@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 Phase: 3 of 10 (Data Ingestion) — IN PROGRESS
 Plan: 4 of 4 in phase 03 (plans 01-04 done)
-Status: Phase 3 Plan 04 complete — FREDIngestor with ALFRED vintage tracking for 5 Tier 1 macro series
-Last activity: 2026-03-06 — Phase 3 Plan 04 complete: FREDIngestor macro data ingestion
+Status: Phase 3 Plans 01-04 complete — all three ingestors (Alpaca, Binance, FRED) implemented
+Last activity: 2026-03-06 — Phase 3 Plan 03 complete: BinanceIngestor crypto 4H OHLCV ingestion
 
 Progress: [█████████░] 91%
 
@@ -59,6 +59,7 @@ Progress: [█████████░] 91%
 | Phase 02-developer-experience P04 | 2 | 2 tasks | 3 files |
 | Phase 03-data-ingestion P01 | 8 min | 2 tasks | 9 files |
 | Phase 03-data-ingestion P02 | 5 | 1 tasks | 4 files |
+| Phase 03-data-ingestion P03 | 13 min | 2 tasks | 5 files |
 | Phase 03 P04 | 7 | 1 tasks | 5 files |
 
 ## Accumulated Context
@@ -97,6 +98,9 @@ Recent decisions affecting current work:
 - [Phase 03-data-ingestion]: Quarantine reasons stored as semicolon-delimited string in reason column
 - [Phase 03-data-ingestion]: Mock SDK client directly rather than HTTP responses for alpaca-py testing
 - [Phase 03]: FRED validate() uses custom null-only row check instead of OHLCV-based validate_rows()
+- [Phase 03-data-ingestion]: All klines fetched from api.binance.us (not api.binance.com) per Binance.US broker architecture
+- [Phase 03-data-ingestion]: Stitch point at 2019-09-01 (Binance.US launch) separates archive from API data
+- [Phase 03-data-ingestion]: Microsecond threshold at 2_000_000_000_000 to detect 2025+ archive timestamp format
 
 ### Pending Todos
 
@@ -110,6 +114,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-06T20:08:35.760Z
-Stopped at: Completed 03-04-PLAN.md
+Last session: 2026-03-06T20:12:39Z
+Stopped at: Completed 03-03-PLAN.md
 Resume file: None
