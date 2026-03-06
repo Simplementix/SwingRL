@@ -66,6 +66,7 @@ dev = [
     "pandas-stubs",
     "types-requests",
     "types-pyyaml",
+    "pytest-cov>=7.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -105,3 +106,15 @@ exclude_dirs = ["tests", ".venv"]
 
 [tool.bandit.assert_used]
 skips = ["*/test_*.py", "*_test.py"]
+
+[tool.coverage.run]
+source = ["swingrl"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.",
+]
