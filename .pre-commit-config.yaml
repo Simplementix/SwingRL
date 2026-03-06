@@ -18,6 +18,7 @@ repos:
         additional_dependencies:
           - pandas-stubs
           - types-requests
+          - types-PyYAML
           - structlog>=24.0
           - pydantic-settings>=2.2
         args: [--config-file=pyproject.toml]
