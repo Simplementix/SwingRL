@@ -41,6 +41,10 @@ dependencies = [
     "pyarrow>=14.0",
     # Storage (Phase 4)
     "duckdb>=1.0,<2",
+    # Alerting (Phase 4)
+    "httpx>=0.27",
+    # Cross-source validation (Phase 4)
+    "yfinance>=0.2.36",
 ]
 
 [tool.uv.sources]
@@ -74,6 +78,7 @@ dev = [
     "types-pyyaml",
     "pytest-cov>=7.0.0",
     "responses>=0.25",
+    "pytest-mock>=3.12",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -108,7 +113,7 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["finrl.*", "pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*", "fredapi.*", "exchange_calendars.*", "duckdb.*"]
+module = ["finrl.*", "pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*", "fredapi.*", "exchange_calendars.*", "duckdb.*", "httpx.*", "yfinance.*"]
 ignore_missing_imports = true
 
 [tool.bandit]
