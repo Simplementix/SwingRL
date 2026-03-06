@@ -29,7 +29,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [ ] **DATA-02**: Binance.US 4-hour bar ingestion for BTC/USD and ETH/USD with rate limit monitoring (X-MBX-USED-WEIGHT headers)
 - [ ] **DATA-03**: 8+ year crypto historical backfill stitching international Binance archives (2017-2019) with Binance.US API (2019+), normalizing volume from base units to USD
 - [ ] **DATA-04**: FRED macro pipeline for Tier 1 series (VIX, T10Y2Y spread, DFF, CPI, unemployment) using ALFRED vintage data to prevent look-ahead bias
-- [ ] **DATA-05**: 12-step data validation checklist with quarantine to data_quarantine table for failed data
+- [x] **DATA-05**: 12-step data validation checklist with quarantine to data_quarantine table for failed data
 - [ ] **DATA-06**: DuckDB analytical database (market_data.ddb) with tables created incrementally per milestone
 - [ ] **DATA-07**: SQLite operational database (trading_ops.db) with tables created incrementally per milestone
 - [ ] **DATA-08**: Cross-database joins via DuckDB sqlite_scanner extension
@@ -180,7 +180,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-02 | Phase 3 | Pending |
 | DATA-03 | Phase 3 | Pending |
 | DATA-04 | Phase 3 | Pending |
-| DATA-05 | Phase 3 | Pending |
+| DATA-05 | Phase 3 | Complete |
 | DATA-06 | Phase 4 | Pending |
 | DATA-07 | Phase 4 | Pending |
 | DATA-08 | Phase 4 | Pending |
