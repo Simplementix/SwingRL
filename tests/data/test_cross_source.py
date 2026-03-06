@@ -252,7 +252,8 @@ class TestDataValidatorStep12:
         """DATA-10: Step 12 runs cross-source check for equity when db provided."""
         from swingrl.data.validation import DataValidator
 
-        idx = pd.DatetimeIndex([datetime(2024, 1, 2), datetime(2024, 1, 3)], tz="UTC")
+        now = pd.Timestamp.now(tz="UTC").normalize()
+        idx = pd.DatetimeIndex([now - pd.Timedelta(days=1), now], tz="UTC")
         df = pd.DataFrame(
             {
                 "open": [472.0, 475.0],
@@ -277,7 +278,8 @@ class TestDataValidatorStep12:
         """DATA-10: Step 12 logs 'skipped' when db is None (backward compatible)."""
         from swingrl.data.validation import DataValidator
 
-        idx = pd.DatetimeIndex([datetime(2024, 1, 2), datetime(2024, 1, 3)], tz="UTC")
+        now = pd.Timestamp.now(tz="UTC").normalize()
+        idx = pd.DatetimeIndex([now - pd.Timedelta(days=1), now], tz="UTC")
         df = pd.DataFrame(
             {
                 "open": [472.0, 475.0],
