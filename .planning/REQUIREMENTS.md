@@ -20,8 +20,8 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **ENV-09**: CLAUDE.md project context file with SwingRL conventions (TDD, snake_case, type hints, Pydantic, pathlib, no hardcoded keys)
 - [x] **ENV-10**: .claude/commands/ with SwingRL-specific skills
 - [ ] **ENV-11**: Pydantic v2 config schema (swingrl.yaml) implementing Doc 05 §10.7 with Field constraints, Literal enums, and model_validators
-- [ ] **ENV-12**: Scaffolded models/ directory with active/, shadow/, archive/ subdirectories and .gitkeep files
-- [ ] **ENV-13**: tests/test_smoke.py verifying all core package imports and tests/conftest.py with shared fixtures
+- [x] **ENV-12**: Scaffolded models/ directory with active/, shadow/, archive/ subdirectories and .gitkeep files
+- [x] **ENV-13**: tests/test_smoke.py verifying all core package imports and tests/conftest.py with shared fixtures
 
 ### Data Pipeline
 
@@ -174,8 +174,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ENV-09 | Phase 2 | Complete |
 | ENV-10 | Phase 2 | Complete |
 | ENV-11 | Phase 2 | Pending |
-| ENV-12 | Phase 2 | Pending |
-| ENV-13 | Phase 2 | Pending |
+| ENV-12 | Phase 2 | Complete |
+| ENV-13 | Phase 2 | Complete |
 | DATA-01 | Phase 3 | Pending |
 | DATA-02 | Phase 3 | Pending |
 | DATA-03 | Phase 3 | Pending |
