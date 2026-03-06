@@ -206,3 +206,211 @@ class TestSQLiteContextManager:
             rows = conn.execute("SELECT id FROM test_rollback").fetchall()
             assert len(rows) == 1
             assert rows[0]["id"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Schema initialization
+# ---------------------------------------------------------------------------
+
+DUCKDB_TABLES = [
+    "ohlcv_daily",
+    "ohlcv_4h",
+    "macro_features",
+    "data_quarantine",
+    "data_ingestion_log",
+]
+
+SQLITE_TABLES = [
+    "trades",
+    "positions",
+    "risk_decisions",
+    "portfolio_snapshots",
+    "system_events",
+    "corporate_actions",
+    "wash_sale_tracker",
+    "circuit_breaker_events",
+    "options_positions",
+    "alert_log",
+]
+
+
+class TestInitSchema:
+    """init_schema() creates all tables, indexes, and views."""
+
+    def test_duckdb_tables_created(self, db_manager: object) -> None:
+        """DATA-06: init_schema() creates all 5 DuckDB tables."""
+        db_manager.init_schema()
+        with db_manager.duckdb() as cursor:
+            result = cursor.execute("SHOW TABLES").fetchall()
+            table_names = {row[0] for row in result}
+        for table in DUCKDB_TABLES:
+            assert table in table_names, f"Missing DuckDB table: {table}"
+
+    def test_sqlite_tables_created(self, db_manager: object) -> None:
+        """DATA-06: init_schema() creates all 10 SQLite tables."""
+        db_manager.init_schema()
+        with db_manager.sqlite() as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+            table_names = {row["name"] for row in rows}
+        for table in SQLITE_TABLES:
+            assert table in table_names, f"Missing SQLite table: {table}"
+
+    def test_sqlite_indexes_created(self, db_manager: object) -> None:
+        """DATA-06: init_schema() creates expected SQLite indexes."""
+        db_manager.init_schema()
+        expected_indexes = {
+            "idx_cb_env_resumed",
+            "idx_trades_symbol_env",
+            "idx_positions_symbol_env",
+        }
+        with db_manager.sqlite() as conn:
+            rows = conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+            index_names = {row["name"] for row in rows}
+        for idx in expected_indexes:
+            assert idx in index_names, f"Missing SQLite index: {idx}"
+
+    def test_idempotent(self, db_manager: object) -> None:
+        """DATA-06: Running init_schema() twice does not error."""
+        db_manager.init_schema()
+        db_manager.init_schema()  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Cross-DB join via sqlite_scanner
+# ---------------------------------------------------------------------------
+
+
+class TestCrossDBJoin:
+    """Cross-DB join between DuckDB and SQLite via sqlite_scanner."""
+
+    def test_attach_sqlite_enables_join(self, db_manager: object) -> None:
+        """DATA-08: INSERT into DuckDB and SQLite, JOIN returns correct row."""
+        db_manager.init_schema()
+
+        # Insert into DuckDB ohlcv_daily
+        with db_manager.duckdb() as cursor:
+            cursor.execute(
+                "INSERT INTO ohlcv_daily (symbol, date, open, high, low, close, volume) "
+                "VALUES ('SPY', '2024-01-02', 470.0, 475.0, 468.0, 473.0, 80000000)"
+            )
+
+        # Insert into SQLite trades
+        with db_manager.sqlite() as conn:
+            conn.execute(
+                "INSERT INTO trades (trade_id, timestamp, symbol, side, quantity, "
+                "price, environment) VALUES ('t1', '2024-01-02T10:00:00', 'SPY', "
+                "'buy', 10, 472.0, 'equity')"
+            )
+
+        # Cross-DB join
+        with db_manager.duckdb() as cursor:
+            db_manager.attach_sqlite(cursor)
+            result = cursor.execute("""
+                SELECT d.symbol, d.close, t.price, t.side
+                FROM ohlcv_daily d
+                JOIN ops.trades t ON d.symbol = t.symbol
+                WHERE d.symbol = 'SPY'
+            """).fetchone()
+
+        assert result is not None
+        assert result[0] == "SPY"
+        assert result[1] == 473.0
+        assert result[2] == 472.0
+        assert result[3] == "buy"
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Aggregation views
+# ---------------------------------------------------------------------------
+
+
+class TestAggregationViews:
+    """Weekly and monthly aggregation views on ohlcv_daily."""
+
+    def test_weekly_view_aggregation(self, db_manager: object) -> None:
+        """DATA-09: ohlcv_weekly view returns correct OHLCV aggregation."""
+        db_manager.init_schema()
+
+        # Insert 10 daily rows for SPY spanning 2 weeks
+        # Week 1: Mon 2024-01-08 to Fri 2024-01-12
+        # Week 2: Mon 2024-01-15 to Fri 2024-01-19
+        daily_data = [
+            # Week 1
+            ("SPY", "2024-01-08", 470.0, 475.0, 468.0, 473.0, 80_000_000, 473.0),
+            ("SPY", "2024-01-09", 473.0, 478.0, 471.0, 476.0, 75_000_000, 476.0),
+            ("SPY", "2024-01-10", 476.0, 480.0, 474.0, 477.0, 70_000_000, 477.0),
+            ("SPY", "2024-01-11", 477.0, 479.0, 472.0, 474.0, 85_000_000, 474.0),
+            ("SPY", "2024-01-12", 474.0, 476.0, 470.0, 475.0, 90_000_000, 475.0),
+            # Week 2
+            ("SPY", "2024-01-15", 475.0, 482.0, 473.0, 480.0, 60_000_000, 480.0),
+            ("SPY", "2024-01-16", 480.0, 485.0, 478.0, 483.0, 65_000_000, 483.0),
+            ("SPY", "2024-01-17", 483.0, 486.0, 479.0, 481.0, 72_000_000, 481.0),
+            ("SPY", "2024-01-18", 481.0, 484.0, 476.0, 478.0, 68_000_000, 478.0),
+            ("SPY", "2024-01-19", 478.0, 483.0, 475.0, 482.0, 77_000_000, 482.0),
+        ]
+
+        with db_manager.duckdb() as cursor:
+            cursor.executemany(
+                "INSERT INTO ohlcv_daily (symbol, date, open, high, low, close, "
+                "volume, adjusted_close) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                daily_data,
+            )
+
+        with db_manager.duckdb() as cursor:
+            rows = cursor.execute(
+                "SELECT * FROM ohlcv_weekly WHERE symbol = 'SPY' ORDER BY week"
+            ).fetchall()
+
+        assert len(rows) == 2
+
+        # Week 1: first open=470, max high=480, min low=468, last close=475, sum vol=400M
+        w1 = rows[0]
+        assert w1[0] == "SPY"  # symbol
+        assert w1[2] == 470.0  # first open
+        assert w1[3] == 480.0  # max high
+        assert w1[4] == 468.0  # min low
+        assert w1[5] == 475.0  # last close
+        assert w1[6] == 400_000_000  # sum volume
+        assert w1[7] == 475.0  # last adjusted_close
+
+        # Week 2: first open=475, max high=486, min low=473, last close=482, sum vol=342M
+        w2 = rows[1]
+        assert w2[2] == 475.0
+        assert w2[3] == 486.0
+        assert w2[4] == 473.0
+        assert w2[5] == 482.0
+        assert w2[6] == 342_000_000
+        assert w2[7] == 482.0
+
+    def test_monthly_view_aggregation(self, db_manager: object) -> None:
+        """DATA-09: ohlcv_monthly view returns correct OHLCV aggregation."""
+        db_manager.init_schema()
+
+        # Insert rows in January 2024
+        daily_data = [
+            ("SPY", "2024-01-02", 470.0, 475.0, 468.0, 473.0, 80_000_000, 473.0),
+            ("SPY", "2024-01-03", 473.0, 478.0, 471.0, 476.0, 75_000_000, 476.0),
+            ("SPY", "2024-01-04", 476.0, 480.0, 465.0, 477.0, 70_000_000, 477.0),
+        ]
+
+        with db_manager.duckdb() as cursor:
+            cursor.executemany(
+                "INSERT INTO ohlcv_daily (symbol, date, open, high, low, close, "
+                "volume, adjusted_close) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                daily_data,
+            )
+
+        with db_manager.duckdb() as cursor:
+            rows = cursor.execute("SELECT * FROM ohlcv_monthly WHERE symbol = 'SPY'").fetchall()
+
+        assert len(rows) == 1
+        m1 = rows[0]
+        assert m1[0] == "SPY"  # symbol
+        assert m1[2] == 470.0  # first open
+        assert m1[3] == 480.0  # max high
+        assert m1[4] == 465.0  # min low
+        assert m1[5] == 477.0  # last close
+        assert m1[6] == 225_000_000  # sum volume
+        assert m1[7] == 477.0  # last adjusted_close
