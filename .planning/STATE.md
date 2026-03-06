@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 02-developer-experience-02-03-PLAN.md
-last_updated: "2026-03-06T17:49:47.437Z"
-last_activity: "2026-03-06 — Phase 2 Plan 03 complete: SwingRLConfig schema, load_config(), YAML dev defaults, prod example"
+stopped_at: Completed 02-developer-experience-02-04-PLAN.md
+last_updated: "2026-03-06T17:54:19.774Z"
+last_activity: "2026-03-06 — Phase 2 Plan 03 complete: config schema, YAML dev defaults, prod example"
 progress:
   total_phases: 10
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 7
-  completed_plans: 6
-  percent: 13
+  completed_plans: 7
+  percent: 86
 ---
 
 # Project State
@@ -56,6 +56,7 @@ Progress: [█████████░] 86%
 | Phase 02-developer-experience P02 | 2 min | 2 tasks | 6 files |
 | Phase 02-developer-experience P01 | 6 | 2 tasks | 8 files |
 | Phase 02-developer-experience P03 | 6 | 2 tasks | 8 files |
+| Phase 02-developer-experience P04 | 2 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -85,6 +86,8 @@ Recent decisions affecting current work:
 - [Phase 02-developer-experience]: pydantic-settings 2.13.1 uses file_secret_settings (not secrets_dir) in settings_customise_sources — fixed to match actual API
 - [Phase 02-developer-experience]: types-PyYAML must be in pre-commit mypy additional_dependencies (isolated env) AND pyproject.toml dev deps
 - [Phase 02-developer-experience]: load_config() uses inner _ConfigWithYaml subclass to bind yaml_path at call time — keeps SwingRLConfig cleanly importable
+- [Phase 02-developer-experience]: conftest.py fixture scopes: session-scoped only for repo_root; function-scoped for all others to prevent cross-test state mutation
+- [Phase 02-developer-experience]: valid_config_yaml as separate string fixture allows bad YAML tests to construct invalid variants independently of the valid baseline
 
 ### Pending Todos
 
@@ -98,6 +101,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-06T17:49:47.435Z
-Stopped at: Completed 02-developer-experience-02-03-PLAN.md
+Last session: 2026-03-06T17:54:19.771Z
+Stopped at: Completed 02-developer-experience-02-04-PLAN.md
 Resume file: None
