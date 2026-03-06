@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 02-developer-experience-02-01-PLAN.md
-last_updated: "2026-03-06T17:40:38.638Z"
-last_activity: "2026-03-06 — Phase 2 Plan 02 complete: CLAUDE.md and .claude/commands/ slash commands created"
+stopped_at: Completed 02-developer-experience-02-03-PLAN.md
+last_updated: "2026-03-06T17:49:47.437Z"
+last_activity: "2026-03-06 — Phase 2 Plan 03 complete: SwingRLConfig schema, load_config(), YAML dev defaults, prod example"
 progress:
   total_phases: 10
   completed_phases: 1
   total_plans: 7
-  completed_plans: 5
+  completed_plans: 6
   percent: 13
 ---
 
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 ## Current Position
 
 Phase: 2 of 10 (Developer Experience) — IN PROGRESS
-Plan: 2 of 4 in phase 02 (plans 01 and 02 done)
-Status: Phase 2 Plan 02 complete — CLAUDE.md and slash commands created
-Last activity: 2026-03-06 — Phase 2 Plan 02 complete: CLAUDE.md and .claude/commands/ slash commands created
+Plan: 3 of 4 in phase 02 (plans 01, 02, and 03 done)
+Status: Phase 2 Plan 03 complete — SwingRLConfig Pydantic v2 schema, load_config(), YAML configs
+Last activity: 2026-03-06 — Phase 2 Plan 03 complete: config schema, YAML dev defaults, prod example
 
-Progress: [█░░░░░░░░░] 13%
+Progress: [█████████░] 86%
 
 ## Performance Metrics
 
@@ -55,6 +55,7 @@ Progress: [█░░░░░░░░░] 13%
 | Phase 01-dev-foundation P03 | ~2 sessions | 3 tasks | 5 files |
 | Phase 02-developer-experience P02 | 2 min | 2 tasks | 6 files |
 | Phase 02-developer-experience P01 | 6 | 2 tasks | 8 files |
+| Phase 02-developer-experience P03 | 6 | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -81,6 +82,9 @@ Recent decisions affecting current work:
 - [Phase 02-developer-experience Plan 02]: ci-local.md 4 stages map to tests, lint, typecheck, security — mirrors ci-homelab.sh stages 2-5 natively
 - [Phase 02-developer-experience]: structlog.* added to mypy ignore_missing_imports; pre-commit mypy hook needs structlog+pydantic-settings as additional_dependencies
 - [Phase 02-developer-experience]: configure_logging uses stdlib ProcessorFormatter bridge so third-party libs emit structured logs
+- [Phase 02-developer-experience]: pydantic-settings 2.13.1 uses file_secret_settings (not secrets_dir) in settings_customise_sources — fixed to match actual API
+- [Phase 02-developer-experience]: types-PyYAML must be in pre-commit mypy additional_dependencies (isolated env) AND pyproject.toml dev deps
+- [Phase 02-developer-experience]: load_config() uses inner _ConfigWithYaml subclass to bind yaml_path at call time — keeps SwingRLConfig cleanly importable
 
 ### Pending Todos
 
@@ -94,6 +98,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-06T17:40:38.635Z
-Stopped at: Completed 02-developer-experience-02-01-PLAN.md
+Last session: 2026-03-06T17:49:47.435Z
+Stopped at: Completed 02-developer-experience-02-03-PLAN.md
 Resume file: None
