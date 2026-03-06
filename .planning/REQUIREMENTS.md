@@ -25,7 +25,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### Data Pipeline
 
-- [ ] **DATA-01**: Alpaca OHLCV ingestion for 8 equity ETFs (SPY, QQQ, VTI, XLV, XLI, XLE, XLF, XLK) via IEX feed
+- [x] **DATA-01**: Alpaca OHLCV ingestion for 8 equity ETFs (SPY, QQQ, VTI, XLV, XLI, XLE, XLF, XLK) via IEX feed
 - [ ] **DATA-02**: Binance.US 4-hour bar ingestion for BTC/USD and ETH/USD with rate limit monitoring (X-MBX-USED-WEIGHT headers)
 - [ ] **DATA-03**: 8+ year crypto historical backfill stitching international Binance archives (2017-2019) with Binance.US API (2019+), normalizing volume from base units to USD
 - [ ] **DATA-04**: FRED macro pipeline for Tier 1 series (VIX, T10Y2Y spread, DFF, CPI, unemployment) using ALFRED vintage data to prevent look-ahead bias
@@ -176,7 +176,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ENV-11 | Phase 2 | Complete |
 | ENV-12 | Phase 2 | Complete |
 | ENV-13 | Phase 2 | Complete |
-| DATA-01 | Phase 3 | Pending |
+| DATA-01 | Phase 3 | Complete |
 | DATA-02 | Phase 3 | Pending |
 | DATA-03 | Phase 3 | Pending |
 | DATA-04 | Phase 3 | Pending |
