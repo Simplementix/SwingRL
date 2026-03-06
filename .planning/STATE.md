@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: planning
-stopped_at: Completed 01-dev-foundation 01-02-PLAN.md
-last_updated: "2026-03-06T16:02:45.645Z"
-last_activity: 2026-03-06 — Roadmap created, all 74 requirements mapped across 10 phases
+status: completed
+stopped_at: Completed 02-developer-experience-02-04-PLAN.md
+last_updated: "2026-03-06T17:58:13.795Z"
+last_activity: "2026-03-06 — Phase 2 Plan 03 complete: config schema, YAML dev defaults, prod example"
 progress:
   total_phases: 10
-  completed_phases: 0
-  total_plans: 3
-  completed_plans: 2
-  percent: 0
+  completed_phases: 2
+  total_plans: 7
+  completed_plans: 7
+  percent: 86
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 ## Current Position
 
-Phase: 1 of 10 (Dev Foundation)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-03-06 — Roadmap created, all 74 requirements mapped across 10 phases
+Phase: 2 of 10 (Developer Experience) — IN PROGRESS
+Plan: 3 of 4 in phase 02 (plans 01, 02, and 03 done)
+Status: Phase 2 Plan 03 complete — SwingRLConfig Pydantic v2 schema, load_config(), YAML configs
+Last activity: 2026-03-06 — Phase 2 Plan 03 complete: config schema, YAML dev defaults, prod example
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█████████░] 86%
 
 ## Performance Metrics
 
@@ -52,6 +52,11 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 | Phase 01-dev-foundation P01 | 11 | 2 tasks | 35 files |
 | Phase 01-dev-foundation P02 | 3 | 1 tasks | 2 files |
+| Phase 01-dev-foundation P03 | ~2 sessions | 3 tasks | 5 files |
+| Phase 02-developer-experience P02 | 2 min | 2 tasks | 6 files |
+| Phase 02-developer-experience P01 | 6 | 2 tasks | 8 files |
+| Phase 02-developer-experience P03 | 6 | 2 tasks | 8 files |
+| Phase 02-developer-experience P04 | 2 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -70,6 +75,19 @@ Recent decisions affecting current work:
 - [Phase 01-dev-foundation]: tool.uv.environments constrained to darwin for Phase 1 — Linux Docker lockfile generation deferred to Phase 2 (ENV-06). Remove constraint before Phase 2 Plan 1.
 - [Phase 01-dev-foundation]: ruff-format replaces black in pre-commit to avoid formatting conflicts; black retained in pyproject.toml for direct CLI use
 - [Phase 01-dev-foundation]: bandit[toml] additional_dependency required in pre-commit hook — without it bandit cannot read pyproject.toml exclusions
+- [Phase 01-dev-foundation Plan 03]: CPU-only torch in Docker — homelab has no GPU; MPS stays on M1 Mac natively
+- [Phase 01-dev-foundation Plan 03]: Single-stage Dockerfile with dev deps — no production split until Phase 8+
+- [Phase 01-dev-foundation Plan 03]: ruff format --check replaces standalone black check inside container (ruff formatter is drop-in black replacement)
+- [Phase 01-dev-foundation Plan 03]: ci-homelab.sh 5-stage pattern established as canonical CI runner for all future phases
+- [Phase 02-developer-experience Plan 02]: CLAUDE.md written verbatim from plan spec — content was fully specified
+- [Phase 02-developer-experience Plan 02]: ci-local.md 4 stages map to tests, lint, typecheck, security — mirrors ci-homelab.sh stages 2-5 natively
+- [Phase 02-developer-experience]: structlog.* added to mypy ignore_missing_imports; pre-commit mypy hook needs structlog+pydantic-settings as additional_dependencies
+- [Phase 02-developer-experience]: configure_logging uses stdlib ProcessorFormatter bridge so third-party libs emit structured logs
+- [Phase 02-developer-experience]: pydantic-settings 2.13.1 uses file_secret_settings (not secrets_dir) in settings_customise_sources — fixed to match actual API
+- [Phase 02-developer-experience]: types-PyYAML must be in pre-commit mypy additional_dependencies (isolated env) AND pyproject.toml dev deps
+- [Phase 02-developer-experience]: load_config() uses inner _ConfigWithYaml subclass to bind yaml_path at call time — keeps SwingRLConfig cleanly importable
+- [Phase 02-developer-experience]: conftest.py fixture scopes: session-scoped only for repo_root; function-scoped for all others to prevent cross-test state mutation
+- [Phase 02-developer-experience]: valid_config_yaml as separate string fixture allows bad YAML tests to construct invalid variants independently of the valid baseline
 
 ### Pending Todos
 
@@ -77,13 +95,12 @@ None yet.
 
 ### Blockers/Concerns
 
-None yet. Key constraints to keep in mind for Phase 1:
-- ci-homelab.sh must run via `ssh homelab` — homelab must be reachable
-- PyTorch must be CPU-only in Docker (homelab has no GPU) and MPS-enabled on M1 Mac natively
-- ENV-06 Dockerfile uses python:3.11-slim with non-root trader user (UID 1000)
+None. Phase 1 complete.
+
+**Action required before Phase 2 Plan 1:** Remove `tool.uv.environments` darwin constraint from pyproject.toml — deferred from Phase 1, needed for Linux Docker lockfile generation (ENV-06 follow-up).
 
 ## Session Continuity
 
-Last session: 2026-03-06T16:02:45.642Z
-Stopped at: Completed 01-dev-foundation 01-02-PLAN.md
+Last session: 2026-03-06T17:54:19.771Z
+Stopped at: Completed 02-developer-experience-02-04-PLAN.md
 Resume file: None

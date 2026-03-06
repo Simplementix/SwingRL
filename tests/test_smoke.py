@@ -105,3 +105,41 @@ def test_swingrl_subpackages_exist() -> None:
         assert (subpkg_dir / "__init__.py").exists(), (
             f"__init__.py missing: src/swingrl/{subpkg}/__init__.py"
         )
+
+
+def test_claude_md_exists() -> None:
+    """ENV-09: CLAUDE.md must exist at the repo root with SwingRL conventions."""
+    repo_root = Path(__file__).parent.parent
+    claude_md = repo_root / "CLAUDE.md"
+    assert claude_md.exists(), "CLAUDE.md missing from repo root"
+    content = claude_md.read_text()
+    assert len(content.splitlines()) >= 50, (
+        f"CLAUDE.md too short ({len(content.splitlines())} lines) — expected >= 50"
+    )
+    assert "SwingRL" in content, "CLAUDE.md must mention SwingRL"
+
+
+def test_claude_commands_exist() -> None:
+    """ENV-10: .claude/commands/ must exist with at least 5 dev workflow skill files."""
+    repo_root = Path(__file__).parent.parent
+    commands_dir = repo_root / ".claude" / "commands"
+    assert commands_dir.is_dir(), ".claude/commands/ directory missing"
+    skill_files = list(commands_dir.glob("*.md"))
+    assert len(skill_files) >= 5, (
+        f"Expected >= 5 skill files in .claude/commands/, found {len(skill_files)}"
+    )
+    for skill_file in skill_files:
+        content = skill_file.read_text()
+        assert "description:" in content, (
+            f"Skill file missing frontmatter description: {skill_file.name}"
+        )
+
+
+def test_models_directories_exist() -> None:
+    """ENV-12: models/active/, models/shadow/, and models/archive/ must have .gitkeep files."""
+    repo_root = Path(__file__).parent.parent
+    for subdir in ["active", "shadow", "archive"]:
+        d = repo_root / "models" / subdir
+        assert d.is_dir(), f"models/{subdir}/ directory missing"
+        gitkeep = d / ".gitkeep"
+        assert gitkeep.exists(), f"models/{subdir}/.gitkeep missing"

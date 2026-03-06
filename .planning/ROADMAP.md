@@ -12,8 +12,8 @@ SwingRL builds an automated RL swing trading system in 10 phases: starting from 
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Dev Foundation** - Reproducible Python 3.11 environment with Docker validated on x86 homelab
-- [ ] **Phase 2: Developer Experience** - Claude skills, config schema, smoke tests, and models scaffold
+- [x] **Phase 1: Dev Foundation** - Reproducible Python 3.11 environment with Docker validated on x86 homelab (completed 2026-03-06)
+- [x] **Phase 2: Developer Experience** - Claude skills, config schema, smoke tests, and models scaffold (completed 2026-03-06)
 - [ ] **Phase 3: Data Ingestion** - Raw OHLCV and macro data flowing from Alpaca, Binance.US, and FRED
 - [ ] **Phase 4: Data Storage and Validation** - DuckDB/SQLite schema operational with validation, quarantine, and alerting
 - [ ] **Phase 5: Feature Engineering** - Full 156-dim equity and 45-dim crypto observation vectors assembled and verified
@@ -35,7 +35,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. GitHub repo exists with canonical directory structure (src/, config/, data/, db/, models/, tests/, scripts/, status/) visible on remote
   4. `pre-commit run --all-files` passes ruff, black, mypy, detect-secrets, and bandit checks on a clean commit
   5. `bash ci-homelab.sh` via `ssh homelab` completes — docker compose build, pytest, and cleanup all green
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [ ] 01-01-PLAN.md — Repository scaffold, pyproject.toml, dependency resolution, smoke tests
@@ -52,7 +52,13 @@ Plans:
   3. Loading swingrl.yaml through the Pydantic v2 config schema raises a `ValidationError` on any invalid field and passes on a valid config
   4. `models/active/`, `models/shadow/`, and `models/archive/` directories exist with `.gitkeep` files committed
   5. `pytest tests/test_smoke.py` passes — all core package imports succeed and conftest fixtures load without error
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Remove darwin constraint, add structlog + pydantic-settings, create utils/exceptions.py and utils/logging.py
+- [ ] 02-02-PLAN.md — Create CLAUDE.md conventions document and .claude/commands/ skill files
+- [ ] 02-03-PLAN.md — Pydantic v2 config schema (schema.py), config/swingrl.yaml dev defaults, prod example
+- [ ] 02-04-PLAN.md — Expand tests/conftest.py fixtures, create tests/test_config.py, add ENV-09/10/12 smoke tests
 
 ### Phase 3: Data Ingestion
 **Goal**: Raw OHLCV bars and macro indicators flow reliably from all three sources into the system, with historical crypto backfill complete
@@ -157,8 +163,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Dev Foundation | 2/3 | In Progress|  |
-| 2. Developer Experience | 0/TBD | Not started | - |
+| 1. Dev Foundation | 3/3 | Complete   | 2026-03-06 |
+| 2. Developer Experience | 4/4 | Complete   | 2026-03-06 |
 | 3. Data Ingestion | 0/TBD | Not started | - |
 | 4. Data Storage and Validation | 0/TBD | Not started | - |
 | 5. Feature Engineering | 0/TBD | Not started | - |
