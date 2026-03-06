@@ -37,7 +37,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [ ] **DATA-10**: Corporate action handling (stock splits, dividends) with corporate_actions table
 - [ ] **DATA-11**: Cross-source validation (Alpaca vs yfinance closing prices, weekly)
 - [ ] **DATA-12**: Data ingestion logging to data_ingestion_log table with run_id, timing, and row counts
-- [ ] **DATA-13**: Alerter module (src/monitoring/alerter.py) with Discord webhook integration, level-based routing, and daily digest batching
+- [x] **DATA-13**: Alerter module (src/monitoring/alerter.py) with Discord webhook integration, level-based routing, and daily digest batching
 
 ### Feature Engineering
 
@@ -188,7 +188,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-10 | Phase 4 | Pending |
 | DATA-11 | Phase 4 | Pending |
 | DATA-12 | Phase 4 | Pending |
-| DATA-13 | Phase 4 | Pending |
+| DATA-13 | Phase 4 | Complete |
 | FEAT-01 | Phase 5 | Pending |
 | FEAT-02 | Phase 5 | Pending |
 | FEAT-03 | Phase 5 | Pending |
