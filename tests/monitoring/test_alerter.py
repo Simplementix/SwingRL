@@ -13,10 +13,10 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from swingrl.monitoring.alerter import Alerter
 
 from swingrl.config.schema import load_config
 from swingrl.data.db import DatabaseManager
+from swingrl.monitoring.alerter import Alerter
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -51,7 +51,9 @@ def db_manager(tmp_path: Path) -> DatabaseManager:
 @pytest.fixture
 def alerter(webhook_url: str) -> Alerter:
     """Alerter without DatabaseManager (standalone mode)."""
-    return Alerter(webhook_url=webhook_url, cooldown_minutes=30)
+    return Alerter(
+        webhook_url=webhook_url, cooldown_minutes=30, consecutive_failures_before_alert=1
+    )
 
 
 @pytest.fixture
