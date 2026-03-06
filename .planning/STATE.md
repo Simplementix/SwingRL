@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: planning
-stopped_at: Completed 01-dev-foundation 01-02-PLAN.md
-last_updated: "2026-03-06T16:02:45.645Z"
-last_activity: 2026-03-06 — Roadmap created, all 74 requirements mapped across 10 phases
+stopped_at: Completed 01-dev-foundation 01-03-PLAN.md
+last_updated: "2026-03-06T16:23:36Z"
+last_activity: 2026-03-06 — Phase 1 complete: Docker CI pipeline validated on homelab (ENV-06, ENV-07, ENV-08)
 progress:
   total_phases: 10
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 2
-  percent: 0
+  completed_plans: 3
+  percent: 10
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 ## Current Position
 
-Phase: 1 of 10 (Dev Foundation)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-03-06 — Roadmap created, all 74 requirements mapped across 10 phases
+Phase: 1 of 10 (Dev Foundation) — COMPLETE
+Plan: 3 of 3 in phase 01 (all done)
+Status: Phase 1 complete — ready for Phase 2 planning
+Last activity: 2026-03-06 — Phase 1 complete: Docker + CI pipeline validated on x86 homelab
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█░░░░░░░░░] 10%
 
 ## Performance Metrics
 
@@ -52,6 +52,7 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 | Phase 01-dev-foundation P01 | 11 | 2 tasks | 35 files |
 | Phase 01-dev-foundation P02 | 3 | 1 tasks | 2 files |
+| Phase 01-dev-foundation P03 | ~2 sessions | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -70,6 +71,10 @@ Recent decisions affecting current work:
 - [Phase 01-dev-foundation]: tool.uv.environments constrained to darwin for Phase 1 — Linux Docker lockfile generation deferred to Phase 2 (ENV-06). Remove constraint before Phase 2 Plan 1.
 - [Phase 01-dev-foundation]: ruff-format replaces black in pre-commit to avoid formatting conflicts; black retained in pyproject.toml for direct CLI use
 - [Phase 01-dev-foundation]: bandit[toml] additional_dependency required in pre-commit hook — without it bandit cannot read pyproject.toml exclusions
+- [Phase 01-dev-foundation Plan 03]: CPU-only torch in Docker — homelab has no GPU; MPS stays on M1 Mac natively
+- [Phase 01-dev-foundation Plan 03]: Single-stage Dockerfile with dev deps — no production split until Phase 8+
+- [Phase 01-dev-foundation Plan 03]: ruff format --check replaces standalone black check inside container (ruff formatter is drop-in black replacement)
+- [Phase 01-dev-foundation Plan 03]: ci-homelab.sh 5-stage pattern established as canonical CI runner for all future phases
 
 ### Pending Todos
 
@@ -77,13 +82,12 @@ None yet.
 
 ### Blockers/Concerns
 
-None yet. Key constraints to keep in mind for Phase 1:
-- ci-homelab.sh must run via `ssh homelab` — homelab must be reachable
-- PyTorch must be CPU-only in Docker (homelab has no GPU) and MPS-enabled on M1 Mac natively
-- ENV-06 Dockerfile uses python:3.11-slim with non-root trader user (UID 1000)
+None. Phase 1 complete.
+
+**Action required before Phase 2 Plan 1:** Remove `tool.uv.environments` darwin constraint from pyproject.toml — deferred from Phase 1, needed for Linux Docker lockfile generation (ENV-06 follow-up).
 
 ## Session Continuity
 
-Last session: 2026-03-06T16:02:45.642Z
-Stopped at: Completed 01-dev-foundation 01-02-PLAN.md
+Last session: 2026-03-06T16:23:36Z
+Stopped at: Completed 01-dev-foundation 01-03-PLAN.md (Phase 1 complete)
 Resume file: None
