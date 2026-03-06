@@ -34,8 +34,8 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **DATA-07**: SQLite operational database (trading_ops.db) with tables created incrementally per milestone
 - [x] **DATA-08**: Cross-database joins via DuckDB sqlite_scanner extension
 - [x] **DATA-09**: "Store lowest, aggregate up" strategy — only store daily/4H bars, compute weekly/monthly on-the-fly via DuckDB
-- [ ] **DATA-10**: Corporate action handling (stock splits, dividends) with corporate_actions table
-- [ ] **DATA-11**: Cross-source validation (Alpaca vs yfinance closing prices, weekly)
+- [x] **DATA-10**: Corporate action handling (stock splits, dividends) with corporate_actions table
+- [x] **DATA-11**: Cross-source validation (Alpaca vs yfinance closing prices, weekly)
 - [x] **DATA-12**: Data ingestion logging to data_ingestion_log table with run_id, timing, and row counts
 - [x] **DATA-13**: Alerter module (src/monitoring/alerter.py) with Discord webhook integration, level-based routing, and daily digest batching
 
@@ -185,8 +185,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-07 | Phase 4 | Complete |
 | DATA-08 | Phase 4 | Complete |
 | DATA-09 | Phase 4 | Complete |
-| DATA-10 | Phase 4 | Pending |
-| DATA-11 | Phase 4 | Pending |
+| DATA-10 | Phase 4 | Complete |
+| DATA-11 | Phase 4 | Complete |
 | DATA-12 | Phase 4 | Complete |
 | DATA-13 | Phase 4 | Complete |
 | FEAT-01 | Phase 5 | Pending |

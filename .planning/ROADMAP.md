@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Dev Foundation** - Reproducible Python 3.11 environment with Docker validated on x86 homelab (completed 2026-03-06)
 - [x] **Phase 2: Developer Experience** - Claude skills, config schema, smoke tests, and models scaffold (completed 2026-03-06)
 - [x] **Phase 3: Data Ingestion** - Raw OHLCV and macro data flowing from Alpaca, Binance.US, and FRED (completed 2026-03-06)
-- [ ] **Phase 4: Data Storage and Validation** - DuckDB/SQLite schema operational with validation, quarantine, and alerting
+- [x] **Phase 4: Data Storage and Validation** - DuckDB/SQLite schema operational with validation, quarantine, and alerting (completed 2026-03-06)
 - [ ] **Phase 5: Feature Engineering** - Full 156-dim equity and 45-dim crypto observation vectors assembled and verified
 - [ ] **Phase 6: RL Environments** - Gymnasium-compatible trading environments passing step/reset contracts
 - [ ] **Phase 7: Agent Training and Validation** - PPO/A2C/SAC ensemble trained and walk-forward validated against performance gates
@@ -178,7 +178,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 1. Dev Foundation | 3/3 | Complete   | 2026-03-06 |
 | 2. Developer Experience | 4/4 | Complete   | 2026-03-06 |
 | 3. Data Ingestion | 4/4 | Complete   | 2026-03-06 |
-| 4. Data Storage and Validation | 2/4 | In Progress|  |
+| 4. Data Storage and Validation | 4/4 | Complete   | 2026-03-06 |
 | 5. Feature Engineering | 0/TBD | Not started | - |
 | 6. RL Environments | 0/TBD | Not started | - |
 | 7. Agent Training and Validation | 0/TBD | Not started | - |
