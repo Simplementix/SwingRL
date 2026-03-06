@@ -1,0 +1,36 @@
+# Pre-commit hooks for SwingRL
+# ruff-format replaces black in pre-commit to avoid formatting conflicts.
+# black config in pyproject.toml is retained for direct CLI use.
+# bandit uses bandit[toml] to read [tool.bandit] exclusions from pyproject.toml.
+# detect-secrets requires .secrets.baseline to be committed before first run.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.5
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.19.1
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - pandas-stubs
+          - types-requests
+        args: [--config-file=pyproject.toml]
+        files: ^src/
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        args: ["-c", "pyproject.toml"]
+        additional_dependencies: ["bandit[toml]"]
+        exclude: ^tests/
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
