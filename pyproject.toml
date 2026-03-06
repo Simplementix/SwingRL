@@ -35,6 +35,10 @@ dependencies = [
     "pyyaml>=6.0",
     "structlog>=24.0",
     "pydantic-settings>=2.2",
+    # Data ingestion (Phase 3)
+    "fredapi>=0.5",
+    "exchange-calendars>=4.13",
+    "pyarrow>=14.0",
 ]
 
 [tool.uv.sources]
@@ -67,6 +71,7 @@ dev = [
     "types-requests",
     "types-pyyaml",
     "pytest-cov>=7.0.0",
+    "responses>=0.25",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -77,6 +82,9 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "integration: requires real API keys and network access (skipped in CI)",
+]
 
 [tool.black]
 line-length = 100
@@ -98,7 +106,7 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["finrl.*", "pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*"]
+module = ["finrl.*", "pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*", "fredapi.*", "exchange_calendars.*"]
 ignore_missing_imports = true
 
 [tool.bandit]
