@@ -30,10 +30,10 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **DATA-03**: 8+ year crypto historical backfill stitching international Binance archives (2017-2019) with Binance.US API (2019+), normalizing volume from base units to USD
 - [x] **DATA-04**: FRED macro pipeline for Tier 1 series (VIX, T10Y2Y spread, DFF, CPI, unemployment) using ALFRED vintage data to prevent look-ahead bias
 - [x] **DATA-05**: 12-step data validation checklist with quarantine to data_quarantine table for failed data
-- [ ] **DATA-06**: DuckDB analytical database (market_data.ddb) with tables created incrementally per milestone
-- [ ] **DATA-07**: SQLite operational database (trading_ops.db) with tables created incrementally per milestone
-- [ ] **DATA-08**: Cross-database joins via DuckDB sqlite_scanner extension
-- [ ] **DATA-09**: "Store lowest, aggregate up" strategy — only store daily/4H bars, compute weekly/monthly on-the-fly via DuckDB
+- [x] **DATA-06**: DuckDB analytical database (market_data.ddb) with tables created incrementally per milestone
+- [x] **DATA-07**: SQLite operational database (trading_ops.db) with tables created incrementally per milestone
+- [x] **DATA-08**: Cross-database joins via DuckDB sqlite_scanner extension
+- [x] **DATA-09**: "Store lowest, aggregate up" strategy — only store daily/4H bars, compute weekly/monthly on-the-fly via DuckDB
 - [ ] **DATA-10**: Corporate action handling (stock splits, dividends) with corporate_actions table
 - [ ] **DATA-11**: Cross-source validation (Alpaca vs yfinance closing prices, weekly)
 - [ ] **DATA-12**: Data ingestion logging to data_ingestion_log table with run_id, timing, and row counts
@@ -181,10 +181,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-03 | Phase 3 | Complete |
 | DATA-04 | Phase 3 | Complete |
 | DATA-05 | Phase 3 | Complete |
-| DATA-06 | Phase 4 | Pending |
-| DATA-07 | Phase 4 | Pending |
-| DATA-08 | Phase 4 | Pending |
-| DATA-09 | Phase 4 | Pending |
+| DATA-06 | Phase 4 | Complete |
+| DATA-07 | Phase 4 | Complete |
+| DATA-08 | Phase 4 | Complete |
+| DATA-09 | Phase 4 | Complete |
 | DATA-10 | Phase 4 | Pending |
 | DATA-11 | Phase 4 | Pending |
 | DATA-12 | Phase 4 | Pending |
