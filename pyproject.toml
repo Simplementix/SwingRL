@@ -1,0 +1,107 @@
+# Source: https://docs.astral.sh/uv/concepts/projects/config/ + project decisions
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "swingrl"
+version = "0.1.0"
+description = "RL-based swing trading system"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    # Core ML
+    "torch>=2.2,<2.4",
+    "torchvision>=0.17,<0.20",
+    # RL framework
+    "stable-baselines3[extra]>=2.0,<3",
+    "gymnasium>=0.29.1",
+    "finrl==0.3.7",
+    # Data
+    "pandas>=2.0,<3",
+    "numpy>=1.26,<2",
+    # pandas-ta DEFERRED: PyPI 0.4.x requires Python>=3.12 and numpy>=2.0.
+    # The 0.3.14b series is no longer on PyPI. All maintained forks also require
+    # numpy>=2.0 which conflicts with Python 3.11 constraint.
+    # Decision: use stockstats (FinRL's native indicator library) for Phase 1-5.
+    # pandas-ta re-evaluation scheduled for Phase 6 (strategy implementation).
+    # See .planning/phases/01-dev-foundation/deferred-items.md
+    "hmmlearn>=0.3",
+    # stockstats: FinRL's native technical indicator library (Python 3.11 compatible)
+    "stockstats>=0.4.0",
+    # Broker APIs
+    "alpaca-py>=0.20",
+    # Config
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+  { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+# Constrain resolution to macOS (darwin) for Phase 1.
+# Linux/Docker environment addressed in Phase 2 (ENV-06/ENV-07).
+# This avoids the Linux pytorch-cpu split resolution in the lockfile,
+# which simplifies the Phase 1 lock generation on M1 Mac.
+[tool.uv]
+environments = ["sys_platform == 'darwin'"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pre-commit>=3.6",
+    "ruff>=0.4",
+    "black>=24.0",
+    "mypy>=1.8",
+    "bandit[toml]>=1.7.7",
+    "detect-secrets>=1.5.0",
+    "pandas-stubs",
+    "types-requests",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/swingrl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "N"]
+ignore = ["E501", "B008", "N803", "N806"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_return_any = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["finrl.*", "pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*"]
+ignore_missing_imports = true
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
+
+[tool.bandit.assert_used]
+skips = ["*/test_*.py", "*_test.py"]

@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv
+# uv.lock is committed — do NOT gitignore it
+
+# Type checking caches
+.mypy_cache/
+.ruff_cache/
+
+# Test caches
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Environment and secrets
+.env
+# .env.example is committed on purpose
+
+# Project data directories (keep .gitkeep files)
+data/*
+!data/.gitkeep
+db/*
+!db/.gitkeep
+
+# Model outputs (keep .gitkeep files)
+models/active/*
+!models/active/.gitkeep
+models/shadow/*
+!models/shadow/.gitkeep
+models/archive/*
+!models/archive/.gitkeep
+
+# Logs (keep .gitkeep)
+logs/*
+!logs/.gitkeep
+
+# Status directory
+status/*
+!status/.gitkeep
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# detect-secrets baseline is committed — not gitignored
