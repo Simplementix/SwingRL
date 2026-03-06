@@ -39,6 +39,8 @@ dependencies = [
     "fredapi>=0.5",
     "exchange-calendars>=4.13",
     "pyarrow>=14.0",
+    # Storage (Phase 4)
+    "duckdb>=1.0,<2",
 ]
 
 [tool.uv.sources]
@@ -106,7 +108,7 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["finrl.*", "pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*", "fredapi.*", "exchange_calendars.*"]
+module = ["finrl.*", "pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*", "fredapi.*", "exchange_calendars.*", "duckdb.*"]
 ignore_missing_imports = true
 
 [tool.bandit]

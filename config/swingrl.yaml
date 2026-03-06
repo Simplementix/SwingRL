@@ -31,3 +31,11 @@ paths:
 logging:
   level: INFO                   # DEBUG | INFO | WARNING | ERROR
   json_logs: false              # true in production/Docker (SWINGRL_LOGGING__JSON_LOGS=true)
+
+system:
+  duckdb_path: data/db/market_data.ddb   # DuckDB: OHLCV, macro, quarantine, ingestion log
+  sqlite_path: data/db/trading_ops.db    # SQLite: trades, positions, risk, events, alerts
+
+alerting:
+  alert_cooldown_minutes: 30               # minimum minutes between repeat alerts
+  consecutive_failures_before_alert: 3     # failures before triggering alert

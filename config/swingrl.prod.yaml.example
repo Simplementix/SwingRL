@@ -32,3 +32,11 @@ logging:
   level: INFO
   json_logs: true               # JSON to stdout — collected by Docker log aggregation
   # Override: SWINGRL_LOGGING__JSON_LOGS=true
+
+system:
+  duckdb_path: /app/data/db/market_data.ddb   # DuckDB: market data analytics
+  sqlite_path: /app/data/db/trading_ops.db    # SQLite: trading operations
+
+alerting:
+  alert_cooldown_minutes: 30               # minimum minutes between repeat alerts
+  consecutive_failures_before_alert: 3     # failures before triggering alert

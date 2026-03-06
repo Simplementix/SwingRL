@@ -126,6 +126,20 @@ class LoggingConfig(BaseModel):
     json_logs: bool = Field(default=False)  # True in production/Docker
 
 
+class SystemConfig(BaseModel):
+    """System-level database paths."""
+
+    duckdb_path: str = Field(default="data/db/market_data.ddb")
+    sqlite_path: str = Field(default="data/db/trading_ops.db")
+
+
+class AlertingConfig(BaseModel):
+    """Alert rate-limiting and threshold configuration."""
+
+    alert_cooldown_minutes: int = Field(default=30, ge=1)
+    consecutive_failures_before_alert: int = Field(default=3, ge=1)
+
+
 class SwingRLConfig(BaseSettings):
     """Root SwingRL configuration.
 
@@ -144,6 +158,8 @@ class SwingRLConfig(BaseSettings):
     capital: CapitalConfig = Field(default_factory=CapitalConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    system: SystemConfig = Field(default_factory=SystemConfig)
+    alerting: AlertingConfig = Field(default_factory=AlertingConfig)
 
 
 def load_config(path: Path | str = "config/swingrl.yaml") -> SwingRLConfig:
