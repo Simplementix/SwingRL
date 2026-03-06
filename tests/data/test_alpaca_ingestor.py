@@ -11,9 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
-from swingrl.data.alpaca import AlpacaIngestor
 
 from swingrl.config.schema import SwingRLConfig
+from swingrl.data.alpaca import AlpacaIngestor
+from swingrl.data.validation import DataValidator
 from swingrl.utils.exceptions import DataError
 
 
@@ -270,7 +271,9 @@ class TestAlpacaRunAll:
 
         with patch.object(alpaca_ingestor._client, "get_stock_bars", side_effect=side_effect):
             with patch("swingrl.data.alpaca.time.sleep"):
-                failed = alpaca_ingestor.run_all(["SPY", "XLE", "QQQ"], since=None)
+                # Patch staleness check since fixture data is old
+                with patch.object(DataValidator, "_check_staleness"):
+                    failed = alpaca_ingestor.run_all(["SPY", "XLE", "QQQ"], since=None)
 
         assert "XLE" in failed
         assert "SPY" not in failed
