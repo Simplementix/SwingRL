@@ -163,13 +163,103 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (Populated by roadmapper) | | |
+| ENV-01 | Phase 1 | Pending |
+| ENV-02 | Phase 1 | Pending |
+| ENV-03 | Phase 1 | Pending |
+| ENV-04 | Phase 1 | Pending |
+| ENV-05 | Phase 1 | Pending |
+| ENV-06 | Phase 1 | Pending |
+| ENV-07 | Phase 1 | Pending |
+| ENV-08 | Phase 1 | Pending |
+| ENV-09 | Phase 2 | Pending |
+| ENV-10 | Phase 2 | Pending |
+| ENV-11 | Phase 2 | Pending |
+| ENV-12 | Phase 2 | Pending |
+| ENV-13 | Phase 2 | Pending |
+| DATA-01 | Phase 3 | Pending |
+| DATA-02 | Phase 3 | Pending |
+| DATA-03 | Phase 3 | Pending |
+| DATA-04 | Phase 3 | Pending |
+| DATA-05 | Phase 3 | Pending |
+| DATA-06 | Phase 4 | Pending |
+| DATA-07 | Phase 4 | Pending |
+| DATA-08 | Phase 4 | Pending |
+| DATA-09 | Phase 4 | Pending |
+| DATA-10 | Phase 4 | Pending |
+| DATA-11 | Phase 4 | Pending |
+| DATA-12 | Phase 4 | Pending |
+| DATA-13 | Phase 4 | Pending |
+| FEAT-01 | Phase 5 | Pending |
+| FEAT-02 | Phase 5 | Pending |
+| FEAT-03 | Phase 5 | Pending |
+| FEAT-04 | Phase 5 | Pending |
+| FEAT-05 | Phase 5 | Pending |
+| FEAT-06 | Phase 5 | Pending |
+| FEAT-07 | Phase 5 | Pending |
+| FEAT-08 | Phase 5 | Pending |
+| FEAT-09 | Phase 5 | Pending |
+| FEAT-10 | Phase 5 | Pending |
+| FEAT-11 | Phase 5 | Pending |
+| TRAIN-01 | Phase 6 | Pending |
+| TRAIN-02 | Phase 6 | Pending |
+| TRAIN-07 | Phase 6 | Pending |
+| TRAIN-08 | Phase 6 | Pending |
+| TRAIN-09 | Phase 6 | Pending |
+| TRAIN-10 | Phase 6 | Pending |
+| TRAIN-11 | Phase 6 | Pending |
+| TRAIN-03 | Phase 7 | Pending |
+| TRAIN-04 | Phase 7 | Pending |
+| TRAIN-05 | Phase 7 | Pending |
+| TRAIN-06 | Phase 7 | Pending |
+| TRAIN-12 | Phase 7 | Pending |
+| VAL-01 | Phase 7 | Pending |
+| VAL-02 | Phase 7 | Pending |
+| VAL-03 | Phase 7 | Pending |
+| VAL-04 | Phase 7 | Pending |
+| VAL-05 | Phase 7 | Pending |
+| VAL-06 | Phase 7 | Pending |
+| VAL-07 | Phase 7 | Pending |
+| VAL-08 | Phase 7 | Pending |
+| PAPER-01 | Phase 8 | Pending |
+| PAPER-02 | Phase 8 | Pending |
+| PAPER-03 | Phase 8 | Pending |
+| PAPER-04 | Phase 8 | Pending |
+| PAPER-05 | Phase 8 | Pending |
+| PAPER-06 | Phase 8 | Pending |
+| PAPER-07 | Phase 8 | Pending |
+| PAPER-08 | Phase 8 | Pending |
+| PAPER-09 | Phase 8 | Pending |
+| PAPER-10 | Phase 8 | Pending |
+| PAPER-11 | Phase 8 | Pending |
+| PAPER-18 | Phase 8 | Pending |
+| PAPER-19 | Phase 8 | Pending |
+| PAPER-20 | Phase 8 | Pending |
+| PAPER-12 | Phase 9 | Pending |
+| PAPER-13 | Phase 9 | Pending |
+| PAPER-14 | Phase 9 | Pending |
+| PAPER-15 | Phase 9 | Pending |
+| PAPER-16 | Phase 9 | Pending |
+| PAPER-17 | Phase 9 | Pending |
+| HARD-01 | Phase 10 | Pending |
+| HARD-02 | Phase 10 | Pending |
+| HARD-03 | Phase 10 | Pending |
+| HARD-04 | Phase 10 | Pending |
+| HARD-05 | Phase 10 | Pending |
+| PROD-01 | Phase 10 | Pending |
+| PROD-02 | Phase 10 | Pending |
+| PROD-03 | Phase 10 | Pending |
+| PROD-04 | Phase 10 | Pending |
+| PROD-05 | Phase 10 | Pending |
+| PROD-06 | Phase 10 | Pending |
+| PROD-07 | Phase 10 | Pending |
+| PROD-08 | Phase 10 | Pending |
+| PROD-09 | Phase 10 | Pending |
 
 **Coverage:**
 - v1 requirements: 74 total
-- Mapped to phases: 0
-- Unmapped: 74
+- Mapped to phases: 74
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-06*
-*Last updated: 2026-03-06 after initial definition*
+*Last updated: 2026-03-06 after roadmap creation — traceability complete*
