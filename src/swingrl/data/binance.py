@@ -99,7 +99,7 @@ class BinanceIngestor(BaseIngestor):
         interval: str,
         start_ms: int,
         end_ms: int | None = None,
-    ) -> list[list]:
+    ) -> list[list[str | int]]:
         """Fetch up to 1000 klines from Binance.US API.
 
         Monitors the X-MBX-USED-WEIGHT-1M header and sleeps when usage
@@ -164,7 +164,7 @@ class BinanceIngestor(BaseIngestor):
         log.error("klines_exhausted_retries", symbol=symbol, error=str(last_error))
         raise DataError(msg)
 
-    def _parse_klines(self, raw: list[list]) -> pd.DataFrame:
+    def _parse_klines(self, raw: list[list[str | int]]) -> pd.DataFrame:
         """Parse raw Binance klines response into a clean OHLCV DataFrame.
 
         Volume uses quote_asset_volume (position [7]) which is already in USD.
@@ -221,7 +221,7 @@ class BinanceIngestor(BaseIngestor):
             start_ms = int(pd.Timestamp(since, tz="UTC").timestamp() * 1000)
 
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
-        all_klines: list[list] = []
+        all_klines: list[list[str | int]] = []
         current_start = start_ms
 
         while current_start < now_ms:
@@ -416,7 +416,7 @@ class BinanceIngestor(BaseIngestor):
         api_start_ms = int(overlap_start.timestamp() * 1000)
         now_ms = int(end_ts.timestamp() * 1000)
 
-        all_klines: list[list] = []
+        all_klines: list[list[str | int]] = []
         current_start = api_start_ms
         while current_start < now_ms:
             batch = self._fetch_klines(symbol, "4h", current_start, now_ms)
@@ -471,8 +471,9 @@ class BinanceIngestor(BaseIngestor):
             Combined archive DataFrame.
         """
         all_dfs: list[pd.DataFrame] = []
-        current = start.to_period("M")
-        end_period = end.to_period("M")
+        # Drop timezone before converting to Period to avoid UserWarning
+        current = start.tz_localize(None).to_period("M")
+        end_period = end.tz_localize(None).to_period("M")
 
         while current <= end_period:
             year = current.year
