@@ -96,7 +96,7 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["finrl.*", "pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*"]
+module = ["finrl.*", "pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*"]
 ignore_missing_imports = true
 
 [tool.bandit]

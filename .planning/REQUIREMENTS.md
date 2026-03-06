@@ -17,8 +17,8 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **ENV-06**: Dockerfile using python:3.11-slim with CPU-only PyTorch and non-root trader user (UID 1000)
 - [x] **ENV-07**: docker-compose.yml with resource limits (2.5g mem, 1 cpu), bind mounts, env_file secrets, TZ=America/New_York
 - [x] **ENV-08**: ci-homelab.sh script (git pull + docker compose build --no-cache + pytest + cleanup) validated via ssh homelab
-- [ ] **ENV-09**: CLAUDE.md project context file with SwingRL conventions (TDD, snake_case, type hints, Pydantic, pathlib, no hardcoded keys)
-- [ ] **ENV-10**: .claude/commands/ with SwingRL-specific skills
+- [x] **ENV-09**: CLAUDE.md project context file with SwingRL conventions (TDD, snake_case, type hints, Pydantic, pathlib, no hardcoded keys)
+- [x] **ENV-10**: .claude/commands/ with SwingRL-specific skills
 - [ ] **ENV-11**: Pydantic v2 config schema (swingrl.yaml) implementing Doc 05 §10.7 with Field constraints, Literal enums, and model_validators
 - [ ] **ENV-12**: Scaffolded models/ directory with active/, shadow/, archive/ subdirectories and .gitkeep files
 - [ ] **ENV-13**: tests/test_smoke.py verifying all core package imports and tests/conftest.py with shared fixtures
@@ -171,8 +171,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ENV-06 | Phase 1 | Complete |
 | ENV-07 | Phase 1 | Complete |
 | ENV-08 | Phase 1 | Complete |
-| ENV-09 | Phase 2 | Pending |
-| ENV-10 | Phase 2 | Pending |
+| ENV-09 | Phase 2 | Complete |
+| ENV-10 | Phase 2 | Complete |
 | ENV-11 | Phase 2 | Pending |
 | ENV-12 | Phase 2 | Pending |
 | ENV-13 | Phase 2 | Pending |
