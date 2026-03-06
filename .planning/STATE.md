@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 02-developer-experience-02-04-PLAN.md
-last_updated: "2026-03-06T17:58:13.795Z"
-last_activity: "2026-03-06 — Phase 2 Plan 03 complete: config schema, YAML dev defaults, prod example"
+stopped_at: Completed 03-03-PLAN.md
+last_updated: "2026-03-06T20:18:17.946Z"
+last_activity: "2026-03-06 — Phase 3 Plan 03 complete: BinanceIngestor crypto 4H OHLCV ingestion"
 progress:
   total_phases: 10
-  completed_phases: 2
-  total_plans: 7
-  completed_plans: 7
-  percent: 86
+  completed_phases: 3
+  total_plans: 11
+  completed_plans: 11
+  percent: 91
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-06)
 
 **Core value:** Capital preservation through disciplined, automated risk management — never lose more than you can recover from
-**Current focus:** Phase 1: Dev Foundation
+**Current focus:** Phase 3: Data Ingestion
 
 ## Current Position
 
-Phase: 2 of 10 (Developer Experience) — IN PROGRESS
-Plan: 3 of 4 in phase 02 (plans 01, 02, and 03 done)
-Status: Phase 2 Plan 03 complete — SwingRLConfig Pydantic v2 schema, load_config(), YAML configs
-Last activity: 2026-03-06 — Phase 2 Plan 03 complete: config schema, YAML dev defaults, prod example
+Phase: 3 of 10 (Data Ingestion) — IN PROGRESS
+Plan: 4 of 4 in phase 03 (plans 01-04 done)
+Status: Phase 3 Plans 01-04 complete — all three ingestors (Alpaca, Binance, FRED) implemented
+Last activity: 2026-03-06 — Phase 3 Plan 03 complete: BinanceIngestor crypto 4H OHLCV ingestion
 
-Progress: [█████████░] 86%
+Progress: [█████████░] 91%
 
 ## Performance Metrics
 
@@ -57,6 +57,10 @@ Progress: [█████████░] 86%
 | Phase 02-developer-experience P01 | 6 | 2 tasks | 8 files |
 | Phase 02-developer-experience P03 | 6 | 2 tasks | 8 files |
 | Phase 02-developer-experience P04 | 2 | 2 tasks | 3 files |
+| Phase 03-data-ingestion P01 | 8 min | 2 tasks | 9 files |
+| Phase 03-data-ingestion P02 | 5 | 1 tasks | 4 files |
+| Phase 03-data-ingestion P03 | 13 min | 2 tasks | 5 files |
+| Phase 03 P04 | 7 | 1 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -88,6 +92,15 @@ Recent decisions affecting current work:
 - [Phase 02-developer-experience]: load_config() uses inner _ConfigWithYaml subclass to bind yaml_path at call time — keeps SwingRLConfig cleanly importable
 - [Phase 02-developer-experience]: conftest.py fixture scopes: session-scoped only for repo_root; function-scoped for all others to prevent cross-test state mutation
 - [Phase 02-developer-experience]: valid_config_yaml as separate string fixture allows bad YAML tests to construct invalid variants independently of the valid baseline
+- [Phase 03-data-ingestion]: pyarrow added as explicit dep (not transitive via pandas as research assumed)
+- [Phase 03-data-ingestion]: responses moved to dev dependency group (test-only library)
+- [Phase 03-data-ingestion]: Staleness threshold: 4 calendar days equity, 8H crypto, 35 days FRED
+- [Phase 03-data-ingestion]: Quarantine reasons stored as semicolon-delimited string in reason column
+- [Phase 03-data-ingestion]: Mock SDK client directly rather than HTTP responses for alpaca-py testing
+- [Phase 03]: FRED validate() uses custom null-only row check instead of OHLCV-based validate_rows()
+- [Phase 03-data-ingestion]: All klines fetched from api.binance.us (not api.binance.com) per Binance.US broker architecture
+- [Phase 03-data-ingestion]: Stitch point at 2019-09-01 (Binance.US launch) separates archive from API data
+- [Phase 03-data-ingestion]: Microsecond threshold at 2_000_000_000_000 to detect 2025+ archive timestamp format
 
 ### Pending Todos
 
@@ -101,6 +114,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-06T17:54:19.771Z
-Stopped at: Completed 02-developer-experience-02-04-PLAN.md
+Last session: 2026-03-06T20:12:39Z
+Stopped at: Completed 03-03-PLAN.md
 Resume file: None

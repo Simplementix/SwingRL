@@ -1,0 +1,22 @@
+[
+  {"date": "2024-01-01", "realtime_start": "2024-02-13", "value": 308.417},
+  {"date": "2024-01-01", "realtime_start": "2024-03-12", "value": 308.685},
+  {"date": "2024-02-01", "realtime_start": "2024-03-12", "value": 310.326},
+  {"date": "2024-02-01", "realtime_start": "2024-04-10", "value": 310.326},
+  {"date": "2024-03-01", "realtime_start": "2024-04-10", "value": 312.230},
+  {"date": "2024-03-01", "realtime_start": "2024-05-15", "value": 312.332},
+  {"date": "2024-04-01", "realtime_start": "2024-05-15", "value": 313.548},
+  {"date": "2024-04-01", "realtime_start": "2024-06-12", "value": 313.548},
+  {"date": "2024-05-01", "realtime_start": "2024-06-12", "value": 314.069},
+  {"date": "2024-05-01", "realtime_start": "2024-07-11", "value": 314.069},
+  {"date": "2024-06-01", "realtime_start": "2024-07-11", "value": 314.175},
+  {"date": "2024-06-01", "realtime_start": "2024-08-14", "value": 314.175},
+  {"date": "2024-07-01", "realtime_start": "2024-08-14", "value": 314.540},
+  {"date": "2024-07-01", "realtime_start": "2024-09-11", "value": 314.796},
+  {"date": "2024-08-01", "realtime_start": "2024-09-11", "value": 314.796},
+  {"date": "2024-08-01", "realtime_start": "2024-10-10", "value": 314.796},
+  {"date": "2024-09-01", "realtime_start": "2024-10-10", "value": 315.301},
+  {"date": "2024-09-01", "realtime_start": "2024-11-13", "value": 315.301},
+  {"date": "2024-10-01", "realtime_start": "2024-11-13", "value": 315.664},
+  {"date": "2024-10-01", "realtime_start": "2024-12-11", "value": 315.664}
+]
