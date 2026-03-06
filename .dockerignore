@@ -1,0 +1,44 @@
+# Python virtual environment — never copy into image (uv creates its own inside)
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Local data directories — bind-mounted at runtime, not baked into image
+data/
+db/
+models/
+logs/
+status/
+
+# Test and development artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Secrets — never include in image
+.env
+*.env
+
+# Planning and documentation
+.planning/
+docs/
+memory/
+
+# Git history
+.git/
+.github/
+
+# Editor and OS artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/

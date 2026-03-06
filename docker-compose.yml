@@ -1,0 +1,20 @@
+services:
+  swingrl:
+    build: .
+    # Resource limits — homelab has 8 GB RAM / 4 cores; cap at 2.5 GB / 1 CPU
+    # to leave headroom for the host OS and other services.
+    mem_limit: 2.5g
+    cpus: 1.0
+    # Secrets: loaded from .env on the host; never baked into the image.
+    env_file: .env
+    environment:
+      - TZ=America/New_York
+    # Bind mounts: data persists on the host across container restarts.
+    # Paths match trader user's /app working directory inside the container.
+    volumes:
+      - ./data:/app/data
+      - ./db:/app/db
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./status:/app/status
+    restart: unless-stopped

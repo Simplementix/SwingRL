@@ -48,12 +48,9 @@ name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
-# Constrain resolution to macOS (darwin) for Phase 1.
-# Linux/Docker environment addressed in Phase 2 (ENV-06/ENV-07).
-# This avoids the Linux pytorch-cpu split resolution in the lockfile,
-# which simplifies the Phase 1 lock generation on M1 Mac.
-[tool.uv]
-environments = ["sys_platform == 'darwin'"]
+# Both macOS (MPS) and Linux/Docker (CPU-only) supported from Phase 2 (Plan 3).
+# Platform-specific torch routing handled by [tool.uv.sources] markers above.
+# Linux gets CPU-only torch from pytorch-cpu index; macOS gets standard PyPI torch (includes MPS).
 
 [dependency-groups]
 dev = [
