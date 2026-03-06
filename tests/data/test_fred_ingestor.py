@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
-from swingrl.data.fred import ALL_SERIES, FREDIngestor
 
+from swingrl.data.fred import ALL_SERIES, FREDIngestor
 from swingrl.utils.exceptions import DataError
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -58,7 +58,10 @@ def ingestor(fred_config, mock_fred_api, monkeypatch, tmp_path):  # noqa: ANN001
     monkeypatch.setenv("FRED_API_KEY", "test-key-12345")
     # Override data dir to use tmp_path
     fred_config.paths.data_dir = str(tmp_path / "data")
-    return FREDIngestor(fred_config)
+    inst = FREDIngestor(fred_config)
+    # Disable staleness check — fixture data uses 2024 dates which would trip 35-day threshold
+    monkeypatch.setattr(inst._validator, "_check_staleness", lambda df, sym: None)
+    return inst
 
 
 class TestFetchDailySeries:
@@ -228,6 +231,10 @@ class TestCLI:
         monkeypatch.setenv("FRED_API_KEY", "test-key-12345")
         fred_config.paths.data_dir = str(tmp_path / "data")
         mock_fred_api.get_series.return_value = _load_vixcls_series()
+        # Disable staleness for fixture data
+        monkeypatch.setattr(
+            "swingrl.data.validation.DataValidator._check_staleness", lambda self, df, sym: None
+        )
 
         from swingrl.data.fred import _run_cli
 
@@ -246,6 +253,10 @@ class TestCLI:
         """DATA-04: --backfill forces observation_start='2016-01-01'."""
         monkeypatch.setenv("FRED_API_KEY", "test-key-12345")
         fred_config.paths.data_dir = str(tmp_path / "data")
+        # Disable staleness for fixture data
+        monkeypatch.setattr(
+            "swingrl.data.validation.DataValidator._check_staleness", lambda self, df, sym: None
+        )
 
         # Create existing parquet so incremental would normally skip
         macro_dir = tmp_path / "data" / "macro"
