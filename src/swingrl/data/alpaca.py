@@ -53,6 +53,9 @@ class AlpacaIngestor(BaseIngestor):
         config: Validated SwingRLConfig instance.
     """
 
+    _environment = "equity"
+    _duckdb_table = "ohlcv_daily"
+
     def __init__(self, config: SwingRLConfig) -> None:
         super().__init__(config)
         api_key = os.environ.get("ALPACA_API_KEY", "")

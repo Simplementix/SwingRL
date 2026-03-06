@@ -9,7 +9,7 @@ Accepts a source type ("equity", "crypto", "fred") to switch gap detection logic
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import exchange_calendars as xcals
 import numpy as np
@@ -17,6 +17,10 @@ import pandas as pd
 import structlog
 
 from swingrl.utils.exceptions import DataError
+
+if TYPE_CHECKING:
+    from swingrl.config.schema import SwingRLConfig
+    from swingrl.data.db import DatabaseManager
 
 log = structlog.get_logger(__name__)
 
@@ -40,10 +44,19 @@ class DataValidator:
     Args:
         source: Data source type — determines gap detection logic and
             source-specific checks (e.g., zero-volume is only flagged for equity).
+        db: Optional DatabaseManager for cross-source validation (Step 12).
+        config: Optional SwingRLConfig for cross-source validation (Step 12).
     """
 
-    def __init__(self, source: Literal["equity", "crypto", "fred"]) -> None:
+    def __init__(
+        self,
+        source: Literal["equity", "crypto", "fred"],
+        db: DatabaseManager | None = None,
+        config: SwingRLConfig | None = None,
+    ) -> None:
         self._source = source
+        self._db = db
+        self._config = config
         if source == "equity":
             self._nyse = xcals.get_calendar("XNYS")
 
@@ -209,8 +222,30 @@ class DataValidator:
                 rows=len(df),
             )
 
-        # Step 12: Cross-source consistency (deferred to Phase 4)
-        log.debug("cross_source_check_deferred", step=12, note="deferred to Phase 4")
+        # Step 12: Cross-source consistency check
+        if self._source == "equity" and self._db is not None and self._config is not None:
+            try:
+                from swingrl.data.cross_source import CrossSourceValidator
+
+                csv = CrossSourceValidator(db=self._db, config=self._config)
+                results = csv.validate_prices(symbols=[symbol], lookback_days=7)
+                for r in results:
+                    if r.status == "warning":
+                        log.warning(
+                            "cross_source_discrepancy",
+                            symbol=r.symbol,
+                            date=str(r.date),
+                            diff=round(r.diff, 4),
+                        )
+                    elif r.status == "error":
+                        log.warning(
+                            "cross_source_error",
+                            symbol=r.symbol,
+                        )
+            except Exception:  # noqa: BLE001
+                log.warning("cross_source_check_failed", symbol=symbol)
+        else:
+            log.debug("cross_source_check_skipped", step=12, source=self._source)
 
         return df
 

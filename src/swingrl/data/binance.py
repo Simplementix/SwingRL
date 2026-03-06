@@ -87,6 +87,9 @@ class BinanceIngestor(BaseIngestor):
         config: Validated SwingRLConfig instance.
     """
 
+    _environment = "crypto"
+    _duckdb_table = "ohlcv_4h"
+
     def __init__(self, config: SwingRLConfig) -> None:
         super().__init__(config)
         self._validator = DataValidator(source="crypto")
