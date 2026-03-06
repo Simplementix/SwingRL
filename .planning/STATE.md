@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: planning
-stopped_at: Phase 1 context gathered
-last_updated: "2026-03-06T15:16:51.660Z"
+stopped_at: Completed 01-dev-foundation 01-01-PLAN.md
+last_updated: "2026-03-06T15:56:32.532Z"
 last_activity: 2026-03-06 — Roadmap created, all 74 requirements mapped across 10 phases
 progress:
   total_phases: 10
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 3
+  completed_plans: 1
   percent: 0
 ---
 
@@ -50,6 +50,7 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: -
 
 *Updated after each plan completion*
+| Phase 01-dev-foundation P01 | 11 | 2 tasks | 35 files |
 
 ## Accumulated Context
 
@@ -64,6 +65,8 @@ Recent decisions affecting current work:
 - Sequential milestones — M2 finishes before M3 starts (no interleaving)
 - Incremental DB schema — create tables as each milestone needs them, not all 28 upfront
 - Discord webhooks as canonical alert channel (not Telegram, not email)
+- [Phase 01-dev-foundation]: pandas-ta removed from Phase 1 deps — PyPI 0.4.x requires Python>=3.12; replaced with stockstats>=0.4.0 (FinRL native TA library). Re-evaluation Phase 6.
+- [Phase 01-dev-foundation]: tool.uv.environments constrained to darwin for Phase 1 — Linux Docker lockfile generation deferred to Phase 2 (ENV-06). Remove constraint before Phase 2 Plan 1.
 
 ### Pending Todos
 
@@ -78,6 +81,6 @@ None yet. Key constraints to keep in mind for Phase 1:
 
 ## Session Continuity
 
-Last session: 2026-03-06T15:16:51.657Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-dev-foundation/01-CONTEXT.md
+Last session: 2026-03-06T15:56:32.529Z
+Stopped at: Completed 01-dev-foundation 01-01-PLAN.md
+Resume file: None
