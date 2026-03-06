@@ -1,6 +1,7 @@
 # Phase 3: Data Ingestion - Context
 
 **Gathered:** 2026-03-06
+**Updated:** 2026-03-06 (gaps & gray areas pass)
 **Status:** Ready for planning
 
 <domain>
@@ -47,13 +48,42 @@ Raw OHLCV bars and macro indicators flowing reliably from Alpaca (8 equity ETFs,
 - Equity backfill: 10 years (2016-present) — covers 2018 correction, 2020 COVID crash, 2022 bear market
 - Phase 4 reads these Parquets directly into DuckDB tables
 
+### FRED macro pipeline
+- 5 Tier 1 series: VIXCLS (VIX via FRED), T10Y2Y, DFF, CPIAUCSL (CPI), UNRATE (unemployment)
+- VIX sourced from FRED VIXCLS series — keeps all macro data on one API, avoids adding a 4th data source
+- Store each series at native frequency (VIX/T10Y2Y/DFF = daily, CPI/UNRATE = monthly); Phase 5 ASOF JOIN handles alignment
+- ALFRED vintage data back to 2016 (matches 10-year equity training window) — prevents look-ahead bias from revised CPI/unemployment
+- Refresh cadence: daily for daily series, weekly check for monthly series (CPI/UNRATE update monthly — daily fetch is wasteful)
+
+### Error handling & retry policy
+- 3 retries with exponential backoff (2s, 4s, 8s) on API failures (timeout, rate limit, server error)
+- After 3 failures: log error with structlog, move to next symbol/series — partial success is better than total failure
+- Run exits with non-zero code if ANY symbol/series failed (so CI and Phase 9 scheduler can detect failures)
+- Binance.US rate limits: proactive throttling via X-MBX-USED-WEIGHT header — if >80% of 1200/min limit, sleep until window resets (prevents 429s during backfill)
+- All API errors raise DataError with context (source, symbol, HTTP status, attempt count) — no new exception subclasses needed
+
+### Incremental update semantics
+- Upsert on matching timestamps — if a bar for the same symbol+timestamp exists, replace it (handles corrected/partial bars)
+- "Last fetched" timestamp derived from max(timestamp) in existing Parquet file — the data IS the state, no separate tracking file
+- Source-aware gap detection:
+  - Equity: NYSE trading calendar via exchange_calendars library — only flag gaps on actual trading days (not weekends/holidays)
+  - Crypto: continuous 4H bars expected 24/7 — any gap is a real gap
+  - FRED: each series has its own cadence (daily or monthly) — gap detection per-series
+- exchange_calendars dependency added for proper NYSE holiday handling (~9 holidays/year)
+
+### Testing strategy
+- Unit tests: mocked HTTP responses (responses or pytest-httpx library) with fixture JSON/CSV payloads per source
+- Integration tests: marked with @pytest.mark.integration, skipped in CI (pytest -m 'not integration'), require real API keys — for manual validation of real API connectivity
+- Backfill tests: small fixture CSV (~100 rows) mimicking Binance archive format — tests parsing, volume normalization, stitch validation without real download
+- Validation test fixtures: one fixture per defect type (null price, negative volume, OHLC ordering violation, duplicate timestamp, price spike >50% jump, stale data, gap, zero volume) — each triggers a specific validation check
+
 ### Claude's Discretion
-- Exact 12-step validation checklist mapping (which checks are row-level vs batch-level)
-- Rate limit handling strategy for Binance.US (X-MBX-USED-WEIGHT header monitoring)
-- Alpaca IEX feed pagination and rate limiting approach
-- FRED API retry logic and backoff strategy
-- Parquet compression and schema details (column types, metadata)
-- Incremental fetch timestamp tracking mechanism (file-based vs config-based)
+- Exact 12-step validation checklist mapping (specific checks beyond the ones enumerated above)
+- Alpaca IEX feed pagination approach
+- Parquet compression and detailed column schema (types, metadata)
+- Specific mocking library choice (responses vs pytest-httpx)
+- exchange_calendars integration details
+- CLI argument parser implementation (argparse vs click)
 
 </decisions>
 
@@ -64,6 +94,9 @@ Raw OHLCV bars and macro indicators flowing reliably from Alpaca (8 equity ETFs,
 - Quote asset volume field preferred over close*volume for accuracy
 - 30-day overlap at stitch point gives confidence in data continuity
 - 10-year equity history ensures training sees multiple market regimes (essential for robust walk-forward validation)
+- FRED VIXCLS avoids adding Yahoo Finance as a 4th data source just for VIX
+- Proactive Binance throttling critical for backfill (many sequential requests)
+- One-fixture-per-defect testing pattern makes it obvious which validation check caught which problem
 
 </specifics>
 
@@ -72,7 +105,7 @@ Raw OHLCV bars and macro indicators flowing reliably from Alpaca (8 equity ETFs,
 
 ### Reusable Assets
 - `SwingRLConfig` (schema.py): Has equity.symbols, crypto.symbols, paths.data_dir — ingestors read these
-- `DataError` (exceptions.py): Ready for pipeline error raising
+- `DataError` (exceptions.py): Ready for pipeline error raising with rich context
 - structlog (logging.py): configure_logging() established — ingestors use `structlog.get_logger(__name__)`
 - `src/swingrl/data/`: Package scaffolded with __init__.py — ingestor modules go here
 
@@ -82,13 +115,20 @@ Raw OHLCV bars and macro indicators flowing reliably from Alpaca (8 equity ETFs,
 - Absolute imports only (from swingrl.data.alpaca import AlpacaIngestor)
 - Pydantic config access via load_config() — never raw YAML
 - TDD: failing test first, then implementation
+- Test naming: `test_<what>` with docstring referencing requirement ID
 
 ### Integration Points
 - Config: load_config() provides symbols, data_dir path, and all settings
 - Credentials: Docker env_file (.env) provides API keys as environment variables
 - Output: data/ directory (already in repo structure with .gitkeep)
 - Phase 4 reads Parquet files from data/ into DuckDB/SQLite tables
+- Phase 5 reads FRED Parquet files and applies ASOF JOIN for forward-fill alignment
 - Phase 9 scheduler calls ingestor library API for automated runs
+
+### New Dependencies (Phase 3)
+- exchange_calendars: NYSE trading calendar for source-aware gap detection
+- HTTP mocking library (responses or pytest-httpx): for unit testing API code
+- pyarrow: Parquet read/write (likely already transitive via pandas)
 
 </code_context>
 
@@ -103,3 +143,4 @@ None — discussion stayed within phase scope.
 
 *Phase: 03-data-ingestion*
 *Context gathered: 2026-03-06*
+*Updated: 2026-03-06 (gaps & gray areas)*
