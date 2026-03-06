@@ -8,6 +8,16 @@ Capital preservation is the primary constraint — never lose more than you can 
 Phases: 1 Foundation → 2 DX → 3 Data → 4 Storage → 5 Features → 6 Envs → 7 Training →
 8 Paper Trading → 9 Automation → 10 Hardening.
 
+## Git Workflow — Per Phase
+
+1. **Start of phase execution**: Create feature branch `gsd/phase-{N}-{slug}` from `main`.
+2. **All phase commits** go to the feature branch.
+3. **After verification passes**: Push the feature branch to origin.
+4. **Run homelab CI**: `ssh homelab "cd ~/swingrl && git fetch origin && git checkout {branch} && git pull origin {branch} && bash scripts/ci-homelab.sh --no-cache"`
+5. **Create PR** to `main` with phase summary.
+6. **User merges** (branch protection requires approval).
+7. **After merge**: `git checkout main && git pull origin main` before starting next phase.
+
 ## Critical Rules — Never Violate
 
 - **No hardcoded values**: Never hardcode ticker symbols, API keys, file paths, or dollar amounts.
