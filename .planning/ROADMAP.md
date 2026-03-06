@@ -35,7 +35,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. GitHub repo exists with canonical directory structure (src/, config/, data/, db/, models/, tests/, scripts/, status/) visible on remote
   4. `pre-commit run --all-files` passes ruff, black, mypy, detect-secrets, and bandit checks on a clean commit
   5. `bash ci-homelab.sh` via `ssh homelab` completes — docker compose build, pytest, and cleanup all green
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Repository scaffold, pyproject.toml, dependency resolution, smoke tests
+- [ ] 01-02-PLAN.md — Pre-commit hooks (ruff, black, mypy, bandit, detect-secrets)
+- [ ] 01-03-PLAN.md — Dockerfile, docker-compose.yml, ci-homelab.sh with homelab validation
 
 ### Phase 2: Developer Experience
 **Goal**: A developer can onboard to SwingRL conventions immediately, the config schema is enforced at startup, and a smoke test confirms all core packages import correctly
@@ -152,7 +157,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Dev Foundation | 0/TBD | Not started | - |
+| 1. Dev Foundation | 0/3 | Planning complete | - |
 | 2. Developer Experience | 0/TBD | Not started | - |
 | 3. Data Ingestion | 0/TBD | Not started | - |
 | 4. Data Storage and Validation | 0/TBD | Not started | - |
