@@ -35,7 +35,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. GitHub repo exists with canonical directory structure (src/, config/, data/, db/, models/, tests/, scripts/, status/) visible on remote
   4. `pre-commit run --all-files` passes ruff, black, mypy, detect-secrets, and bandit checks on a clean commit
   5. `bash ci-homelab.sh` via `ssh homelab` completes — docker compose build, pytest, and cleanup all green
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 
 Plans:
 - [ ] 01-01-PLAN.md — Repository scaffold, pyproject.toml, dependency resolution, smoke tests
@@ -157,7 +157,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Dev Foundation | 1/3 | In Progress|  |
+| 1. Dev Foundation | 2/3 | In Progress|  |
 | 2. Developer Experience | 0/TBD | Not started | - |
 | 3. Data Ingestion | 0/TBD | Not started | - |
 | 4. Data Storage and Validation | 0/TBD | Not started | - |

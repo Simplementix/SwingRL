@@ -13,7 +13,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **ENV-02**: uv package manager installed on M1 Mac and homelab (Ubuntu 24.04)
 - [x] **ENV-03**: GitHub repository with canonical directory structure (src/, config/, data/, db/, models/, tests/, scripts/, status/)
 - [x] **ENV-04**: pyproject.toml with pinned dependencies and tool configuration (pytest, ruff, black, mypy)
-- [ ] **ENV-05**: Pre-commit hooks enforcing ruff, black, mypy, detect-secrets, and bandit on every commit
+- [x] **ENV-05**: Pre-commit hooks enforcing ruff, black, mypy, detect-secrets, and bandit on every commit
 - [ ] **ENV-06**: Dockerfile using python:3.11-slim with CPU-only PyTorch and non-root trader user (UID 1000)
 - [ ] **ENV-07**: docker-compose.yml with resource limits (2.5g mem, 1 cpu), bind mounts, env_file secrets, TZ=America/New_York
 - [ ] **ENV-08**: ci-homelab.sh script (git pull + docker compose build --no-cache + pytest + cleanup) validated via ssh homelab
@@ -167,7 +167,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ENV-02 | Phase 1 | Complete |
 | ENV-03 | Phase 1 | Complete |
 | ENV-04 | Phase 1 | Complete |
-| ENV-05 | Phase 1 | Pending |
+| ENV-05 | Phase 1 | Complete |
 | ENV-06 | Phase 1 | Pending |
 | ENV-07 | Phase 1 | Pending |
 | ENV-08 | Phase 1 | Pending |
