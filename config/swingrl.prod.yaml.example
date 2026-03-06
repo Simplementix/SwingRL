@@ -1,0 +1,34 @@
+# config/swingrl.prod.yaml.example — Production reference values (annotated)
+# Copy to swingrl.prod.yaml on homelab. NEVER commit real credentials.
+# In Docker: override sensitive fields via .env (chmod 600) using SWINGRL_ prefix.
+# Example .env line: SWINGRL_TRADING_MODE=live
+
+trading_mode: live  # OVERRIDE via: SWINGRL_TRADING_MODE=live
+
+equity:
+  symbols: [SPY, QQQ, VTI, XLV, XLI, XLE, XLF, XLK]
+  max_position_size: 0.25       # conservative for Phase 1 live trading
+  max_drawdown_pct: 0.10        # 10% DD halts equity — do not raise until Sharpe > 0.7 sustained
+  daily_loss_limit_pct: 0.02    # 2% daily loss limit
+
+crypto:
+  symbols: [BTCUSDT, ETHUSDT]
+  max_position_size: 0.50
+  max_drawdown_pct: 0.12        # 12% DD halts crypto
+  daily_loss_limit_pct: 0.03    # 3% daily loss limit
+  min_order_usd: 10.0           # Binance.US $10 floor — never lower this
+
+capital:
+  equity_usd: 400.0             # update when depositing additional capital
+  crypto_usd: 47.0              # update when transferring from Coinbase to Binance.US
+
+paths:
+  data_dir: /app/data/          # absolute paths in production Docker container
+  db_dir: /app/db/
+  models_dir: /app/models/
+  logs_dir: /app/logs/
+
+logging:
+  level: INFO
+  json_logs: true               # JSON to stdout — collected by Docker log aggregation
+  # Override: SWINGRL_LOGGING__JSON_LOGS=true
