@@ -52,7 +52,13 @@ Plans:
   3. Loading swingrl.yaml through the Pydantic v2 config schema raises a `ValidationError` on any invalid field and passes on a valid config
   4. `models/active/`, `models/shadow/`, and `models/archive/` directories exist with `.gitkeep` files committed
   5. `pytest tests/test_smoke.py` passes — all core package imports succeed and conftest fixtures load without error
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Remove darwin constraint, add structlog + pydantic-settings, create utils/exceptions.py and utils/logging.py
+- [ ] 02-02-PLAN.md — Create CLAUDE.md conventions document and .claude/commands/ skill files
+- [ ] 02-03-PLAN.md — Pydantic v2 config schema (schema.py), config/swingrl.yaml dev defaults, prod example
+- [ ] 02-04-PLAN.md — Expand tests/conftest.py fixtures, create tests/test_config.py, add ENV-09/10/12 smoke tests
 
 ### Phase 3: Data Ingestion
 **Goal**: Raw OHLCV bars and macro indicators flow reliably from all three sources into the system, with historical crypto backfill complete
@@ -158,7 +164,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Dev Foundation | 3/3 | Complete   | 2026-03-06 |
-| 2. Developer Experience | 0/TBD | Not started | - |
+| 2. Developer Experience | 0/4 | Not started | - |
 | 3. Data Ingestion | 0/TBD | Not started | - |
 | 4. Data Storage and Validation | 0/TBD | Not started | - |
 | 5. Feature Engineering | 0/TBD | Not started | - |
