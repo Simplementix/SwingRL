@@ -11,9 +11,9 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
-from swingrl.features.fundamentals import FundamentalFetcher
 
 from swingrl.config.schema import load_config
+from swingrl.features.fundamentals import FundamentalFetcher
 
 
 @pytest.fixture
