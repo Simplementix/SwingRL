@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-03-07T02:55:22.312Z"
-last_activity: "2026-03-07 — Phase 5 Plan 01 complete: Feature engineering foundation (indicators, DDL, config)"
+stopped_at: Completed 05-03-PLAN.md
+last_updated: "2026-03-07T02:55:00.000Z"
+last_activity: "2026-03-07 — Phase 5 Plan 03 complete: HMM regime detector + turbulence index calculator"
 progress:
   total_phases: 10
   completed_phases: 4
   total_plans: 20
-  completed_plans: 17
-  percent: 80
+  completed_plans: 19
+  percent: 90
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 ## Current Position
 
 Phase: 5 of 10 (Feature Engineering) — IN PROGRESS
-Plan: 1 of 5 in phase 05 (Plan 01 complete)
-Status: Plan 01 complete — feature engineering foundation (indicators, DDL, config, test infra)
-Last activity: 2026-03-07 — Phase 5 Plan 01 complete: Feature engineering foundation (indicators, DDL, config)
+Plan: 3 of 5 in phase 05 (Plans 01-03 complete)
+Status: Plan 03 complete — HMM regime detector + turbulence index calculator
+Last activity: 2026-03-07 — Phase 5 Plan 03 complete: HMM regime detector + turbulence index calculator
 
-Progress: [████████░░] 80%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
@@ -66,6 +66,7 @@ Progress: [████████░░] 80%
 | Phase 04 P02 | 11 | 1 tasks | 8 files |
 | Phase 04 P04 | 13 | 2 tasks | 6 files |
 | Phase 05 P01 | 5 | 2 tasks | 10 files |
+| Phase 05 P03 | 5 | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -116,6 +117,9 @@ Recent decisions affecting current work:
 - [Phase 04]: Corporate action thresholds: 30% equity overnight spike, 40% crypto
 - [Phase 05]: init_feature_schema accepts raw DuckDB conn for testability with in-memory connections
 - [Phase 05]: stockstats retype(ohlcv.copy()) pattern established for copy-safe indicator computation
+- [Phase 05]: HMM label ordering via mean-return sort ensures bull=state0 consistency across refits
+- [Phase 05]: Ridge regularization (1e-6) on covariance matrices prevents ValueError on warm-start
+- [Phase 05]: Turbulence uses np.linalg.pinv for near-singular crypto covariance (BTC/ETH r=0.9)
 
 ### Pending Todos
 
@@ -129,6 +133,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-07T02:55:22.310Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-03-07T02:55:00.000Z
+Stopped at: Completed 05-03-PLAN.md
 Resume file: None

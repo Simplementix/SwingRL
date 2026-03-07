@@ -106,7 +106,7 @@ Plans:
   3. HMM regime detection produces two continuous probabilities (P(bull), P(bear)) that sum to 1.0 for every bar in both environments
   4. Rolling z-score normalization uses a 252-bar window for equity and a 360-bar window for crypto, and the per-environment feature tables exist in DuckDB (features_equity, features_crypto)
   5. A new candidate feature added to the pipeline is rejected when its A/B Sharpe improvement is less than 0.05, and accepted when it meets the threshold
-**Plans:** 5 plans
+**Plans:** 2/5 plans executed
 
 Plans:
 - [ ] 05-01-PLAN.md — Config schema (FeaturesConfig), DuckDB DDL (4 tables), technical indicator calculator, test infrastructure
@@ -186,7 +186,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 2. Developer Experience | 4/4 | Complete   | 2026-03-06 |
 | 3. Data Ingestion | 4/4 | Complete   | 2026-03-06 |
 | 4. Data Storage and Validation | 4/4 | Complete   | 2026-03-06 |
-| 5. Feature Engineering | 0/5 | Not started | - |
+| 5. Feature Engineering | 2/5 | In Progress|  |
 | 6. RL Environments | 0/TBD | Not started | - |
 | 7. Agent Training and Validation | 0/TBD | Not started | - |
 | 8. Paper Trading Core | 0/TBD | Not started | - |

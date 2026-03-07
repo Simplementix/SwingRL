@@ -45,7 +45,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **FEAT-02**: Derived features: log returns (1d, 5d, 20d), Bollinger Band width
 - [ ] **FEAT-03**: Fundamental features (equities only): P/E ratio (sector-relative z-score), earnings growth, debt-to-equity, dividend yield — updated quarterly
 - [ ] **FEAT-04**: Macro regime features (shared): VIX z-score, yield curve spread/direction, Fed Funds 90-day change, CPI YoY, unemployment 3-month direction — forward-filled via ASOF JOIN
-- [ ] **FEAT-05**: HMM regime detection: 2-state Gaussian HMM per environment (SPY for equity, BTC for crypto), producing P(bull) and P(bear) continuous probabilities
+- [x] **FEAT-05**: HMM regime detection: 2-state Gaussian HMM per environment (SPY for equity, BTC for crypto), producing P(bull) and P(bear) continuous probabilities
 - [ ] **FEAT-06**: Rolling z-score normalization with per-environment windows (252 bars equity, 360 bars crypto)
 - [ ] **FEAT-07**: Observation space assembly: 156 dimensions equity, 45 dimensions crypto
 - [ ] **FEAT-08**: Feature addition protocol: new features kept only if validation Sharpe improves by at least 0.05 in A/B test
@@ -193,7 +193,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FEAT-02 | Phase 5 | Complete |
 | FEAT-03 | Phase 5 | Pending |
 | FEAT-04 | Phase 5 | Pending |
-| FEAT-05 | Phase 5 | Pending |
+| FEAT-05 | Phase 5 | Complete |
 | FEAT-06 | Phase 5 | Pending |
 | FEAT-07 | Phase 5 | Pending |
 | FEAT-08 | Phase 5 | Pending |
