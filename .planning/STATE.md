@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 05-02-PLAN.md
+stopped_at: Completed 05-04-PLAN.md
 last_updated: "2026-03-07T02:59:45.460Z"
-last_activity: "2026-03-07 — Phase 5 Plan 02 re-verified: FundamentalFetcher + MacroFeatureAligner"
+last_activity: "2026-03-07 — Phase 5 Plan 04: Rolling z-score normalization and correlation pruning"
 progress:
   total_phases: 10
   completed_phases: 4
   total_plans: 20
-  completed_plans: 18
-  percent: 90
+  completed_plans: 19
+  percent: 95
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 ## Current Position
 
 Phase: 5 of 10 (Feature Engineering) — IN PROGRESS
-Plan: 3 of 5 in phase 05 (Plans 01-03 complete)
-Status: Plan 02 re-verified — Fundamentals + macro alignment tests green
-Last activity: 2026-03-07 — Phase 5 Plan 02 re-verified: FundamentalFetcher + MacroFeatureAligner
+Plan: 5 of 5 in phase 05 (Plans 01-04 complete)
+Status: Plan 04 complete — Normalization + correlation pruning
+Last activity: 2026-03-07 — Phase 5 Plan 04: Rolling z-score normalization and correlation pruning
 
-Progress: [█████████░] 90%
+Progress: [█████████▌] 95%
 
 ## Performance Metrics
 
@@ -68,6 +68,7 @@ Progress: [█████████░] 90%
 | Phase 05 P01 | 5 | 2 tasks | 10 files |
 | Phase 05 P03 | 5 | 2 tasks | 7 files |
 | Phase 05 P02 | 9 | 2 tasks | 7 files |
+| Phase 05 P04 | 4 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -123,6 +124,9 @@ Recent decisions affecting current work:
 - [Phase 05]: Turbulence uses np.linalg.pinv for near-singular crypto covariance (BTC/ETH r=0.9)
 - [Phase 05]: ASOF JOIN on release_date for look-ahead-free macro alignment
 - [Phase 05]: Alpha Vantage fallback is lazy-imported and disabled without API key
+- [Phase 05]: Rolling z-score epsilon floor via clip(lower=epsilon) on rolling std
+- [Phase 05]: Domain priority dict drives deterministic correlation pruning drop selection
+- [Phase 05]: SMA exception threshold (0.90) higher than general correlation threshold (0.85)
 
 ### Pending Todos
 
@@ -137,5 +141,5 @@ None. Phase 1 complete.
 ## Session Continuity
 
 Last session: 2026-03-07T02:59:45.457Z
-Stopped at: Completed 05-02-PLAN.md
+Stopped at: Completed 05-04-PLAN.md
 Resume file: None
