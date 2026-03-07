@@ -107,7 +107,15 @@ def seeded_duckdb() -> Any:
     dates = pd.bdate_range("2023-01-02", periods=300)
     for symbol in ["DIA", "IWM", "QQQ", "SPY", "VTI", "XLE", "XLF", "XLK"]:
         base = 100.0 + rng.random() * 400
-        close = base + rng.normal(0, 2, 300).cumsum()
+        if symbol == "SPY":
+            # Clear bull-then-bear regime so HMM converges reliably across platforms
+            # Bull: small positive returns with low vol; Bear: negative returns with high vol
+            bull_returns = rng.normal(0.002, 0.005, 150)
+            bear_returns = rng.normal(-0.003, 0.02, 150)
+            all_returns = np.concatenate([bull_returns, bear_returns])
+            close = base * np.exp(np.cumsum(all_returns))
+        else:
+            close = base + rng.normal(0, 2, 300).cumsum()
         for i, dt in enumerate(dates):
             conn.execute(
                 "INSERT INTO ohlcv_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
