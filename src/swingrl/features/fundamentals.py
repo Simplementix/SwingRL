@@ -50,7 +50,9 @@ _AV_FIELD_MAP: dict[str, str] = {
 def _try_import_av() -> Any:
     """Lazily import Alpha Vantage FundamentalData."""
     try:
-        from alpha_vantage.fundamentaldata import FundamentalData
+        from alpha_vantage.fundamentaldata import (  # type: ignore[import-untyped,import-not-found]
+            FundamentalData,
+        )
 
         return FundamentalData
     except ImportError:
@@ -80,7 +82,7 @@ class FundamentalFetcher:
         self._config = config
         self._av_api_key: str | None = os.environ.get("ALPHA_VANTAGE_API_KEY")
 
-    def fetch_symbol(self, symbol: str) -> dict[str, float]:
+    def fetch_symbol(self, symbol: str) -> dict[str, float | None]:
         """Fetch fundamental metrics for a single symbol.
 
         Tries yfinance first, falls back to Alpha Vantage if available.
@@ -101,7 +103,7 @@ class FundamentalFetcher:
                 return self._fetch_from_alpha_vantage(symbol)
             return self._empty_fundamentals()
 
-    def _fetch_from_yfinance(self, symbol: str) -> dict[str, float]:
+    def _fetch_from_yfinance(self, symbol: str) -> dict[str, float | None]:
         """Fetch from yfinance Ticker.info.
 
         Args:
@@ -113,7 +115,7 @@ class FundamentalFetcher:
         ticker = yfinance.Ticker(symbol)
         info = ticker.info
 
-        result: dict[str, float] = {}
+        result: dict[str, float | None] = {}
         for yf_key, our_key in _YF_FIELD_MAP.items():
             value = info.get(yf_key)
             result[our_key] = float(value) if value is not None else float("nan")
@@ -122,11 +124,11 @@ class FundamentalFetcher:
             "fundamentals_fetched",
             symbol=symbol,
             source="yfinance",
-            fields_available=sum(1 for v in result.values() if not math.isnan(v)),
+            fields_available=sum(1 for v in result.values() if v is not None and not math.isnan(v)),
         )
         return result
 
-    def _fetch_from_alpha_vantage(self, symbol: str) -> dict[str, float]:
+    def _fetch_from_alpha_vantage(self, symbol: str) -> dict[str, float | None]:
         """Fetch from Alpha Vantage as fallback.
 
         Args:
@@ -139,7 +141,7 @@ class FundamentalFetcher:
             av = FundamentalData(key=self._av_api_key, output_format="pandas")
             overview_df, _ = av.get_company_overview(symbol)
 
-            result: dict[str, float] = {}
+            result: dict[str, float | None] = {}
             for av_key, our_key in _AV_FIELD_MAP.items():
                 if av_key in overview_df.columns:
                     raw_value = overview_df[av_key].iloc[0]
@@ -154,7 +156,9 @@ class FundamentalFetcher:
                 "fundamentals_fetched",
                 symbol=symbol,
                 source="alpha_vantage",
-                fields_available=sum(1 for v in result.values() if not math.isnan(v)),
+                fields_available=sum(
+                    1 for v in result.values() if v is not None and not math.isnan(v)
+                ),
             )
             return result
         except Exception:
@@ -162,7 +166,7 @@ class FundamentalFetcher:
             return self._empty_fundamentals()
 
     @staticmethod
-    def _empty_fundamentals() -> dict[str, float]:
+    def _empty_fundamentals() -> dict[str, float | None]:
         """Return dict with all NaN values."""
         return {
             "pe_ratio": float("nan"),
@@ -267,7 +271,8 @@ class FundamentalFetcher:
             return (pe - mean) / std
 
         result["pe_zscore"] = result.groupby("sector", group_keys=False).apply(
-            _zscore_group, include_groups=False
+            _zscore_group,
+            include_groups=False,  # type: ignore[call-overload]
         )
         return result
 

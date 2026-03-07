@@ -163,7 +163,7 @@ class ObservationAssembler:
             log.error("assembly_nan_detected", nan_count=nan_count)
             raise DataError(msg)
 
-        return obs
+        return np.asarray(obs)
 
     def assemble_crypto(
         self,
@@ -218,7 +218,7 @@ class ObservationAssembler:
             log.error("assembly_nan_detected", nan_count=nan_count)
             raise DataError(msg)
 
-        return obs
+        return np.asarray(obs)
 
     def get_feature_names_equity(self) -> list[str]:
         """Return ordered list of 156 feature names for equity observation.
