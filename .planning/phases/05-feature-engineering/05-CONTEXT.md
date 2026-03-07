@@ -1,6 +1,7 @@
 # Phase 5: Feature Engineering - Context
 
 **Gathered:** 2026-03-06
+**Updated:** 2026-03-06 (gaps & gray areas pass via NotebookLM)
 **Status:** Ready for planning
 
 <domain>
@@ -68,10 +69,25 @@ Compute the full 156-dimension equity and 45-dimension crypto observation vector
 - **Cold-start:** Informed prior initialization (positive mean/low volatility for bull) until ~500 bars available
 - **Storage:** DuckDB `hmm_state_history` table for P(bull), P(bear) over time
 
+### Warmup period and NaN handling
+- **Equity warmup:** 252 bars minimum (driven by z-score normalization window; SMA-200 needs 200 bars, well within)
+- **Crypto warmup:** 360 bars minimum (driven by z-score normalization window)
+- After warmup, observation arrays must have zero NaN values — any NaN is a pipeline bug
+- During training, 200-bar purge gap between folds prevents data leakage from overlapping feature windows (Phase 7 concern but pipeline must support it)
+- **Missing fundamentals:** Mark as N/A (not zero) when data unavailable for an ETF. Fallback: reduce fundamental set from 4 to 2 features (P/E + earnings growth only) if full set causes training issues — saves 16 dimensions
+
+### Turbulence Index
+- **Equity:** Expanding lookback starting after initial 252-bar window
+- **Crypto:** Rolling 1,080-bar lookback (~6 months) — shorter rolling window because crypto's structural volatility shifts make older data misleading
+- **Numerical stability:** Use `np.linalg.pinv` (pseudo-inverse) for crypto covariance matrix — BTC/ETH correlation is ~0.8-0.9, causing near-singular matrices with standard inverse
+- Computed on-the-fly at each decision step, not stored in DuckDB
+- Protection threshold: turbulence > 90th percentile triggers liquidation + halt (Phase 8 PAPER-20, but calculator built in Phase 5)
+
 ### Rolling z-score normalization (FEAT-06)
 - Per-environment windows: 252 bars (equity), 360 bars (crypto) — locked from prior phases
 - Applied to stored technical features before observation vector assembly
 - VecNormalize (SB3 wrapper) applied separately during training (Phase 7) — Phase 5 does rolling z-scores only
+- **Normalization bounds smoke test:** Verify z-scored features fall roughly within [-3, 3] range — values consistently outside this range indicate a pipeline bug
 
 ### Correlation pruning (FEAT-09)
 - Pairwise Pearson r > 0.85 threshold
@@ -83,6 +99,7 @@ Compute the full 156-dimension equity and 45-dimension crypto observation vector
   - SMA exception: keep both SMA-50 and SMA-200 ratios unless r > 0.90
 - Run correlation matrix on full training dataset, finalize observation space before training
 - Pruning results documented (which pairs flagged, which dropped, rationale)
+- **Permutation importance:** Use feature permutation (shuffle one feature, measure Sharpe drop) to identify noisy features that hurt test performance — complementary to correlation pruning
 
 ### Feature addition protocol (FEAT-08)
 - **Threshold:** New feature kept only if validation Sharpe improves by >= 0.05
@@ -189,3 +206,4 @@ Compute the full 156-dimension equity and 45-dimension crypto observation vector
 
 *Phase: 05-feature-engineering*
 *Context gathered: 2026-03-06*
+*Updated: 2026-03-06 (gaps & gray areas via NotebookLM)*
