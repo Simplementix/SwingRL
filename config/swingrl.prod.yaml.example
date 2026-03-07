@@ -40,3 +40,17 @@ system:
 alerting:
   alert_cooldown_minutes: 30               # minimum minutes between repeat alerts
   consecutive_failures_before_alert: 3     # failures before triggering alert
+
+features:
+  equity_zscore_window: 252        # rolling z-score window for equity (trading days)
+  crypto_zscore_window: 360        # rolling z-score window for crypto (4H bars ~60 days)
+  equity_hmm_window: 1260          # HMM fitting window for equity (5 years daily)
+  crypto_hmm_window: 2000          # HMM fitting window for crypto (4H bars ~1 year)
+  hmm_n_iter: 200                  # max EM iterations per HMM fit
+  hmm_n_inits: 5                   # random initializations, best log-likelihood wins
+  hmm_ridge: 0.000001             # ridge regularization for HMM covariance stability
+  correlation_threshold: 0.85      # Pearson r threshold for feature pruning
+  zscore_epsilon: 0.00000001      # floor for rolling std to prevent division by zero
+  equity_turbulence_warmup: 252    # expanding lookback warmup for equity turbulence
+  crypto_turbulence_window: 1080   # rolling window for crypto turbulence (4H bars)
+  crypto_turbulence_warmup: 360    # crypto turbulence minimum warmup bars
