@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Completed 05-03-PLAN.md
-last_updated: "2026-03-07T02:55:00.000Z"
-last_activity: "2026-03-07 — Phase 5 Plan 03 complete: HMM regime detector + turbulence index calculator"
+status: verifying
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-03-07T02:59:45.460Z"
+last_activity: "2026-03-07 — Phase 5 Plan 02 re-verified: FundamentalFetcher + MacroFeatureAligner"
 progress:
   total_phases: 10
   completed_phases: 4
   total_plans: 20
-  completed_plans: 19
+  completed_plans: 18
   percent: 90
 ---
 
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 Phase: 5 of 10 (Feature Engineering) — IN PROGRESS
 Plan: 3 of 5 in phase 05 (Plans 01-03 complete)
-Status: Plan 03 complete — HMM regime detector + turbulence index calculator
-Last activity: 2026-03-07 — Phase 5 Plan 03 complete: HMM regime detector + turbulence index calculator
+Status: Plan 02 re-verified — Fundamentals + macro alignment tests green
+Last activity: 2026-03-07 — Phase 5 Plan 02 re-verified: FundamentalFetcher + MacroFeatureAligner
 
 Progress: [█████████░] 90%
 
@@ -67,6 +67,7 @@ Progress: [█████████░] 90%
 | Phase 04 P04 | 13 | 2 tasks | 6 files |
 | Phase 05 P01 | 5 | 2 tasks | 10 files |
 | Phase 05 P03 | 5 | 2 tasks | 7 files |
+| Phase 05 P02 | 9 | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -120,6 +121,8 @@ Recent decisions affecting current work:
 - [Phase 05]: HMM label ordering via mean-return sort ensures bull=state0 consistency across refits
 - [Phase 05]: Ridge regularization (1e-6) on covariance matrices prevents ValueError on warm-start
 - [Phase 05]: Turbulence uses np.linalg.pinv for near-singular crypto covariance (BTC/ETH r=0.9)
+- [Phase 05]: ASOF JOIN on release_date for look-ahead-free macro alignment
+- [Phase 05]: Alpha Vantage fallback is lazy-imported and disabled without API key
 
 ### Pending Todos
 
@@ -133,6 +136,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-07T02:55:00.000Z
-Stopped at: Completed 05-03-PLAN.md
+Last session: 2026-03-07T02:59:45.457Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None

@@ -43,8 +43,8 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 - [x] **FEAT-01**: Technical indicators via pandas_ta: SMA(50,200) as price ratios, RSI(14), MACD line + histogram, Bollinger Band position (0-1), ATR(14) as % of price, Volume/Volume_SMA(20) ratio
 - [x] **FEAT-02**: Derived features: log returns (1d, 5d, 20d), Bollinger Band width
-- [ ] **FEAT-03**: Fundamental features (equities only): P/E ratio (sector-relative z-score), earnings growth, debt-to-equity, dividend yield — updated quarterly
-- [ ] **FEAT-04**: Macro regime features (shared): VIX z-score, yield curve spread/direction, Fed Funds 90-day change, CPI YoY, unemployment 3-month direction — forward-filled via ASOF JOIN
+- [x] **FEAT-03**: Fundamental features (equities only): P/E ratio (sector-relative z-score), earnings growth, debt-to-equity, dividend yield — updated quarterly
+- [x] **FEAT-04**: Macro regime features (shared): VIX z-score, yield curve spread/direction, Fed Funds 90-day change, CPI YoY, unemployment 3-month direction — forward-filled via ASOF JOIN
 - [x] **FEAT-05**: HMM regime detection: 2-state Gaussian HMM per environment (SPY for equity, BTC for crypto), producing P(bull) and P(bear) continuous probabilities
 - [ ] **FEAT-06**: Rolling z-score normalization with per-environment windows (252 bars equity, 360 bars crypto)
 - [ ] **FEAT-07**: Observation space assembly: 156 dimensions equity, 45 dimensions crypto
@@ -191,8 +191,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-13 | Phase 4 | Complete |
 | FEAT-01 | Phase 5 | Complete |
 | FEAT-02 | Phase 5 | Complete |
-| FEAT-03 | Phase 5 | Pending |
-| FEAT-04 | Phase 5 | Pending |
+| FEAT-03 | Phase 5 | Complete |
+| FEAT-04 | Phase 5 | Complete |
 | FEAT-05 | Phase 5 | Complete |
 | FEAT-06 | Phase 5 | Pending |
 | FEAT-07 | Phase 5 | Pending |
