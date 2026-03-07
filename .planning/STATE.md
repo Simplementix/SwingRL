@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
-stopped_at: Completed 05-04-PLAN.md
+status: complete
+stopped_at: Completed 05-05-PLAN.md
 last_updated: "2026-03-07T02:59:45.460Z"
-last_activity: "2026-03-07 — Phase 5 Plan 04: Rolling z-score normalization and correlation pruning"
+last_activity: "2026-03-07 — Phase 5 Plan 05: Assembler, pipeline, CLI, A/B comparison"
 progress:
   total_phases: 10
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 20
-  completed_plans: 19
-  percent: 95
+  completed_plans: 20
+  percent: 100
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 ## Current Position
 
-Phase: 5 of 10 (Feature Engineering) — IN PROGRESS
-Plan: 5 of 5 in phase 05 (Plans 01-04 complete)
-Status: Plan 04 complete — Normalization + correlation pruning
-Last activity: 2026-03-07 — Phase 5 Plan 04: Rolling z-score normalization and correlation pruning
+Phase: 5 of 10 (Feature Engineering) — COMPLETE
+Plan: 5 of 5 in phase 05 (All plans complete)
+Status: Phase 5 complete — All feature engineering delivered
+Last activity: 2026-03-07 — Phase 5 Plan 05: Assembler, pipeline, CLI, A/B comparison
 
-Progress: [█████████▌] 95%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -69,6 +69,7 @@ Progress: [█████████▌] 95%
 | Phase 05 P03 | 5 | 2 tasks | 7 files |
 | Phase 05 P02 | 9 | 2 tasks | 7 files |
 | Phase 05 P04 | 4 | 2 tasks | 4 files |
+| Phase 05 P05 | 9 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -127,6 +128,9 @@ Recent decisions affecting current work:
 - [Phase 05]: Rolling z-score epsilon floor via clip(lower=epsilon) on rolling std
 - [Phase 05]: Domain priority dict drives deterministic correlation pruning drop selection
 - [Phase 05]: SMA exception threshold (0.90) higher than general correlation threshold (0.85)
+- [Phase 05]: Observation assembly order: [per-asset alpha-sorted] + [macro] + [HMM] + [turbulence] + [overnight crypto-only] + [portfolio state]
+- [Phase 05]: Default portfolio state = 100% cash until Phase 6 RL environments provide real positions
+- [Phase 05]: Feature A/B comparison threshold: validation Sharpe >= 0.05 with overfitting guard
 
 ### Pending Todos
 
@@ -140,6 +144,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-07T02:59:45.457Z
-Stopped at: Completed 05-04-PLAN.md
+Last session: 2026-03-07T03:16:37Z
+Stopped at: Completed 05-05-PLAN.md — Phase 5 complete
 Resume file: None
