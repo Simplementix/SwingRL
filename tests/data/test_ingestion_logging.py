@@ -137,7 +137,8 @@ def db_config(tmp_path: Path) -> SwingRLConfig:
 
 @pytest.fixture
 def db_manager(db_config: SwingRLConfig) -> DatabaseManager:
-    """Create DatabaseManager with schema initialized, reset after test."""
+    """Create DatabaseManager with schema initialized, reset before and after test."""
+    DatabaseManager.reset()  # Clear stale singleton from prior test files
     mgr = DatabaseManager(db_config)
     mgr.init_schema()
     yield mgr  # type: ignore[misc]
