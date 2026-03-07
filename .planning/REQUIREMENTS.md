@@ -41,17 +41,17 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### Feature Engineering
 
-- [ ] **FEAT-01**: Technical indicators via pandas_ta: SMA(50,200) as price ratios, RSI(14), MACD line + histogram, Bollinger Band position (0-1), ATR(14) as % of price, Volume/Volume_SMA(20) ratio
-- [ ] **FEAT-02**: Derived features: log returns (1d, 5d, 20d), Bollinger Band width
-- [ ] **FEAT-03**: Fundamental features (equities only): P/E ratio (sector-relative z-score), earnings growth, debt-to-equity, dividend yield — updated quarterly
-- [ ] **FEAT-04**: Macro regime features (shared): VIX z-score, yield curve spread/direction, Fed Funds 90-day change, CPI YoY, unemployment 3-month direction — forward-filled via ASOF JOIN
-- [ ] **FEAT-05**: HMM regime detection: 2-state Gaussian HMM per environment (SPY for equity, BTC for crypto), producing P(bull) and P(bear) continuous probabilities
-- [ ] **FEAT-06**: Rolling z-score normalization with per-environment windows (252 bars equity, 360 bars crypto)
-- [ ] **FEAT-07**: Observation space assembly: 156 dimensions equity, 45 dimensions crypto
-- [ ] **FEAT-08**: Feature addition protocol: new features kept only if validation Sharpe improves by at least 0.05 in A/B test
-- [ ] **FEAT-09**: Correlation pruning: remove features with pairwise Pearson r > 0.85
-- [ ] **FEAT-10**: Weekly-derived features (SMA trend direction, weekly RSI-14) computed from aggregated weekly bars, not fetched separately
-- [ ] **FEAT-11**: Per-environment feature tables in DuckDB: features_equity (DATE key), features_crypto (TIMESTAMP key)
+- [x] **FEAT-01**: Technical indicators via pandas_ta: SMA(50,200) as price ratios, RSI(14), MACD line + histogram, Bollinger Band position (0-1), ATR(14) as % of price, Volume/Volume_SMA(20) ratio
+- [x] **FEAT-02**: Derived features: log returns (1d, 5d, 20d), Bollinger Band width
+- [x] **FEAT-03**: Fundamental features (equities only): P/E ratio (sector-relative z-score), earnings growth, debt-to-equity, dividend yield — updated quarterly
+- [x] **FEAT-04**: Macro regime features (shared): VIX z-score, yield curve spread/direction, Fed Funds 90-day change, CPI YoY, unemployment 3-month direction — forward-filled via ASOF JOIN
+- [x] **FEAT-05**: HMM regime detection: 2-state Gaussian HMM per environment (SPY for equity, BTC for crypto), producing P(bull) and P(bear) continuous probabilities
+- [x] **FEAT-06**: Rolling z-score normalization with per-environment windows (252 bars equity, 360 bars crypto)
+- [x] **FEAT-07**: Observation space assembly: 156 dimensions equity, 45 dimensions crypto
+- [x] **FEAT-08**: Feature addition protocol: new features kept only if validation Sharpe improves by at least 0.05 in A/B test
+- [x] **FEAT-09**: Correlation pruning: remove features with pairwise Pearson r > 0.85
+- [x] **FEAT-10**: Weekly-derived features (SMA trend direction, weekly RSI-14) computed from aggregated weekly bars, not fetched separately
+- [x] **FEAT-11**: Per-environment feature tables in DuckDB: features_equity (DATE key), features_crypto (TIMESTAMP key)
 
 ### RL Training
 
@@ -189,17 +189,17 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-11 | Phase 4 | Complete |
 | DATA-12 | Phase 4 | Complete |
 | DATA-13 | Phase 4 | Complete |
-| FEAT-01 | Phase 5 | Pending |
-| FEAT-02 | Phase 5 | Pending |
-| FEAT-03 | Phase 5 | Pending |
-| FEAT-04 | Phase 5 | Pending |
-| FEAT-05 | Phase 5 | Pending |
-| FEAT-06 | Phase 5 | Pending |
-| FEAT-07 | Phase 5 | Pending |
-| FEAT-08 | Phase 5 | Pending |
-| FEAT-09 | Phase 5 | Pending |
-| FEAT-10 | Phase 5 | Pending |
-| FEAT-11 | Phase 5 | Pending |
+| FEAT-01 | Phase 5 | Complete |
+| FEAT-02 | Phase 5 | Complete |
+| FEAT-03 | Phase 5 | Complete |
+| FEAT-04 | Phase 5 | Complete |
+| FEAT-05 | Phase 5 | Complete |
+| FEAT-06 | Phase 5 | Complete |
+| FEAT-07 | Phase 5 | Complete |
+| FEAT-08 | Phase 5 | Complete |
+| FEAT-09 | Phase 5 | Complete |
+| FEAT-10 | Phase 5 | Complete |
+| FEAT-11 | Phase 5 | Complete |
 | TRAIN-01 | Phase 6 | Pending |
 | TRAIN-02 | Phase 6 | Pending |
 | TRAIN-07 | Phase 6 | Pending |

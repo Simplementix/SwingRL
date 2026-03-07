@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 04-04-PLAN.md
-last_updated: "2026-03-06T23:42:36.215Z"
-last_activity: "2026-03-06 — Phase 4 Plan 04 complete: Cross-source validation + corporate action detection"
+stopped_at: Completed 05-05-PLAN.md — Phase 5 complete
+last_updated: "2026-03-07T03:22:08.136Z"
+last_activity: "2026-03-07 — Phase 5 Plan 05: Assembler, pipeline, CLI, A/B comparison"
 progress:
   total_phases: 10
-  completed_phases: 4
-  total_plans: 15
-  completed_plans: 15
+  completed_phases: 5
+  total_plans: 20
+  completed_plans: 20
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-06)
 
 **Core value:** Capital preservation through disciplined, automated risk management — never lose more than you can recover from
-**Current focus:** Phase 4: Data Storage and Validation
+**Current focus:** Phase 5: Feature Engineering
 
 ## Current Position
 
-Phase: 4 of 10 (Data Storage and Validation) — COMPLETE
-Plan: 4 of 4 in phase 04 (all plans done)
-Status: Phase 4 complete — all data storage and validation plans executed
-Last activity: 2026-03-06 — Phase 4 Plan 04 complete: Cross-source validation + corporate action detection
+Phase: 5 of 10 (Feature Engineering) — COMPLETE
+Plan: 5 of 5 in phase 05 (All plans complete)
+Status: Phase 5 complete — All feature engineering delivered
+Last activity: 2026-03-07 — Phase 5 Plan 05: Assembler, pipeline, CLI, A/B comparison
 
 Progress: [██████████] 100%
 
@@ -65,6 +65,11 @@ Progress: [██████████] 100%
 | Phase 04 P03 | 5 | 1 tasks | 4 files |
 | Phase 04 P02 | 11 | 1 tasks | 8 files |
 | Phase 04 P04 | 13 | 2 tasks | 6 files |
+| Phase 05 P01 | 5 | 2 tasks | 10 files |
+| Phase 05 P03 | 5 | 2 tasks | 7 files |
+| Phase 05 P02 | 9 | 2 tasks | 7 files |
+| Phase 05 P04 | 4 | 2 tasks | 4 files |
+| Phase 05 P05 | 9 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -113,6 +118,19 @@ Recent decisions affecting current work:
 - [Phase 04]: as_of_date parameter added to validate_prices for testability with historical dates
 - [Phase 04]: Step 12 cross-source check is warning-only, never quarantines data
 - [Phase 04]: Corporate action thresholds: 30% equity overnight spike, 40% crypto
+- [Phase 05]: init_feature_schema accepts raw DuckDB conn for testability with in-memory connections
+- [Phase 05]: stockstats retype(ohlcv.copy()) pattern established for copy-safe indicator computation
+- [Phase 05]: HMM label ordering via mean-return sort ensures bull=state0 consistency across refits
+- [Phase 05]: Ridge regularization (1e-6) on covariance matrices prevents ValueError on warm-start
+- [Phase 05]: Turbulence uses np.linalg.pinv for near-singular crypto covariance (BTC/ETH r=0.9)
+- [Phase 05]: ASOF JOIN on release_date for look-ahead-free macro alignment
+- [Phase 05]: Alpha Vantage fallback is lazy-imported and disabled without API key
+- [Phase 05]: Rolling z-score epsilon floor via clip(lower=epsilon) on rolling std
+- [Phase 05]: Domain priority dict drives deterministic correlation pruning drop selection
+- [Phase 05]: SMA exception threshold (0.90) higher than general correlation threshold (0.85)
+- [Phase 05]: Observation assembly order: [per-asset alpha-sorted] + [macro] + [HMM] + [turbulence] + [overnight crypto-only] + [portfolio state]
+- [Phase 05]: Default portfolio state = 100% cash until Phase 6 RL environments provide real positions
+- [Phase 05]: Feature A/B comparison threshold: validation Sharpe >= 0.05 with overfitting guard
 
 ### Pending Todos
 
@@ -126,6 +144,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-06T23:37:34.000Z
-Stopped at: Completed 04-04-PLAN.md
+Last session: 2026-03-07T03:16:37Z
+Stopped at: Completed 05-05-PLAN.md — Phase 5 complete
 Resume file: None

@@ -126,6 +126,32 @@ class LoggingConfig(BaseModel):
     json_logs: bool = Field(default=False)  # True in production/Docker
 
 
+class FeaturesConfig(BaseModel):
+    """Feature engineering configuration."""
+
+    # HMM regime detection
+    equity_hmm_window: int = Field(default=1260, ge=100)
+    crypto_hmm_window: int = Field(default=2000, ge=100)
+    hmm_n_iter: int = Field(default=200, ge=10)
+    hmm_n_inits: int = Field(default=5, ge=1)
+    hmm_ridge: float = Field(default=1e-6, gt=0.0)
+
+    # Normalization
+    equity_zscore_window: int = Field(default=252, ge=50)
+    crypto_zscore_window: int = Field(default=360, ge=50)
+
+    # Correlation pruning
+    correlation_threshold: float = Field(default=0.85, gt=0.0, le=1.0)
+
+    # Z-score normalization epsilon (prevents division by zero)
+    zscore_epsilon: float = Field(default=1e-8, gt=0.0)
+
+    # Turbulence
+    equity_turbulence_warmup: int = Field(default=252, ge=50)
+    crypto_turbulence_window: int = Field(default=1080, ge=100)
+    crypto_turbulence_warmup: int = Field(default=360, ge=50)
+
+
 class SystemConfig(BaseModel):
     """System-level database paths."""
 
@@ -158,6 +184,7 @@ class SwingRLConfig(BaseSettings):
     capital: CapitalConfig = Field(default_factory=CapitalConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    features: FeaturesConfig = Field(default_factory=FeaturesConfig)
     system: SystemConfig = Field(default_factory=SystemConfig)
     alerting: AlertingConfig = Field(default_factory=AlertingConfig)
 
