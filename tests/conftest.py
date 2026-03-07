@@ -49,6 +49,12 @@ def valid_config_yaml() -> str:
         logging:
           level: INFO
           json_logs: false
+        system:
+          duckdb_path: data/db/market_data.ddb
+          sqlite_path: data/db/trading_ops.db
+        alerting:
+          alert_cooldown_minutes: 30
+          consecutive_failures_before_alert: 3
     """)
 
 

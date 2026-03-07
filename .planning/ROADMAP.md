@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Dev Foundation** - Reproducible Python 3.11 environment with Docker validated on x86 homelab (completed 2026-03-06)
 - [x] **Phase 2: Developer Experience** - Claude skills, config schema, smoke tests, and models scaffold (completed 2026-03-06)
 - [x] **Phase 3: Data Ingestion** - Raw OHLCV and macro data flowing from Alpaca, Binance.US, and FRED (completed 2026-03-06)
-- [ ] **Phase 4: Data Storage and Validation** - DuckDB/SQLite schema operational with validation, quarantine, and alerting
+- [x] **Phase 4: Data Storage and Validation** - DuckDB/SQLite schema operational with validation, quarantine, and alerting (completed 2026-03-06)
 - [ ] **Phase 5: Feature Engineering** - Full 156-dim equity and 45-dim crypto observation vectors assembled and verified
 - [ ] **Phase 6: RL Environments** - Gymnasium-compatible trading environments passing step/reset contracts
 - [ ] **Phase 7: Agent Training and Validation** - PPO/A2C/SAC ensemble trained and walk-forward validated against performance gates
@@ -91,10 +91,10 @@ Plans:
 **Plans**: 4 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — Foundation: BaseIngestor ABC, DataValidator (12-step checklist), ParquetStore, deps install
-- [ ] 03-02-PLAN.md — Alpaca equity ingestor for 8 ETFs with IEX feed, incremental/backfill modes, CLI
-- [ ] 03-03-PLAN.md — Binance.US crypto ingestor with 4H bars, rate limiting, historical backfill, stitch validation
-- [ ] 03-04-PLAN.md — FRED macro ingestor for 5 Tier 1 series with ALFRED vintage data, CLI
+- [ ] 04-01-PLAN.md — DatabaseManager singleton, DuckDB/SQLite schema, aggregation views, config additions, init_db.py
+- [ ] 04-02-PLAN.md — BaseIngestor DuckDB sync, ingestion logging, quarantine migration to DuckDB
+- [ ] 04-03-PLAN.md — Discord alerter module with level-based routing, cooldown, daily digest
+- [ ] 04-04-PLAN.md — Cross-source validation (Alpaca vs yfinance) and corporate action detection
 
 ### Phase 5: Feature Engineering
 **Goal**: The complete 156-dimension equity and 45-dimension crypto observation vectors are computed correctly from raw bars, with normalization and correlation pruning applied
@@ -106,13 +106,7 @@ Plans:
   3. HMM regime detection produces two continuous probabilities (P(bull), P(bear)) that sum to 1.0 for every bar in both environments
   4. Rolling z-score normalization uses a 252-bar window for equity and a 360-bar window for crypto, and the per-environment feature tables exist in DuckDB (features_equity, features_crypto)
   5. A new candidate feature added to the pipeline is rejected when its A/B Sharpe improvement is less than 0.05, and accepted when it meets the threshold
-**Plans**: 4 plans
-
-Plans:
-- [ ] 03-01-PLAN.md — Foundation: BaseIngestor ABC, DataValidator (12-step checklist), ParquetStore, deps install
-- [ ] 03-02-PLAN.md — Alpaca equity ingestor for 8 ETFs with IEX feed, incremental/backfill modes, CLI
-- [ ] 03-03-PLAN.md — Binance.US crypto ingestor with 4H bars, rate limiting, historical backfill, stitch validation
-- [ ] 03-04-PLAN.md — FRED macro ingestor for 5 Tier 1 series with ALFRED vintage data, CLI
+**Plans**: TBD
 
 ### Phase 6: RL Environments
 **Goal**: Gymnasium-compatible trading environments for both equity and crypto pass the step/reset contract and produce valid observations and rewards
@@ -124,13 +118,7 @@ Plans:
   3. The rolling 20-day Sharpe reward function returns an expanding-window warmup value for the first 19 bars, then a proper Sharpe ratio thereafter
   4. Actions within +/-0.02 of zero result in a "hold" (no trade executed), confirmed by inspecting the trade log after a random rollout
   5. Equity episodes run for 252-day segments; crypto episodes run for 540 4H bars with a random start — confirmed by running 10 episodes each and checking lengths
-**Plans**: 4 plans
-
-Plans:
-- [ ] 03-01-PLAN.md — Foundation: BaseIngestor ABC, DataValidator (12-step checklist), ParquetStore, deps install
-- [ ] 03-02-PLAN.md — Alpaca equity ingestor for 8 ETFs with IEX feed, incremental/backfill modes, CLI
-- [ ] 03-03-PLAN.md — Binance.US crypto ingestor with 4H bars, rate limiting, historical backfill, stitch validation
-- [ ] 03-04-PLAN.md — FRED macro ingestor for 5 Tier 1 series with ALFRED vintage data, CLI
+**Plans**: TBD
 
 ### Phase 7: Agent Training and Validation
 **Goal**: PPO, A2C, and SAC agents train on both environments, the Sharpe-weighted ensemble is blended, and walk-forward backtesting confirms all four performance gates pass
@@ -142,13 +130,7 @@ Plans:
   3. Walk-forward backtesting produces results across at least 3 non-overlapping 3-month folds with a 200-bar purge gap verified between each fold
   4. All four validation gates pass: Sharpe > 0.7 per environment, MDD < 15%, Profit Factor > 1.5, overfitting gap < 20%
   5. Backtest results are stored in the DuckDB backtest_results table with per-model and per-fold rows queryable via SQL
-**Plans**: 4 plans
-
-Plans:
-- [ ] 03-01-PLAN.md — Foundation: BaseIngestor ABC, DataValidator (12-step checklist), ParquetStore, deps install
-- [ ] 03-02-PLAN.md — Alpaca equity ingestor for 8 ETFs with IEX feed, incremental/backfill modes, CLI
-- [ ] 03-03-PLAN.md — Binance.US crypto ingestor with 4H bars, rate limiting, historical backfill, stitch validation
-- [ ] 03-04-PLAN.md — FRED macro ingestor for 5 Tier 1 series with ALFRED vintage data, CLI
+**Plans**: TBD
 
 ### Phase 8: Paper Trading Core
 **Goal**: Equity and crypto paper trading connections are live, orders flow through the full 5-stage execution middleware, and the two-tier risk management veto layer blocks out-of-policy trades
@@ -160,13 +142,7 @@ Plans:
   3. Submitting an order that would breach the per-environment equity drawdown limit (-10% DD) is vetoed by the risk layer before reaching the exchange adapter
   4. Triggering a circuit breaker writes a row to circuit_breaker_events in SQLite, and the system still reads that halt state correctly after a container restart
   5. An order sized below $10 for crypto is automatically floor-adjusted to $10.00 before submission, and an order where round-trip costs exceed 2.0% of order value is rejected by the cost gate
-**Plans**: 4 plans
-
-Plans:
-- [ ] 03-01-PLAN.md — Foundation: BaseIngestor ABC, DataValidator (12-step checklist), ParquetStore, deps install
-- [ ] 03-02-PLAN.md — Alpaca equity ingestor for 8 ETFs with IEX feed, incremental/backfill modes, CLI
-- [ ] 03-03-PLAN.md — Binance.US crypto ingestor with 4H bars, rate limiting, historical backfill, stitch validation
-- [ ] 03-04-PLAN.md — FRED macro ingestor for 5 Tier 1 series with ALFRED vintage data, CLI
+**Plans**: TBD
 
 ### Phase 9: Automation and Monitoring
 **Goal**: The system runs autonomously on schedule, sends Discord alerts for all significant events, and the operator can monitor system health from the Streamlit dashboard and Healthchecks.io
@@ -178,13 +154,7 @@ Plans:
   3. If the equity environment stays 100% cash for 10 consecutive trading days, a "stuck agent" Discord alert fires
   4. The Streamlit dashboard displays traffic-light status for both environments and the last 5 trade executions without manual refresh
   5. Healthchecks.io receives a heartbeat ping within the 70-minute crypto window and the 25-hour equity window; missing either sends a Discord alert
-**Plans**: 4 plans
-
-Plans:
-- [ ] 03-01-PLAN.md — Foundation: BaseIngestor ABC, DataValidator (12-step checklist), ParquetStore, deps install
-- [ ] 03-02-PLAN.md — Alpaca equity ingestor for 8 ETFs with IEX feed, incremental/backfill modes, CLI
-- [ ] 03-03-PLAN.md — Binance.US crypto ingestor with 4H bars, rate limiting, historical backfill, stitch validation
-- [ ] 03-04-PLAN.md — FRED macro ingestor for 5 Tier 1 series with ALFRED vintage data, CLI
+**Plans**: TBD
 
 ### Phase 10: Production Hardening
 **Goal**: The system is fully hardened for sustained operation — backups automated, models deploy via script, shadow mode validates new models before promotion, security reviewed, and disaster recovery tested
@@ -196,13 +166,7 @@ Plans:
   3. A new model running in shadow mode produces hypothetical trades in parallel with the active model for 10 equity days / 30 crypto cycles; auto-promotion fires when all three promotion criteria are met
   4. Running `emergency_stop.py` halts all jobs, cancels open orders, and liquidates crypto immediately (equity queued for market open) — confirmed by checking exchange state and trading_ops.db
   5. Stopping the container, deleting all volumes, restoring from backup, and restarting completes the 9-step disaster recovery checklist with the system resuming paper trading correctly
-**Plans**: 4 plans
-
-Plans:
-- [ ] 03-01-PLAN.md — Foundation: BaseIngestor ABC, DataValidator (12-step checklist), ParquetStore, deps install
-- [ ] 03-02-PLAN.md — Alpaca equity ingestor for 8 ETFs with IEX feed, incremental/backfill modes, CLI
-- [ ] 03-03-PLAN.md — Binance.US crypto ingestor with 4H bars, rate limiting, historical backfill, stitch validation
-- [ ] 03-04-PLAN.md — FRED macro ingestor for 5 Tier 1 series with ALFRED vintage data, CLI
+**Plans**: TBD
 
 ## Progress
 
@@ -214,7 +178,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 1. Dev Foundation | 3/3 | Complete   | 2026-03-06 |
 | 2. Developer Experience | 4/4 | Complete   | 2026-03-06 |
 | 3. Data Ingestion | 4/4 | Complete   | 2026-03-06 |
-| 4. Data Storage and Validation | 0/TBD | Not started | - |
+| 4. Data Storage and Validation | 4/4 | Complete   | 2026-03-06 |
 | 5. Feature Engineering | 0/TBD | Not started | - |
 | 6. RL Environments | 0/TBD | Not started | - |
 | 7. Agent Training and Validation | 0/TBD | Not started | - |

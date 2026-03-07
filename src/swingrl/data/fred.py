@@ -54,6 +54,9 @@ class FREDIngestor(BaseIngestor):
         config: Validated SwingRLConfig instance.
     """
 
+    _environment = "macro"
+    _duckdb_table = "macro_features"
+
     def __init__(self, config: SwingRLConfig) -> None:
         super().__init__(config)
         api_key = os.environ.get("FRED_API_KEY", "")
