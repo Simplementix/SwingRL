@@ -1,13 +1,15 @@
 """Tests for RL environment foundation components.
 
 Tests cover PortfolioSimulator, RollingSharpeReward, process_actions (softmax + deadzone),
-EnvironmentConfig schema integration, and BaseTradingEnv/StockTradingEnv contracts.
+EnvironmentConfig schema integration, BaseTradingEnv/StockTradingEnv contracts,
+CryptoTradingEnv with random-start episodes, Gymnasium registration, and SB3 check_env.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from swingrl.envs.crypto import CryptoTradingEnv
 
 from swingrl.envs.equity import StockTradingEnv
 from swingrl.envs.portfolio import PortfolioSimulator, process_actions
@@ -627,3 +629,255 @@ class TestStockTradingEnvFullEpisode:
             assert not truncated
         assert isinstance(total_reward, float)
         assert info["step"] == 252
+
+
+# ---------------------------------------------------------------------------
+# CryptoTradingEnv (random-start episodes)
+# ---------------------------------------------------------------------------
+
+
+class TestCryptoTradingEnvInit:
+    """CryptoTradingEnv initializes with correct spaces."""
+
+    def test_observation_space_shape(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: observation_space is Box(45,) float32."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        assert env.observation_space.shape == (45,)
+        assert env.observation_space.dtype == np.float32
+
+    def test_action_space_shape(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: action_space is Box(2,) float32 for BTC/ETH."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        assert env.action_space.shape == (2,)
+        assert env.action_space.dtype == np.float32
+
+
+class TestCryptoTradingEnvReset:
+    """CryptoTradingEnv.reset() returns valid observation with random start."""
+
+    def test_reset_returns_obs_info(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: reset(seed=42) returns (obs, info) with correct obs shape/dtype."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        obs, info = env.reset(seed=42)
+        assert obs.shape == (45,)
+        assert obs.dtype == np.float32
+
+    def test_reset_obs_all_finite(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: reset() observation has all finite values."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        obs, _ = env.reset(seed=42)
+        assert np.all(np.isfinite(obs))
+
+    def test_random_start_within_valid_range(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: reset(seed=42) selects random start index in valid range."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        # Start step should be within [0, len(data) - episode_bars)
+        max_start = len(crypto_features_array) - equity_env_config.environment.crypto_episode_bars
+        assert 0 <= env._current_step < max_start
+
+    def test_same_seed_same_start(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: reset(seed=42) twice produces same start index."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        start1 = env._current_step
+        env.reset(seed=42)
+        start2 = env._current_step
+        assert start1 == start2
+
+    def test_different_seeds_different_starts(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: reset(seed=42) and reset(seed=99) produce different start indices."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        start1 = env._current_step
+        env.reset(seed=99)
+        start2 = env._current_step
+        assert start1 != start2
+
+
+class TestCryptoTradingEnvStep:
+    """CryptoTradingEnv.step() returns valid 5-tuple with 540-step episodes."""
+
+    def test_step_returns_5_tuple(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: step() returns (obs, reward, terminated, truncated, info)."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        result = env.step(env.action_space.sample())
+        assert len(result) == 5
+        obs, reward, terminated, truncated, info = result
+        assert isinstance(reward, float)
+        assert isinstance(terminated, bool)
+        assert isinstance(truncated, bool)
+        assert isinstance(info, dict)
+
+    def test_terminated_after_540_steps(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-11: terminated=True after exactly 540 steps (crypto episode length)."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        for i in range(539):
+            _, _, terminated, _, _ = env.step(env.action_space.sample())
+            assert not terminated, f"Terminated early at step {i}"
+        _, _, terminated, _, _ = env.step(env.action_space.sample())
+        assert terminated, "Should terminate at step 540"
+
+    def test_truncated_always_false(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-11: truncated is always False."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        for _ in range(540):
+            _, _, _, truncated, _ = env.step(env.action_space.sample())
+            assert truncated is False
+
+
+class TestCryptoTradingEnvMultiEpisode:
+    """Multiple crypto episodes complete with random actions."""
+
+    def test_10_episodes_540_steps(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: 10 episodes complete successfully, each running 540 steps."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        for episode in range(10):
+            env.reset(seed=episode)
+            steps = 0
+            terminated = False
+            while not terminated:
+                _, _, terminated, _, _ = env.step(env.action_space.sample())
+                steps += 1
+            assert steps == 540, f"Episode {episode} ran {steps} steps, expected 540"
+
+    def test_full_episode_portfolio_tracking(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: Full episode tracks portfolio_value in info without NaN."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        for _ in range(540):
+            _, _, _, _, info = env.step(env.action_space.sample())
+            pv = info["portfolio_value"]
+            assert np.isfinite(pv), f"portfolio_value is not finite: {pv}"
+            assert pv > 0, f"portfolio_value must be positive: {pv}"
+
+
+class TestCryptoTradingEnvFactory:
+    """from_arrays() factory method for CryptoTradingEnv."""
+
+    def test_from_arrays_creates_env(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: from_arrays() creates valid CryptoTradingEnv."""
+        env = CryptoTradingEnv.from_arrays(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        obs, info = env.reset(seed=42)
+        assert obs.shape == (45,)
+        assert obs.dtype == np.float32
