@@ -125,7 +125,12 @@ Plans:
   3. The rolling 20-day Sharpe reward function returns an expanding-window warmup value for the first 19 bars, then a proper Sharpe ratio thereafter
   4. Actions within +/-0.02 of zero result in a "hold" (no trade executed), confirmed by inspecting the trade log after a random rollout
   5. Equity episodes run for 252-day segments; crypto episodes run for 540 4H bars with a random start — confirmed by running 10 episodes each and checking lengths
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — EnvironmentConfig schema, PortfolioSimulator, RollingSharpeReward, action processing utilities, test fixtures
+- [ ] 06-02-PLAN.md — BaseTradingEnv base class and StockTradingEnv equity environment with step/reset contracts
+- [ ] 06-03-PLAN.md — CryptoTradingEnv with random-start episodes, Gymnasium registration, SB3 check_env integration tests
 
 ### Phase 7: Agent Training and Validation
 **Goal**: PPO, A2C, and SAC agents train on both environments, the Sharpe-weighted ensemble is blended, and walk-forward backtesting confirms all four performance gates pass
@@ -187,7 +192,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 3. Data Ingestion | 4/4 | Complete   | 2026-03-06 |
 | 4. Data Storage and Validation | 4/4 | Complete   | 2026-03-06 |
 | 5. Feature Engineering | 4/5 | In Progress|  |
-| 6. RL Environments | 0/TBD | Not started | - |
+| 6. RL Environments | 0/3 | Not started | - |
 | 7. Agent Training and Validation | 0/TBD | Not started | - |
 | 8. Paper Trading Core | 0/TBD | Not started | - |
 | 9. Automation and Monitoring | 0/TBD | Not started | - |
