@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 05-05-PLAN.md — Phase 5 complete
-last_updated: "2026-03-07T03:22:08.136Z"
-last_activity: "2026-03-07 — Phase 5 Plan 05: Assembler, pipeline, CLI, A/B comparison"
+stopped_at: Completed 06-03-PLAN.md (Phase 6 complete)
+last_updated: "2026-03-08T03:47:18.004Z"
+last_activity: "2026-03-08 — Phase 6 Plan 03: CryptoTradingEnv, Gymnasium registration, and integration tests"
 progress:
   total_phases: 10
-  completed_phases: 5
-  total_plans: 20
-  completed_plans: 20
+  completed_phases: 6
+  total_plans: 23
+  completed_plans: 23
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-06)
 
 **Core value:** Capital preservation through disciplined, automated risk management — never lose more than you can recover from
-**Current focus:** Phase 5: Feature Engineering
+**Current focus:** Phase 6: RL Environments
 
 ## Current Position
 
-Phase: 5 of 10 (Feature Engineering) — COMPLETE
-Plan: 5 of 5 in phase 05 (All plans complete)
-Status: Phase 5 complete — All feature engineering delivered
-Last activity: 2026-03-07 — Phase 5 Plan 05: Assembler, pipeline, CLI, A/B comparison
+Phase: 6 of 10 (RL Environments) -- COMPLETE
+Plan: 3 of 3 in phase 06 (Plan 03 complete -- Phase 6 done)
+Status: Phase 6 complete — All environments delivered, SB3-validated, Gymnasium-registered
+Last activity: 2026-03-08 — Phase 6 Plan 03: CryptoTradingEnv, Gymnasium registration, and integration tests
 
 Progress: [██████████] 100%
 
@@ -70,6 +70,9 @@ Progress: [██████████] 100%
 | Phase 05 P02 | 9 | 2 tasks | 7 files |
 | Phase 05 P04 | 4 | 2 tasks | 4 files |
 | Phase 05 P05 | 9 | 2 tasks | 5 files |
+| Phase 06 P01 | 4 | 1 tasks | 7 files |
+| Phase 06 P02 | 6 | 1 tasks | 6 files |
+| Phase 06 P03 | 5 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -131,6 +134,12 @@ Recent decisions affecting current work:
 - [Phase 05]: Observation assembly order: [per-asset alpha-sorted] + [macro] + [HMM] + [turbulence] + [overnight crypto-only] + [portfolio state]
 - [Phase 05]: Default portfolio state = 100% cash until Phase 6 RL environments provide real positions
 - [Phase 05]: Feature A/B comparison threshold: validation Sharpe >= 0.05 with overfitting guard
+- [Phase 06]: deque(maxlen=window) for RollingSharpeReward automatic rolling window
+- [Phase 06]: step_count-based termination avoids off-by-one in episode length
+- [Phase 06]: equity_env_config fixture with 8 symbols separate from loaded_config to prevent fixture coupling
+- [Phase 06]: gymnasium added to pre-commit mypy additional_dependencies for isolated hook environment
+- [Phase 06]: register() calls before class imports in envs/__init__.py to avoid circular imports
+- [Phase 06]: E402 noqa suppression for intentional post-registration class imports
 
 ### Pending Todos
 
@@ -144,6 +153,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-07T03:16:37Z
-Stopped at: Completed 05-05-PLAN.md — Phase 5 complete
+Last session: 2026-03-08T03:43:12Z
+Stopped at: Completed 06-03-PLAN.md (Phase 6 complete)
 Resume file: None

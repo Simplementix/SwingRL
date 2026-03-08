@@ -32,6 +32,16 @@ logging:
   level: INFO                   # DEBUG | INFO | WARNING | ERROR
   json_logs: false              # true in production/Docker (SWINGRL_LOGGING__JSON_LOGS=true)
 
+environment:
+  initial_amount: 100000.0               # $100K normalized training capital (both envs)
+  equity_episode_bars: 252               # equity episode length (trading days)
+  crypto_episode_bars: 540               # crypto episode length (4H bars ~3 months)
+  equity_transaction_cost_pct: 0.0006    # 0.06% round-trip (spread + slippage)
+  crypto_transaction_cost_pct: 0.0022    # 0.22% round-trip (commission + spread + slippage)
+  signal_deadzone: 0.02                  # hold threshold: suppress weight changes < 2%
+  position_penalty_coeff: 10.0           # soft penalty for position limit breach
+  drawdown_penalty_coeff: 5.0            # soft penalty for drawdown threshold breach
+
 system:
   duckdb_path: data/db/market_data.ddb   # DuckDB: OHLCV, macro, quarantine, ingestion log
   sqlite_path: data/db/trading_ops.db    # SQLite: trades, positions, risk, events, alerts

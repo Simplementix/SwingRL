@@ -10,6 +10,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -49,6 +50,15 @@ def valid_config_yaml() -> str:
         logging:
           level: INFO
           json_logs: false
+        environment:
+          initial_amount: 100000.0
+          equity_episode_bars: 252
+          crypto_episode_bars: 540
+          equity_transaction_cost_pct: 0.0006
+          crypto_transaction_cost_pct: 0.0022
+          signal_deadzone: 0.02
+          position_penalty_coeff: 10.0
+          drawdown_penalty_coeff: 5.0
         system:
           duckdb_path: data/db/market_data.ddb
           sqlite_path: data/db/trading_ops.db
@@ -124,6 +134,103 @@ def crypto_ohlcv() -> pd.DataFrame:
         },
         index=dates,
     )
+
+
+@pytest.fixture
+def equity_env_config_yaml() -> str:
+    """Config YAML with 8 equity symbols matching equity_prices_array (8 columns)."""
+    return textwrap.dedent("""\
+        trading_mode: paper
+        equity:
+          symbols: [SPY, QQQ, VTI, XLV, XLI, XLE, XLF, XLK]
+          max_position_size: 0.25
+          max_drawdown_pct: 0.10
+          daily_loss_limit_pct: 0.02
+        crypto:
+          symbols: [BTCUSDT, ETHUSDT]
+          max_position_size: 0.50
+          max_drawdown_pct: 0.12
+          daily_loss_limit_pct: 0.03
+          min_order_usd: 10.0
+        capital:
+          equity_usd: 400.0
+          crypto_usd: 47.0
+        paths:
+          data_dir: data/
+          db_dir: db/
+          models_dir: models/
+          logs_dir: logs/
+        logging:
+          level: INFO
+          json_logs: false
+        environment:
+          initial_amount: 100000.0
+          equity_episode_bars: 252
+          crypto_episode_bars: 540
+          equity_transaction_cost_pct: 0.0006
+          crypto_transaction_cost_pct: 0.0022
+          signal_deadzone: 0.02
+          position_penalty_coeff: 10.0
+          drawdown_penalty_coeff: 5.0
+        system:
+          duckdb_path: data/db/market_data.ddb
+          sqlite_path: data/db/trading_ops.db
+        alerting:
+          alert_cooldown_minutes: 30
+          consecutive_failures_before_alert: 3
+    """)
+
+
+@pytest.fixture
+def equity_env_config(tmp_path: Path, equity_env_config_yaml: str) -> SwingRLConfig:
+    """SwingRLConfig with 8 equity symbols for environment tests."""
+    config_file = tmp_path / "swingrl_env.yaml"
+    config_file.write_text(equity_env_config_yaml)
+    return load_config(config_file)
+
+
+@pytest.fixture
+def equity_features_array() -> np.ndarray:
+    """Synthetic equity feature array for environment tests.
+
+    Shape (300, 156) float32 — enough for 252-step episodes with buffer.
+    """
+    rng = np.random.default_rng(44)
+    return rng.standard_normal((300, 156)).astype(np.float32)
+
+
+@pytest.fixture
+def crypto_features_array() -> np.ndarray:
+    """Synthetic crypto feature array for environment tests.
+
+    Shape (600, 45) float32 — enough for 540-step episodes with buffer.
+    """
+    rng = np.random.default_rng(45)
+    return rng.standard_normal((600, 45)).astype(np.float32)
+
+
+@pytest.fixture
+def equity_prices_array() -> np.ndarray:
+    """Synthetic equity price array for environment tests.
+
+    Shape (300, 8) float32 with realistic cumulative-return price paths.
+    """
+    rng = np.random.default_rng(46)
+    base_prices = np.array([470, 400, 220, 140, 110, 80, 40, 190], dtype=np.float32)
+    returns = 1.0 + rng.normal(0.0002, 0.01, (300, 8))
+    return (base_prices * np.cumprod(returns, axis=0)).astype(np.float32)
+
+
+@pytest.fixture
+def crypto_prices_array() -> np.ndarray:
+    """Synthetic crypto price array for environment tests.
+
+    Shape (600, 2) float32 with BTC/ETH-like cumulative-return price paths.
+    """
+    rng = np.random.default_rng(47)
+    base_prices = np.array([42_000.0, 2_500.0], dtype=np.float32)
+    returns = 1.0 + rng.normal(0.0001, 0.02, (600, 2))
+    return (base_prices * np.cumprod(returns, axis=0)).astype(np.float32)
 
 
 @pytest.fixture
