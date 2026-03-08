@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-03-08T03:29:01.415Z"
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-03-08T03:37:33.471Z"
 last_activity: "2026-03-08 — Phase 6 Plan 01: Environment foundation (portfolio, rewards, actions)"
 progress:
   total_phases: 10
   completed_phases: 5
   total_plans: 23
-  completed_plans: 21
+  completed_plans: 22
   percent: 91
 ---
 
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 ## Current Position
 
 Phase: 6 of 10 (RL Environments)
-Plan: 1 of 3 in phase 06 (Plan 01 complete)
-Status: Phase 6 in progress — Environment foundation delivered
-Last activity: 2026-03-08 — Phase 6 Plan 01: Environment foundation (portfolio, rewards, actions)
+Plan: 2 of 3 in phase 06 (Plan 02 complete)
+Status: Phase 6 in progress — BaseTradingEnv and StockTradingEnv delivered
+Last activity: 2026-03-08 — Phase 6 Plan 02: BaseTradingEnv and StockTradingEnv with Gymnasium contract
 
 Progress: [█████████░] 91%
 
@@ -71,6 +71,7 @@ Progress: [█████████░] 91%
 | Phase 05 P04 | 4 | 2 tasks | 4 files |
 | Phase 05 P05 | 9 | 2 tasks | 5 files |
 | Phase 06 P01 | 4 | 1 tasks | 7 files |
+| Phase 06 P02 | 6 | 1 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -133,6 +134,9 @@ Recent decisions affecting current work:
 - [Phase 05]: Default portfolio state = 100% cash until Phase 6 RL environments provide real positions
 - [Phase 05]: Feature A/B comparison threshold: validation Sharpe >= 0.05 with overfitting guard
 - [Phase 06]: deque(maxlen=window) for RollingSharpeReward automatic rolling window
+- [Phase 06]: step_count-based termination avoids off-by-one in episode length
+- [Phase 06]: equity_env_config fixture with 8 symbols separate from loaded_config to prevent fixture coupling
+- [Phase 06]: gymnasium added to pre-commit mypy additional_dependencies for isolated hook environment
 
 ### Pending Todos
 
@@ -146,6 +150,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-08T03:29:01.413Z
-Stopped at: Completed 06-01-PLAN.md
+Last session: 2026-03-08T03:37:33.468Z
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None

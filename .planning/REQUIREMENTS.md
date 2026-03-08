@@ -55,17 +55,17 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### RL Training
 
-- [ ] **TRAIN-01**: StockTradingEnv — Gymnasium-compatible, daily bars, 8 ETFs, 156-dim observation, continuous action space (target portfolio weights)
+- [x] **TRAIN-01**: StockTradingEnv — Gymnasium-compatible, daily bars, 8 ETFs, 156-dim observation, continuous action space (target portfolio weights)
 - [ ] **TRAIN-02**: CryptoTradingEnv — Gymnasium-compatible, 4H bars, BTC/ETH, 45-dim observation, continuous action space
 - [ ] **TRAIN-03**: PPO agent training with hyperparameters: lr=0.0003, n_steps=2048, batch_size=64, ent_coef=0.01, clip_range=0.2, gamma=0.99
 - [ ] **TRAIN-04**: A2C agent training with hyperparameters: lr=0.0007, n_steps=5, vf_coef=0.5, ent_coef=0.01, gamma=0.99
 - [ ] **TRAIN-05**: SAC agent training with hyperparameters: lr=0.0003, batch_size=256, tau=0.005, ent_coef="auto", gamma=0.99
 - [ ] **TRAIN-06**: Sharpe-weighted softmax ensemble blending using per-environment validation windows (63 trading days equity, 126 4H bars crypto)
 - [x] **TRAIN-07**: Rolling 20-day Sharpe ratio reward function with expanding-window warmup for first 19 bars
-- [ ] **TRAIN-08**: VecNormalize statistics handling — frozen (training=False) during inference to prevent train/serve skew
+- [x] **TRAIN-08**: VecNormalize statistics handling — frozen (training=False) during inference to prevent train/serve skew
 - [x] **TRAIN-09**: Signal deadzone: actions within +/-0.02 of zero mapped to "hold" to suppress meaningless tiny trades
-- [ ] **TRAIN-10**: Adaptive validation windows: shrink by 50% during high turbulence, expand during calm
-- [ ] **TRAIN-11**: Episode structure: equity 252-day segments, crypto 540 4H bars (3 months) with random start within training window
+- [x] **TRAIN-10**: Adaptive validation windows: shrink by 50% during high turbulence, expand during calm
+- [x] **TRAIN-11**: Episode structure: equity 252-day segments, crypto 540 4H bars (3 months) with random start within training window
 - [ ] **TRAIN-12**: Model metadata and ensemble weights stored in DuckDB for audit trail
 
 ### Validation
@@ -200,13 +200,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FEAT-09 | Phase 5 | Complete |
 | FEAT-10 | Phase 5 | Complete |
 | FEAT-11 | Phase 5 | Complete |
-| TRAIN-01 | Phase 6 | Pending |
+| TRAIN-01 | Phase 6 | Complete |
 | TRAIN-02 | Phase 6 | Pending |
 | TRAIN-07 | Phase 6 | Complete |
-| TRAIN-08 | Phase 6 | Pending |
+| TRAIN-08 | Phase 6 | Complete |
 | TRAIN-09 | Phase 6 | Complete |
-| TRAIN-10 | Phase 6 | Pending |
-| TRAIN-11 | Phase 6 | Pending |
+| TRAIN-10 | Phase 6 | Complete |
+| TRAIN-11 | Phase 6 | Complete |
 | TRAIN-03 | Phase 7 | Pending |
 | TRAIN-04 | Phase 7 | Pending |
 | TRAIN-05 | Phase 7 | Pending |
