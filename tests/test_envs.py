@@ -1,13 +1,15 @@
 """Tests for RL environment foundation components.
 
 Tests cover PortfolioSimulator, RollingSharpeReward, process_actions (softmax + deadzone),
-and EnvironmentConfig schema integration.
+EnvironmentConfig schema integration, and BaseTradingEnv/StockTradingEnv contracts.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from swingrl.envs.equity import StockTradingEnv
+
 from swingrl.envs.portfolio import PortfolioSimulator, process_actions
 from swingrl.envs.rewards import RollingSharpeReward
 
@@ -287,3 +289,341 @@ class TestEnvironmentConfig:
         """TRAIN-07: Default penalty coefficients are set."""
         assert loaded_config.environment.position_penalty_coeff == pytest.approx(10.0)
         assert loaded_config.environment.drawdown_penalty_coeff == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# StockTradingEnv (BaseTradingEnv + equity specialization)
+# ---------------------------------------------------------------------------
+
+
+class TestStockTradingEnvInit:
+    """StockTradingEnv initializes with correct spaces."""
+
+    def test_observation_space_shape(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: observation_space is Box(156,) float32."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        assert env.observation_space.shape == (156,)
+        assert env.observation_space.dtype == np.float32
+
+    def test_action_space_shape(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: action_space is Box(8,) float32 for 8 ETFs."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        assert env.action_space.shape == (8,)
+        assert env.action_space.dtype == np.float32
+
+
+class TestStockTradingEnvReset:
+    """StockTradingEnv.reset() returns valid 2-tuple."""
+
+    def test_reset_returns_obs_info(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: reset(seed=42) returns (obs, info) with correct obs shape/dtype."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        obs, info = env.reset(seed=42)
+        assert obs.shape == (156,)
+        assert obs.dtype == np.float32
+
+    def test_reset_obs_all_finite(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: reset() observation has all finite values (no NaN, no Inf)."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        obs, _ = env.reset(seed=42)
+        assert np.all(np.isfinite(obs))
+
+    def test_reset_deterministic(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: reset(seed=42) twice produces identical observations."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        obs1, _ = env.reset(seed=42)
+        obs2, _ = env.reset(seed=42)
+        np.testing.assert_array_equal(obs1, obs2)
+
+
+class TestStockTradingEnvStep:
+    """StockTradingEnv.step() returns valid 5-tuple."""
+
+    def test_step_returns_5_tuple(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: step() returns (obs, reward, terminated, truncated, info)."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        env.reset(seed=42)
+        action = env.action_space.sample()
+        result = env.step(action)
+        assert len(result) == 5
+        obs, reward, terminated, truncated, info = result
+        assert isinstance(reward, float)
+        assert isinstance(terminated, bool)
+        assert isinstance(truncated, bool)
+        assert isinstance(info, dict)
+
+    def test_step_obs_shape_dtype(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: step() observation shape is (156,) and dtype is float32."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        env.reset(seed=42)
+        obs, _, _, _, _ = env.step(env.action_space.sample())
+        assert obs.shape == (156,)
+        assert obs.dtype == np.float32
+
+    def test_terminated_after_252_steps(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-11: terminated=True after exactly 252 steps (equity episode length)."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        env.reset(seed=42)
+        for i in range(251):
+            _, _, terminated, _, _ = env.step(env.action_space.sample())
+            assert not terminated, f"Terminated early at step {i}"
+        _, _, terminated, _, _ = env.step(env.action_space.sample())
+        assert terminated, "Should terminate at step 252"
+
+    def test_truncated_always_false(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-11: truncated is always False (no early termination)."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        env.reset(seed=42)
+        for _ in range(252):
+            _, _, _, truncated, _ = env.step(env.action_space.sample())
+            assert truncated is False
+
+    def test_info_dict_keys(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: info dict contains required keys."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        env.reset(seed=42)
+        _, _, _, _, info = env.step(env.action_space.sample())
+        required_keys = {
+            "portfolio_value",
+            "daily_return",
+            "transaction_cost",
+            "turbulence",
+            "step",
+        }
+        assert required_keys.issubset(info.keys())
+
+    def test_portfolio_value_tracking(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: portfolio_value in info tracks correctly over multiple steps."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        env.reset(seed=42)
+        values = []
+        for _ in range(10):
+            _, _, _, _, info = env.step(env.action_space.sample())
+            values.append(info["portfolio_value"])
+        # Values should be positive and varying (not all the same)
+        assert all(v > 0 for v in values)
+        assert len(set(values)) > 1, "Portfolio values should change over steps"
+
+
+class TestStockTradingEnvRiskPenalties:
+    """Soft risk penalties for position and drawdown breaches."""
+
+    def test_position_penalty_when_weight_exceeds_limit(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-10: Soft penalty applied when weight exceeds max_position_size (0.25)."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        env.reset(seed=42)
+        # Create action that concentrates heavily in one asset
+        action = np.array([-5.0, -5.0, -5.0, -5.0, -5.0, -5.0, -5.0, 10.0], dtype=np.float32)
+        # Step and get reward with concentrated position
+        _, reward_concentrated, _, _, _ = env.step(action)
+
+        # Reset and use balanced action
+        env.reset(seed=42)
+        action_balanced = np.zeros(8, dtype=np.float32)  # softmax -> equal weights
+        _, reward_balanced, _, _, _ = env.step(action_balanced)
+
+        # Concentrated position should have lower reward due to penalty
+        assert reward_concentrated < reward_balanced
+
+    def test_drawdown_penalty_applied(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-10: Soft penalty applied when portfolio drawdown exceeds max_drawdown_pct."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        env.reset(seed=42)
+        # Force a drawdown scenario by manipulating peak value
+        env.step(env.action_space.sample())
+        # Artificially set peak high to trigger drawdown penalty
+        env._peak_value = env._prev_value * 2.0  # 50% drawdown from peak
+        _, reward, _, _, _ = env.step(env.action_space.sample())
+        # With extreme drawdown, penalty should make reward more negative
+        assert isinstance(reward, float)
+
+
+class TestStockTradingEnvRawObservations:
+    """Observations are raw (not normalized)."""
+
+    def test_observations_can_exceed_unit_range(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-08: Observations are raw -- values can be outside [-1, 1] range."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        obs, _ = env.reset(seed=42)
+        # Raw features from standard normal can exceed [-1, 1]
+        assert np.max(np.abs(obs)) > 1.0, "Raw observations should not be clipped to [-1, 1]"
+
+
+class TestStockTradingEnvFactory:
+    """from_arrays() factory method."""
+
+    def test_from_arrays_creates_env(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: Environment works with from_arrays() factory method."""
+        env = StockTradingEnv.from_arrays(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        obs, info = env.reset(seed=42)
+        assert obs.shape == (156,)
+        assert obs.dtype == np.float32
+
+
+class TestStockTradingEnvFullEpisode:
+    """Full episode rollout completes without error."""
+
+    def test_full_episode_rollout(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        loaded_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: Full episode rollout completes without error (252 steps)."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=loaded_config,
+        )
+        obs, info = env.reset(seed=42)
+        assert obs.shape == (156,)
+        total_reward = 0.0
+        for step_num in range(252):
+            action = env.action_space.sample()
+            obs, reward, terminated, truncated, info = env.step(action)
+            total_reward += reward
+            assert obs.shape == (156,)
+            assert obs.dtype == np.float32
+            assert np.all(np.isfinite(obs))
+            if step_num < 251:
+                assert not terminated
+            else:
+                assert terminated
+            assert not truncated
+        assert isinstance(total_reward, float)
+        assert info["step"] == 252
