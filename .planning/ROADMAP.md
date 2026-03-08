@@ -142,7 +142,7 @@ Plans:
   3. Walk-forward backtesting produces results across at least 3 non-overlapping 3-month folds with a 200-bar purge gap verified between each fold
   4. All four validation gates pass: Sharpe > 0.7 per environment, MDD < 15%, Profit Factor > 1.5, overfitting gap < 20%
   5. Backtest results are stored in the DuckDB backtest_results table with per-model and per-fold rows queryable via SQL
-**Plans:** 3 plans
+**Plans:** 2/3 plans executed
 
 Plans:
 - [ ] 07-01-PLAN.md — Performance metrics (Sharpe, Sortino, Calmar, Rachev, MDD, trade metrics), validation gates, overfitting detection, DuckDB DDL
@@ -198,7 +198,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 4. Data Storage and Validation | 4/4 | Complete   | 2026-03-06 |
 | 5. Feature Engineering | 4/5 | In Progress|  |
 | 6. RL Environments | 0/3 | Not started | - |
-| 7. Agent Training and Validation | 0/3 | Not started | - |
+| 7. Agent Training and Validation | 2/3 | In Progress|  |
 | 8. Paper Trading Core | 0/TBD | Not started | - |
 | 9. Automation and Monitoring | 0/TBD | Not started | - |
 | 10. Production Hardening | 0/TBD | Not started | - |
