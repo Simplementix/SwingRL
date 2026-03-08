@@ -66,18 +66,18 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **TRAIN-09**: Signal deadzone: actions within +/-0.02 of zero mapped to "hold" to suppress meaningless tiny trades
 - [x] **TRAIN-10**: Adaptive validation windows: shrink by 50% during high turbulence, expand during calm
 - [x] **TRAIN-11**: Episode structure: equity 252-day segments, crypto 540 4H bars (3 months) with random start within training window
-- [ ] **TRAIN-12**: Model metadata and ensemble weights stored in DuckDB for audit trail
+- [x] **TRAIN-12**: Model metadata and ensemble weights stored in DuckDB for audit trail
 
 ### Validation
 
 - [ ] **VAL-01**: Walk-forward backtesting framework with 3-month test folds for both environments
 - [ ] **VAL-02**: 200-bar purge gap and 1% embargo between training and test folds to prevent data leakage
-- [ ] **VAL-03**: Performance metric calculators: Sharpe, Sortino, Calmar, Rachev ratios, MDD, average drawdown, drawdown duration
-- [ ] **VAL-04**: Trade-level metrics: win rate, Profit Factor, trade frequency (2-10 trades per week)
+- [x] **VAL-03**: Performance metric calculators: Sharpe, Sortino, Calmar, Rachev ratios, MDD, average drawdown, drawdown duration
+- [x] **VAL-04**: Trade-level metrics: win rate, Profit Factor, trade frequency (2-10 trades per week)
 - [ ] **VAL-05**: ConvergenceCallback for Stable Baselines3 — early stopping if mean reward improvement < 1% over 10 evaluations
-- [ ] **VAL-06**: Overfitting detection: in-sample vs out-of-sample Sharpe gap (< 20% healthy, 20-50% marginal, > 50% reject)
-- [ ] **VAL-07**: Validation gates: Sharpe > 0.7 per env, MDD < 15%, Profit Factor > 1.5, overfitting gap < 20%
-- [ ] **VAL-08**: Backtest results stored in DuckDB backtest_results table per model and fold
+- [x] **VAL-06**: Overfitting detection: in-sample vs out-of-sample Sharpe gap (< 20% healthy, 20-50% marginal, > 50% reject)
+- [x] **VAL-07**: Validation gates: Sharpe > 0.7 per env, MDD < 15%, Profit Factor > 1.5, overfitting gap < 20%
+- [x] **VAL-08**: Backtest results stored in DuckDB backtest_results table per model and fold
 
 ### Paper Trading & Deployment
 
@@ -211,15 +211,15 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TRAIN-04 | Phase 7 | Pending |
 | TRAIN-05 | Phase 7 | Pending |
 | TRAIN-06 | Phase 7 | Pending |
-| TRAIN-12 | Phase 7 | Pending |
+| TRAIN-12 | Phase 7 | Complete |
 | VAL-01 | Phase 7 | Pending |
 | VAL-02 | Phase 7 | Pending |
-| VAL-03 | Phase 7 | Pending |
-| VAL-04 | Phase 7 | Pending |
+| VAL-03 | Phase 7 | Complete |
+| VAL-04 | Phase 7 | Complete |
 | VAL-05 | Phase 7 | Pending |
-| VAL-06 | Phase 7 | Pending |
-| VAL-07 | Phase 7 | Pending |
-| VAL-08 | Phase 7 | Pending |
+| VAL-06 | Phase 7 | Complete |
+| VAL-07 | Phase 7 | Complete |
+| VAL-08 | Phase 7 | Complete |
 | PAPER-01 | Phase 8 | Pending |
 | PAPER-02 | Phase 8 | Pending |
 | PAPER-03 | Phase 8 | Pending |

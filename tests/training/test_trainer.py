@@ -11,9 +11,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from swingrl.training.trainer import ALGO_MAP, HYPERPARAMS, SEED_MAP, TrainingOrchestrator
 
 from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.training.trainer import ALGO_MAP, HYPERPARAMS, SEED_MAP, TrainingOrchestrator
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -51,8 +51,8 @@ logging:
   json_logs: false
 environment:
   initial_amount: 100000.0
-  equity_episode_bars: 30
-  crypto_episode_bars: 30
+  equity_episode_bars: 50
+  crypto_episode_bars: 50
   equity_transaction_cost_pct: 0.0006
   crypto_transaction_cost_pct: 0.0022
   signal_deadzone: 0.02
@@ -71,33 +71,33 @@ alerting:
 
 @pytest.fixture
 def tiny_equity_features() -> np.ndarray:
-    """Tiny equity features array: (50, 156) for fast training."""
+    """Tiny equity features array: (60, 156) for fast training."""
     rng = np.random.default_rng(100)
-    return rng.standard_normal((50, 156)).astype(np.float32)
+    return rng.standard_normal((60, 156)).astype(np.float32)
 
 
 @pytest.fixture
 def tiny_equity_prices() -> np.ndarray:
-    """Tiny equity prices array: (50, 2) matching 2-symbol config."""
+    """Tiny equity prices array: (60, 2) matching 2-symbol config."""
     rng = np.random.default_rng(101)
     base = np.array([470.0, 400.0], dtype=np.float32)
-    returns = 1.0 + rng.normal(0.0002, 0.01, (50, 2))
+    returns = 1.0 + rng.normal(0.0002, 0.01, (60, 2))
     return (base * np.cumprod(returns, axis=0)).astype(np.float32)
 
 
 @pytest.fixture
 def tiny_crypto_features() -> np.ndarray:
-    """Tiny crypto features array: (50, 45) for fast training."""
+    """Tiny crypto features array: (60, 45) for fast training."""
     rng = np.random.default_rng(102)
-    return rng.standard_normal((50, 45)).astype(np.float32)
+    return rng.standard_normal((60, 45)).astype(np.float32)
 
 
 @pytest.fixture
 def tiny_crypto_prices() -> np.ndarray:
-    """Tiny crypto prices array: (50, 2) for fast training."""
+    """Tiny crypto prices array: (60, 2) for fast training."""
     rng = np.random.default_rng(103)
     base = np.array([42_000.0, 2_500.0], dtype=np.float32)
-    returns = 1.0 + rng.normal(0.0001, 0.02, (50, 2))
+    returns = 1.0 + rng.normal(0.0001, 0.02, (60, 2))
     return (base * np.cumprod(returns, axis=0)).astype(np.float32)
 
 
