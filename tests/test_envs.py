@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from swingrl.envs.crypto import CryptoTradingEnv
 
+from swingrl.envs.crypto import CryptoTradingEnv
 from swingrl.envs.equity import StockTradingEnv
 from swingrl.envs.portfolio import PortfolioSimulator, process_actions
 from swingrl.envs.rewards import RollingSharpeReward
@@ -881,3 +881,223 @@ class TestCryptoTradingEnvFactory:
         obs, info = env.reset(seed=42)
         assert obs.shape == (45,)
         assert obs.dtype == np.float32
+
+
+# ---------------------------------------------------------------------------
+# Gymnasium Registration
+# ---------------------------------------------------------------------------
+
+
+class TestGymnasiumRegistration:
+    """Gymnasium register() and gym.make() for both environments."""
+
+    def test_import_triggers_registration(self) -> None:
+        """TRAIN-02: Importing swingrl.envs registers environments without error."""
+        import gymnasium
+
+        import swingrl.envs  # noqa: F401
+
+        spec_equity = gymnasium.spec("StockTradingEnv-v0")
+        spec_crypto = gymnasium.spec("CryptoTradingEnv-v0")
+        assert spec_equity is not None
+        assert spec_crypto is not None
+
+    def test_gym_make_equity(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: gym.make('StockTradingEnv-v0') returns StockTradingEnv."""
+        import gymnasium
+
+        import swingrl.envs  # noqa: F401
+
+        env = gymnasium.make(
+            "StockTradingEnv-v0",
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=equity_env_config,
+        )
+        assert isinstance(env.unwrapped, StockTradingEnv)
+
+    def test_gym_make_crypto(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: gym.make('CryptoTradingEnv-v0') returns CryptoTradingEnv."""
+        import gymnasium
+
+        import swingrl.envs  # noqa: F401
+
+        env = gymnasium.make(
+            "CryptoTradingEnv-v0",
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        assert isinstance(env.unwrapped, CryptoTradingEnv)
+
+
+# ---------------------------------------------------------------------------
+# SB3 check_env Validation
+# ---------------------------------------------------------------------------
+
+
+class TestCheckEnv:
+    """SB3 check_env() validates both environments."""
+
+    def test_equity_check_env(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-01: SB3 check_env(StockTradingEnv) passes."""
+        from stable_baselines3.common.env_checker import check_env
+
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=equity_env_config,
+        )
+        # check_env raises if validation fails; warnings about inf bounds are expected
+        check_env(env, warn=False)
+
+    def test_crypto_check_env(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-02: SB3 check_env(CryptoTradingEnv) passes."""
+        from stable_baselines3.common.env_checker import check_env
+
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        check_env(env, warn=False)
+
+
+# ---------------------------------------------------------------------------
+# Episode Structure (multi-episode rollouts)
+# ---------------------------------------------------------------------------
+
+
+class TestEpisodeStructure:
+    """Multi-episode rollouts confirm correct episode lengths."""
+
+    def test_equity_10_episodes_252_steps(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-11: 10 equity episodes all run exactly 252 steps each."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=equity_env_config,
+        )
+        for episode in range(10):
+            env.reset(seed=episode)
+            steps = 0
+            terminated = False
+            while not terminated:
+                _, _, terminated, _, _ = env.step(env.action_space.sample())
+                steps += 1
+            assert steps == 252, f"Equity episode {episode} ran {steps} steps, expected 252"
+
+    def test_crypto_10_episodes_540_steps(
+        self,
+        crypto_features_array: np.ndarray,
+        crypto_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-11: 10 crypto episodes all run exactly 540 steps each."""
+        env = CryptoTradingEnv(
+            features=crypto_features_array,
+            prices=crypto_prices_array,
+            config=equity_env_config,
+        )
+        for episode in range(10):
+            env.reset(seed=episode)
+            steps = 0
+            terminated = False
+            while not terminated:
+                _, _, terminated, _, _ = env.step(env.action_space.sample())
+                steps += 1
+            assert steps == 540, f"Crypto episode {episode} ran {steps} steps, expected 540"
+
+
+# ---------------------------------------------------------------------------
+# Integration Tests
+# ---------------------------------------------------------------------------
+
+
+class TestIntegration:
+    """Integration tests for deadzone, turbulence, and raw observations."""
+
+    def test_signal_deadzone_hold(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-09: Near-zero actions within deadzone result in no trades."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        # Send near-zero actions for 10 steps -- softmax of zeros => ~equal weights
+        # Then same action => diff < deadzone => hold
+        zero_action = np.zeros(8, dtype=np.float32)
+        # First step establishes initial position
+        env.step(zero_action)
+        # Clear the trade log to start counting from step 2
+        env._portfolio.trade_log.clear()
+        # Subsequent identical actions should be within deadzone
+        for _ in range(9):
+            env.step(zero_action)
+        assert len(env._portfolio.trade_log) == 0, (
+            f"Expected no trades from repeated identical actions, "
+            f"got {len(env._portfolio.trade_log)} trades"
+        )
+
+    def test_info_dict_turbulence(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-10: Info dict contains 'turbulence' key."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        _, _, _, _, info = env.step(env.action_space.sample())
+        assert "turbulence" in info
+        assert isinstance(info["turbulence"], float)
+
+    def test_raw_observations_not_normalized(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """TRAIN-08: Raw observations contain values outside [-1, 1] range."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=equity_env_config,
+        )
+        obs, _ = env.reset(seed=42)
+        assert np.max(np.abs(obs)) > 1.0, "Raw observations should not be clipped to [-1, 1]"
