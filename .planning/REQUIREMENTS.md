@@ -60,7 +60,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **TRAIN-03**: PPO agent training with hyperparameters: lr=0.0003, n_steps=2048, batch_size=64, ent_coef=0.01, clip_range=0.2, gamma=0.99
 - [x] **TRAIN-04**: A2C agent training with hyperparameters: lr=0.0007, n_steps=5, vf_coef=0.5, ent_coef=0.01, gamma=0.99
 - [x] **TRAIN-05**: SAC agent training with hyperparameters: lr=0.0003, batch_size=256, tau=0.005, ent_coef="auto", gamma=0.99
-- [ ] **TRAIN-06**: Sharpe-weighted softmax ensemble blending using per-environment validation windows (63 trading days equity, 126 4H bars crypto)
+- [x] **TRAIN-06**: Sharpe-weighted softmax ensemble blending using per-environment validation windows (63 trading days equity, 126 4H bars crypto)
 - [x] **TRAIN-07**: Rolling 20-day Sharpe ratio reward function with expanding-window warmup for first 19 bars
 - [x] **TRAIN-08**: VecNormalize statistics handling — frozen (training=False) during inference to prevent train/serve skew
 - [x] **TRAIN-09**: Signal deadzone: actions within +/-0.02 of zero mapped to "hold" to suppress meaningless tiny trades
@@ -70,8 +70,8 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### Validation
 
-- [ ] **VAL-01**: Walk-forward backtesting framework with 3-month test folds for both environments
-- [ ] **VAL-02**: 200-bar purge gap and 1% embargo between training and test folds to prevent data leakage
+- [x] **VAL-01**: Walk-forward backtesting framework with 3-month test folds for both environments
+- [x] **VAL-02**: 200-bar purge gap and 1% embargo between training and test folds to prevent data leakage
 - [x] **VAL-03**: Performance metric calculators: Sharpe, Sortino, Calmar, Rachev ratios, MDD, average drawdown, drawdown duration
 - [x] **VAL-04**: Trade-level metrics: win rate, Profit Factor, trade frequency (2-10 trades per week)
 - [x] **VAL-05**: ConvergenceCallback for Stable Baselines3 — early stopping if mean reward improvement < 1% over 10 evaluations
@@ -210,10 +210,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TRAIN-03 | Phase 7 | Complete |
 | TRAIN-04 | Phase 7 | Complete |
 | TRAIN-05 | Phase 7 | Complete |
-| TRAIN-06 | Phase 7 | Pending |
+| TRAIN-06 | Phase 7 | Complete |
 | TRAIN-12 | Phase 7 | Complete |
-| VAL-01 | Phase 7 | Pending |
-| VAL-02 | Phase 7 | Pending |
+| VAL-01 | Phase 7 | Complete |
+| VAL-02 | Phase 7 | Complete |
 | VAL-03 | Phase 7 | Complete |
 | VAL-04 | Phase 7 | Complete |
 | VAL-05 | Phase 7 | Complete |
