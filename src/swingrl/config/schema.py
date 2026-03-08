@@ -152,6 +152,19 @@ class FeaturesConfig(BaseModel):
     crypto_turbulence_warmup: int = Field(default=360, ge=50)
 
 
+class EnvironmentConfig(BaseModel):
+    """RL environment configuration for training."""
+
+    initial_amount: float = Field(default=100_000.0, gt=0.0)
+    equity_episode_bars: int = Field(default=252, ge=50)
+    crypto_episode_bars: int = Field(default=540, ge=50)
+    equity_transaction_cost_pct: float = Field(default=0.0006, ge=0.0)
+    crypto_transaction_cost_pct: float = Field(default=0.0022, ge=0.0)
+    signal_deadzone: float = Field(default=0.02, ge=0.0, le=0.1)
+    position_penalty_coeff: float = Field(default=10.0, ge=0.0)
+    drawdown_penalty_coeff: float = Field(default=5.0, ge=0.0)
+
+
 class SystemConfig(BaseModel):
     """System-level database paths."""
 
@@ -185,6 +198,7 @@ class SwingRLConfig(BaseSettings):
     paths: PathsConfig = Field(default_factory=PathsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     features: FeaturesConfig = Field(default_factory=FeaturesConfig)
+    environment: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
     system: SystemConfig = Field(default_factory=SystemConfig)
     alerting: AlertingConfig = Field(default_factory=AlertingConfig)
 
