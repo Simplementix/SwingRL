@@ -21,6 +21,7 @@ repos:
           - types-PyYAML
           - structlog>=24.0
           - pydantic-settings>=2.2
+          - gymnasium>=1.0
         args: [--config-file=pyproject.toml]
         files: ^src/
 

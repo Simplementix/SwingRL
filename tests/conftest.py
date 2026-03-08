@@ -137,6 +137,59 @@ def crypto_ohlcv() -> pd.DataFrame:
 
 
 @pytest.fixture
+def equity_env_config_yaml() -> str:
+    """Config YAML with 8 equity symbols matching equity_prices_array (8 columns)."""
+    return textwrap.dedent("""\
+        trading_mode: paper
+        equity:
+          symbols: [SPY, QQQ, VTI, XLV, XLI, XLE, XLF, XLK]
+          max_position_size: 0.25
+          max_drawdown_pct: 0.10
+          daily_loss_limit_pct: 0.02
+        crypto:
+          symbols: [BTCUSDT, ETHUSDT]
+          max_position_size: 0.50
+          max_drawdown_pct: 0.12
+          daily_loss_limit_pct: 0.03
+          min_order_usd: 10.0
+        capital:
+          equity_usd: 400.0
+          crypto_usd: 47.0
+        paths:
+          data_dir: data/
+          db_dir: db/
+          models_dir: models/
+          logs_dir: logs/
+        logging:
+          level: INFO
+          json_logs: false
+        environment:
+          initial_amount: 100000.0
+          equity_episode_bars: 252
+          crypto_episode_bars: 540
+          equity_transaction_cost_pct: 0.0006
+          crypto_transaction_cost_pct: 0.0022
+          signal_deadzone: 0.02
+          position_penalty_coeff: 10.0
+          drawdown_penalty_coeff: 5.0
+        system:
+          duckdb_path: data/db/market_data.ddb
+          sqlite_path: data/db/trading_ops.db
+        alerting:
+          alert_cooldown_minutes: 30
+          consecutive_failures_before_alert: 3
+    """)
+
+
+@pytest.fixture
+def equity_env_config(tmp_path: Path, equity_env_config_yaml: str) -> SwingRLConfig:
+    """SwingRLConfig with 8 equity symbols for environment tests."""
+    config_file = tmp_path / "swingrl_env.yaml"
+    config_file.write_text(equity_env_config_yaml)
+    return load_config(config_file)
+
+
+@pytest.fixture
 def equity_features_array() -> np.ndarray:
     """Synthetic equity feature array for environment tests.
 
