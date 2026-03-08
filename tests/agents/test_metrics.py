@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+
 from swingrl.agents.metrics import (
     annualized_sharpe,
     avg_drawdown,

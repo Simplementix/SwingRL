@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+
 from swingrl.training.ensemble import EnsembleBlender, sharpe_softmax_weights
 
 
