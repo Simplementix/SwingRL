@@ -61,9 +61,9 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [ ] **TRAIN-04**: A2C agent training with hyperparameters: lr=0.0007, n_steps=5, vf_coef=0.5, ent_coef=0.01, gamma=0.99
 - [ ] **TRAIN-05**: SAC agent training with hyperparameters: lr=0.0003, batch_size=256, tau=0.005, ent_coef="auto", gamma=0.99
 - [ ] **TRAIN-06**: Sharpe-weighted softmax ensemble blending using per-environment validation windows (63 trading days equity, 126 4H bars crypto)
-- [ ] **TRAIN-07**: Rolling 20-day Sharpe ratio reward function with expanding-window warmup for first 19 bars
+- [x] **TRAIN-07**: Rolling 20-day Sharpe ratio reward function with expanding-window warmup for first 19 bars
 - [ ] **TRAIN-08**: VecNormalize statistics handling — frozen (training=False) during inference to prevent train/serve skew
-- [ ] **TRAIN-09**: Signal deadzone: actions within +/-0.02 of zero mapped to "hold" to suppress meaningless tiny trades
+- [x] **TRAIN-09**: Signal deadzone: actions within +/-0.02 of zero mapped to "hold" to suppress meaningless tiny trades
 - [ ] **TRAIN-10**: Adaptive validation windows: shrink by 50% during high turbulence, expand during calm
 - [ ] **TRAIN-11**: Episode structure: equity 252-day segments, crypto 540 4H bars (3 months) with random start within training window
 - [ ] **TRAIN-12**: Model metadata and ensemble weights stored in DuckDB for audit trail
@@ -202,9 +202,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FEAT-11 | Phase 5 | Complete |
 | TRAIN-01 | Phase 6 | Pending |
 | TRAIN-02 | Phase 6 | Pending |
-| TRAIN-07 | Phase 6 | Pending |
+| TRAIN-07 | Phase 6 | Complete |
 | TRAIN-08 | Phase 6 | Pending |
-| TRAIN-09 | Phase 6 | Pending |
+| TRAIN-09 | Phase 6 | Complete |
 | TRAIN-10 | Phase 6 | Pending |
 | TRAIN-11 | Phase 6 | Pending |
 | TRAIN-03 | Phase 7 | Pending |
