@@ -56,7 +56,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 ### RL Training
 
 - [x] **TRAIN-01**: StockTradingEnv — Gymnasium-compatible, daily bars, 8 ETFs, 156-dim observation, continuous action space (target portfolio weights)
-- [ ] **TRAIN-02**: CryptoTradingEnv — Gymnasium-compatible, 4H bars, BTC/ETH, 45-dim observation, continuous action space
+- [x] **TRAIN-02**: CryptoTradingEnv — Gymnasium-compatible, 4H bars, BTC/ETH, 45-dim observation, continuous action space
 - [ ] **TRAIN-03**: PPO agent training with hyperparameters: lr=0.0003, n_steps=2048, batch_size=64, ent_coef=0.01, clip_range=0.2, gamma=0.99
 - [ ] **TRAIN-04**: A2C agent training with hyperparameters: lr=0.0007, n_steps=5, vf_coef=0.5, ent_coef=0.01, gamma=0.99
 - [ ] **TRAIN-05**: SAC agent training with hyperparameters: lr=0.0003, batch_size=256, tau=0.005, ent_coef="auto", gamma=0.99
@@ -201,7 +201,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FEAT-10 | Phase 5 | Complete |
 | FEAT-11 | Phase 5 | Complete |
 | TRAIN-01 | Phase 6 | Complete |
-| TRAIN-02 | Phase 6 | Pending |
+| TRAIN-02 | Phase 6 | Complete |
 | TRAIN-07 | Phase 6 | Complete |
 | TRAIN-08 | Phase 6 | Complete |
 | TRAIN-09 | Phase 6 | Complete |
