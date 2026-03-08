@@ -221,6 +221,51 @@ class DatabaseManager:
                 )
             """)
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS model_metadata (
+                    model_id TEXT PRIMARY KEY,
+                    environment TEXT NOT NULL,
+                    algorithm TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    training_start_date TEXT,
+                    training_end_date TEXT,
+                    total_timesteps INTEGER,
+                    converged_at_step INTEGER,
+                    validation_sharpe DOUBLE,
+                    ensemble_weight DOUBLE,
+                    model_path TEXT NOT NULL,
+                    vec_normalize_path TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT current_timestamp
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS backtest_results (
+                    result_id TEXT PRIMARY KEY,
+                    model_id TEXT NOT NULL,
+                    environment TEXT NOT NULL,
+                    algorithm TEXT NOT NULL,
+                    fold_number INTEGER NOT NULL,
+                    fold_type TEXT NOT NULL,
+                    train_start_idx INTEGER,
+                    train_end_idx INTEGER,
+                    test_start_idx INTEGER,
+                    test_end_idx INTEGER,
+                    sharpe DOUBLE,
+                    sortino DOUBLE,
+                    calmar DOUBLE,
+                    mdd DOUBLE,
+                    profit_factor DOUBLE,
+                    win_rate DOUBLE,
+                    total_trades INTEGER,
+                    avg_drawdown DOUBLE,
+                    max_dd_duration INTEGER,
+                    final_portfolio_value DOUBLE,
+                    total_return DOUBLE,
+                    created_at TIMESTAMP DEFAULT current_timestamp
+                )
+            """)
+
             # --- Aggregation views ---
             cursor.execute("""
                 CREATE VIEW IF NOT EXISTS ohlcv_weekly AS

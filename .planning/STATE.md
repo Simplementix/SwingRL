@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 06-03-PLAN.md (Phase 6 complete)
-last_updated: "2026-03-08T03:47:18.004Z"
-last_activity: "2026-03-08 — Phase 6 Plan 03: CryptoTradingEnv, Gymnasium registration, and integration tests"
+stopped_at: Completed 07-03-PLAN.md
+last_updated: "2026-03-08T14:17:34.708Z"
+last_activity: "2026-03-08 -- Phase 7 Plan 03: Walk-forward backtesting and ensemble blending"
 progress:
   total_phases: 10
-  completed_phases: 6
-  total_plans: 23
-  completed_plans: 23
+  completed_phases: 7
+  total_plans: 26
+  completed_plans: 26
   percent: 100
 ---
 
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 ## Current Position
 
-Phase: 6 of 10 (RL Environments) -- COMPLETE
-Plan: 3 of 3 in phase 06 (Plan 03 complete -- Phase 6 done)
-Status: Phase 6 complete — All environments delivered, SB3-validated, Gymnasium-registered
-Last activity: 2026-03-08 — Phase 6 Plan 03: CryptoTradingEnv, Gymnasium registration, and integration tests
+Phase: 7 of 10 (Agent Training and Validation) -- COMPLETE
+Plan: 3 of 3 in phase 07 (Plan 03 complete)
+Status: Phase 07 complete -- Walk-forward backtester, ensemble blender, CLI scripts
+Last activity: 2026-03-08 -- Phase 7 Plan 03: Walk-forward backtesting and ensemble blending
 
 Progress: [██████████] 100%
 
@@ -73,6 +73,10 @@ Progress: [██████████] 100%
 | Phase 06 P01 | 4 | 1 tasks | 7 files |
 | Phase 06 P02 | 6 | 1 tasks | 6 files |
 | Phase 06 P03 | 5 | 2 tasks | 3 files |
+| Phase 07 P01 | 7 | 2 tasks | 8 files |
+| Phase 07 P02 | 11 | 2 tasks | 6 files |
+| Phase 07 P01 | 8 | 2 tasks | 5 files |
+| Phase 07 P03 | 6 | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -140,6 +144,16 @@ Recent decisions affecting current work:
 - [Phase 06]: gymnasium added to pre-commit mypy additional_dependencies for isolated hook environment
 - [Phase 06]: register() calls before class imports in envs/__init__.py to avoid circular imports
 - [Phase 06]: E402 noqa suppression for intentional post-registration class imports
+- [Phase 07]: Sortino uses sqrt(mean(neg^2)) for downside deviation (full lower partial moment)
+- [Phase 07]: Overfitting gap boundaries: <0.20 healthy, 0.20-0.50 marginal, >0.50 reject (strict inequalities)
+- [Phase 07]: compute_trade_metrics treats zero-PnL trades as losses for win_rate
+- [Phase 07]: stable_baselines3 added to mypy ignore_missing_imports and pre-commit additional_dependencies
+- [Phase 07]: type: ignore[assignment] for SB3 VecEnv step/reset type stubs mismatches
+- [Phase 07]: Episode bars minimum 50 in test fixtures (schema constraint)
+- [Phase 07]: No log_interval parameter to model.learn() -- ZeroDivisionError in A2C on-policy
+- [Phase 07]: Default turbulence threshold 1.0 for adaptive ensemble window shrink (configurable)
+- [Phase 07]: Ensemble validation windows: 63 bars equity, 126 bars crypto (CONTEXT.md spec)
+- [Phase 07]: nosec B608 on DuckDB table name interpolation (env_name constrained by CLI enum)
 
 ### Pending Todos
 
@@ -153,6 +167,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-08T03:43:12Z
-Stopped at: Completed 06-03-PLAN.md (Phase 6 complete)
+Last session: 2026-03-08T14:13:25.421Z
+Stopped at: Completed 07-03-PLAN.md
 Resume file: None

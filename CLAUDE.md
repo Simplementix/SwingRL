@@ -8,15 +8,18 @@ Capital preservation is the primary constraint — never lose more than you can 
 Phases: 1 Foundation → 2 DX → 3 Data → 4 Storage → 5 Features → 6 Envs → 7 Training →
 8 Paper Trading → 9 Automation → 10 Hardening.
 
-## Git Workflow — Per Phase
+## Git Workflow — Per Phase (Closeout Checklist)
 
-1. **Start of phase execution**: Create feature branch `gsd/phase-{N}-{slug}` from `main`.
+1. **Start of phase execution** (Claude): Create feature branch `gsd/phase-{N}-{slug}` from `main`.
 2. **All phase commits** go to the feature branch.
-3. **After verification passes**: Push the feature branch to origin.
-4. **Run homelab CI**: `ssh homelab "cd ~/swingrl && git fetch origin && git checkout {branch} && git pull origin {branch} && bash scripts/ci-homelab.sh --no-cache"`
-5. **Create PR** to `main` with phase summary.
+3. **After verification passes** (Claude): Fix ROADMAP.md checkbox (`- [x]`) and push the feature branch to origin.
+4. **Run homelab CI** (Claude): SSH into homelab and run CI. Must pass before PR creation.
+   ```bash
+   ssh homelab "cd ~/swingrl && git fetch origin && git checkout {branch} && git pull origin {branch} && bash scripts/ci-homelab.sh --no-cache"
+   ```
+5. **CI passes → Create PR** (Claude): Create PR to `main` with phase summary. Only after CI passes.
 6. **User merges** (branch protection requires approval).
-7. **After merge**: `git checkout main && git pull origin main` before starting next phase.
+7. **After merge** (User): `git checkout main && git pull origin main` before starting next phase.
 
 ## Critical Rules — Never Violate
 
