@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 08-03-PLAN.md
-last_updated: "2026-03-09T04:13:37.287Z"
-last_activity: "2026-03-09 -- Phase 8 Plan 02: Signal interpreter, position sizer, order validator"
+stopped_at: Completed 08-01-PLAN.md
+last_updated: "2026-03-09T04:21:16.704Z"
+last_activity: "2026-03-09 -- Phase 8 Plan 01: Risk infrastructure and pipeline types"
 progress:
   total_phases: 10
   completed_phases: 7
   total_plans: 31
-  completed_plans: 28
-  percent: 80
+  completed_plans: 29
+  percent: 90
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 ## Current Position
 
 Phase: 8 of 10 (Paper Trading Core)
-Plan: 3 of 5 in phase 08 (Plan 03 complete)
-Status: Phase 08 in progress -- Exchange adapters and fill processor complete
-Last activity: 2026-03-09 -- Phase 8 Plan 03: Exchange adapters and fill processor
+Plan: 1 of 5 in phase 08 (Plan 01 complete)
+Status: Phase 08 in progress -- Risk infrastructure complete
+Last activity: 2026-03-09 -- Phase 8 Plan 01: Risk infrastructure and pipeline types
 
 Progress: [█████████░] 90%
 
@@ -79,6 +79,7 @@ Progress: [█████████░] 90%
 | Phase 07 P03 | 6 | 2 tasks | 6 files |
 | Phase 08 P02 | 5 | 2 tasks | 7 files |
 | Phase 08 P03 | 7 | 2 tasks | 8 files |
+| Phase 08 P01 | 14 | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -161,6 +162,9 @@ Recent decisions affecting current work:
 - [Phase 08]: ValidatedOrder.order field name (not sized_order) per frozen dataclass convention
 - [Phase 08]: ValidatedOrder.order field name matched existing types.py frozen dataclass
 - [Phase 08]: Broker literal binance_us (not binance_sim) to match FillResult Literal constraint
+- [Phase 08]: [Phase 08-01]: portfolio_snapshots gains environment column (composite PK) for per-env queries
+- [Phase 08]: [Phase 08-01]: CB ramp-up uses 5-interval scheme (20% halt + 4x 20% ramp) to avoid float boundary issues
+- [Phase 08]: [Phase 08-01]: exchange_calendars NYSE calendar for equity business day cooldown counting
 
 ### Pending Todos
 
@@ -174,6 +178,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-09T04:13:37.283Z
-Stopped at: Completed 08-03-PLAN.md
+Last session: 2026-03-09T04:21:13.282Z
+Stopped at: Completed 08-01-PLAN.md
 Resume file: None
