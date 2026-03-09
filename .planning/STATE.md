@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Phase 9 context gathered
-last_updated: "2026-03-09T20:57:35.912Z"
+stopped_at: Completed 09-03-PLAN.md
+last_updated: "2026-03-09T21:28:35.735Z"
 last_activity: "2026-03-09 -- Phase 8 Plan 05: Docker production build and deployment"
 progress:
   total_phases: 10
   completed_phases: 8
-  total_plans: 31
-  completed_plans: 31
+  total_plans: 35
+  completed_plans: 32
   percent: 100
 ---
 
@@ -82,6 +82,7 @@ Progress: [██████████] 100%
 | Phase 08 P01 | 14 | 2 tasks | 11 files |
 | Phase 08 P04 | 8 | 2 tasks | 9 files |
 | Phase 08 P05 | 5 | 2 tasks | 4 files |
+| Phase 09 P03 | 3 | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -173,6 +174,8 @@ Recent decisions affecting current work:
 - [Phase 08]: [Phase 08-05]: Phase 8 placeholder CMD (sleep loop) in production Dockerfile -- Phase 9 replaces with APScheduler
 - [Phase 08]: [Phase 08-05]: HEALTHCHECK skips missing DBs gracefully on first startup (no false unhealthy)
 - [Phase 08]: [Phase 08-05]: Production image selective COPY (src/, config/, scripts/) excludes tests/docs/.planning
+- [Phase 09]: Dashboard as separate repo-root directory with own requirements.txt (not inside src/swingrl/)
+- [Phase 09]: Traffic-light windows: 26h equity, 5h crypto; read-only SQLite URI mode enforced
 
 ### Pending Todos
 
@@ -186,6 +189,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-09T20:57:35.907Z
-Stopped at: Phase 9 context gathered
-Resume file: .planning/phases/09-automation-and-monitoring/09-CONTEXT.md
+Last session: 2026-03-09T21:28:35.732Z
+Stopped at: Completed 09-03-PLAN.md
+Resume file: None

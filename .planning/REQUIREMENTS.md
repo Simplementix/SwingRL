@@ -95,7 +95,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [ ] **PAPER-12**: APScheduler: equity daily at 4:15 PM ET, crypto every 4H at 5 min past bar close, pre-cycle halt checks
 - [ ] **PAPER-13**: Discord webhook alerting: trade executions, circuit breakers, daily summary (6 PM ET), stuck agent detection
 - [ ] **PAPER-14**: Stuck agent detection: alert if environment stays 100% cash for 10 equity days or 30 crypto cycles
-- [ ] **PAPER-15**: Streamlit dashboard for system health monitoring with traffic-light status
+- [x] **PAPER-15**: Streamlit dashboard for system health monitoring with traffic-light status
 - [ ] **PAPER-16**: Healthchecks.io dead man's switch (70-min crypto window, 25-hr equity window)
 - [ ] **PAPER-17**: Wash sale tracker: log realized losses and flag 30-day wash sale violations
 - [x] **PAPER-18**: Production database seeding from M1 Mac historical archive (7-step procedure)
@@ -237,7 +237,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PAPER-12 | Phase 9 | Pending |
 | PAPER-13 | Phase 9 | Pending |
 | PAPER-14 | Phase 9 | Pending |
-| PAPER-15 | Phase 9 | Pending |
+| PAPER-15 | Phase 9 | Complete |
 | PAPER-16 | Phase 9 | Pending |
 | PAPER-17 | Phase 9 | Pending |
 | HARD-01 | Phase 10 | Pending |
