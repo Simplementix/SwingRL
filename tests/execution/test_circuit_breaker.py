@@ -8,10 +8,9 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
-    from swingrl.execution.risk.circuit_breaker import CircuitBreaker
-
     from swingrl.config.schema import SwingRLConfig
     from swingrl.data.db import DatabaseManager
+    from swingrl.execution.risk.circuit_breaker import CircuitBreaker
 
 
 @pytest.fixture
@@ -51,9 +50,9 @@ class TestCBTriggers:
         """PAPER-04: Equity CB triggers at -10% drawdown."""
         from swingrl.execution.risk.circuit_breaker import CBState
 
-        # 10% drawdown: portfolio at 360, HWM at 400
+        # >10% drawdown: portfolio at 359, HWM at 400 (10.25% DD)
         state = equity_cb.check_and_update(
-            portfolio_value=360.0, high_water_mark=400.0, daily_pnl=0.0
+            portfolio_value=359.0, high_water_mark=400.0, daily_pnl=0.0
         )
         assert state == CBState.HALTED
 
@@ -202,9 +201,10 @@ class TestGlobalCircuitBreaker:
         )
 
         # Total initial: 400 + 47 = 447
-        # 15% of 447 = 67.05 -> portfolio at 379.95
+        # 15% of 447 = 67.05 -> portfolio must be below 379.95
+        # 340 + 28 = 368 -> DD = 1 - 368/447 = 17.7% > 15%
         result = global_cb.check_combined(
-            portfolio_values={"equity": 350.0, "crypto": 30.0},
+            portfolio_values={"equity": 340.0, "crypto": 28.0},
             daily_pnls={"equity": 0.0, "crypto": 0.0},
         )
         assert result is True  # triggered
