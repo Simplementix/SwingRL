@@ -3,8 +3,16 @@
 # uv: copied from official uv image for fast, reproducible dep install
 # PyTorch: CPU-only (via pytorch-cpu index in pyproject.toml linux marker)
 # User: non-root trader (UID 1000) — follows principle of least privilege
+#
+# Targets:
+#   ci         — includes dev deps (pytest, ruff, mypy, bandit) for CI pipeline
+#   production — minimal image for homelab paper trading deployment
 
-FROM python:3.11-slim AS base
+# ──────────────────────────────────────────────────────────
+# CI target: all dependencies (prod + dev) for testing/linting
+# Used by: ci-homelab.sh (docker build --target ci)
+# ──────────────────────────────────────────────────────────
+FROM python:3.11-slim AS ci
 
 # Copy uv binary from official image (avoids curl + install overhead)
 COPY --from=ghcr.io/astral-sh/uv:0.5.30 /uv /uvx /bin/
@@ -16,7 +24,7 @@ RUN useradd -m -u 1000 trader && mkdir -p /app && chown trader:trader /app
 
 WORKDIR /app
 
-# Stage 1: Install all dependencies (prod + dev for CI) using bind mounts.
+# Install all dependencies (prod + dev for CI) using bind mounts.
 # Running as root here so the uv cache mount target is accessible.
 # The .venv is created inside /app which is owned by trader.
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -24,7 +32,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     uv sync --locked --group dev --no-install-project
 
-# Stage 2: Copy source code (with correct ownership) and install the project itself.
+# Copy source code (with correct ownership) and install the project itself.
 # --chown ensures source files are trader-owned from the COPY instruction.
 # Source changes only invalidate this layer, not the dep-install layer above.
 COPY --chown=trader:trader . /app
@@ -33,5 +41,46 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 USER trader
 
-# Default entrypoint for production use (overridden by docker compose for CI/tests).
+# Default entrypoint for CI use (overridden by docker compose for tests/lint).
 ENTRYPOINT ["uv", "run", "python", "-m", "swingrl"]
+
+
+# ──────────────────────────────────────────────────────────
+# Production target: no dev deps, minimal image for deployment
+# Used by: docker-compose.prod.yml (target: production)
+# Phase 8 placeholder CMD — Phase 9 replaces with APScheduler entrypoint
+# ──────────────────────────────────────────────────────────
+FROM python:3.11-slim AS production
+
+COPY --from=ghcr.io/astral-sh/uv:0.5.30 /uv /uvx /bin/
+
+RUN useradd -m -u 1000 trader && mkdir -p /app && chown trader:trader /app
+
+WORKDIR /app
+
+# Install production dependencies only (no dev group).
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-dev --no-install-project
+
+# Copy only production-relevant files (exclude tests, docs, .planning).
+COPY --chown=trader:trader src/ /app/src/
+COPY --chown=trader:trader config/ /app/config/
+COPY --chown=trader:trader scripts/ /app/scripts/
+COPY --chown=trader:trader pyproject.toml uv.lock /app/
+
+# Install the project itself (production deps already cached above).
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev
+
+USER trader
+
+# Docker HEALTHCHECK: verify process liveness and DB connectivity.
+# Interval 60s, timeout 10s, 3 retries before marking unhealthy.
+HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
+    CMD ["python", "scripts/healthcheck.py"]
+
+# Phase 8 placeholder: keep container alive for manual cycle triggers.
+# Phase 9 replaces this with APScheduler entrypoint (scripts/scheduler.py).
+CMD ["python", "-c", "import time; time.sleep(999999)"]

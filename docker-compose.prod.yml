@@ -1,8 +1,24 @@
+# docker-compose.prod.yml — Production deployment for homelab paper trading.
+#
+# Uses the multi-stage Dockerfile 'production' target (excludes dev deps).
+# Intended for homelab deployment with TRADING_MODE=paper.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.prod.yml logs -f
+#   docker compose -f docker-compose.prod.yml down
+#
+# Required .env file with:
+#   ALPACA_API_KEY=...
+#   ALPACA_SECRET_KEY=...
+#   DISCORD_WEBHOOK_URL=...
+
 services:
   swingrl:
     build:
       context: .
-      target: ci
+      dockerfile: Dockerfile
+      target: production
     # Resource limits — homelab has 8 GB RAM / 4 cores; cap at 2.5 GB / 1 CPU
     # to leave headroom for the host OS and other services.
     mem_limit: 2.5g
@@ -10,6 +26,7 @@ services:
     # Secrets: loaded from .env on the host; never baked into the image.
     env_file: .env
     environment:
+      - SWINGRL_TRADING_MODE=paper
       - TZ=America/New_York
     # Bind mounts: data persists on the host across container restarts.
     # Paths match trader user's /app working directory inside the container.
@@ -18,5 +35,6 @@ services:
       - ./db:/app/db
       - ./models:/app/models
       - ./logs:/app/logs
+      - ./config:/app/config
       - ./status:/app/status
     restart: unless-stopped
