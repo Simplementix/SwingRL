@@ -14,6 +14,8 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from swingrl.scheduler.halt_check import init_emergency_flags, set_halt
 from swingrl.scheduler.jobs import (
     JobContext,
     crypto_cycle,
@@ -24,8 +26,6 @@ from swingrl.scheduler.jobs import (
     stuck_agent_check_job,
     weekly_fundamentals_job,
 )
-
-from swingrl.scheduler.halt_check import init_emergency_flags, set_halt
 
 
 @pytest.fixture
@@ -175,7 +175,8 @@ class TestDailySummaryJob:
                 ("2026-03-09T12:00:00Z", "equity", 400.0, 300.0, 0.0, 100.0, 400.0, -5.0, 0.01),
             )
         daily_summary_job()
-        mock_alerter.send_alert.assert_called()
+        # daily_summary_job now uses send_embed via build_daily_summary_embed
+        mock_alerter.send_embed.assert_called()
 
 
 class TestStuckAgentCheckJob:

@@ -20,6 +20,12 @@ import structlog
 from swingrl.scheduler.halt_check import is_halted
 from swingrl.scheduler.healthcheck_ping import ping_healthcheck
 
+try:
+    from swingrl.monitoring.embeds import build_daily_summary_embed, build_trade_embed
+except ImportError:  # pragma: no cover
+    build_trade_embed = None  # type: ignore[assignment]
+    build_daily_summary_embed = None  # type: ignore[assignment]
+
 if TYPE_CHECKING:
     from swingrl.config.schema import SwingRLConfig
     from swingrl.data.db import DatabaseManager
@@ -102,6 +108,14 @@ def equity_cycle() -> list[FillResult]:
         return []
 
     # Post-cycle callbacks (each wrapped individually)
+    if build_trade_embed is not None:
+        for fill in fills:
+            try:
+                embed = build_trade_embed(fill)
+                ctx.alerter.send_embed("info", embed)
+            except Exception:
+                log.exception("equity_trade_embed_failed", symbol=getattr(fill, "symbol", "?"))
+
     try:
         ping_healthcheck(ctx.config.alerting.healthchecks_equity_url)
     except Exception:
@@ -137,6 +151,14 @@ def crypto_cycle() -> list[FillResult]:
         return []
 
     # Post-cycle callbacks
+    if build_trade_embed is not None:
+        for fill in fills:
+            try:
+                embed = build_trade_embed(fill)
+                ctx.alerter.send_embed("info", embed)
+            except Exception:
+                log.exception("crypto_trade_embed_failed", symbol=getattr(fill, "symbol", "?"))
+
     try:
         ping_healthcheck(ctx.config.alerting.healthchecks_crypto_url)
     except Exception:
@@ -169,16 +191,39 @@ def daily_summary_job() -> None:
             log.info("daily_summary_no_data")
             return
 
-        lines = []
+        # Build snapshots per environment
+        equity_snap = None
+        crypto_snap = None
         for row in rows:
-            lines.append(
-                f"**{row['environment'].title()}**: "
-                f"${row['total_value']:.2f} "
-                f"(PnL: ${row['daily_pnl']:.2f}, DD: {row['drawdown_pct']:.2%})"
-            )
+            snap = {
+                "total_value": row["total_value"],
+                "daily_pnl": row["daily_pnl"],
+                "cash_balance": row["cash_balance"],
+            }
+            if row["environment"] == "equity":
+                equity_snap = snap
+            elif row["environment"] == "crypto":
+                crypto_snap = snap
 
-        summary = "\n".join(lines)
-        ctx.alerter.send_alert("info", "Daily Portfolio Summary", summary)
+        if build_daily_summary_embed is not None:
+            embed = build_daily_summary_embed(
+                equity_snapshot=equity_snap,
+                crypto_snapshot=crypto_snap,
+                equity_trades_today=0,
+                crypto_trades_today=0,
+            )
+            ctx.alerter.send_embed("info", embed)
+        else:
+            # Fallback: send plain text summary
+            lines = []
+            for row in rows:
+                lines.append(
+                    f"**{row['environment'].title()}**: "
+                    f"${row['total_value']:.2f} "
+                    f"(PnL: ${row['daily_pnl']:.2f}, DD: {row['drawdown_pct']:.2%})"
+                )
+            ctx.alerter.send_alert("info", "Daily Portfolio Summary", "\n".join(lines))
+
         log.info("daily_summary_sent")
     except Exception:
         log.exception("daily_summary_failed")

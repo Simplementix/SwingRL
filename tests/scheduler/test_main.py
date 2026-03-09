@@ -128,11 +128,13 @@ class TestMainInitSequence:
         mock_scheduler = MagicMock()
 
         with patch("scripts.main.BackgroundScheduler", return_value=mock_scheduler):
-            with patch("scripts.main.DatabaseManager"):
-                with patch("scripts.main.ExecutionPipeline"):
-                    with patch("scripts.main.Alerter"):
-                        with patch("scripts.main.start_stop_polling_thread"):
-                            build_app(config_path="config/test.yaml")
+            with patch("scripts.main.SQLAlchemyJobStore"):
+                with patch("scripts.main.ThreadPoolExecutor"):
+                    with patch("scripts.main.DatabaseManager"):
+                        with patch("scripts.main.ExecutionPipeline"):
+                            with patch("scripts.main.Alerter"):
+                                with patch("scripts.main.start_stop_polling_thread"):
+                                    build_app(config_path="config/test.yaml")
 
         mock_init_flags.assert_called_once()
         mock_init_job_ctx.assert_called_once()
