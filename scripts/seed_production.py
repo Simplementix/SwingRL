@@ -1,0 +1,257 @@
+"""CLI entry point for production DB seeding.
+
+Implements Doc 14 SS10.1 7-step DB seeding procedure for transferring
+databases from M1 Mac to homelab. Validates file integrity after copy.
+
+Usage:
+    python scripts/seed_production.py --source-dir /path/to/m1/db --target-dir db/
+    python scripts/seed_production.py --source-dir ~/swingrl/db --target-dir db/ --skip-integrity
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import shutil
+import sqlite3
+import sys
+from pathlib import Path
+
+import structlog
+
+from swingrl.utils.logging import configure_logging
+
+log = structlog.get_logger(__name__)
+
+# Expected database files
+_EXPECTED_FILES = [
+    "market_data.ddb",
+    "trading_ops.db",
+]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build CLI argument parser.
+
+    Returns:
+        Configured ArgumentParser.
+    """
+    parser = argparse.ArgumentParser(
+        description="Seed production databases on homelab from M1 Mac source.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Steps performed:
+  1. Validate source files exist
+  2. Compute SHA256 checksums of source files
+  3. Copy files to target directory
+  4. Verify checksums of copied files
+  5. Run integrity checks on databases
+  6. Print summary
+
+Examples:
+  python scripts/seed_production.py --source-dir ~/swingrl/db --target-dir db/
+""",
+    )
+
+    parser.add_argument(
+        "--source-dir",
+        type=str,
+        required=True,
+        help="Path to source DB files (M1 Mac side).",
+    )
+    parser.add_argument(
+        "--target-dir",
+        type=str,
+        default="db",
+        help="Path to target DB directory (default: db/).",
+    )
+    parser.add_argument(
+        "--skip-integrity",
+        action="store_true",
+        default=False,
+        help="Skip database integrity checks after copy.",
+    )
+
+    return parser
+
+
+def _sha256(file_path: Path) -> str:
+    """Compute SHA256 hash of a file.
+
+    Args:
+        file_path: Path to file.
+
+    Returns:
+        Hex digest string.
+    """
+    h = hashlib.sha256()
+    with file_path.open("rb") as f:
+        while True:
+            chunk = f.read(8192)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _check_sqlite_integrity(db_path: Path) -> bool:
+    """Run PRAGMA integrity_check on SQLite database.
+
+    Args:
+        db_path: Path to SQLite database.
+
+    Returns:
+        True if integrity check passes.
+    """
+    try:
+        conn = sqlite3.connect(str(db_path))
+        result = conn.execute("PRAGMA integrity_check").fetchone()
+        conn.close()
+        return result is not None and result[0] == "ok"
+    except Exception as exc:
+        log.error("sqlite_integrity_failed", path=str(db_path), error=str(exc))
+        return False
+
+
+def _check_duckdb_integrity(db_path: Path) -> bool:
+    """Run basic count queries on DuckDB tables.
+
+    Args:
+        db_path: Path to DuckDB database.
+
+    Returns:
+        True if basic queries succeed.
+    """
+    try:
+        import duckdb
+
+        conn = duckdb.connect(str(db_path), read_only=True)
+        tables = conn.execute("SHOW TABLES").fetchall()
+        table_count = len(tables)
+        conn.close()
+        log.info("duckdb_tables_found", count=table_count, path=str(db_path))
+        return table_count > 0
+    except Exception as exc:
+        log.error("duckdb_integrity_failed", path=str(db_path), error=str(exc))
+        return False
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run production DB seeding procedure.
+
+    Args:
+        argv: Command-line arguments (default: sys.argv[1:]).
+
+    Returns:
+        Exit code (0 = success, 1 = error).
+    """
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    configure_logging(json_logs=False, log_level="INFO")
+
+    source_dir = Path(args.source_dir)
+    target_dir = Path(args.target_dir)
+    skip_integrity: bool = args.skip_integrity
+
+    log.info(
+        "seed_production_started",
+        source=str(source_dir),
+        target=str(target_dir),
+    )
+
+    # Step 1: Validate source files exist
+    missing = []
+    for filename in _EXPECTED_FILES:
+        src_path = source_dir / filename
+        if not src_path.exists():
+            missing.append(filename)
+
+    if missing:
+        log.error("source_files_missing", missing=missing)
+        print(f"\nError: Missing source files: {', '.join(missing)}")
+        return 1
+
+    # Step 2: Compute SHA256 checksums of source files
+    source_checksums: dict[str, str] = {}
+    for filename in _EXPECTED_FILES:
+        src_path = source_dir / filename
+        checksum = _sha256(src_path)
+        source_checksums[filename] = checksum
+        log.info("source_checksum", file=filename, sha256=checksum[:16] + "...")
+
+    # Step 3: Copy files to target directory
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for filename in _EXPECTED_FILES:
+        src_path = source_dir / filename
+        dst_path = target_dir / filename
+        shutil.copy2(str(src_path), str(dst_path))
+        log.info(
+            "file_copied",
+            file=filename,
+            size_mb=round(dst_path.stat().st_size / (1024 * 1024), 2),
+        )
+
+    # Step 4: Verify checksums of copied files
+    checksum_ok = True
+    for filename in _EXPECTED_FILES:
+        dst_path = target_dir / filename
+        dst_checksum = _sha256(dst_path)
+        if dst_checksum != source_checksums[filename]:
+            log.error(
+                "checksum_mismatch",
+                file=filename,
+                expected=source_checksums[filename][:16],
+                actual=dst_checksum[:16],
+            )
+            checksum_ok = False
+        else:
+            log.info("checksum_verified", file=filename)
+
+    if not checksum_ok:
+        print("\nError: Checksum verification failed!")
+        return 1
+
+    # Step 5: Run integrity checks
+    integrity_ok = True
+    if not skip_integrity:
+        # SQLite integrity
+        sqlite_path = target_dir / "trading_ops.db"
+        if sqlite_path.exists():
+            if _check_sqlite_integrity(sqlite_path):
+                log.info("sqlite_integrity_passed", path=str(sqlite_path))
+            else:
+                log.error("sqlite_integrity_failed", path=str(sqlite_path))
+                integrity_ok = False
+
+        # DuckDB integrity
+        duckdb_path = target_dir / "market_data.ddb"
+        if duckdb_path.exists():
+            if _check_duckdb_integrity(duckdb_path):
+                log.info("duckdb_integrity_passed", path=str(duckdb_path))
+            else:
+                log.error("duckdb_integrity_failed", path=str(duckdb_path))
+                integrity_ok = False
+
+    if not integrity_ok:
+        print("\nError: Integrity check failed!")
+        return 1
+
+    # Step 6: Print summary
+    print("\n=== Production DB Seeding Complete ===")
+    for filename in _EXPECTED_FILES:
+        dst_path = target_dir / filename
+        size_mb = dst_path.stat().st_size / (1024 * 1024)
+        print(f"  {filename}: {size_mb:.2f} MB, checksum verified")
+    print(f"  Integrity checks: {'skipped' if skip_integrity else 'passed'}")
+    print(f"  Target directory: {target_dir.resolve()}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        log.info("seed_production_interrupted")
+        sys.exit(130)
