@@ -345,14 +345,16 @@ class DatabaseManager:
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
-                    timestamp TEXT PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    environment TEXT NOT NULL,
                     total_value REAL NOT NULL,
                     equity_value REAL,
                     crypto_value REAL,
                     cash_balance REAL,
                     high_water_mark REAL,
                     daily_pnl REAL,
-                    drawdown_pct REAL
+                    drawdown_pct REAL,
+                    PRIMARY KEY (timestamp, environment)
                 )
             """)
 

@@ -81,26 +81,26 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### Paper Trading & Deployment
 
-- [ ] **PAPER-01**: Alpaca paper trading connection for equity environment
-- [ ] **PAPER-02**: Binance.US simulated fills for crypto environment (real-time prices, local fill recording)
-- [ ] **PAPER-03**: Two-tier risk management veto layer: Tier 1 per-environment budgets + Tier 2 global portfolio constraints
-- [ ] **PAPER-04**: Circuit breakers: equity -10% DD / -2% daily, crypto -12% DD / -3% daily, global -15% DD / -3% combined
-- [ ] **PAPER-05**: Circuit breaker cooldown: 5 business days equity, 3 calendar days crypto, with 25%/50%/75%/100% ramp-up
-- [ ] **PAPER-06**: Halt-state persistence in circuit_breaker_events table across container restarts
-- [ ] **PAPER-07**: Position sizing: modified Kelly criterion (quarter-Kelly Phase 1), 2% max risk per trade, ATR(2x) stop-losses
-- [ ] **PAPER-08**: Binance.US $10 minimum order floor: max(kelly_sized_amount, $10.00)
-- [ ] **PAPER-09**: 5-stage execution middleware: Signal Interpreter, Position Sizer, Order Validator, Exchange Adapter, Fill Processor
-- [ ] **PAPER-10**: Bracket orders: OTO for Alpaca (ATR stop-loss, R:R take-profit), two-step OCO for Binance.US
-- [ ] **PAPER-11**: Cost gate: reject orders where estimated round-trip transaction costs exceed 2.0% of order value
+- [x] **PAPER-01**: Alpaca paper trading connection for equity environment
+- [x] **PAPER-02**: Binance.US simulated fills for crypto environment (real-time prices, local fill recording)
+- [x] **PAPER-03**: Two-tier risk management veto layer: Tier 1 per-environment budgets + Tier 2 global portfolio constraints
+- [x] **PAPER-04**: Circuit breakers: equity -10% DD / -2% daily, crypto -12% DD / -3% daily, global -15% DD / -3% combined
+- [x] **PAPER-05**: Circuit breaker cooldown: 5 business days equity, 3 calendar days crypto, with 25%/50%/75%/100% ramp-up
+- [x] **PAPER-06**: Halt-state persistence in circuit_breaker_events table across container restarts
+- [x] **PAPER-07**: Position sizing: modified Kelly criterion (quarter-Kelly Phase 1), 2% max risk per trade, ATR(2x) stop-losses
+- [x] **PAPER-08**: Binance.US $10 minimum order floor: max(kelly_sized_amount, $10.00)
+- [x] **PAPER-09**: 5-stage execution middleware: Signal Interpreter, Position Sizer, Order Validator, Exchange Adapter, Fill Processor
+- [x] **PAPER-10**: Bracket orders: OTO for Alpaca (ATR stop-loss, R:R take-profit), two-step OCO for Binance.US
+- [x] **PAPER-11**: Cost gate: reject orders where estimated round-trip transaction costs exceed 2.0% of order value
 - [ ] **PAPER-12**: APScheduler: equity daily at 4:15 PM ET, crypto every 4H at 5 min past bar close, pre-cycle halt checks
 - [ ] **PAPER-13**: Discord webhook alerting: trade executions, circuit breakers, daily summary (6 PM ET), stuck agent detection
 - [ ] **PAPER-14**: Stuck agent detection: alert if environment stays 100% cash for 10 equity days or 30 crypto cycles
 - [ ] **PAPER-15**: Streamlit dashboard for system health monitoring with traffic-light status
 - [ ] **PAPER-16**: Healthchecks.io dead man's switch (70-min crypto window, 25-hr equity window)
 - [ ] **PAPER-17**: Wash sale tracker: log realized losses and flag 30-day wash sale violations
-- [ ] **PAPER-18**: Production database seeding from M1 Mac historical archive (7-step procedure)
-- [ ] **PAPER-19**: Full Docker production deployment on homelab with TRADING_MODE=paper
-- [ ] **PAPER-20**: Turbulence index crash protection: liquidate and halt if turbulence > 90th percentile
+- [x] **PAPER-18**: Production database seeding from M1 Mac historical archive (7-step procedure)
+- [x] **PAPER-19**: Full Docker production deployment on homelab with TRADING_MODE=paper
+- [x] **PAPER-20**: Turbulence index crash protection: liquidate and halt if turbulence > 90th percentile
 
 ### Hardening & Sentiment
 
@@ -220,20 +220,20 @@ Which phases cover which requirements. Updated during roadmap creation.
 | VAL-06 | Phase 7 | Complete |
 | VAL-07 | Phase 7 | Complete |
 | VAL-08 | Phase 7 | Complete |
-| PAPER-01 | Phase 8 | Pending |
-| PAPER-02 | Phase 8 | Pending |
-| PAPER-03 | Phase 8 | Pending |
-| PAPER-04 | Phase 8 | Pending |
-| PAPER-05 | Phase 8 | Pending |
-| PAPER-06 | Phase 8 | Pending |
-| PAPER-07 | Phase 8 | Pending |
-| PAPER-08 | Phase 8 | Pending |
-| PAPER-09 | Phase 8 | Pending |
-| PAPER-10 | Phase 8 | Pending |
-| PAPER-11 | Phase 8 | Pending |
-| PAPER-18 | Phase 8 | Pending |
-| PAPER-19 | Phase 8 | Pending |
-| PAPER-20 | Phase 8 | Pending |
+| PAPER-01 | Phase 8 | Complete |
+| PAPER-02 | Phase 8 | Complete |
+| PAPER-03 | Phase 8 | Complete |
+| PAPER-04 | Phase 8 | Complete |
+| PAPER-05 | Phase 8 | Complete |
+| PAPER-06 | Phase 8 | Complete |
+| PAPER-07 | Phase 8 | Complete |
+| PAPER-08 | Phase 8 | Complete |
+| PAPER-09 | Phase 8 | Complete |
+| PAPER-10 | Phase 8 | Complete |
+| PAPER-11 | Phase 8 | Complete |
+| PAPER-18 | Phase 8 | Complete |
+| PAPER-19 | Phase 8 | Complete |
+| PAPER-20 | Phase 8 | Complete |
 | PAPER-12 | Phase 9 | Pending |
 | PAPER-13 | Phase 9 | Pending |
 | PAPER-14 | Phase 9 | Pending |

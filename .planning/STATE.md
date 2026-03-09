@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 07-03-PLAN.md
-last_updated: "2026-03-08T14:17:34.708Z"
-last_activity: "2026-03-08 -- Phase 7 Plan 03: Walk-forward backtesting and ensemble blending"
+stopped_at: Completed 08-05-PLAN.md (Phase 8 complete)
+last_updated: "2026-03-09T17:01:55.970Z"
+last_activity: "2026-03-09 -- Phase 8 Plan 05: Docker production build and deployment"
 progress:
   total_phases: 10
-  completed_phases: 7
-  total_plans: 26
-  completed_plans: 26
+  completed_phases: 8
+  total_plans: 31
+  completed_plans: 31
   percent: 100
 ---
 
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 ## Current Position
 
-Phase: 7 of 10 (Agent Training and Validation) -- COMPLETE
-Plan: 3 of 3 in phase 07 (Plan 03 complete)
-Status: Phase 07 complete -- Walk-forward backtester, ensemble blender, CLI scripts
-Last activity: 2026-03-08 -- Phase 7 Plan 03: Walk-forward backtesting and ensemble blending
+Phase: 8 of 10 (Paper Trading Core)
+Plan: 5 of 5 in phase 08 (Plan 05 complete -- Phase 8 COMPLETE)
+Status: Phase 08 complete -- Docker production build and full paper trading infrastructure
+Last activity: 2026-03-09 -- Phase 8 Plan 05: Docker production build and deployment
 
 Progress: [██████████] 100%
 
@@ -77,6 +77,11 @@ Progress: [██████████] 100%
 | Phase 07 P02 | 11 | 2 tasks | 6 files |
 | Phase 07 P01 | 8 | 2 tasks | 5 files |
 | Phase 07 P03 | 6 | 2 tasks | 6 files |
+| Phase 08 P02 | 5 | 2 tasks | 7 files |
+| Phase 08 P03 | 7 | 2 tasks | 8 files |
+| Phase 08 P01 | 14 | 2 tasks | 11 files |
+| Phase 08 P04 | 8 | 2 tasks | 9 files |
+| Phase 08 P05 | 5 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -154,6 +159,20 @@ Recent decisions affecting current work:
 - [Phase 07]: Default turbulence threshold 1.0 for adaptive ensemble window shrink (configurable)
 - [Phase 07]: Ensemble validation windows: 63 bars equity, 126 bars crypto (CONTEXT.md spec)
 - [Phase 07]: nosec B608 on DuckDB table name interpolation (env_name constrained by CLI enum)
+- [Phase 08]: Deadzone boundary (exactly +/-0.02) treated as hold, strict inequality for buy/sell
+- [Phase 08]: Cost gate uses proportional rate (0.06% equity, 0.22% crypto) -- always passes under 2% threshold
+- [Phase 08]: ValidatedOrder.order field name (not sized_order) per frozen dataclass convention
+- [Phase 08]: ValidatedOrder.order field name matched existing types.py frozen dataclass
+- [Phase 08]: Broker literal binance_us (not binance_sim) to match FillResult Literal constraint
+- [Phase 08]: [Phase 08-01]: portfolio_snapshots gains environment column (composite PK) for per-env queries
+- [Phase 08]: [Phase 08-01]: CB ramp-up uses 5-interval scheme (20% halt + 4x 20% ramp) to avoid float boundary issues
+- [Phase 08]: [Phase 08-01]: exchange_calendars NYSE calendar for equity business day cooldown counting
+- [Phase 08]: [Phase 08-04]: Exchange adapter instantiated lazily during execute_cycle to avoid API credential requirements at init
+- [Phase 08]: [Phase 08-04]: Startup reconciliation runs before first trade cycle in run_cycle.py (equity only, per CONTEXT.md)
+- [Phase 08]: [Phase 08-04]: Turbulence 90th percentile approximated from atr_14_pct until dedicated turbulence history table
+- [Phase 08]: [Phase 08-05]: Phase 8 placeholder CMD (sleep loop) in production Dockerfile -- Phase 9 replaces with APScheduler
+- [Phase 08]: [Phase 08-05]: HEALTHCHECK skips missing DBs gracefully on first startup (no false unhealthy)
+- [Phase 08]: [Phase 08-05]: Production image selective COPY (src/, config/, scripts/) excludes tests/docs/.planning
 
 ### Pending Todos
 
@@ -167,6 +186,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-08T14:13:25.421Z
-Stopped at: Completed 07-03-PLAN.md
+Last session: 2026-03-09T16:57:00Z
+Stopped at: Completed 08-05-PLAN.md (Phase 8 complete)
 Resume file: None
