@@ -159,7 +159,14 @@ Plans:
   3. Submitting an order that would breach the per-environment equity drawdown limit (-10% DD) is vetoed by the risk layer before reaching the exchange adapter
   4. Triggering a circuit breaker writes a row to circuit_breaker_events in SQLite, and the system still reads that halt state correctly after a container restart
   5. An order sized below $10 for crypto is automatically floor-adjusted to $10.00 before submission, and an order where round-trip costs exceed 2.0% of order value is rejected by the cost gate
-**Plans**: TBD
+**Plans:** 5 plans
+
+Plans:
+- [ ] 08-01-PLAN.md — Pipeline data types, risk infrastructure (two-tier risk manager, circuit breakers, position tracker)
+- [ ] 08-02-PLAN.md — Middleware stages 1-3 (signal interpreter, position sizer, order validator with cost gate)
+- [ ] 08-03-PLAN.md — Exchange adapters (Alpaca paper trading, Binance.US simulated fills) and fill processor
+- [ ] 08-04-PLAN.md — ExecutionPipeline orchestrator, position reconciliation, CLI scripts (run_cycle, reconcile, seed_production)
+- [ ] 08-05-PLAN.md — Multi-stage Docker production build, HEALTHCHECK, production docker-compose for homelab
 
 ### Phase 9: Automation and Monitoring
 **Goal**: The system runs autonomously on schedule, sends Discord alerts for all significant events, and the operator can monitor system health from the Streamlit dashboard and Healthchecks.io
@@ -199,6 +206,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 5. Feature Engineering | 4/5 | In Progress|  |
 | 6. RL Environments | 0/3 | Not started | - |
 | 7. Agent Training and Validation | 2/3 | In Progress|  |
-| 8. Paper Trading Core | 0/TBD | Not started | - |
+| 8. Paper Trading Core | 0/5 | Not started | - |
 | 9. Automation and Monitoring | 0/TBD | Not started | - |
 | 10. Production Hardening | 0/TBD | Not started | - |
