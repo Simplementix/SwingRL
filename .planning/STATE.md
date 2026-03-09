@@ -10,8 +10,8 @@ progress:
   total_phases: 10
   completed_phases: 7
   total_plans: 31
-  completed_plans: 29
-  percent: 90
+  completed_plans: 32
+  percent: 93
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 ## Current Position
 
 Phase: 8 of 10 (Paper Trading Core)
-Plan: 1 of 5 in phase 08 (Plan 01 complete)
-Status: Phase 08 in progress -- Risk infrastructure complete
-Last activity: 2026-03-09 -- Phase 8 Plan 01: Risk infrastructure and pipeline types
+Plan: 4 of 5 in phase 08 (Plan 04 complete)
+Status: Phase 08 in progress -- Execution pipeline and CLI scripts complete
+Last activity: 2026-03-09 -- Phase 8 Plan 04: Execution pipeline and CLI scripts
 
-Progress: [█████████░] 90%
+Progress: [█████████░] 93%
 
 ## Performance Metrics
 
@@ -80,6 +80,7 @@ Progress: [█████████░] 90%
 | Phase 08 P02 | 5 | 2 tasks | 7 files |
 | Phase 08 P03 | 7 | 2 tasks | 8 files |
 | Phase 08 P01 | 14 | 2 tasks | 11 files |
+| Phase 08 P04 | 8 | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -165,6 +166,9 @@ Recent decisions affecting current work:
 - [Phase 08]: [Phase 08-01]: portfolio_snapshots gains environment column (composite PK) for per-env queries
 - [Phase 08]: [Phase 08-01]: CB ramp-up uses 5-interval scheme (20% halt + 4x 20% ramp) to avoid float boundary issues
 - [Phase 08]: [Phase 08-01]: exchange_calendars NYSE calendar for equity business day cooldown counting
+- [Phase 08]: [Phase 08-04]: Exchange adapter instantiated lazily during execute_cycle to avoid API credential requirements at init
+- [Phase 08]: [Phase 08-04]: Startup reconciliation runs before first trade cycle in run_cycle.py (equity only, per CONTEXT.md)
+- [Phase 08]: [Phase 08-04]: Turbulence 90th percentile approximated from atr_14_pct until dedicated turbulence history table
 
 ### Pending Todos
 
@@ -178,6 +182,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-09T04:21:13.282Z
-Stopped at: Completed 08-01-PLAN.md
+Last session: 2026-03-09T04:31:00Z
+Stopped at: Completed 08-04-PLAN.md
 Resume file: None

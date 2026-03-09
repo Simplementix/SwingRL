@@ -98,7 +98,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [ ] **PAPER-15**: Streamlit dashboard for system health monitoring with traffic-light status
 - [ ] **PAPER-16**: Healthchecks.io dead man's switch (70-min crypto window, 25-hr equity window)
 - [ ] **PAPER-17**: Wash sale tracker: log realized losses and flag 30-day wash sale violations
-- [ ] **PAPER-18**: Production database seeding from M1 Mac historical archive (7-step procedure)
+- [x] **PAPER-18**: Production database seeding from M1 Mac historical archive (7-step procedure)
 - [ ] **PAPER-19**: Full Docker production deployment on homelab with TRADING_MODE=paper
 - [x] **PAPER-20**: Turbulence index crash protection: liquidate and halt if turbulence > 90th percentile
 
@@ -231,7 +231,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PAPER-09 | Phase 8 | Complete |
 | PAPER-10 | Phase 8 | Complete |
 | PAPER-11 | Phase 8 | Complete |
-| PAPER-18 | Phase 8 | Pending |
+| PAPER-18 | Phase 8 | Complete |
 | PAPER-19 | Phase 8 | Pending |
 | PAPER-20 | Phase 8 | Complete |
 | PAPER-12 | Phase 9 | Pending |
