@@ -52,7 +52,7 @@ def validated_order() -> ValidatedOrder:
 
 @pytest.fixture
 def adapter(exec_config: SwingRLConfig) -> AlpacaAdapter:
-    """AlpacaAdapter with mocked TradingClient."""
+    """AlpacaAdapter with mocked TradingClient and StockHistoricalDataClient."""
     with (
         patch.dict(
             "os.environ",
@@ -62,8 +62,12 @@ def adapter(exec_config: SwingRLConfig) -> AlpacaAdapter:
             },
         ),
         patch("swingrl.execution.adapters.alpaca_adapter.TradingClient") as mock_client_cls,
+        patch(
+            "swingrl.execution.adapters.alpaca_adapter.StockHistoricalDataClient"
+        ) as mock_data_cls,
     ):
         mock_client_cls.return_value = MagicMock()
+        mock_data_cls.return_value = MagicMock()
         return AlpacaAdapter(config=exec_config)
 
 

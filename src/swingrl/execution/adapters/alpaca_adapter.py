@@ -18,6 +18,8 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockLatestTradeRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest, StopLossRequest, TakeProfitRequest
@@ -70,6 +72,10 @@ class AlpacaAdapter:
             secret_key=secret_key,
             paper=paper,
         )
+        self._data_client = StockHistoricalDataClient(
+            api_key=api_key,
+            secret_key=secret_key,
+        )
         self._alerter = alerter
 
         log.info("alpaca_adapter_initialized", paper=paper)
@@ -89,6 +95,12 @@ class AlpacaAdapter:
         """
         sized = order.order
         side = OrderSide.BUY if sized.side == "buy" else OrderSide.SELL
+
+        if sized.stop_loss_price is None or sized.take_profit_price is None:
+            log.error("bracket_order_missing_prices", symbol=sized.symbol)
+            raise BrokerError(
+                f"Bracket order requires stop_loss and take_profit prices for {sized.symbol}"
+            )
 
         order_req = MarketOrderRequest(
             symbol=sized.symbol,
@@ -173,8 +185,9 @@ class AlpacaAdapter:
         Returns:
             Latest trade price as float.
         """
-        trade = self._retry(lambda: self._client.get_latest_trade(symbol))
-        return float(trade.price)
+        request = StockLatestTradeRequest(symbol_or_symbols=symbol)
+        trades = self._retry(lambda: self._data_client.get_stock_latest_trade(request))
+        return float(trades[symbol].price)
 
     def _retry(self, fn: Callable[[], Any], max_attempts: int = _MAX_RETRIES) -> Any:  # noqa: ANN401
         """Execute fn with exponential backoff retry.
