@@ -19,7 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: Feature Engineering** - Full 156-dim equity and 45-dim crypto observation vectors assembled and verified
 - [x] **Phase 6: RL Environments** - Gymnasium-compatible trading environments passing step/reset contracts
 - [x] **Phase 7: Agent Training and Validation** - PPO/A2C/SAC ensemble trained and walk-forward validated against performance gates
-- [ ] **Phase 8: Paper Trading Core** - Broker connections live with risk management veto layer and execution middleware
+- [x] **Phase 8: Paper Trading Core** - Broker connections live with risk management veto layer and execution middleware (completed 2026-03-09)
 - [ ] **Phase 9: Automation and Monitoring** - Scheduled execution, Discord alerting, dashboard, and dead man's switch running
 - [ ] **Phase 10: Production Hardening** - Backup, model deployment pipeline, shadow mode, security review, and disaster recovery verified
 
@@ -159,7 +159,7 @@ Plans:
   3. Submitting an order that would breach the per-environment equity drawdown limit (-10% DD) is vetoed by the risk layer before reaching the exchange adapter
   4. Triggering a circuit breaker writes a row to circuit_breaker_events in SQLite, and the system still reads that halt state correctly after a container restart
   5. An order sized below $10 for crypto is automatically floor-adjusted to $10.00 before submission, and an order where round-trip costs exceed 2.0% of order value is rejected by the cost gate
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 - [ ] 08-01-PLAN.md — Pipeline data types, risk infrastructure (two-tier risk manager, circuit breakers, position tracker)
@@ -206,6 +206,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 5. Feature Engineering | 4/5 | In Progress|  |
 | 6. RL Environments | 0/3 | Not started | - |
 | 7. Agent Training and Validation | 2/3 | In Progress|  |
-| 8. Paper Trading Core | 4/5 | In Progress|  |
+| 8. Paper Trading Core | 5/5 | Complete   | 2026-03-09 |
 | 9. Automation and Monitoring | 0/TBD | Not started | - |
 | 10. Production Hardening | 0/TBD | Not started | - |
