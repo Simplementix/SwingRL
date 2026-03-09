@@ -22,7 +22,6 @@ def risk_manager(
 ) -> RiskManager:
     """Risk manager wired to all dependencies."""
     from swingrl.execution.risk.circuit_breaker import CircuitBreaker, GlobalCircuitBreaker
-
     from swingrl.execution.risk.risk_manager import RiskManager
 
     eq_cb = CircuitBreaker(environment="equity", db=mock_db, config=exec_config)

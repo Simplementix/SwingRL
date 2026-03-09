@@ -9,9 +9,8 @@ import numpy as np
 import pytest
 
 if TYPE_CHECKING:
-    from swingrl.execution.risk.position_tracker import PositionTracker
-
     from swingrl.data.db import DatabaseManager
+    from swingrl.execution.risk.position_tracker import PositionTracker
 
 
 class TestPositionTrackerPortfolioValue:

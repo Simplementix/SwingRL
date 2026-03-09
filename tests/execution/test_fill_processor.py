@@ -9,8 +9,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from swingrl.execution.fill_processor import FillProcessor
 
+from swingrl.execution.fill_processor import FillProcessor
 from swingrl.execution.types import FillResult
 
 if TYPE_CHECKING:
