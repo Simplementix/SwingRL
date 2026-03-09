@@ -48,7 +48,7 @@ ENTRYPOINT ["uv", "run", "python", "-m", "swingrl"]
 # ──────────────────────────────────────────────────────────
 # Production target: no dev deps, minimal image for deployment
 # Used by: docker-compose.prod.yml (target: production)
-# Phase 8 placeholder CMD — Phase 9 replaces with APScheduler entrypoint
+# CMD: APScheduler entrypoint (scripts/main.py) with cron jobs
 # ──────────────────────────────────────────────────────────
 FROM python:3.11-slim AS production
 
@@ -81,6 +81,5 @@ USER trader
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
     CMD ["python", "scripts/healthcheck.py"]
 
-# Phase 8 placeholder: keep container alive for manual cycle triggers.
-# Phase 9 replaces this with APScheduler entrypoint (scripts/scheduler.py).
-CMD ["python", "-c", "import time; time.sleep(999999)"]
+# Production entrypoint: APScheduler with cron jobs and stop-price polling.
+CMD ["python", "scripts/main.py"]
