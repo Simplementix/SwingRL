@@ -92,11 +92,11 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **PAPER-09**: 5-stage execution middleware: Signal Interpreter, Position Sizer, Order Validator, Exchange Adapter, Fill Processor
 - [x] **PAPER-10**: Bracket orders: OTO for Alpaca (ATR stop-loss, R:R take-profit), two-step OCO for Binance.US
 - [x] **PAPER-11**: Cost gate: reject orders where estimated round-trip transaction costs exceed 2.0% of order value
-- [ ] **PAPER-12**: APScheduler: equity daily at 4:15 PM ET, crypto every 4H at 5 min past bar close, pre-cycle halt checks
+- [x] **PAPER-12**: APScheduler: equity daily at 4:15 PM ET, crypto every 4H at 5 min past bar close, pre-cycle halt checks
 - [x] **PAPER-13**: Discord webhook alerting: trade executions, circuit breakers, daily summary (6 PM ET), stuck agent detection
 - [x] **PAPER-14**: Stuck agent detection: alert if environment stays 100% cash for 10 equity days or 30 crypto cycles
 - [x] **PAPER-15**: Streamlit dashboard for system health monitoring with traffic-light status
-- [ ] **PAPER-16**: Healthchecks.io dead man's switch (70-min crypto window, 25-hr equity window)
+- [x] **PAPER-16**: Healthchecks.io dead man's switch (70-min crypto window, 25-hr equity window)
 - [x] **PAPER-17**: Wash sale tracker: log realized losses and flag 30-day wash sale violations
 - [x] **PAPER-18**: Production database seeding from M1 Mac historical archive (7-step procedure)
 - [x] **PAPER-19**: Full Docker production deployment on homelab with TRADING_MODE=paper
@@ -234,11 +234,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PAPER-18 | Phase 8 | Complete |
 | PAPER-19 | Phase 8 | Complete |
 | PAPER-20 | Phase 8 | Complete |
-| PAPER-12 | Phase 9 | Pending |
+| PAPER-12 | Phase 9 | Complete |
 | PAPER-13 | Phase 9 | Complete |
 | PAPER-14 | Phase 9 | Complete |
 | PAPER-15 | Phase 9 | Complete |
-| PAPER-16 | Phase 9 | Pending |
+| PAPER-16 | Phase 9 | Complete |
 | PAPER-17 | Phase 9 | Complete |
 | HARD-01 | Phase 10 | Pending |
 | HARD-02 | Phase 10 | Pending |
