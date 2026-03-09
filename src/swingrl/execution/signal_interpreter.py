@@ -6,7 +6,7 @@ from the ensemble blender into buy/sell/hold TradeSignals per symbol.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import structlog
@@ -62,16 +62,19 @@ class SignalInterpreter:
             diff = target - current
 
             if diff > self._deadzone:
-                action = "buy"
+                action: Literal["buy", "sell"] = "buy"
             elif diff < -self._deadzone:
                 action = "sell"
             else:
                 hold_count += 1
                 continue  # holds excluded from output
 
+            env_literal: Literal["equity", "crypto"] = (
+                "equity" if env_name == "equity" else "crypto"
+            )
             signals.append(
                 TradeSignal(
-                    environment=env_name,
+                    environment=env_literal,
                     symbol=symbol,
                     action=action,
                     raw_weight=target,

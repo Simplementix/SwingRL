@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-from swingrl.execution.pipeline import ExecutionPipeline
 
+from swingrl.execution.pipeline import ExecutionPipeline
 from swingrl.execution.types import FillResult
 
 
@@ -87,10 +87,22 @@ class TestExecuteCycle:
                 with patch.object(pipeline, "_normalize_observation") as mock_norm:
                     mock_norm.return_value = np.zeros(156, dtype=np.float32)
 
-                    result = pipeline.execute_cycle("equity", dry_run=True)
+                    mock_adapter = MagicMock()
+                    mock_adapter.get_current_price.return_value = 450.0
 
-                    # Dry-run should not produce fills (no broker submission)
-                    assert isinstance(result, list)
+                    with patch.object(pipeline, "_get_adapter") as mock_get_adapter:
+                        mock_get_adapter.return_value = mock_adapter
+
+                        with patch.object(pipeline, "_get_latest_atr") as mock_atr:
+                            mock_atr.return_value = 5.0
+
+                            result = pipeline.execute_cycle("equity", dry_run=True)
+
+                            # Dry-run should not produce fills (no broker submission)
+                            assert isinstance(result, list)
+                            assert result == []
+                            # Adapter submit_order should NOT be called
+                            mock_adapter.submit_order.assert_not_called()
 
     def test_full_cycle_with_mocked_stages(self, pipeline: ExecutionPipeline) -> None:
         """PAPER-09: Full end-to-end cycle with all stages mocked."""

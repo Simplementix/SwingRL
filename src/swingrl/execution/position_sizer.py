@@ -6,7 +6,7 @@ with risk-adjusted position sizes, stop-losses, and take-profit levels.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import structlog
 
@@ -132,9 +132,10 @@ class PositionSizer:
         # Step 9: Quantity
         quantity = dollar_amount / current_price
 
+        side: Literal["buy", "sell"] = "buy" if signal.action == "buy" else "sell"
         order = SizedOrder(
             symbol=signal.symbol,
-            side=signal.action,
+            side=side,
             quantity=quantity,
             dollar_amount=dollar_amount,
             stop_loss_price=stop_loss,
