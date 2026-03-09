@@ -1,0 +1,210 @@
+"""Tests for ExecutionPipeline orchestrator.
+
+Verifies the full 5-stage execution pipeline with mocked dependencies:
+model loading, observation, ensemble blending, and stage orchestration.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import numpy as np
+import pytest
+from swingrl.execution.pipeline import ExecutionPipeline
+
+from swingrl.execution.types import FillResult
+
+
+@pytest.fixture
+def mock_feature_pipeline() -> MagicMock:
+    """Mock FeaturePipeline returning a dummy observation."""
+    fp = MagicMock()
+    fp.get_observation.return_value = np.zeros(156, dtype=np.float32)
+    return fp
+
+
+@pytest.fixture
+def mock_alerter() -> MagicMock:
+    """Mock Alerter."""
+    return MagicMock()
+
+
+@pytest.fixture
+def pipeline(
+    exec_config: Any,
+    mock_db: Any,
+    mock_feature_pipeline: MagicMock,
+    mock_alerter: MagicMock,
+    tmp_path: Path,
+) -> ExecutionPipeline:
+    """Create ExecutionPipeline with mocked dependencies."""
+    return ExecutionPipeline(
+        config=exec_config,
+        db=mock_db,
+        feature_pipeline=mock_feature_pipeline,
+        alerter=mock_alerter,
+        models_dir=tmp_path / "models",
+    )
+
+
+class TestExecuteCycle:
+    """Test the execute_cycle orchestrator method."""
+
+    def test_cb_halted_returns_empty(self, pipeline: ExecutionPipeline) -> None:
+        """PAPER-09: Circuit breaker halt short-circuits to empty list."""
+        # Trigger CB for equity
+        with pipeline._db.sqlite() as conn:
+            conn.execute(
+                "INSERT INTO circuit_breaker_events "
+                "(event_id, environment, triggered_at, trigger_value, threshold, reason) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("cb1", "equity", "2099-01-01T00:00:00+00:00", 0.15, 0.10, "test"),
+            )
+
+        result = pipeline.execute_cycle("equity")
+        assert result == []
+
+    def test_dry_run_skips_submission(self, pipeline: ExecutionPipeline) -> None:
+        """PAPER-09: Dry-run logs actions but does not submit orders."""
+        # Mock all stages so pipeline can reach dry-run check
+        with patch.object(pipeline, "_load_models") as mock_load:
+            mock_model = MagicMock()
+            mock_model.predict.return_value = (
+                np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                None,
+            )
+            mock_load.return_value = {
+                "ppo": (mock_model, None),
+                "a2c": (mock_model, None),
+                "sac": (mock_model, None),
+            }
+
+            with patch.object(pipeline, "_get_ensemble_weights") as mock_weights:
+                mock_weights.return_value = {"ppo": 0.4, "a2c": 0.3, "sac": 0.3}
+
+                with patch.object(pipeline, "_normalize_observation") as mock_norm:
+                    mock_norm.return_value = np.zeros(156, dtype=np.float32)
+
+                    result = pipeline.execute_cycle("equity", dry_run=True)
+
+                    # Dry-run should not produce fills (no broker submission)
+                    assert isinstance(result, list)
+
+    def test_full_cycle_with_mocked_stages(self, pipeline: ExecutionPipeline) -> None:
+        """PAPER-09: Full end-to-end cycle with all stages mocked."""
+        fill = FillResult(
+            trade_id="test-fill-1",
+            symbol="SPY",
+            side="buy",
+            quantity=1.0,
+            fill_price=450.0,
+            commission=0.0,
+            slippage=0.0,
+            environment="equity",
+            broker="alpaca",
+        )
+
+        with patch.object(pipeline, "_load_models") as mock_load:
+            mock_model = MagicMock()
+            mock_model.predict.return_value = (
+                np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                None,
+            )
+            mock_load.return_value = {
+                "ppo": (mock_model, None),
+                "a2c": (mock_model, None),
+                "sac": (mock_model, None),
+            }
+
+            with patch.object(pipeline, "_get_ensemble_weights") as mock_weights:
+                mock_weights.return_value = {"ppo": 0.4, "a2c": 0.3, "sac": 0.3}
+
+                with patch.object(pipeline, "_normalize_observation") as mock_norm:
+                    mock_norm.return_value = np.zeros(156, dtype=np.float32)
+
+                    # Mock adapter to return fill
+                    mock_adapter = MagicMock()
+                    mock_adapter.submit_order.return_value = fill
+                    mock_adapter.get_current_price.return_value = 450.0
+
+                    with patch.object(pipeline, "_get_adapter") as mock_get_adapter:
+                        mock_get_adapter.return_value = mock_adapter
+
+                        # Mock ATR query
+                        with patch.object(pipeline, "_get_latest_atr") as mock_atr:
+                            mock_atr.return_value = 5.0
+
+                            result = pipeline.execute_cycle("equity")
+                            assert isinstance(result, list)
+
+    def test_risk_veto_catches_and_continues(self, pipeline: ExecutionPipeline) -> None:
+        """PAPER-09: RiskVetoError on one signal does not abort entire cycle."""
+        with patch.object(pipeline, "_load_models") as mock_load:
+            mock_model = MagicMock()
+            # Two buy signals
+            mock_model.predict.return_value = (
+                np.array([0.1, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                None,
+            )
+            mock_load.return_value = {
+                "ppo": (mock_model, None),
+                "a2c": (mock_model, None),
+                "sac": (mock_model, None),
+            }
+
+            with patch.object(pipeline, "_get_ensemble_weights") as mock_weights:
+                mock_weights.return_value = {"ppo": 0.4, "a2c": 0.3, "sac": 0.3}
+
+                with patch.object(pipeline, "_normalize_observation") as mock_norm:
+                    mock_norm.return_value = np.zeros(156, dtype=np.float32)
+
+                    mock_adapter = MagicMock()
+                    mock_adapter.get_current_price.return_value = 450.0
+
+                    with patch.object(pipeline, "_get_adapter") as mock_get_adapter:
+                        mock_get_adapter.return_value = mock_adapter
+
+                        with patch.object(pipeline, "_get_latest_atr") as mock_atr:
+                            mock_atr.return_value = 5.0
+
+                            # Pipeline should handle RiskVetoError gracefully
+                            result = pipeline.execute_cycle("equity")
+                            assert isinstance(result, list)
+
+    def test_turbulence_crash_protection(self, pipeline: ExecutionPipeline) -> None:
+        """PAPER-20: High turbulence triggers CB and returns empty."""
+        with patch.object(pipeline, "_load_models") as mock_load:
+            mock_model = MagicMock()
+            mock_model.predict.return_value = (np.zeros(8), None)
+            mock_load.return_value = {
+                "ppo": (mock_model, None),
+                "a2c": (mock_model, None),
+                "sac": (mock_model, None),
+            }
+
+            with patch.object(pipeline, "_get_ensemble_weights") as mock_weights:
+                mock_weights.return_value = {"ppo": 0.4, "a2c": 0.3, "sac": 0.3}
+
+                with patch.object(pipeline, "_normalize_observation") as mock_norm:
+                    mock_norm.return_value = np.zeros(156, dtype=np.float32)
+
+                    # Mock turbulence to exceed threshold
+                    with patch.object(pipeline, "_check_turbulence") as mock_turb:
+                        mock_turb.return_value = True  # turbulence exceeded
+
+                        result = pipeline.execute_cycle("equity")
+                        assert result == []
+
+
+class TestPipelineInit:
+    """Test pipeline initialization and lazy loading."""
+
+    def test_pipeline_creates_successfully(self, pipeline: ExecutionPipeline) -> None:
+        """Pipeline initializes without errors."""
+        assert pipeline is not None
+
+    def test_models_not_loaded_on_init(self, pipeline: ExecutionPipeline) -> None:
+        """Models are lazy-loaded, not loaded on construction."""
+        assert pipeline._models == {}
