@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
-from swingrl.execution.adapters.binance_sim import BinanceSimAdapter
 
 from swingrl.execution.adapters.base import ExchangeAdapter
+from swingrl.execution.adapters.binance_sim import BinanceSimAdapter
 from swingrl.execution.types import SizedOrder, ValidatedOrder
 
 if TYPE_CHECKING:
@@ -33,7 +33,7 @@ def order_book_response() -> dict[str, list[list[str]]]:
 def crypto_order() -> ValidatedOrder:
     """Sample validated crypto order."""
     return ValidatedOrder(
-        sized_order=SizedOrder(
+        order=SizedOrder(
             symbol="BTCUSDT",
             side="buy",
             quantity=0.001,
@@ -112,7 +112,7 @@ class TestSlippageAndCommission:
     ) -> None:
         """Sell order fill price includes negative slippage."""
         sell_order = ValidatedOrder(
-            sized_order=SizedOrder(
+            order=SizedOrder(
                 symbol="BTCUSDT",
                 side="sell",
                 quantity=0.001,
@@ -148,7 +148,7 @@ class TestSlippageAndCommission:
 
         # 0.10% of $50 = $0.05
         assert result.commission == pytest.approx(0.05)
-        assert result.broker == "binance_sim"
+        assert result.broker == "binance_us"
 
 
 class TestSpreadWarning:

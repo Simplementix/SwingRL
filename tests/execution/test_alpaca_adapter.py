@@ -37,7 +37,7 @@ def mock_alpaca_response() -> MagicMock:
 def validated_order() -> ValidatedOrder:
     """Sample validated equity order."""
     return ValidatedOrder(
-        sized_order=SizedOrder(
+        order=SizedOrder(
             symbol="SPY",
             side="buy",
             quantity=2.5,

@@ -78,7 +78,7 @@ class AlpacaAdapter:
         """Submit a bracket order to Alpaca with stop-loss and take-profit.
 
         Args:
-            order: Validated order with sized_order containing dollar_amount,
+            order: Validated order with SizedOrder containing dollar_amount,
                    stop_loss_price, and take_profit_price.
 
         Returns:
@@ -87,7 +87,7 @@ class AlpacaAdapter:
         Raises:
             BrokerError: If all retry attempts fail.
         """
-        sized = order.sized_order
+        sized = order.order
         side = OrderSide.BUY if sized.side == "buy" else OrderSide.SELL
 
         order_req = MarketOrderRequest(
