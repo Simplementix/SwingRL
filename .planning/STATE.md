@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 ## Current Position
 
-Phase: 7 of 10 (Agent Training and Validation) -- COMPLETE
-Plan: 3 of 3 in phase 07 (Plan 03 complete)
-Status: Phase 07 complete -- Walk-forward backtester, ensemble blender, CLI scripts
-Last activity: 2026-03-08 -- Phase 7 Plan 03: Walk-forward backtesting and ensemble blending
+Phase: 8 of 10 (Paper Trading Core)
+Plan: 2 of 4 in phase 08 (Plan 02 complete)
+Status: Phase 08 in progress -- Execution middleware stages 1-3 complete
+Last activity: 2026-03-09 -- Phase 8 Plan 02: Signal interpreter, position sizer, order validator
 
-Progress: [██████████] 100%
+Progress: [████████░░] 80%
 
 ## Performance Metrics
 
@@ -77,6 +77,7 @@ Progress: [██████████] 100%
 | Phase 07 P02 | 11 | 2 tasks | 6 files |
 | Phase 07 P01 | 8 | 2 tasks | 5 files |
 | Phase 07 P03 | 6 | 2 tasks | 6 files |
+| Phase 08 P02 | 5 | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -154,6 +155,9 @@ Recent decisions affecting current work:
 - [Phase 07]: Default turbulence threshold 1.0 for adaptive ensemble window shrink (configurable)
 - [Phase 07]: Ensemble validation windows: 63 bars equity, 126 bars crypto (CONTEXT.md spec)
 - [Phase 07]: nosec B608 on DuckDB table name interpolation (env_name constrained by CLI enum)
+- [Phase 08]: Deadzone boundary (exactly +/-0.02) treated as hold, strict inequality for buy/sell
+- [Phase 08]: Cost gate uses proportional rate (0.06% equity, 0.22% crypto) -- always passes under 2% threshold
+- [Phase 08]: ValidatedOrder.order field name (not sized_order) per frozen dataclass convention
 
 ### Pending Todos
 
@@ -167,6 +171,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-09T03:13:22.743Z
-Stopped at: Phase 8 context gathered
-Resume file: .planning/phases/08-paper-trading-core/08-CONTEXT.md
+Last session: 2026-03-09T04:11:13Z
+Stopped at: Completed 08-02-PLAN.md
+Resume file: .planning/phases/08-paper-trading-core/08-02-SUMMARY.md

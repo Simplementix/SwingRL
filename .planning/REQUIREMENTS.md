@@ -87,11 +87,11 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [ ] **PAPER-04**: Circuit breakers: equity -10% DD / -2% daily, crypto -12% DD / -3% daily, global -15% DD / -3% combined
 - [ ] **PAPER-05**: Circuit breaker cooldown: 5 business days equity, 3 calendar days crypto, with 25%/50%/75%/100% ramp-up
 - [ ] **PAPER-06**: Halt-state persistence in circuit_breaker_events table across container restarts
-- [ ] **PAPER-07**: Position sizing: modified Kelly criterion (quarter-Kelly Phase 1), 2% max risk per trade, ATR(2x) stop-losses
-- [ ] **PAPER-08**: Binance.US $10 minimum order floor: max(kelly_sized_amount, $10.00)
-- [ ] **PAPER-09**: 5-stage execution middleware: Signal Interpreter, Position Sizer, Order Validator, Exchange Adapter, Fill Processor
+- [x] **PAPER-07**: Position sizing: modified Kelly criterion (quarter-Kelly Phase 1), 2% max risk per trade, ATR(2x) stop-losses
+- [x] **PAPER-08**: Binance.US $10 minimum order floor: max(kelly_sized_amount, $10.00)
+- [x] **PAPER-09**: 5-stage execution middleware: Signal Interpreter, Position Sizer, Order Validator, Exchange Adapter, Fill Processor
 - [ ] **PAPER-10**: Bracket orders: OTO for Alpaca (ATR stop-loss, R:R take-profit), two-step OCO for Binance.US
-- [ ] **PAPER-11**: Cost gate: reject orders where estimated round-trip transaction costs exceed 2.0% of order value
+- [x] **PAPER-11**: Cost gate: reject orders where estimated round-trip transaction costs exceed 2.0% of order value
 - [ ] **PAPER-12**: APScheduler: equity daily at 4:15 PM ET, crypto every 4H at 5 min past bar close, pre-cycle halt checks
 - [ ] **PAPER-13**: Discord webhook alerting: trade executions, circuit breakers, daily summary (6 PM ET), stuck agent detection
 - [ ] **PAPER-14**: Stuck agent detection: alert if environment stays 100% cash for 10 equity days or 30 crypto cycles
@@ -226,11 +226,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PAPER-04 | Phase 8 | Pending |
 | PAPER-05 | Phase 8 | Pending |
 | PAPER-06 | Phase 8 | Pending |
-| PAPER-07 | Phase 8 | Pending |
-| PAPER-08 | Phase 8 | Pending |
-| PAPER-09 | Phase 8 | Pending |
+| PAPER-07 | Phase 8 | Complete |
+| PAPER-08 | Phase 8 | Complete |
+| PAPER-09 | Phase 8 | Complete |
 | PAPER-10 | Phase 8 | Pending |
-| PAPER-11 | Phase 8 | Pending |
+| PAPER-11 | Phase 8 | Complete |
 | PAPER-18 | Phase 8 | Pending |
 | PAPER-19 | Phase 8 | Pending |
 | PAPER-20 | Phase 8 | Pending |
