@@ -375,10 +375,9 @@ class TestAutomatedTriggers:
 
         conn = mock_db.sqlite.return_value.__enter__.return_value
 
-        # No VIX trigger, no drawdown trigger, but NaN count >= 2
+        # No VIX trigger (<=40 so drawdown query skipped), NaN count >= 2
         conn.execute.return_value.fetchone.side_effect = [
-            {"vix_close": 20.0},  # VIX OK
-            {"combined_drawdown": -5.0},  # Drawdown OK
+            {"vix_close": 20.0},  # VIX OK -- drawdown query NOT called
             {"nan_count": 3},  # NaN trigger
             None,  # IP ban check
         ]
@@ -397,8 +396,7 @@ class TestAutomatedTriggers:
         conn = mock_db.sqlite.return_value.__enter__.return_value
 
         conn.execute.return_value.fetchone.side_effect = [
-            {"vix_close": 20.0},  # VIX OK
-            {"combined_drawdown": -5.0},  # Drawdown OK
+            {"vix_close": 20.0},  # VIX OK -- drawdown query NOT called
             {"nan_count": 0},  # NaN OK
             {"status_code": 418},  # IP ban!
         ]
@@ -417,8 +415,7 @@ class TestAutomatedTriggers:
         conn = mock_db.sqlite.return_value.__enter__.return_value
 
         conn.execute.return_value.fetchone.side_effect = [
-            {"vix_close": 20.0},  # VIX OK
-            {"combined_drawdown": -5.0},  # Drawdown OK
+            {"vix_close": 20.0},  # VIX OK -- drawdown query NOT called
             {"nan_count": 0},  # NaN OK
             None,  # No IP ban
         ]
