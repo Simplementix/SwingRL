@@ -23,7 +23,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 9: Automation and Monitoring** - Scheduled execution, Discord alerting, dashboard, and dead man's switch running (completed 2026-03-09)
 - [x] **Phase 10: Production Hardening** - Backup, model deployment pipeline, shadow mode, security review, and disaster recovery verified (completed 2026-03-10)
 - [x] **Phase 11: Production Startup Wiring** - Fix main.py ExecutionPipeline constructor, wire feature table init, fix FRED import path (gap closure, completed 2026-03-10)
-- [ ] **Phase 12: Schema Alignment and Emergency Triggers** - Fix stop_polling table reference, fix emergency trigger queries against missing tables (gap closure)
+- [x] **Phase 12: Schema Alignment and Emergency Triggers** - Fix stop_polling table reference, fix emergency trigger queries against missing tables (gap closure) (completed 2026-03-10)
 
 ## Phase Details
 
@@ -254,4 +254,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 9. Automation and Monitoring | 4/4 | Complete   | 2026-03-09 |
 | 10. Production Hardening | 8/8 | Complete    | 2026-03-10 |
 | 11. Production Startup Wiring | 1/1 | Complete    | 2026-03-10 |
-| 12. Schema Alignment and Emergency Triggers | 0/1 | Not started | - |
+| 12. Schema Alignment and Emergency Triggers | 1/1 | Complete   | 2026-03-10 |
