@@ -8,6 +8,8 @@ services:
     mem_limit: 2.5g
     cpus: 1.0
     # Secrets: loaded from .env on the host; never baked into the image.
+    # SECURITY: .env must be chmod 600 (owner read/write only).
+    #   chmod 600 .env  # Run after any .env modification
     env_file: .env
     environment:
       - TZ=America/New_York

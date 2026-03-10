@@ -421,6 +421,24 @@ class DatabaseManager:
             """)
 
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS shadow_trades (
+                    trade_id TEXT PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL NOT NULL,
+                    commission REAL DEFAULT 0.0,
+                    slippage REAL DEFAULT 0.0,
+                    environment TEXT NOT NULL,
+                    broker TEXT,
+                    order_type TEXT,
+                    trade_type TEXT,
+                    model_version TEXT NOT NULL
+                )
+            """)
+
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS alert_log (
                     alert_id TEXT PRIMARY KEY,
                     timestamp TEXT NOT NULL,

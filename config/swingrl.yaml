@@ -59,6 +59,29 @@ scheduler:
   misfire_grace_time: 300                  # seconds to tolerate late job execution
   max_workers: 4                           # APScheduler thread pool size
 
+backup:
+  sqlite_retention_days: 14         # days to keep SQLite backups
+  duckdb_rotate: false              # rotate DuckDB snapshots (off in dev)
+  backup_dir: backups/              # relative to repo root
+  # offsite_host: ""                # rsync destination host (production only)
+  # offsite_path: ""                # rsync destination path (production only)
+
+shadow:
+  equity_eval_days: 10              # trading days to evaluate shadow equity model
+  crypto_eval_cycles: 30            # 4H cycles to evaluate shadow crypto model
+  auto_promote: true                # auto-promote shadow if it beats active
+  mdd_tolerance_ratio: 1.2          # shadow MDD must be <= active_MDD * ratio
+
+sentiment:
+  enabled: false                    # set true + install transformers to enable
+  model_name: ProsusAI/finbert      # HuggingFace model for sentiment scoring
+  max_headlines_per_asset: 10       # max news headlines per asset per cycle
+  finnhub_api_key: ""               # OVERRIDE via SWINGRL_SENTIMENT__FINNHUB_API_KEY
+
+security:
+  key_rotation_days: 90             # reminder threshold for API key rotation
+  env_file_permissions: "600"       # expected permissions on .env file
+
 features:
   equity_zscore_window: 252        # rolling z-score window for equity (trading days)
   crypto_zscore_window: 360        # rolling z-score window for crypto (4H bars ~60 days)

@@ -191,6 +191,41 @@ class SchedulerConfig(BaseModel):
     max_workers: int = Field(default=4, ge=1)
 
 
+class BackupConfig(BaseModel):
+    """Backup and retention configuration."""
+
+    sqlite_retention_days: int = Field(default=14, ge=1)
+    duckdb_rotate: bool = Field(default=False)
+    backup_dir: str = Field(default="backups/")
+    offsite_host: str = Field(default="")
+    offsite_path: str = Field(default="")
+
+
+class ShadowConfig(BaseModel):
+    """Shadow model evaluation configuration."""
+
+    equity_eval_days: int = Field(default=10, ge=5)
+    crypto_eval_cycles: int = Field(default=30, ge=10)
+    auto_promote: bool = Field(default=True)
+    mdd_tolerance_ratio: float = Field(default=1.2, gt=1.0)
+
+
+class SentimentConfig(BaseModel):
+    """Sentiment analysis configuration (optional, requires transformers)."""
+
+    enabled: bool = Field(default=False)
+    model_name: str = Field(default="ProsusAI/finbert")
+    max_headlines_per_asset: int = Field(default=10, ge=1)
+    finnhub_api_key: str = Field(default="")
+
+
+class SecurityConfig(BaseModel):
+    """Security and key management configuration."""
+
+    key_rotation_days: int = Field(default=90, ge=30)
+    env_file_permissions: str = Field(default="600")
+
+
 class SwingRLConfig(BaseSettings):
     """Root SwingRL configuration.
 
@@ -214,6 +249,10 @@ class SwingRLConfig(BaseSettings):
     system: SystemConfig = Field(default_factory=SystemConfig)
     alerting: AlertingConfig = Field(default_factory=AlertingConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    backup: BackupConfig = Field(default_factory=BackupConfig)
+    shadow: ShadowConfig = Field(default_factory=ShadowConfig)
+    sentiment: SentimentConfig = Field(default_factory=SentimentConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
 
 
 def load_config(path: Path | str = "config/swingrl.yaml") -> SwingRLConfig:

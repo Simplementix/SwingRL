@@ -1,7 +1,7 @@
 """SwingRL production entrypoint -- APScheduler with cron jobs and stop-price polling.
 
-Initializes all components, registers 6 cron jobs, starts crypto stop-price
-polling daemon thread, and blocks until SIGTERM/SIGINT.
+Initializes all components, registers 11 jobs (6 trading + 3 backup + 1 shadow + 1 trigger),
+starts crypto stop-price polling daemon thread, and blocks until SIGTERM/SIGINT.
 
 Usage:
     python scripts/main.py --config config/swingrl.yaml
@@ -23,12 +23,17 @@ from swingrl.execution.pipeline import ExecutionPipeline
 from swingrl.monitoring.alerter import Alerter
 from swingrl.scheduler.halt_check import init_emergency_flags
 from swingrl.scheduler.jobs import (
+    automated_trigger_check_job,
     crypto_cycle,
+    daily_backup_job,
     daily_summary_job,
     equity_cycle,
     init_job_context,
     monthly_macro_job,
+    monthly_offsite_job,
+    shadow_promotion_check_job,
     stuck_agent_check_job,
+    weekly_duckdb_backup_job,
     weekly_fundamentals_job,
 )
 from swingrl.scheduler.stop_polling import start_stop_polling_thread
@@ -55,7 +60,7 @@ def create_scheduler_and_register_jobs(
     scheduler: Any,
     config: Any,
 ) -> None:
-    """Register all 6 cron jobs on the scheduler.
+    """Register all 11 jobs on the scheduler (6 trading + 3 backup + 1 shadow + 1 trigger).
 
     Args:
         scheduler: APScheduler BackgroundScheduler instance.
@@ -123,7 +128,60 @@ def create_scheduler_and_register_jobs(
         replace_existing=True,
     )
 
-    log.info("scheduler_jobs_registered", count=6)
+    # Backup jobs (run even when trading is halted)
+    scheduler.add_job(
+        daily_backup_job,
+        trigger="cron",
+        hour=2,
+        minute=0,
+        timezone="America/New_York",
+        id="daily_sqlite_backup",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        weekly_duckdb_backup_job,
+        trigger="cron",
+        day_of_week="sun",
+        hour=3,
+        minute=0,
+        timezone="America/New_York",
+        id="weekly_duckdb_backup",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        monthly_offsite_job,
+        trigger="cron",
+        day=1,
+        hour=4,
+        minute=0,
+        timezone="America/New_York",
+        id="monthly_offsite",
+        replace_existing=True,
+    )
+
+    # Shadow promotion check (daily at 7 PM ET, after daily summary)
+    scheduler.add_job(
+        shadow_promotion_check_job,
+        trigger="cron",
+        hour=19,
+        minute=0,
+        timezone="America/New_York",
+        id="shadow_promotion_check",
+        replace_existing=True,
+    )
+
+    # Automated emergency trigger check (runs even when halted)
+    scheduler.add_job(
+        automated_trigger_check_job,
+        trigger="interval",
+        minutes=5,
+        id="automated_trigger_check",
+        replace_existing=True,
+    )
+
+    log.info("scheduler_jobs_registered", count=11)
 
 
 def make_signal_handler(
@@ -209,7 +267,7 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
     log.info(
         "swingrl_app_built",
         jobstore_path=config.scheduler.apscheduler_db_path,
-        job_count=6,
+        job_count=11,
     )
 
     return {

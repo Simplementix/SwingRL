@@ -42,16 +42,16 @@ def mock_fill() -> MagicMock:
 
 
 class TestMainRegistersJobs:
-    """Verify that main.py registers all 6 cron jobs."""
+    """Verify that main.py registers all 11 cron jobs."""
 
-    def test_main_registers_six_jobs(self, mock_config: MagicMock) -> None:
-        """PAPER-12: main.py registers 6 cron jobs with correct IDs."""
+    def test_main_registers_all_jobs(self, mock_config: MagicMock) -> None:
+        """PAPER-12: main.py registers 11 cron jobs with correct IDs."""
         from scripts.main import create_scheduler_and_register_jobs
 
         mock_scheduler = MagicMock()
         create_scheduler_and_register_jobs(mock_scheduler, mock_config)
 
-        assert mock_scheduler.add_job.call_count == 6
+        assert mock_scheduler.add_job.call_count == 11
 
         job_ids = {c.kwargs["id"] for c in mock_scheduler.add_job.call_args_list}
         expected_ids = {
@@ -61,6 +61,11 @@ class TestMainRegistersJobs:
             "stuck_agent_check",
             "weekly_fundamentals",
             "monthly_macro",
+            "daily_sqlite_backup",
+            "weekly_duckdb_backup",
+            "monthly_offsite",
+            "shadow_promotion_check",
+            "automated_trigger_check",
         }
         assert job_ids == expected_ids
 

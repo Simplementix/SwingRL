@@ -567,6 +567,71 @@ class FeaturePipeline:
             log.error("crypto_features_store_failed")
 
 
+def get_sentiment_features(
+    *,
+    enabled: bool,
+    symbols: list[str],
+    alpaca_api_key: str = "",
+    alpaca_api_secret: str = "",
+    finnhub_api_key: str = "",
+    max_headlines_per_asset: int = 10,
+    model_name: str = "ProsusAI/finbert",
+) -> dict[str, tuple[float, float]]:
+    """Get sentiment features for symbols when enabled.
+
+    Returns empty dict when disabled. When enabled, fetches headlines and scores
+    them with FinBERT, returning (sentiment_score, confidence) per symbol.
+    Failures produce (0.0, 0.0) defaults -- never crashes the pipeline.
+
+    Args:
+        enabled: Whether sentiment features are active.
+        symbols: List of ticker symbols.
+        alpaca_api_key: Alpaca API key for news access.
+        alpaca_api_secret: Alpaca API secret for news access.
+        finnhub_api_key: Finnhub API key (fallback).
+        max_headlines_per_asset: Max headlines per symbol.
+        model_name: HuggingFace model identifier for FinBERT.
+
+    Returns:
+        Dict of {symbol: (sentiment_score, confidence)}. Empty dict if disabled.
+    """
+    if not enabled:
+        return {}
+
+    from swingrl.config.schema import SentimentConfig
+    from swingrl.sentiment.finbert import FinBERTScorer
+    from swingrl.sentiment.news_fetcher import NewsFetcher
+
+    config = SentimentConfig(
+        enabled=True,
+        model_name=model_name,
+        max_headlines_per_asset=max_headlines_per_asset,
+        finnhub_api_key=finnhub_api_key,
+    )
+    scorer = FinBERTScorer(model_name=model_name)
+    fetcher = NewsFetcher(
+        config,
+        alpaca_api_key=alpaca_api_key,
+        alpaca_api_secret=alpaca_api_secret,
+    )
+
+    result: dict[str, tuple[float, float]] = {}
+    for symbol in symbols:
+        try:
+            headlines = fetcher.fetch_headlines(symbol)
+            if not headlines:
+                result[symbol] = (0.0, 0.0)
+                continue
+            scores = scorer.score_headlines(headlines)
+            sentiment_score, confidence = scorer.aggregate_sentiment(scores)
+            result[symbol] = (sentiment_score, confidence)
+        except Exception:
+            log.warning("sentiment_feature_failed", symbol=symbol)
+            result[symbol] = (0.0, 0.0)
+
+    return result
+
+
 def compare_features(
     baseline_metrics: dict[str, float],
     candidate_metrics: dict[str, float],

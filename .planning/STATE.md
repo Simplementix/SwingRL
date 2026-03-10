@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 09-04-PLAN.md
-last_updated: "2026-03-09T22:00:44.549Z"
-last_activity: "2026-03-09 -- Phase 9 Plan 04: Entrypoint wiring"
+stopped_at: Phase 12 context gathered
+last_updated: "2026-03-10T13:45:23.337Z"
+last_activity: "2026-03-10 -- Phase 10 Plan 04: Shadow mode inference and auto-promotion"
 progress:
-  total_phases: 10
-  completed_phases: 9
-  total_plans: 35
-  completed_plans: 35
+  total_phases: 12
+  completed_phases: 10
+  total_plans: 43
+  completed_plans: 43
   percent: 100
 ---
 
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 ## Current Position
 
-Phase: 9 of 10 (Automation & Monitoring)
-Plan: 4 of 4 in phase 09 (Phase 09 complete)
-Status: Phase 09 complete -- all 4 plans executed
-Last activity: 2026-03-09 -- Phase 9 Plan 04: Entrypoint wiring
+Phase: 10 of 10 (Production Hardening)
+Plan: 6 of 6 in phase 10
+Status: Plan 10-06 complete -- Emergency stop protocol (10-04 shadow mode also complete)
+Last activity: 2026-03-10 -- Phase 10 Plan 04: Shadow mode inference and auto-promotion
 
 Progress: [██████████] 100%
 
@@ -86,6 +86,14 @@ Progress: [██████████] 100%
 | Phase 09 P02 | 5 | 2 tasks | 8 files |
 | Phase 09 P01 | 7 | 2 tasks | 11 files |
 | Phase 09 P04 | 8 | 3 tasks | 9 files |
+| Phase 10 P01 | 5 | 2 tasks | 10 files |
+| Phase 10 P05 | 8 | 2 tasks | 7 files |
+| Phase 10 P03 | 5 | 2 tasks | 6 files |
+| Phase 10-production-hardening P02 | 6 | 2 tasks | 9 files |
+| Phase 10-production-hardening P06 | 5 | 2 tasks | 5 files |
+| Phase 10-production-hardening P04 | 9 | 2 tasks | 8 files |
+| Phase 10-production-hardening P07 | 6 | 3 tasks | 7 files |
+| Phase 10-production-hardening P08 | 5 | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -184,6 +192,17 @@ Recent decisions affecting current work:
 - [Phase 09]: threading.Event().wait() over signal.pause() for cross-platform main blocking
 - [Phase 09]: Stop-price polling daemon thread at 60s intervals with daemon=True
 - [Phase 09]: Dashboard service 512MB/0.5 CPU with read-only DB mounts
+- [Phase 10]: tenacity added to mypy ignore_missing_imports (no type stubs available)
+- [Phase 10]: transformers in optional [sentiment] dep group to avoid 2GB+ install when disabled
+- [Phase 10]: File handler always uses JSONRenderer regardless of json_logs flag
+- [Phase 10-production-hardening]: Backup jobs skip halt check -- backups must run even when trading is halted
+- [Phase 10-production-hardening]: nosec B608 on DuckDB backup table name interpolation (module constant tuple)
+- [Phase 10-production-hardening]: _transformers module-level global for lazy import to avoid ruff N814 CamelCase alias violations
+- [Phase 10-production-hardening]: nosec B107 on NewsFetcher __init__ for empty-string API key defaults (test-friendly)
+- [Phase 10-production-hardening]: nosec B608 on promoter SQL table name interpolation (constrained to shadow_trades/trades)
+- [Phase 10-production-hardening]: archive_shadow lifecycle method added for shadow->archive transition (separate from active->archive)
+- [Phase 10-production-hardening]: CheckResult/StepResult dataclass pattern for structured pass/fail reporting in ops scripts
+- [Phase 10-production-hardening]: Shadow uses zero portfolio weights (np.zeros) for signal interpretation since it has no real positions
 
 ### Pending Todos
 
@@ -197,6 +216,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-09T21:57:19.548Z
-Stopped at: Completed 09-04-PLAN.md
-Resume file: None
+Last session: 2026-03-10T13:45:23.332Z
+Stopped at: Phase 12 context gathered
+Resume file: .planning/phases/12-schema-alignment-and-emergency-triggers/12-CONTEXT.md

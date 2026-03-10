@@ -41,6 +41,29 @@ alerting:
   alert_cooldown_minutes: 30               # minimum minutes between repeat alerts
   consecutive_failures_before_alert: 3     # failures before triggering alert
 
+backup:
+  sqlite_retention_days: 14         # keep 2 weeks of SQLite backups
+  duckdb_rotate: true               # rotate DuckDB snapshots in production
+  backup_dir: /app/backups/         # absolute path in Docker
+  offsite_host: ""                  # SET: rsync destination host for off-site backups
+  offsite_path: ""                  # SET: rsync destination path
+
+shadow:
+  equity_eval_days: 10              # 10 trading days shadow evaluation window
+  crypto_eval_cycles: 30            # 30 crypto 4H cycles shadow evaluation
+  auto_promote: true                # auto-promote shadow model when it beats active
+  mdd_tolerance_ratio: 1.2          # shadow MDD tolerance: 1.2x active MDD
+
+sentiment:
+  enabled: false                    # enable when finnhub key + transformers installed
+  model_name: ProsusAI/finbert      # HuggingFace sentiment model
+  max_headlines_per_asset: 10       # headlines per asset per cycle
+  # finnhub_api_key: ""             # OVERRIDE via SWINGRL_SENTIMENT__FINNHUB_API_KEY
+
+security:
+  key_rotation_days: 90             # 90-day rotation reminder for API keys
+  env_file_permissions: "600"       # .env must be owner-only readable
+
 features:
   equity_zscore_window: 252        # rolling z-score window for equity (trading days)
   crypto_zscore_window: 360        # rolling z-score window for crypto (4H bars ~60 days)

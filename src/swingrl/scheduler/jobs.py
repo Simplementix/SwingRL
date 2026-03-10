@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -121,6 +122,14 @@ def equity_cycle() -> list[FillResult]:
     except Exception:
         log.exception("equity_healthcheck_ping_failed")
 
+    # Shadow inference (non-blocking, never affects active)
+    try:
+        from swingrl.shadow.shadow_runner import run_shadow_inference  # noqa: PLC0415
+
+        run_shadow_inference(ctx, "equity")
+    except Exception:
+        log.exception("shadow_inference_failed", environment="equity")
+
     return fills
 
 
@@ -163,6 +172,14 @@ def crypto_cycle() -> list[FillResult]:
         ping_healthcheck(ctx.config.alerting.healthchecks_crypto_url)
     except Exception:
         log.exception("crypto_healthcheck_ping_failed")
+
+    # Shadow inference (non-blocking, never affects active)
+    try:
+        from swingrl.shadow.shadow_runner import run_shadow_inference  # noqa: PLC0415
+
+        run_shadow_inference(ctx, "crypto")
+    except Exception:
+        log.exception("shadow_inference_failed", environment="crypto")
 
     return fills
 
@@ -317,3 +334,124 @@ def monthly_macro_job() -> None:
             log.warning("monthly_macro_import_unavailable")
     except Exception:
         log.exception("monthly_macro_failed")
+
+
+def daily_backup_job() -> None:
+    """Run daily SQLite backup with integrity verification and rotation.
+
+    Backups should run even when trading is halted (no halt check).
+    Wraps in try/except to never crash the scheduler.
+    """
+    ctx = _get_ctx()
+
+    try:
+        from swingrl.backup.sqlite_backup import backup_sqlite
+
+        success = backup_sqlite(ctx.config, ctx.alerter)
+        log.info("daily_backup_job_complete", success=success)
+    except Exception:
+        log.exception("daily_backup_job_failed")
+
+
+def weekly_duckdb_backup_job() -> None:
+    """Run weekly DuckDB backup with table/row verification.
+
+    Backups should run even when trading is halted (no halt check).
+    Wraps in try/except to never crash the scheduler.
+    """
+    ctx = _get_ctx()
+
+    try:
+        from swingrl.backup.duckdb_backup import backup_duckdb
+
+        success = backup_duckdb(ctx.config, ctx.alerter)
+        log.info("weekly_duckdb_backup_job_complete", success=success)
+    except Exception:
+        log.exception("weekly_duckdb_backup_job_failed")
+
+
+def monthly_offsite_job() -> None:
+    """Run monthly off-site rsync via Tailscale.
+
+    Backups should run even when trading is halted (no halt check).
+    Wraps in try/except to never crash the scheduler.
+    """
+    ctx = _get_ctx()
+
+    try:
+        from swingrl.backup.offsite_sync import offsite_rsync
+
+        success = offsite_rsync(ctx.config, ctx.alerter)
+        log.info("monthly_offsite_job_complete", success=success)
+    except Exception:
+        log.exception("monthly_offsite_job_failed")
+
+
+def shadow_promotion_check_job() -> None:
+    """Evaluate shadow models for promotion daily at 7 PM ET.
+
+    For each environment (equity, crypto), runs auto-promotion criteria
+    evaluation. Import-guarded so shadow module is optional.
+    Wraps in try/except to never crash the scheduler.
+    """
+    ctx = _get_ctx()
+
+    if is_halted(ctx.db):
+        log.warning("shadow_promotion_check_skipped", reason="halt_flag_active")
+        return
+
+    try:
+        from swingrl.shadow.lifecycle import ModelLifecycle  # noqa: PLC0415
+        from swingrl.shadow.promoter import evaluate_shadow_promotion  # noqa: PLC0415
+
+        models_dir = Path(ctx.config.paths.models_dir)
+        lifecycle = ModelLifecycle(models_dir)
+
+        for env_name in ("equity", "crypto"):
+            try:
+                promoted = evaluate_shadow_promotion(
+                    config=ctx.config,
+                    db=ctx.db,
+                    env_name=env_name,
+                    lifecycle=lifecycle,
+                    alerter=ctx.alerter,
+                )
+                log.info(
+                    "shadow_promotion_check_complete",
+                    environment=env_name,
+                    promoted=promoted,
+                )
+            except Exception:
+                log.exception("shadow_promotion_check_env_failed", environment=env_name)
+    except Exception:
+        log.exception("shadow_promotion_check_job_failed")
+
+
+def automated_trigger_check_job() -> None:
+    """Check for automated emergency stop triggers every 5 minutes.
+
+    Checks VIX+CB threshold, consecutive NaN inferences, and Binance.US IP ban.
+    If any triggers detected, executes the full four-tier emergency stop.
+    No halt check -- triggers must be evaluated even when halted (idempotent halt set).
+    Wraps in try/except to never crash the scheduler.
+    """
+    ctx = _get_ctx()
+
+    try:
+        from swingrl.execution.emergency import check_automated_triggers, execute_emergency_stop
+
+        triggers = check_automated_triggers(config=ctx.config, db=ctx.db)
+
+        if triggers:
+            reason = "; ".join(triggers)
+            log.critical("automated_triggers_firing", triggers=triggers)
+            execute_emergency_stop(
+                config=ctx.config,
+                db=ctx.db,
+                alerter=ctx.alerter,
+                reason=reason,
+            )
+        else:
+            log.debug("automated_trigger_check_clear")
+    except Exception:
+        log.exception("automated_trigger_check_job_failed")
