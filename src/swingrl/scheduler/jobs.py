@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
@@ -48,6 +48,7 @@ class JobContext:
 
 
 _ctx: JobContext | None = None
+_reconciliation_failures: int = 0
 
 
 def init_job_context(
@@ -425,6 +426,57 @@ def shadow_promotion_check_job() -> None:
                 log.exception("shadow_promotion_check_env_failed", environment=env_name)
     except Exception:
         log.exception("shadow_promotion_check_job_failed")
+
+
+def reconciliation_job() -> None:
+    """Reconcile DB equity positions against Alpaca broker state (daily at 5 PM ET).
+
+    Runs equity-only reconciliation. Crypto uses virtual balance and has no
+    broker-side positions to reconcile. Skips when halt flag is active.
+    Tracks consecutive failures; 3+ consecutive failures escalate to critical alert.
+    Resets failure counter on success. Never raises (always wraps in try/except).
+    """
+    global _reconciliation_failures  # noqa: PLW0603
+
+    ctx = _get_ctx()
+
+    if is_halted(ctx.db):
+        log.warning("reconciliation_job_skipped", reason="halt_flag_active")
+        return
+
+    try:
+        from swingrl.execution.adapters.alpaca_adapter import AlpacaAdapter  # noqa: PLC0415
+        from swingrl.execution.reconciliation import PositionReconciler  # noqa: PLC0415
+
+        adapter = AlpacaAdapter(config=ctx.config, alerter=ctx.alerter)
+        reconciler = PositionReconciler(
+            config=ctx.config,
+            db=ctx.db,
+            adapter=adapter,
+            alerter=ctx.alerter,
+        )
+        adjustments = reconciler.reconcile("equity")
+        _reconciliation_failures = 0
+        log.info("reconciliation_job_complete", adjustments=len(adjustments))
+    except Exception:
+        _reconciliation_failures += 1
+        level: Literal["critical", "warning"] = (
+            "critical" if _reconciliation_failures >= 3 else "warning"
+        )
+        log.exception(
+            "reconciliation_job_failed",
+            consecutive_failures=_reconciliation_failures,
+            level=level,
+        )
+        try:
+            ctx.alerter.send_alert(
+                level,
+                "Reconciliation Job Failed",
+                f"Daily equity reconciliation failed "
+                f"(consecutive failures: {_reconciliation_failures})",
+            )
+        except Exception:
+            log.exception("reconciliation_job_alert_failed")
 
 
 def automated_trigger_check_job() -> None:

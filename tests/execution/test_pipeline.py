@@ -256,11 +256,13 @@ class TestPipelineInit:
         assert expected_path.exists()
 
         # _load_models should find model at bare_models_dir/active/equity/ppo/model.zip
-        # We mock the actual SB3 load to avoid needing a real model
-        with patch("swingrl.execution.pipeline.PPO") as mock_ppo_cls:
-            mock_ppo_cls.load.return_value = MagicMock()
-            # Patch A2C and SAC to not find files (only PPO path exists)
-            models = pipe._load_models("equity")
+        # PPO/A2C/SAC are imported locally inside _load_models from stable_baselines3
+        with patch("stable_baselines3.PPO") as mock_ppo_cls:
+            with patch("stable_baselines3.A2C"):
+                with patch("stable_baselines3.SAC"):
+                    mock_ppo_cls.load.return_value = MagicMock()
+                    # Only PPO path exists; A2C and SAC model.zip files don't exist
+                    models = pipe._load_models("equity")
 
         # PPO model was found and loaded from the non-double-nested path
         assert "ppo" in models
