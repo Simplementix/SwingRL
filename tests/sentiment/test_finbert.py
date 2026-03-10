@@ -9,14 +9,36 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-from swingrl.sentiment.finbert import FinBERTScorer
-from swingrl.sentiment.news_fetcher import NewsFetcher
 
 from swingrl.config.schema import SentimentConfig
+from swingrl.sentiment.finbert import FinBERTScorer
+from swingrl.sentiment.news_fetcher import NewsFetcher
 
 # ---------------------------------------------------------------------------
 # FinBERTScorer tests
 # ---------------------------------------------------------------------------
+
+
+def _make_mock_transformers(logits_array: np.ndarray) -> MagicMock:
+    """Create a mock transformers module with tokenizer and model."""
+    mock_transformers = MagicMock()
+
+    # Mock tokenizer
+    mock_tokenizer = MagicMock()
+    mock_transformers.AutoTokenizer.from_pretrained.return_value = mock_tokenizer
+    mock_tokenizer.return_value = {
+        "input_ids": MagicMock(),
+        "attention_mask": MagicMock(),
+    }
+
+    # Mock model
+    mock_model = MagicMock()
+    mock_transformers.AutoModelForSequenceClassification.from_pretrained.return_value = mock_model
+    mock_logits = MagicMock()
+    mock_logits.detach.return_value.cpu.return_value.numpy.return_value = logits_array
+    mock_model.return_value.logits = mock_logits
+
+    return mock_transformers
 
 
 class TestFinBERTScorerLazyLoading:
@@ -28,62 +50,28 @@ class TestFinBERTScorerLazyLoading:
         assert scorer._model is None
         assert scorer._tokenizer is None
 
-    @patch("swingrl.sentiment.finbert.AutoModelForSequenceClassification")
-    @patch("swingrl.sentiment.finbert.AutoTokenizer")
-    def test_model_loaded_on_first_score(
-        self, mock_tokenizer_cls: MagicMock, mock_model_cls: MagicMock
-    ) -> None:
+    def test_model_loaded_on_first_score(self) -> None:
         """Model loads lazily on the first score_headlines call."""
-        # Setup mock tokenizer
-        mock_tokenizer = MagicMock()
-        mock_tokenizer_cls.from_pretrained.return_value = mock_tokenizer
-        mock_tokenizer.return_value = {
-            "input_ids": MagicMock(),
-            "attention_mask": MagicMock(),
-        }
+        mock_tf = _make_mock_transformers(np.array([[0.5, -0.3, 0.1]]))
 
-        # Setup mock model
-        mock_model = MagicMock()
-        mock_model_cls.from_pretrained.return_value = mock_model
-        mock_logits = MagicMock()
-        mock_logits.detach.return_value.cpu.return_value.numpy.return_value = np.array(
-            [[0.5, -0.3, 0.1]]
-        )
-        mock_model.return_value.logits = mock_logits
-
-        scorer = FinBERTScorer()
-        assert scorer._model is None
-        scorer.score_headlines(["Test headline"])
-        assert scorer._model is not None
+        with patch("swingrl.sentiment.finbert._transformers", mock_tf):
+            scorer = FinBERTScorer()
+            assert scorer._model is None
+            scorer.score_headlines(["Test headline"])
+            assert scorer._model is not None
 
 
 class TestFinBERTScorerScoring:
     """HARD-03: score_headlines returns sentiment scores summing to ~1.0."""
 
-    @patch("swingrl.sentiment.finbert.AutoModelForSequenceClassification")
-    @patch("swingrl.sentiment.finbert.AutoTokenizer")
-    def test_score_headlines_returns_correct_format(
-        self, mock_tokenizer_cls: MagicMock, mock_model_cls: MagicMock
-    ) -> None:
+    def test_score_headlines_returns_correct_format(self) -> None:
         """Each result has positive, negative, neutral keys summing to ~1.0."""
-        mock_tokenizer = MagicMock()
-        mock_tokenizer_cls.from_pretrained.return_value = mock_tokenizer
-        mock_tokenizer.return_value = {
-            "input_ids": MagicMock(),
-            "attention_mask": MagicMock(),
-        }
-
-        mock_model = MagicMock()
-        mock_model_cls.from_pretrained.return_value = mock_model
         # Logits for 2 headlines: first positive, second negative
-        mock_logits = MagicMock()
-        mock_logits.detach.return_value.cpu.return_value.numpy.return_value = np.array(
-            [[2.0, -1.0, 0.5], [-1.0, 2.0, 0.3]]
-        )
-        mock_model.return_value.logits = mock_logits
+        mock_tf = _make_mock_transformers(np.array([[2.0, -1.0, 0.5], [-1.0, 2.0, 0.3]]))
 
-        scorer = FinBERTScorer()
-        results = scorer.score_headlines(["Good news", "Bad news"])
+        with patch("swingrl.sentiment.finbert._transformers", mock_tf):
+            scorer = FinBERTScorer()
+            results = scorer.score_headlines(["Good news", "Bad news"])
 
         assert len(results) == 2
         for result in results:
