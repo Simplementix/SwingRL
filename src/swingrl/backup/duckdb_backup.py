@@ -101,7 +101,8 @@ def _verify_backup(backup_path: Path) -> None:
             if table not in tables:
                 raise RuntimeError(f"Required table missing from backup: {table}")
 
-            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608  # nosec B608
+            row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # nosec B608
+            count = row[0] if row is not None else 0
             if count == 0:
                 raise RuntimeError(f"Table {table} has zero rows in backup")
 
