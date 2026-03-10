@@ -196,7 +196,16 @@ Plans:
   3. A new model running in shadow mode produces hypothetical trades in parallel with the active model for 10 equity days / 30 crypto cycles; auto-promotion fires when all three promotion criteria are met
   4. Running `emergency_stop.py` halts all jobs, cancels open orders, and liquidates crypto immediately (equity queued for market open) — confirmed by checking exchange state and trading_ops.db
   5. Stopping the container, deleting all volumes, restoring from backup, and restarting completes the 9-step disaster recovery checklist with the system resuming paper trading correctly
-**Plans**: TBD
+**Plans:** 7 plans
+
+Plans:
+- [ ] 10-01-PLAN.md — Config extensions (Backup/Shadow/Sentiment/Security), dependencies, retry decorator, file-based JSON logging
+- [ ] 10-02-PLAN.md — Backup automation: daily SQLite, weekly DuckDB, monthly off-site rsync, APScheduler jobs
+- [ ] 10-03-PLAN.md — Model deployment pipeline (deploy_model.sh), model lifecycle state machine, 6-point smoke test
+- [ ] 10-04-PLAN.md — Shadow mode: parallel inference, hypothetical trades, auto-promotion with 3 criteria
+- [ ] 10-05-PLAN.md — FinBERT sentiment pipeline, news fetcher (Alpaca + Finnhub), A/B experiment infrastructure
+- [ ] 10-06-PLAN.md — Four-tier emergency stop protocol, 3 automated triggers, CLI update
+- [ ] 10-07-PLAN.md — Security review checklist, disaster recovery test script, key rotation runbook, Jupyter notebooks
 
 ## Progress
 
@@ -214,4 +223,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 7. Agent Training and Validation | 2/3 | In Progress|  |
 | 8. Paper Trading Core | 5/5 | Complete   | 2026-03-09 |
 | 9. Automation and Monitoring | 4/4 | Complete   | 2026-03-09 |
-| 10. Production Hardening | 0/TBD | Not started | - |
+| 10. Production Hardening | 0/7 | Not started | - |
