@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
 from swingrl.scheduler.halt_check import clear_halt, init_emergency_flags, is_halted, set_halt
 
 

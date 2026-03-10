@@ -8,6 +8,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import httpx
+
 from swingrl.scheduler.healthcheck_ping import ping_healthcheck
 
 
