@@ -7,10 +7,12 @@ Shadow failures never crash the active trading cycle.
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
+
+import numpy as np
 
 
 @dataclass
@@ -224,3 +226,213 @@ class TestShadowTradesSchema:
         }
         assert columns == expected
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Fake config dataclasses for _generate_hypothetical_trades tests
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FakeEquity:
+    """Minimal equity config."""
+
+    symbols: list[str] = field(default_factory=lambda: ["SPY", "QQQ"])
+
+
+@dataclass
+class _FakeCrypto:
+    """Minimal crypto config."""
+
+    symbols: list[str] = field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
+    min_order_usd: float = 10.0
+    max_position_size: float = 0.50
+
+
+@dataclass
+class _FakeEnvironment:
+    """Minimal environment config."""
+
+    signal_deadzone: float = 0.02
+
+
+@dataclass
+class _FakeCapital:
+    """Minimal capital config."""
+
+    equity_usd: float = 400.0
+    crypto_usd: float = 47.0
+
+
+@dataclass
+class _FakeFullConfig:
+    """Config with all fields needed for trade generation."""
+
+    equity: _FakeEquity = field(default_factory=_FakeEquity)
+    crypto: _FakeCrypto = field(default_factory=_FakeCrypto)
+    environment: _FakeEnvironment = field(default_factory=_FakeEnvironment)
+    capital: _FakeCapital = field(default_factory=_FakeCapital)
+    paths: _FakePaths = field(default_factory=_FakePaths)
+    shadow: _FakeShadow = field(default_factory=_FakeShadow)
+
+
+@dataclass
+class _FakeFeaturePipeline:
+    """Minimal feature pipeline returning a fixed observation."""
+
+    obs: np.ndarray = field(default_factory=lambda: np.zeros(156))
+
+    def get_observation(self, env: str, date_str: str) -> np.ndarray:
+        """Return stored observation."""
+        return self.obs
+
+
+@dataclass
+class _FakePipelineCtx:
+    """Minimal execution pipeline context."""
+
+    _feature_pipeline: _FakeFeaturePipeline = field(
+        default_factory=_FakeFeaturePipeline,
+    )
+    _config: Any = field(default_factory=_FakeFullConfig)
+
+
+class TestGenerateHypotheticalTrades:
+    """PROD-03/04: _generate_hypothetical_trades produces trade dicts from model predictions."""
+
+    def _make_ctx(
+        self,
+        actions: np.ndarray | None = None,
+        obs: np.ndarray | None = None,
+    ) -> tuple[Any, MagicMock]:
+        """Build a ctx and mock model for testing.
+
+        Returns:
+            (ctx, mock_model) tuple.
+        """
+        if obs is None:
+            obs = np.random.default_rng(42).random(156).astype(np.float32)
+        if actions is None:
+            # Two symbols for equity: big positive buy actions
+            actions = np.array([0.5, -0.5], dtype=np.float32)
+
+        feature_pipeline = _FakeFeaturePipeline(obs=obs)
+        config = _FakeFullConfig()
+        pipeline_ctx = _FakePipelineCtx(
+            _feature_pipeline=feature_pipeline,
+            _config=config,
+        )
+
+        ctx = _FakeJobContext(
+            config=config,
+            db=MagicMock(),
+            pipeline=pipeline_ctx,
+        )
+
+        mock_model = MagicMock()
+        mock_model.predict.return_value = (actions, None)
+
+        return ctx, mock_model
+
+    def test_returns_trade_dicts_with_correct_schema(self) -> None:
+        """PROD-03: Non-hold actions produce trade dicts with all shadow_trades columns."""
+        from swingrl.shadow.shadow_runner import _generate_hypothetical_trades
+
+        ctx, mock_model = self._make_ctx(
+            actions=np.array([0.5, -0.5], dtype=np.float32),
+        )
+
+        trades = _generate_hypothetical_trades(mock_model, ctx, "equity", "ppo_v1")
+
+        assert len(trades) > 0
+        required_keys = {
+            "trade_id",
+            "timestamp",
+            "symbol",
+            "side",
+            "quantity",
+            "price",
+            "commission",
+            "slippage",
+            "environment",
+            "broker",
+            "order_type",
+            "trade_type",
+            "model_version",
+        }
+        for trade in trades:
+            assert required_keys.issubset(trade.keys()), (
+                f"Missing keys: {required_keys - trade.keys()}"
+            )
+            assert trade["trade_type"] == "shadow"
+            assert trade["environment"] == "equity"
+            assert trade["model_version"] == "ppo_v1"
+            assert trade["order_type"] == "market"
+
+    def test_calls_pipeline_in_correct_order(self) -> None:
+        """PROD-03: Calls get_observation, model.predict, interpret, size in order."""
+        from swingrl.shadow.shadow_runner import _generate_hypothetical_trades
+
+        ctx, mock_model = self._make_ctx()
+
+        with (
+            patch("swingrl.shadow.shadow_runner.SignalInterpreter") as mock_si_cls,
+            patch("swingrl.shadow.shadow_runner.PositionSizer") as mock_ps_cls,
+        ):
+            mock_si = mock_si_cls.return_value
+            mock_si.interpret.return_value = []  # no signals for simplicity
+            _ = mock_ps_cls.return_value  # PositionSizer instantiated but unused (no signals)
+
+            _generate_hypothetical_trades(mock_model, ctx, "equity", "v1")
+
+            # Model should have been called with observation
+            mock_model.predict.assert_called_once()
+            # SignalInterpreter should have been created with config
+            mock_si_cls.assert_called_once()
+            # interpret should have been called
+            mock_si.interpret.assert_called_once()
+
+    def test_hold_actions_return_empty_list(self) -> None:
+        """PROD-03: When all actions are within deadzone, returns empty list."""
+        from swingrl.shadow.shadow_runner import _generate_hypothetical_trades
+
+        # Actions within deadzone (0.02): diff from 0.0 current weights is < 0.02
+        ctx, mock_model = self._make_ctx(
+            actions=np.array([0.01, -0.01], dtype=np.float32),
+        )
+
+        trades = _generate_hypothetical_trades(mock_model, ctx, "equity", "v1")
+
+        assert trades == []
+
+    def test_skips_none_from_position_sizer(self) -> None:
+        """PROD-04: When PositionSizer returns None (negative Kelly), signal is skipped."""
+        from swingrl.shadow.shadow_runner import _generate_hypothetical_trades
+
+        ctx, mock_model = self._make_ctx(
+            actions=np.array([0.5, -0.5], dtype=np.float32),
+        )
+
+        with patch("swingrl.shadow.shadow_runner.PositionSizer") as mock_ps_cls:
+            mock_ps = mock_ps_cls.return_value
+            mock_ps.size.return_value = None  # negative Kelly
+
+            trades = _generate_hypothetical_trades(mock_model, ctx, "equity", "v1")
+
+        assert trades == []
+
+    def test_includes_model_version_and_trade_type(self) -> None:
+        """PROD-04: Trade dicts include model_version and trade_type='shadow'."""
+        from swingrl.shadow.shadow_runner import _generate_hypothetical_trades
+
+        ctx, mock_model = self._make_ctx(
+            actions=np.array([0.5, 0.0], dtype=np.float32),
+        )
+
+        trades = _generate_hypothetical_trades(mock_model, ctx, "equity", "ppo_equity_v3")
+
+        # At least one trade for the big positive action on SPY
+        spy_trades = [t for t in trades if t["symbol"] == "SPY"]
+        assert len(spy_trades) >= 1
+        assert spy_trades[0]["model_version"] == "ppo_equity_v3"
+        assert spy_trades[0]["trade_type"] == "shadow"
