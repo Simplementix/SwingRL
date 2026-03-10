@@ -9,8 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from swingrl.shadow.lifecycle import ModelLifecycle, ModelState
 
+from swingrl.shadow.lifecycle import ModelLifecycle, ModelState
 from swingrl.utils.exceptions import ModelError
 
 

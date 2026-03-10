@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+
 from swingrl.shadow.lifecycle import smoke_test_model
 
 

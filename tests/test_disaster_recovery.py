@@ -70,6 +70,7 @@ class TestVerifyDbIntegrity:
     def test_duckdb_table_count(self, tmp_path: Path) -> None:
         """PROD-08: DR verify_db_integrity checks DuckDB table count."""
         import duckdb
+
         from scripts.disaster_recovery import verify_duckdb_integrity
 
         db_path = tmp_path / "market_data.ddb"

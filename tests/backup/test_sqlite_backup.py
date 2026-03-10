@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
 from swingrl.backup.sqlite_backup import backup_sqlite, rotate_old_backups
 
 
