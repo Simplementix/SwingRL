@@ -49,8 +49,8 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **FEAT-06**: Rolling z-score normalization with per-environment windows (252 bars equity, 360 bars crypto)
 - [x] **FEAT-07**: Observation space assembly: 156 dimensions equity, 45 dimensions crypto
 - [x] **FEAT-08**: Feature addition protocol: new features kept only if validation Sharpe improves by at least 0.05 in A/B test
-- [x] **FEAT-09**: Correlation pruning: remove features with pairwise Pearson r > 0.85
-- [x] **FEAT-10**: Weekly-derived features (SMA trend direction, weekly RSI-14) computed from aggregated weekly bars, not fetched separately
+- [ ] **FEAT-09**: Correlation pruning: remove features with pairwise Pearson r > 0.85
+- [ ] **FEAT-10**: Weekly-derived features (SMA trend direction, weekly RSI-14) computed from aggregated weekly bars, not fetched separately
 - [x] **FEAT-11**: Per-environment feature tables in DuckDB: features_equity (DATE key), features_crypto (TIMESTAMP key)
 
 ### RL Training
@@ -82,14 +82,14 @@ Requirements for M0-M6 software build (pre-live-trading).
 ### Paper Trading & Deployment
 
 - [x] **PAPER-01**: Alpaca paper trading connection for equity environment
-- [x] **PAPER-02**: Binance.US simulated fills for crypto environment (real-time prices, local fill recording)
+- [ ] **PAPER-02**: Binance.US simulated fills for crypto environment (real-time prices, local fill recording)
 - [x] **PAPER-03**: Two-tier risk management veto layer: Tier 1 per-environment budgets + Tier 2 global portfolio constraints
 - [x] **PAPER-04**: Circuit breakers: equity -10% DD / -2% daily, crypto -12% DD / -3% daily, global -15% DD / -3% combined
 - [x] **PAPER-05**: Circuit breaker cooldown: 5 business days equity, 3 calendar days crypto, with 25%/50%/75%/100% ramp-up
 - [x] **PAPER-06**: Halt-state persistence in circuit_breaker_events table across container restarts
 - [x] **PAPER-07**: Position sizing: modified Kelly criterion (quarter-Kelly Phase 1), 2% max risk per trade, ATR(2x) stop-losses
 - [x] **PAPER-08**: Binance.US $10 minimum order floor: max(kelly_sized_amount, $10.00)
-- [x] **PAPER-09**: 5-stage execution middleware: Signal Interpreter, Position Sizer, Order Validator, Exchange Adapter, Fill Processor
+- [ ] **PAPER-09**: 5-stage execution middleware: Signal Interpreter, Position Sizer, Order Validator, Exchange Adapter, Fill Processor
 - [x] **PAPER-10**: Bracket orders: OTO for Alpaca (ATR stop-loss, R:R take-profit), two-step OCO for Binance.US
 - [x] **PAPER-11**: Cost gate: reject orders where estimated round-trip transaction costs exceed 2.0% of order value
 - [x] **PAPER-12**: APScheduler: equity daily at 4:15 PM ET, crypto every 4H at 5 min past bar close, pre-cycle halt checks
@@ -197,8 +197,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FEAT-06 | Phase 5 | Complete |
 | FEAT-07 | Phase 5 | Complete |
 | FEAT-08 | Phase 5 | Complete |
-| FEAT-09 | Phase 5 | Complete |
-| FEAT-10 | Phase 5 | Complete |
+| FEAT-09 | Phase 14 | Pending |
+| FEAT-10 | Phase 14 | Pending |
 | FEAT-11 | Phase 11 | Complete |
 | TRAIN-01 | Phase 6 | Complete |
 | TRAIN-02 | Phase 6 | Complete |
@@ -221,14 +221,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 | VAL-07 | Phase 7 | Complete |
 | VAL-08 | Phase 7 | Complete |
 | PAPER-01 | Phase 11 | Complete |
-| PAPER-02 | Phase 11 | Complete |
+| PAPER-02 | Phase 13 | Pending |
 | PAPER-03 | Phase 8 | Complete |
 | PAPER-04 | Phase 8 | Complete |
 | PAPER-05 | Phase 8 | Complete |
 | PAPER-06 | Phase 8 | Complete |
 | PAPER-07 | Phase 8 | Complete |
 | PAPER-08 | Phase 8 | Complete |
-| PAPER-09 | Phase 8 | Complete |
+| PAPER-09 | Phase 13 | Pending |
 | PAPER-10 | Phase 12 | Complete |
 | PAPER-11 | Phase 8 | Complete |
 | PAPER-18 | Phase 8 | Complete |
@@ -258,8 +258,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 **Coverage:**
 - v1 requirements: 74 total
 - Mapped to phases: 74
-- Complete: 72
-- Pending (gap closure): 2 (PAPER-10, PROD-07)
+- Complete: 70
+- Pending (gap closure): 4 (PAPER-02, PAPER-09, FEAT-09, FEAT-10)
 - Unmapped: 0
 
 ---
