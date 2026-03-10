@@ -220,6 +220,13 @@ DUCKDB_TABLES = [
     "data_ingestion_log",
 ]
 
+FEATURE_TABLES = [
+    "features_equity",
+    "features_crypto",
+    "fundamentals",
+    "hmm_state_history",
+]
+
 SQLITE_TABLES = [
     "trades",
     "positions",
@@ -232,6 +239,19 @@ SQLITE_TABLES = [
     "options_positions",
     "alert_log",
 ]
+
+
+class TestFeatureTableInit:
+    """init_schema() creates Phase 5 feature tables in DuckDB."""
+
+    def test_init_schema_creates_feature_tables(self, db_manager: object) -> None:
+        """DATA-09: init_schema() creates features_equity, features_crypto, fundamentals, hmm_state_history."""
+        db_manager.init_schema()
+        with db_manager.duckdb() as cursor:
+            result = cursor.execute("SHOW TABLES").fetchall()
+            table_names = {row[0] for row in result}
+        for table in FEATURE_TABLES:
+            assert table in table_names, f"Missing feature table: {table}"
 
 
 class TestInitSchema:

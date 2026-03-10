@@ -247,3 +247,55 @@ class TestMonthlyMacroJob:
     def test_runs_without_error(self, job_ctx: JobContext) -> None:
         """monthly_macro_job completes without raising."""
         monthly_macro_job()
+
+
+class TestFredImportPath:
+    """Verify FRED jobs import from correct module path and use correct API."""
+
+    @patch("swingrl.scheduler.jobs._ctx", new=None)
+    def test_weekly_fundamentals_imports_fred_correctly(self) -> None:
+        """FEAT-11: weekly_fundamentals_job imports FREDIngestor from swingrl.data.fred."""
+        mock_alerter = MagicMock()
+        mock_pipeline = MagicMock()
+        mock_db = MagicMock()
+        mock_config = MagicMock()
+
+        init_job_context(
+            config=mock_config, db=mock_db, pipeline=mock_pipeline, alerter=mock_alerter
+        )
+
+        with patch("swingrl.scheduler.jobs.is_halted", return_value=False):
+            with patch("swingrl.data.fred.FREDIngestor") as mock_fred_cls:
+                mock_ingestor = MagicMock()
+                mock_fred_cls.return_value = mock_ingestor
+
+                weekly_fundamentals_job()
+
+                # FREDIngestor constructed with only config (not config + db)
+                mock_fred_cls.assert_called_once_with(mock_config)
+                # run_all() called (not refresh())
+                mock_ingestor.run_all.assert_called_once()
+
+    @patch("swingrl.scheduler.jobs._ctx", new=None)
+    def test_monthly_macro_imports_fred_correctly(self) -> None:
+        """FEAT-11: monthly_macro_job imports FREDIngestor from swingrl.data.fred."""
+        mock_alerter = MagicMock()
+        mock_pipeline = MagicMock()
+        mock_db = MagicMock()
+        mock_config = MagicMock()
+
+        init_job_context(
+            config=mock_config, db=mock_db, pipeline=mock_pipeline, alerter=mock_alerter
+        )
+
+        with patch("swingrl.scheduler.jobs.is_halted", return_value=False):
+            with patch("swingrl.data.fred.FREDIngestor") as mock_fred_cls:
+                mock_ingestor = MagicMock()
+                mock_fred_cls.return_value = mock_ingestor
+
+                monthly_macro_job()
+
+                # FREDIngestor constructed with only config (not config + db)
+                mock_fred_cls.assert_called_once_with(mock_config)
+                # run_all() called (not refresh())
+                mock_ingestor.run_all.assert_called_once()
