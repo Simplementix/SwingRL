@@ -104,7 +104,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### Hardening & Sentiment
 
-- [ ] **HARD-01**: Jupyter analysis notebooks for weekly performance review (portfolio curves, trade logs, risk metrics)
+- [x] **HARD-01**: Jupyter analysis notebooks for weekly performance review (portfolio curves, trade logs, risk metrics)
 - [x] **HARD-02**: Error handling with retry logic and exponential backoff for API timeouts and data feed gaps
 - [x] **HARD-03**: FinBERT sentiment pipeline (ProsusAI/finbert): score daily headlines from Alpaca News + Finnhub
 - [x] **HARD-04**: A/B sentiment experiment: train identical agents with/without sentiment, evaluate Sharpe improvement
@@ -117,10 +117,10 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **PROD-03**: Shadow mode: new models run parallel with active model generating hypothetical trades (10 equity days, 30 crypto cycles)
 - [x] **PROD-04**: Shadow mode auto-promotion criteria: Shadow Sharpe >= Active Sharpe, Shadow MDD <= 120% Active MDD, no circuit breakers
 - [x] **PROD-05**: Model lifecycle: Training -> Shadow -> Active -> Archive -> Deletion
-- [ ] **PROD-06**: Security review: non-root containers, env_file (chmod 600), Binance.US IP allowlisting, 90-day key rotation (staggered)
+- [x] **PROD-06**: Security review: non-root containers, env_file (chmod 600), Binance.US IP allowlisting, 90-day key rotation (staggered)
 - [ ] **PROD-07**: emergency_stop.py: four-tier kill switch — halt jobs, cancel orders, liquidate crypto immediately, queue equity for market open
-- [ ] **PROD-08**: Disaster recovery test: stop container, delete volumes, restore from backup, verify system resumes correctly
-- [ ] **PROD-09**: 9-step quarterly recovery checklist (starting M6)
+- [x] **PROD-08**: Disaster recovery test: stop container, delete volumes, restore from backup, verify system resumes correctly
+- [x] **PROD-09**: 9-step quarterly recovery checklist (starting M6)
 
 ## v2 Requirements
 
@@ -240,7 +240,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PAPER-15 | Phase 9 | Complete |
 | PAPER-16 | Phase 9 | Complete |
 | PAPER-17 | Phase 9 | Complete |
-| HARD-01 | Phase 10 | Pending |
+| HARD-01 | Phase 10 | Complete |
 | HARD-02 | Phase 10 | Complete |
 | HARD-03 | Phase 10 | Complete |
 | HARD-04 | Phase 10 | Complete |
@@ -250,10 +250,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PROD-03 | Phase 10 | Complete |
 | PROD-04 | Phase 10 | Complete |
 | PROD-05 | Phase 10 | Complete |
-| PROD-06 | Phase 10 | Pending |
+| PROD-06 | Phase 10 | Complete |
 | PROD-07 | Phase 10 | Pending |
-| PROD-08 | Phase 10 | Pending |
-| PROD-09 | Phase 10 | Pending |
+| PROD-08 | Phase 10 | Complete |
+| PROD-09 | Phase 10 | Complete |
 
 **Coverage:**
 - v1 requirements: 74 total
