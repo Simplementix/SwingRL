@@ -22,6 +22,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 8: Paper Trading Core** - Broker connections live with risk management veto layer and execution middleware (completed 2026-03-09)
 - [x] **Phase 9: Automation and Monitoring** - Scheduled execution, Discord alerting, dashboard, and dead man's switch running (completed 2026-03-09)
 - [x] **Phase 10: Production Hardening** - Backup, model deployment pipeline, shadow mode, security review, and disaster recovery verified (completed 2026-03-10)
+- [ ] **Phase 11: Production Startup Wiring** - Fix main.py ExecutionPipeline constructor, wire feature table init, fix FRED import path (gap closure)
+- [ ] **Phase 12: Schema Alignment and Emergency Triggers** - Fix stop_polling table reference, fix emergency trigger queries against missing tables (gap closure)
 
 ## Phase Details
 
@@ -208,10 +210,36 @@ Plans:
 - [ ] 10-07-PLAN.md — Security review checklist, disaster recovery test script, key rotation runbook, Jupyter notebooks
 - [ ] 10-08-PLAN.md — [GAP CLOSURE] Wire _generate_hypothetical_trades stub to feature pipeline, model inference, and signal interpretation
 
+### Phase 11: Production Startup Wiring
+**Goal**: The production entrypoint (main.py) starts without error, feature tables are initialized as part of standard DB setup, and scheduler jobs import from correct module paths
+**Depends on**: Phase 10
+**Requirements**: PAPER-01, PAPER-02, PAPER-12, FEAT-11, DATA-09, DATA-04, FEAT-04
+**Gap Closure:** Closes INT-01, INT-02, INT-05, Flow 1 from v1.0 audit
+**Success Criteria** (what must be TRUE):
+  1. `python scripts/main.py` with a valid config starts without TypeError — ExecutionPipeline receives all 5 required arguments
+  2. `DatabaseManager.init_schema()` creates feature tables (features_equity, features_crypto) without requiring a prior `compute_features.py` run
+  3. Weekly fundamentals and monthly macro scheduler jobs import from `swingrl.data.fred` without ImportError
+
+Plans:
+- [ ] 11-01-PLAN.md — Fix main.py ExecutionPipeline constructor, wire feature table init into DatabaseManager, fix FRED import path
+
+### Phase 12: Schema Alignment and Emergency Triggers
+**Goal**: Stop-price polling queries the correct table with correct columns, and all three automated emergency triggers query existing tables
+**Depends on**: Phase 11
+**Requirements**: PAPER-10, PROD-07
+**Gap Closure:** Closes INT-03, INT-04, Flow 2 from v1.0 audit
+**Success Criteria** (what must be TRUE):
+  1. `stop_polling.py` queries the `positions` table with correct column names and processes stop/TP prices without error
+  2. All three automated emergency triggers in `check_automated_triggers()` query existing tables and return valid results
+  3. The automated emergency trigger flow fires `execute_emergency_stop()` when trigger conditions are met
+
+Plans:
+- [ ] 12-01-PLAN.md — Fix stop_polling table/column references, fix or create tables for emergency trigger queries
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 -> 12
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -225,3 +253,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 8. Paper Trading Core | 5/5 | Complete   | 2026-03-09 |
 | 9. Automation and Monitoring | 4/4 | Complete   | 2026-03-09 |
 | 10. Production Hardening | 8/8 | Complete    | 2026-03-10 |
+| 11. Production Startup Wiring | 0/1 | Not started | - |
+| 12. Schema Alignment and Emergency Triggers | 0/1 | Not started | - |

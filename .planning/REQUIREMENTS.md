@@ -28,12 +28,12 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **DATA-01**: Alpaca OHLCV ingestion for 8 equity ETFs (SPY, QQQ, VTI, XLV, XLI, XLE, XLF, XLK) via IEX feed
 - [x] **DATA-02**: Binance.US 4-hour bar ingestion for BTC/USD and ETH/USD with rate limit monitoring (X-MBX-USED-WEIGHT headers)
 - [x] **DATA-03**: 8+ year crypto historical backfill stitching international Binance archives (2017-2019) with Binance.US API (2019+), normalizing volume from base units to USD
-- [x] **DATA-04**: FRED macro pipeline for Tier 1 series (VIX, T10Y2Y spread, DFF, CPI, unemployment) using ALFRED vintage data to prevent look-ahead bias
+- [ ] **DATA-04**: FRED macro pipeline for Tier 1 series (VIX, T10Y2Y spread, DFF, CPI, unemployment) using ALFRED vintage data to prevent look-ahead bias
 - [x] **DATA-05**: 12-step data validation checklist with quarantine to data_quarantine table for failed data
 - [x] **DATA-06**: DuckDB analytical database (market_data.ddb) with tables created incrementally per milestone
 - [x] **DATA-07**: SQLite operational database (trading_ops.db) with tables created incrementally per milestone
 - [x] **DATA-08**: Cross-database joins via DuckDB sqlite_scanner extension
-- [x] **DATA-09**: "Store lowest, aggregate up" strategy — only store daily/4H bars, compute weekly/monthly on-the-fly via DuckDB
+- [ ] **DATA-09**: "Store lowest, aggregate up" strategy — only store daily/4H bars, compute weekly/monthly on-the-fly via DuckDB
 - [x] **DATA-10**: Corporate action handling (stock splits, dividends) with corporate_actions table
 - [x] **DATA-11**: Cross-source validation (Alpaca vs yfinance closing prices, weekly)
 - [x] **DATA-12**: Data ingestion logging to data_ingestion_log table with run_id, timing, and row counts
@@ -44,14 +44,14 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **FEAT-01**: Technical indicators via pandas_ta: SMA(50,200) as price ratios, RSI(14), MACD line + histogram, Bollinger Band position (0-1), ATR(14) as % of price, Volume/Volume_SMA(20) ratio
 - [x] **FEAT-02**: Derived features: log returns (1d, 5d, 20d), Bollinger Band width
 - [x] **FEAT-03**: Fundamental features (equities only): P/E ratio (sector-relative z-score), earnings growth, debt-to-equity, dividend yield — updated quarterly
-- [x] **FEAT-04**: Macro regime features (shared): VIX z-score, yield curve spread/direction, Fed Funds 90-day change, CPI YoY, unemployment 3-month direction — forward-filled via ASOF JOIN
+- [ ] **FEAT-04**: Macro regime features (shared): VIX z-score, yield curve spread/direction, Fed Funds 90-day change, CPI YoY, unemployment 3-month direction — forward-filled via ASOF JOIN
 - [x] **FEAT-05**: HMM regime detection: 2-state Gaussian HMM per environment (SPY for equity, BTC for crypto), producing P(bull) and P(bear) continuous probabilities
 - [x] **FEAT-06**: Rolling z-score normalization with per-environment windows (252 bars equity, 360 bars crypto)
 - [x] **FEAT-07**: Observation space assembly: 156 dimensions equity, 45 dimensions crypto
 - [x] **FEAT-08**: Feature addition protocol: new features kept only if validation Sharpe improves by at least 0.05 in A/B test
 - [x] **FEAT-09**: Correlation pruning: remove features with pairwise Pearson r > 0.85
 - [x] **FEAT-10**: Weekly-derived features (SMA trend direction, weekly RSI-14) computed from aggregated weekly bars, not fetched separately
-- [x] **FEAT-11**: Per-environment feature tables in DuckDB: features_equity (DATE key), features_crypto (TIMESTAMP key)
+- [ ] **FEAT-11**: Per-environment feature tables in DuckDB: features_equity (DATE key), features_crypto (TIMESTAMP key)
 
 ### RL Training
 
@@ -81,8 +81,8 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### Paper Trading & Deployment
 
-- [x] **PAPER-01**: Alpaca paper trading connection for equity environment
-- [x] **PAPER-02**: Binance.US simulated fills for crypto environment (real-time prices, local fill recording)
+- [ ] **PAPER-01**: Alpaca paper trading connection for equity environment
+- [ ] **PAPER-02**: Binance.US simulated fills for crypto environment (real-time prices, local fill recording)
 - [x] **PAPER-03**: Two-tier risk management veto layer: Tier 1 per-environment budgets + Tier 2 global portfolio constraints
 - [x] **PAPER-04**: Circuit breakers: equity -10% DD / -2% daily, crypto -12% DD / -3% daily, global -15% DD / -3% combined
 - [x] **PAPER-05**: Circuit breaker cooldown: 5 business days equity, 3 calendar days crypto, with 25%/50%/75%/100% ramp-up
@@ -90,9 +90,9 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **PAPER-07**: Position sizing: modified Kelly criterion (quarter-Kelly Phase 1), 2% max risk per trade, ATR(2x) stop-losses
 - [x] **PAPER-08**: Binance.US $10 minimum order floor: max(kelly_sized_amount, $10.00)
 - [x] **PAPER-09**: 5-stage execution middleware: Signal Interpreter, Position Sizer, Order Validator, Exchange Adapter, Fill Processor
-- [x] **PAPER-10**: Bracket orders: OTO for Alpaca (ATR stop-loss, R:R take-profit), two-step OCO for Binance.US
+- [ ] **PAPER-10**: Bracket orders: OTO for Alpaca (ATR stop-loss, R:R take-profit), two-step OCO for Binance.US
 - [x] **PAPER-11**: Cost gate: reject orders where estimated round-trip transaction costs exceed 2.0% of order value
-- [x] **PAPER-12**: APScheduler: equity daily at 4:15 PM ET, crypto every 4H at 5 min past bar close, pre-cycle halt checks
+- [ ] **PAPER-12**: APScheduler: equity daily at 4:15 PM ET, crypto every 4H at 5 min past bar close, pre-cycle halt checks
 - [x] **PAPER-13**: Discord webhook alerting: trade executions, circuit breakers, daily summary (6 PM ET), stuck agent detection
 - [x] **PAPER-14**: Stuck agent detection: alert if environment stays 100% cash for 10 equity days or 30 crypto cycles
 - [x] **PAPER-15**: Streamlit dashboard for system health monitoring with traffic-light status
@@ -118,7 +118,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **PROD-04**: Shadow mode auto-promotion criteria: Shadow Sharpe >= Active Sharpe, Shadow MDD <= 120% Active MDD, no circuit breakers
 - [x] **PROD-05**: Model lifecycle: Training -> Shadow -> Active -> Archive -> Deletion
 - [x] **PROD-06**: Security review: non-root containers, env_file (chmod 600), Binance.US IP allowlisting, 90-day key rotation (staggered)
-- [x] **PROD-07**: emergency_stop.py: four-tier kill switch — halt jobs, cancel orders, liquidate crypto immediately, queue equity for market open
+- [ ] **PROD-07**: emergency_stop.py: four-tier kill switch — halt jobs, cancel orders, liquidate crypto immediately, queue equity for market open
 - [x] **PROD-08**: Disaster recovery test: stop container, delete volumes, restore from backup, verify system resumes correctly
 - [x] **PROD-09**: 9-step quarterly recovery checklist (starting M6)
 
@@ -179,12 +179,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-01 | Phase 3 | Complete |
 | DATA-02 | Phase 3 | Complete |
 | DATA-03 | Phase 3 | Complete |
-| DATA-04 | Phase 3 | Complete |
+| DATA-04 | Phase 11 | Pending |
 | DATA-05 | Phase 3 | Complete |
 | DATA-06 | Phase 4 | Complete |
 | DATA-07 | Phase 4 | Complete |
 | DATA-08 | Phase 4 | Complete |
-| DATA-09 | Phase 4 | Complete |
+| DATA-09 | Phase 11 | Pending |
 | DATA-10 | Phase 4 | Complete |
 | DATA-11 | Phase 4 | Complete |
 | DATA-12 | Phase 4 | Complete |
@@ -192,14 +192,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FEAT-01 | Phase 5 | Complete |
 | FEAT-02 | Phase 5 | Complete |
 | FEAT-03 | Phase 5 | Complete |
-| FEAT-04 | Phase 5 | Complete |
+| FEAT-04 | Phase 11 | Pending |
 | FEAT-05 | Phase 5 | Complete |
 | FEAT-06 | Phase 5 | Complete |
 | FEAT-07 | Phase 5 | Complete |
 | FEAT-08 | Phase 5 | Complete |
 | FEAT-09 | Phase 5 | Complete |
 | FEAT-10 | Phase 5 | Complete |
-| FEAT-11 | Phase 5 | Complete |
+| FEAT-11 | Phase 11 | Pending |
 | TRAIN-01 | Phase 6 | Complete |
 | TRAIN-02 | Phase 6 | Complete |
 | TRAIN-07 | Phase 6 | Complete |
@@ -220,8 +220,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | VAL-06 | Phase 7 | Complete |
 | VAL-07 | Phase 7 | Complete |
 | VAL-08 | Phase 7 | Complete |
-| PAPER-01 | Phase 8 | Complete |
-| PAPER-02 | Phase 8 | Complete |
+| PAPER-01 | Phase 11 | Pending |
+| PAPER-02 | Phase 11 | Pending |
 | PAPER-03 | Phase 8 | Complete |
 | PAPER-04 | Phase 8 | Complete |
 | PAPER-05 | Phase 8 | Complete |
@@ -229,12 +229,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PAPER-07 | Phase 8 | Complete |
 | PAPER-08 | Phase 8 | Complete |
 | PAPER-09 | Phase 8 | Complete |
-| PAPER-10 | Phase 8 | Complete |
+| PAPER-10 | Phase 12 | Pending |
 | PAPER-11 | Phase 8 | Complete |
 | PAPER-18 | Phase 8 | Complete |
 | PAPER-19 | Phase 8 | Complete |
 | PAPER-20 | Phase 8 | Complete |
-| PAPER-12 | Phase 9 | Complete |
+| PAPER-12 | Phase 11 | Pending |
 | PAPER-13 | Phase 9 | Complete |
 | PAPER-14 | Phase 9 | Complete |
 | PAPER-15 | Phase 9 | Complete |
@@ -251,13 +251,15 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PROD-04 | Phase 10 | Complete |
 | PROD-05 | Phase 10 | Complete |
 | PROD-06 | Phase 10 | Complete |
-| PROD-07 | Phase 10 | Complete |
+| PROD-07 | Phase 12 | Pending |
 | PROD-08 | Phase 10 | Complete |
 | PROD-09 | Phase 10 | Complete |
 
 **Coverage:**
 - v1 requirements: 74 total
 - Mapped to phases: 74
+- Complete: 65
+- Pending (gap closure): 9 (PAPER-01, PAPER-02, PAPER-10, PAPER-12, FEAT-04, FEAT-11, DATA-04, DATA-09, PROD-07)
 - Unmapped: 0
 
 ---
