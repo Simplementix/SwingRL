@@ -317,3 +317,54 @@ def monthly_macro_job() -> None:
             log.warning("monthly_macro_import_unavailable")
     except Exception:
         log.exception("monthly_macro_failed")
+
+
+def daily_backup_job() -> None:
+    """Run daily SQLite backup with integrity verification and rotation.
+
+    Backups should run even when trading is halted (no halt check).
+    Wraps in try/except to never crash the scheduler.
+    """
+    ctx = _get_ctx()
+
+    try:
+        from swingrl.backup.sqlite_backup import backup_sqlite
+
+        success = backup_sqlite(ctx.config, ctx.alerter)
+        log.info("daily_backup_job_complete", success=success)
+    except Exception:
+        log.exception("daily_backup_job_failed")
+
+
+def weekly_duckdb_backup_job() -> None:
+    """Run weekly DuckDB backup with table/row verification.
+
+    Backups should run even when trading is halted (no halt check).
+    Wraps in try/except to never crash the scheduler.
+    """
+    ctx = _get_ctx()
+
+    try:
+        from swingrl.backup.duckdb_backup import backup_duckdb
+
+        success = backup_duckdb(ctx.config, ctx.alerter)
+        log.info("weekly_duckdb_backup_job_complete", success=success)
+    except Exception:
+        log.exception("weekly_duckdb_backup_job_failed")
+
+
+def monthly_offsite_job() -> None:
+    """Run monthly off-site rsync via Tailscale.
+
+    Backups should run even when trading is halted (no halt check).
+    Wraps in try/except to never crash the scheduler.
+    """
+    ctx = _get_ctx()
+
+    try:
+        from swingrl.backup.offsite_sync import offsite_rsync
+
+        success = offsite_rsync(ctx.config, ctx.alerter)
+        log.info("monthly_offsite_job_complete", success=success)
+    except Exception:
+        log.exception("monthly_offsite_job_failed")

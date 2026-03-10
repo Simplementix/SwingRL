@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import duckdb
 import pytest
+
 from swingrl.backup.duckdb_backup import backup_duckdb
 
 
@@ -91,12 +93,26 @@ class TestBackupDuckdb:
 
     def test_never_rotates(self, duckdb_env: dict[str, Path]) -> None:
         """PROD-01: DuckDB backups are never rotated (duckdb_rotate=False)."""
+        from unittest.mock import patch
+
         config = _make_config(duckdb_env)
         alerter = MagicMock()
 
-        # Create two backups
-        backup_duckdb(config, alerter)
-        backup_duckdb(config, alerter)
+        # Create first backup with mocked timestamp
+        from datetime import datetime
+
+        ts1 = datetime(2026, 3, 1, 0, 0, 0, tzinfo=UTC)
+        ts2 = datetime(2026, 3, 2, 0, 0, 0, tzinfo=UTC)
+
+        with patch("swingrl.backup.duckdb_backup.datetime") as mock_dt:
+            mock_dt.now.return_value = ts1
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            backup_duckdb(config, alerter)
+
+        with patch("swingrl.backup.duckdb_backup.datetime") as mock_dt:
+            mock_dt.now.return_value = ts2
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            backup_duckdb(config, alerter)
 
         duckdb_dir = duckdb_env["backup_dir"] / "duckdb"
         ddb_files = list(duckdb_dir.glob("market_data_*.ddb"))
