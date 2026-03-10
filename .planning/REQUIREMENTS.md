@@ -106,8 +106,8 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 - [ ] **HARD-01**: Jupyter analysis notebooks for weekly performance review (portfolio curves, trade logs, risk metrics)
 - [x] **HARD-02**: Error handling with retry logic and exponential backoff for API timeouts and data feed gaps
-- [ ] **HARD-03**: FinBERT sentiment pipeline (ProsusAI/finbert): score daily headlines from Alpaca News + Finnhub
-- [ ] **HARD-04**: A/B sentiment experiment: train identical agents with/without sentiment, evaluate Sharpe improvement
+- [x] **HARD-03**: FinBERT sentiment pipeline (ProsusAI/finbert): score daily headlines from Alpaca News + Finnhub
+- [x] **HARD-04**: A/B sentiment experiment: train identical agents with/without sentiment, evaluate Sharpe improvement
 - [x] **HARD-05**: Structured JSON logging to bind-mounted logs/ volume with comprehensive audit trails
 
 ### Production Hardening
@@ -242,8 +242,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PAPER-17 | Phase 9 | Complete |
 | HARD-01 | Phase 10 | Pending |
 | HARD-02 | Phase 10 | Complete |
-| HARD-03 | Phase 10 | Pending |
-| HARD-04 | Phase 10 | Pending |
+| HARD-03 | Phase 10 | Complete |
+| HARD-04 | Phase 10 | Complete |
 | HARD-05 | Phase 10 | Complete |
 | PROD-01 | Phase 10 | Complete |
 | PROD-02 | Phase 10 | Complete |
