@@ -112,7 +112,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### Production Hardening
 
-- [ ] **PROD-01**: Backup automation: daily SQLite (trading_ops.db), weekly DuckDB (market_data.ddb), monthly off-site rsync via Tailscale
+- [x] **PROD-01**: Backup automation: daily SQLite (trading_ops.db), weekly DuckDB (market_data.ddb), monthly off-site rsync via Tailscale
 - [x] **PROD-02**: deploy_model.sh: SCP model transfer from M1 Mac to homelab with integrity verification and automated smoke test
 - [ ] **PROD-03**: Shadow mode: new models run parallel with active model generating hypothetical trades (10 equity days, 30 crypto cycles)
 - [ ] **PROD-04**: Shadow mode auto-promotion criteria: Shadow Sharpe >= Active Sharpe, Shadow MDD <= 120% Active MDD, no circuit breakers
@@ -245,7 +245,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | HARD-03 | Phase 10 | Pending |
 | HARD-04 | Phase 10 | Pending |
 | HARD-05 | Phase 10 | Complete |
-| PROD-01 | Phase 10 | Pending |
+| PROD-01 | Phase 10 | Complete |
 | PROD-02 | Phase 10 | Complete |
 | PROD-03 | Phase 10 | Pending |
 | PROD-04 | Phase 10 | Pending |
