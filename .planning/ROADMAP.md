@@ -22,7 +22,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 8: Paper Trading Core** - Broker connections live with risk management veto layer and execution middleware (completed 2026-03-09)
 - [x] **Phase 9: Automation and Monitoring** - Scheduled execution, Discord alerting, dashboard, and dead man's switch running (completed 2026-03-09)
 - [x] **Phase 10: Production Hardening** - Backup, model deployment pipeline, shadow mode, security review, and disaster recovery verified (completed 2026-03-10)
-- [ ] **Phase 11: Production Startup Wiring** - Fix main.py ExecutionPipeline constructor, wire feature table init, fix FRED import path (gap closure)
+- [x] **Phase 11: Production Startup Wiring** - Fix main.py ExecutionPipeline constructor, wire feature table init, fix FRED import path (gap closure, completed 2026-03-10)
 - [ ] **Phase 12: Schema Alignment and Emergency Triggers** - Fix stop_polling table reference, fix emergency trigger queries against missing tables (gap closure)
 
 ## Phase Details
@@ -221,7 +221,7 @@ Plans:
   3. Weekly fundamentals and monthly macro scheduler jobs import from `swingrl.data.fred` without ImportError
 
 Plans:
-- [ ] 11-01-PLAN.md — Fix main.py ExecutionPipeline constructor, wire feature table init into DatabaseManager, fix FRED import path
+- [x] 11-01-PLAN.md — Fix main.py ExecutionPipeline constructor, wire feature table init into DatabaseManager, fix FRED import path
 
 ### Phase 12: Schema Alignment and Emergency Triggers
 **Goal**: Stop-price polling queries the correct table with correct columns, and all three automated emergency triggers query existing tables
@@ -253,5 +253,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 8. Paper Trading Core | 5/5 | Complete   | 2026-03-09 |
 | 9. Automation and Monitoring | 4/4 | Complete   | 2026-03-09 |
 | 10. Production Hardening | 8/8 | Complete    | 2026-03-10 |
-| 11. Production Startup Wiring | 0/1 | Not started | - |
+| 11. Production Startup Wiring | 1/1 | Complete    | 2026-03-10 |
 | 12. Schema Alignment and Emergency Triggers | 0/1 | Not started | - |

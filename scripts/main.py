@@ -13,6 +13,7 @@ import argparse
 import signal
 import sys
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -20,6 +21,7 @@ import structlog
 from swingrl.config.schema import load_config
 from swingrl.data.db import DatabaseManager
 from swingrl.execution.pipeline import ExecutionPipeline
+from swingrl.features.pipeline import FeaturePipeline
 from swingrl.monitoring.alerter import Alerter
 from swingrl.scheduler.halt_check import init_emergency_flags
 from swingrl.scheduler.jobs import (
@@ -228,7 +230,6 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
     db = DatabaseManager(config)
     init_emergency_flags(db)
 
-    pipeline = ExecutionPipeline(config=config, db=db)
     alerter = Alerter(
         webhook_url=config.alerting.alerts_webhook_url,
         alerts_webhook_url=config.alerting.alerts_webhook_url,
@@ -236,6 +237,17 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
         cooldown_minutes=config.alerting.alert_cooldown_minutes,
         consecutive_failures_before_alert=config.alerting.consecutive_failures_before_alert,
         db=db,
+    )
+
+    duckdb_conn = db._get_duckdb_conn()
+    feature_pipeline = FeaturePipeline(config, duckdb_conn)
+
+    pipeline = ExecutionPipeline(
+        config=config,
+        db=db,
+        feature_pipeline=feature_pipeline,
+        alerter=alerter,
+        models_dir=Path(config.paths.models_dir) / "active",
     )
 
     init_job_context(config=config, db=db, pipeline=pipeline, alerter=alerter)

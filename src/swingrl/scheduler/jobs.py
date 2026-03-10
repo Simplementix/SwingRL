@@ -301,10 +301,10 @@ def weekly_fundamentals_job() -> None:
 
     try:
         try:
-            from swingrl.data.ingestors.fred import FredIngestor  # type: ignore[import-not-found]
+            from swingrl.data.fred import FREDIngestor  # noqa: PLC0415
 
-            ingestor = FredIngestor(ctx.config, ctx.db)
-            ingestor.refresh()
+            ingestor = FREDIngestor(ctx.config)
+            ingestor.run_all()
             log.info("weekly_fundamentals_refreshed")
         except ImportError:
             log.warning("weekly_fundamentals_import_unavailable")
@@ -325,10 +325,10 @@ def monthly_macro_job() -> None:
 
     try:
         try:
-            from swingrl.data.ingestors.fred import FredIngestor  # noqa: F811
+            from swingrl.data.fred import FREDIngestor  # noqa: PLC0415
 
-            ingestor = FredIngestor(ctx.config, ctx.db)
-            ingestor.refresh()
+            ingestor = FREDIngestor(ctx.config)
+            ingestor.run_all()
             log.info("monthly_macro_refreshed")
         except ImportError:
             log.warning("monthly_macro_import_unavailable")

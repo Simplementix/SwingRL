@@ -144,6 +144,52 @@ class TestMainInitSequence:
         mock_init_flags.assert_called_once()
         mock_init_job_ctx.assert_called_once()
 
+    @patch("scripts.main.init_emergency_flags")
+    @patch("scripts.main.init_job_context")
+    @patch("scripts.main.load_config")
+    @patch("scripts.main.configure_logging")
+    def test_build_app_creates_pipeline_with_all_args(
+        self,
+        mock_logging: MagicMock,
+        mock_load_config: MagicMock,
+        mock_init_job_ctx: MagicMock,
+        mock_init_flags: MagicMock,
+        mock_config: MagicMock,
+    ) -> None:
+        """PAPER-01: build_app creates ExecutionPipeline with all 5 required arguments."""
+        mock_load_config.return_value = mock_config
+
+        from scripts.main import build_app
+
+        mock_scheduler = MagicMock()
+        mock_pipeline_cls = MagicMock()
+        mock_feature_pipeline_cls = MagicMock()
+
+        with patch("scripts.main.BackgroundScheduler", return_value=mock_scheduler):
+            with patch("scripts.main.SQLAlchemyJobStore"):
+                with patch("scripts.main.ThreadPoolExecutor"):
+                    with patch("scripts.main.DatabaseManager"):
+                        with patch("scripts.main.ExecutionPipeline", mock_pipeline_cls):
+                            with patch("scripts.main.Alerter"):
+                                with patch("scripts.main.start_stop_polling_thread"):
+                                    with patch(
+                                        "scripts.main.FeaturePipeline",
+                                        mock_feature_pipeline_cls,
+                                    ):
+                                        build_app(config_path="config/test.yaml")
+
+        # ExecutionPipeline must be called with all 5 keyword arguments
+        mock_pipeline_cls.assert_called_once()
+        call_kwargs = mock_pipeline_cls.call_args.kwargs
+        assert "config" in call_kwargs
+        assert "db" in call_kwargs
+        assert "feature_pipeline" in call_kwargs
+        assert "alerter" in call_kwargs
+        assert "models_dir" in call_kwargs
+
+        # FeaturePipeline must have been constructed
+        mock_feature_pipeline_cls.assert_called_once()
+
 
 class TestMainSignalHandler:
     """Verify SIGTERM triggers scheduler.shutdown."""
