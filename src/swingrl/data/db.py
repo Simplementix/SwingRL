@@ -153,7 +153,7 @@ class DatabaseManager:
             log.info("schema_initialized")
 
     def _init_duckdb_schema(self) -> None:
-        """Create DuckDB tables and aggregation views."""
+        """Create DuckDB tables, feature tables, and aggregation views."""
         with self.duckdb() as cursor:
             # --- Tables ---
             cursor.execute("""
@@ -296,6 +296,11 @@ class DatabaseManager:
                 FROM ohlcv_daily
                 GROUP BY symbol, date_trunc('month', date)
             """)
+
+            # Phase 5 feature tables (idempotent -- CREATE TABLE IF NOT EXISTS)
+            from swingrl.features.schema import init_feature_schema  # noqa: PLC0415
+
+            init_feature_schema(cursor)
 
     def _init_sqlite_schema(self) -> None:
         """Create SQLite tables and indexes."""
