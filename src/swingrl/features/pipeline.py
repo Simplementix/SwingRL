@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 from typing import Any, Literal
 
 import numpy as np
@@ -22,8 +23,8 @@ import structlog
 from swingrl.config.schema import SwingRLConfig
 from swingrl.features.assembler import (
     CRYPTO_PER_ASSET,
-    EQUITY_PER_ASSET,
     ObservationAssembler,
+    equity_per_asset_dim,
 )
 from swingrl.features.hmm_regime import HMMRegimeDetector
 from swingrl.features.macro import MacroFeatureAligner
@@ -306,6 +307,7 @@ class FeaturePipeline:
     def _get_equity_observation(self, date_str: str) -> np.ndarray:
         """Build equity observation from stored features."""
         per_asset: dict[str, np.ndarray] = {}
+        per_asset_size = equity_per_asset_dim(self._config.sentiment.enabled)
 
         for symbol in self._equity_symbols:
             row = self._conn.execute(
@@ -316,7 +318,7 @@ class FeaturePipeline:
             ).fetchdf()
 
             if row.empty:
-                per_asset[symbol] = np.zeros(EQUITY_PER_ASSET)
+                per_asset[symbol] = np.zeros(per_asset_size)
             else:
                 vals = row[_EQUITY_FEATURE_COLS].values[0]
                 per_asset[symbol] = np.nan_to_num(np.array(vals, dtype=float), nan=0.0)
@@ -330,7 +332,20 @@ class FeaturePipeline:
         # Turbulence — compute on-the-fly from recent returns
         turb = self._compute_turbulence_equity(date_str)
 
-        return self._assembler.assemble_equity(per_asset, macro, hmm, turb)
+        # Sentiment features — fetched when enabled
+        sentiment: dict[str, tuple[float, float]] | None = None
+        if self._config.sentiment.enabled:
+            sentiment = get_sentiment_features(
+                enabled=True,
+                symbols=self._equity_symbols,
+                alpaca_api_key=os.environ.get("APCA_API_KEY_ID", ""),
+                alpaca_api_secret=os.environ.get("APCA_API_SECRET_KEY", ""),
+                finnhub_api_key=self._config.sentiment.finnhub_api_key,
+            )
+
+        return self._assembler.assemble_equity(
+            per_asset, macro, hmm, turb, sentiment_features=sentiment
+        )
 
     def _get_crypto_observation(self, datetime_str: str) -> np.ndarray:
         """Build crypto observation from stored features."""

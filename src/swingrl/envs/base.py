@@ -22,8 +22,8 @@ from swingrl.envs.rewards import RollingSharpeReward
 from swingrl.features.assembler import (
     CRYPTO_OBS_DIM,
     CRYPTO_PORTFOLIO,
-    EQUITY_OBS_DIM,
     EQUITY_PORTFOLIO,
+    equity_obs_dim,
 )
 
 log = structlog.get_logger(__name__)
@@ -63,7 +63,10 @@ class BaseTradingEnv(gymnasium.Env):
 
         # Resolve environment-specific parameters
         if environment == "equity":
-            self._obs_dim = EQUITY_OBS_DIM
+            self._obs_dim = equity_obs_dim(
+                sentiment_enabled=config.sentiment.enabled,
+                n_equity_symbols=len(config.equity.symbols),
+            )
             self._portfolio_dim = EQUITY_PORTFOLIO
             self._n_assets = len(config.equity.symbols)
             self._episode_bars = config.environment.equity_episode_bars
