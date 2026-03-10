@@ -434,3 +434,69 @@ class TestAggregationViews:
         assert m1[5] == 477.0  # last close
         assert m1[6] == 225_000_000  # sum volume
         assert m1[7] == 477.0  # last adjusted_close
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 Task 1: Schema migrations for inference_outcomes, api_errors,
+# positions columns
+# ---------------------------------------------------------------------------
+
+
+class TestPhase12SchemaMigrations:
+    """init_schema() creates new tables and columns for Phase 12."""
+
+    def test_inference_outcomes_table_created(self, db_manager: object) -> None:
+        """INT-03: inference_outcomes table exists after init_schema()."""
+        db_manager.init_schema()
+        with db_manager.sqlite() as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='inference_outcomes'"
+            ).fetchall()
+        assert len(rows) == 1
+
+    def test_inference_outcomes_columns(self, db_manager: object) -> None:
+        """INT-03: inference_outcomes has id, timestamp, environment, had_nan."""
+        db_manager.init_schema()
+        with db_manager.sqlite() as conn:
+            info = conn.execute("PRAGMA table_info(inference_outcomes)").fetchall()
+            col_names = {row["name"] for row in info}
+        assert {"id", "timestamp", "environment", "had_nan"} <= col_names
+
+    def test_api_errors_table_created(self, db_manager: object) -> None:
+        """INT-04: api_errors table exists after init_schema()."""
+        db_manager.init_schema()
+        with db_manager.sqlite() as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='api_errors'"
+            ).fetchall()
+        assert len(rows) == 1
+
+    def test_api_errors_columns(self, db_manager: object) -> None:
+        """INT-04: api_errors has id, timestamp, broker, status_code, endpoint, error_message."""
+        db_manager.init_schema()
+        with db_manager.sqlite() as conn:
+            info = conn.execute("PRAGMA table_info(api_errors)").fetchall()
+            col_names = {row["name"] for row in info}
+        assert {
+            "id",
+            "timestamp",
+            "broker",
+            "status_code",
+            "endpoint",
+            "error_message",
+        } <= col_names
+
+    def test_positions_has_stop_columns(self, db_manager: object) -> None:
+        """INT-03: positions table has stop_loss_price, take_profit_price, side after init_schema()."""
+        db_manager.init_schema()
+        with db_manager.sqlite() as conn:
+            info = conn.execute("PRAGMA table_info(positions)").fetchall()
+            col_names = {row["name"] for row in info}
+        assert "stop_loss_price" in col_names
+        assert "take_profit_price" in col_names
+        assert "side" in col_names
+
+    def test_positions_alter_idempotent(self, db_manager: object) -> None:
+        """INT-03: Running init_schema() twice does not error on ALTER TABLE."""
+        db_manager.init_schema()
+        db_manager.init_schema()  # Second call should not raise

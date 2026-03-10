@@ -86,3 +86,60 @@ class TestStopPollingThread:
 
         assert thread.daemon is True
         # Clean up: thread won't actually run since _poll_stop_prices is mocked
+
+
+class TestStopPollingUsesPositionsTable:
+    """Verify stop_polling queries 'positions' table (not 'position_tracker')."""
+
+    def test_query_references_positions_table(self) -> None:
+        """INT-03: stop_polling SELECT references 'FROM positions' not 'FROM position_tracker'."""
+        import inspect
+
+        from swingrl.scheduler.stop_polling import _poll_stop_prices
+
+        source = inspect.getsource(_poll_stop_prices)
+        assert "FROM positions " in source
+        assert "position_tracker" not in source
+
+    def test_processes_rows_with_stop_levels(self) -> None:
+        """INT-03: stop_polling processes rows with stop_loss_price and take_profit_price."""
+        from swingrl.scheduler.stop_polling import _check_stop_levels
+
+        mock_config = MagicMock()
+        mock_db = MagicMock()
+
+        # Row with stop_loss and take_profit
+        row = {
+            "symbol": "BTCUSDT",
+            "side": "buy",
+            "stop_loss_price": 50000.0,
+            "take_profit_price": 70000.0,
+        }
+
+        # Mock httpx (imported locally inside _check_stop_levels)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"price": "60000.0"}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("httpx.get", return_value=mock_resp):
+            # Should not raise
+            _check_stop_levels(row, mock_config, mock_db)
+
+    def test_skips_row_without_stop_levels(self) -> None:
+        """INT-03: stop_polling skips rows with no stop_loss_price or take_profit_price."""
+        from swingrl.scheduler.stop_polling import _check_stop_levels
+
+        mock_config = MagicMock()
+        mock_db = MagicMock()
+
+        row = {
+            "symbol": "BTCUSDT",
+            "side": "buy",
+            "stop_loss_price": None,
+            "take_profit_price": None,
+        }
+
+        # Should return early without making any HTTP calls
+        with patch("httpx.get") as mock_get:
+            _check_stop_levels(row, mock_config, mock_db)
+            mock_get.assert_not_called()
