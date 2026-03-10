@@ -454,6 +454,39 @@ class DatabaseManager:
                 )
             """)
 
+            # Phase 12: Add stop/TP columns to positions (idempotent)
+            for col_sql in [
+                "ALTER TABLE positions ADD COLUMN stop_loss_price REAL",
+                "ALTER TABLE positions ADD COLUMN take_profit_price REAL",
+                "ALTER TABLE positions ADD COLUMN side TEXT",
+            ]:
+                try:
+                    conn.execute(col_sql)
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+
+            # Phase 12: inference_outcomes for NaN tracking
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS inference_outcomes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    environment TEXT NOT NULL,
+                    had_nan INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+
+            # Phase 12: api_errors for broker error tracking
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS api_errors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    broker TEXT NOT NULL,
+                    status_code INTEGER NOT NULL,
+                    endpoint TEXT,
+                    error_message TEXT
+                )
+            """)
+
             # --- Indexes ---
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_cb_env_resumed

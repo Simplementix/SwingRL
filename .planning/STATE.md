@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 11-01-PLAN.md
-last_updated: "2026-03-10T15:14:37.055Z"
-last_activity: "2026-03-10 -- Phase 11 Plan 01: Production startup wiring fixes"
+stopped_at: Completed 12-01-PLAN.md
+last_updated: "2026-03-10T16:46:18.304Z"
+last_activity: "2026-03-10 -- Phase 12 Plan 01: Schema alignment and emergency triggers"
 progress:
   total_phases: 12
-  completed_phases: 11
-  total_plans: 44
-  completed_plans: 44
+  completed_phases: 12
+  total_plans: 45
+  completed_plans: 45
   percent: 100
 ---
 
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 ## Current Position
 
-Phase: 11 of 12 (Production Startup Wiring)
-Plan: 1 of 1 in phase 11
-Status: Plan 11-01 complete -- Fixed three cross-phase wiring bugs for production startup
-Last activity: 2026-03-10 -- Phase 11 Plan 01: Production startup wiring fixes
+Phase: 12 of 12 (Schema Alignment and Emergency Triggers)
+Plan: 1 of 1 in phase 12
+Status: Plan 12-01 complete -- Schema alignment and emergency trigger rewrites
+Last activity: 2026-03-10 -- Phase 12 Plan 01: Schema alignment and emergency triggers
 
 Progress: [██████████] 100%
 
@@ -95,6 +95,7 @@ Progress: [██████████] 100%
 | Phase 10-production-hardening P07 | 6 | 3 tasks | 7 files |
 | Phase 10-production-hardening P08 | 5 | 1 tasks | 2 files |
 | Phase 11-production-startup-wiring P01 | 9 | 2 tasks | 6 files |
+| Phase 12 P01 | 6 | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -206,6 +207,7 @@ Recent decisions affecting current work:
 - [Phase 10-production-hardening]: Shadow uses zero portfolio weights (np.zeros) for signal interpretation since it has no real positions
 - [Phase 11-production-startup-wiring]: models_dir points to models/active (Phase 10 convention for active model directory)
 - [Phase 11-production-startup-wiring]: Local import of init_feature_schema inside _init_duckdb_schema to avoid circular imports
+- [Phase 12]: _CB_DRAWDOWN_TRIGGER changed from -13.0 to 0.13 (positive fraction matching drawdown_pct storage)
 
 ### Pending Todos
 
@@ -219,6 +221,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-10T15:08:00Z
-Stopped at: Completed 11-01-PLAN.md
-Resume file: .planning/phases/12-schema-alignment-and-emergency-triggers/12-01-PLAN.md
+Last session: 2026-03-10T16:42:18.532Z
+Stopped at: Completed 12-01-PLAN.md
+Resume file: None

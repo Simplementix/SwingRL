@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import requests
@@ -219,6 +220,23 @@ class BinanceSimAdapter:
 
         error_msg = str(last_error) if last_error else "Unknown error"
         log.error("binance_price_fetch_failed", symbol=symbol, error=error_msg)
+
+        # Record API error for automated trigger detection
+        try:
+            with self._db.sqlite() as conn:
+                conn.execute(
+                    "INSERT INTO api_errors (timestamp, broker, status_code, endpoint, "
+                    "error_message) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        datetime.now(UTC).isoformat(),
+                        "binance_us",
+                        0,
+                        f"/api/v3/depth?symbol={symbol}",
+                        error_msg,
+                    ),
+                )
+        except Exception:
+            log.warning("api_error_tracking_failed", exc_info=True)
 
         if self._alerter is not None:
             self._alerter.send_alert(

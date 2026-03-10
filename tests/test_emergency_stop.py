@@ -14,11 +14,15 @@ import pytest
 
 @pytest.fixture()
 def mock_db() -> MagicMock:
-    """Mock DatabaseManager with SQLite context manager."""
+    """Mock DatabaseManager with SQLite and DuckDB context managers."""
     db = MagicMock()
     conn = MagicMock()
     db.sqlite.return_value.__enter__ = MagicMock(return_value=conn)
     db.sqlite.return_value.__exit__ = MagicMock(return_value=False)
+
+    duck_cursor = MagicMock()
+    db.duckdb.return_value.__enter__ = MagicMock(return_value=duck_cursor)
+    db.duckdb.return_value.__exit__ = MagicMock(return_value=False)
     return db
 
 
@@ -346,46 +350,121 @@ class TestFullEmergencyStop:
 class TestAutomatedTriggers:
     """Test check_automated_triggers for VIX+CB, NaN, and IP ban."""
 
-    def test_vix_plus_cb_trigger(
+    def test_vix_plus_cb_trigger_fires(
         self,
         mock_db: MagicMock,
         mock_config: MagicMock,
     ) -> None:
-        """PROD-07: Detects VIX>40 AND global CB within 2% of firing."""
+        """PROD-07: Detects VIX>40 AND drawdown_pct >= 0.13."""
         from swingrl.execution.emergency import check_automated_triggers
 
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        duck_cursor = mock_db.duckdb.return_value.__enter__.return_value
+        sqlite_conn = mock_db.sqlite.return_value.__enter__.return_value
 
-        # VIX > 40 and drawdown > -13%
-        conn.execute.return_value.fetchone.side_effect = [
-            {"vix_close": 42.0},  # VIX query
-            {"combined_drawdown": -14.0},  # Drawdown query
+        # VIX > 40 from DuckDB (tuple indexing)
+        duck_cursor.execute.return_value.fetchone.return_value = (42.0,)
+
+        # Drawdown >= 0.13 from SQLite (dict-key access)
+        sqlite_conn.execute.return_value.fetchone.side_effect = [
+            {"worst_dd": 0.15},  # drawdown query
+            {"nan_count": 0},  # NaN query
+            {"ban_count": 0},  # IP ban query
         ]
 
         triggers = check_automated_triggers(config=mock_config, db=mock_db)
         assert any("VIX" in t for t in triggers)
 
-    def test_nan_inference_trigger(
+    def test_vix_plus_cb_trigger_does_not_fire_low_vix(
         self,
         mock_db: MagicMock,
         mock_config: MagicMock,
     ) -> None:
-        """PROD-07: Detects 2+ consecutive NaN inferences in 24h."""
+        """PROD-07: Does NOT fire when VIX <= 40."""
         from swingrl.execution.emergency import check_automated_triggers
 
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        duck_cursor = mock_db.duckdb.return_value.__enter__.return_value
+        sqlite_conn = mock_db.sqlite.return_value.__enter__.return_value
 
-        # No VIX trigger (<=40 so drawdown query skipped), NaN count >= 2
-        conn.execute.return_value.fetchone.side_effect = [
-            {"vix_close": 20.0},  # VIX OK -- drawdown query NOT called
-            {"nan_count": 3},  # NaN trigger
-            None,  # IP ban check
+        # VIX <= 40
+        duck_cursor.execute.return_value.fetchone.return_value = (20.0,)
+
+        sqlite_conn.execute.return_value.fetchone.side_effect = [
+            {"nan_count": 0},  # NaN query
+            {"ban_count": 0},  # IP ban query
+        ]
+
+        triggers = check_automated_triggers(config=mock_config, db=mock_db)
+        assert not any("VIX" in t for t in triggers)
+
+    def test_vix_plus_cb_trigger_does_not_fire_low_drawdown(
+        self,
+        mock_db: MagicMock,
+        mock_config: MagicMock,
+    ) -> None:
+        """PROD-07: Does NOT fire when VIX>40 but drawdown_pct < 0.13."""
+        from swingrl.execution.emergency import check_automated_triggers
+
+        duck_cursor = mock_db.duckdb.return_value.__enter__.return_value
+        sqlite_conn = mock_db.sqlite.return_value.__enter__.return_value
+
+        # VIX > 40 from DuckDB
+        duck_cursor.execute.return_value.fetchone.return_value = (42.0,)
+
+        # Drawdown < 0.13
+        sqlite_conn.execute.return_value.fetchone.side_effect = [
+            {"worst_dd": 0.05},  # drawdown too low
+            {"nan_count": 0},  # NaN query
+            {"ban_count": 0},  # IP ban query
+        ]
+
+        triggers = check_automated_triggers(config=mock_config, db=mock_db)
+        assert not any("VIX" in t for t in triggers)
+
+    def test_nan_inference_trigger_fires(
+        self,
+        mock_db: MagicMock,
+        mock_config: MagicMock,
+    ) -> None:
+        """PROD-07: Detects 2+ NaN inferences in 24h."""
+        from swingrl.execution.emergency import check_automated_triggers
+
+        duck_cursor = mock_db.duckdb.return_value.__enter__.return_value
+        sqlite_conn = mock_db.sqlite.return_value.__enter__.return_value
+
+        # VIX OK
+        duck_cursor.execute.return_value.fetchone.return_value = (20.0,)
+
+        # NaN count >= 2
+        sqlite_conn.execute.return_value.fetchone.side_effect = [
+            {"nan_count": 3},  # NaN trigger fires
+            {"ban_count": 0},  # IP ban query
         ]
 
         triggers = check_automated_triggers(config=mock_config, db=mock_db)
         assert any("NaN" in t for t in triggers)
 
-    def test_ip_ban_trigger(
+    def test_nan_inference_trigger_does_not_fire(
+        self,
+        mock_db: MagicMock,
+        mock_config: MagicMock,
+    ) -> None:
+        """PROD-07: Does NOT fire when NaN count < 2."""
+        from swingrl.execution.emergency import check_automated_triggers
+
+        duck_cursor = mock_db.duckdb.return_value.__enter__.return_value
+        sqlite_conn = mock_db.sqlite.return_value.__enter__.return_value
+
+        duck_cursor.execute.return_value.fetchone.return_value = (20.0,)
+
+        sqlite_conn.execute.return_value.fetchone.side_effect = [
+            {"nan_count": 1},  # Below threshold
+            {"ban_count": 0},
+        ]
+
+        triggers = check_automated_triggers(config=mock_config, db=mock_db)
+        assert not any("NaN" in t for t in triggers)
+
+    def test_ip_ban_trigger_fires(
         self,
         mock_db: MagicMock,
         mock_config: MagicMock,
@@ -393,16 +472,39 @@ class TestAutomatedTriggers:
         """PROD-07: Detects Binance.US IP ban (HTTP 418)."""
         from swingrl.execution.emergency import check_automated_triggers
 
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        duck_cursor = mock_db.duckdb.return_value.__enter__.return_value
+        sqlite_conn = mock_db.sqlite.return_value.__enter__.return_value
 
-        conn.execute.return_value.fetchone.side_effect = [
-            {"vix_close": 20.0},  # VIX OK -- drawdown query NOT called
-            {"nan_count": 0},  # NaN OK
-            {"status_code": 418},  # IP ban!
+        duck_cursor.execute.return_value.fetchone.return_value = (20.0,)
+
+        sqlite_conn.execute.return_value.fetchone.side_effect = [
+            {"nan_count": 0},
+            {"ban_count": 1},  # IP ban detected
         ]
 
         triggers = check_automated_triggers(config=mock_config, db=mock_db)
         assert any("418" in t or "ban" in t.lower() for t in triggers)
+
+    def test_ip_ban_trigger_does_not_fire(
+        self,
+        mock_db: MagicMock,
+        mock_config: MagicMock,
+    ) -> None:
+        """PROD-07: Does NOT fire when no 418 errors exist."""
+        from swingrl.execution.emergency import check_automated_triggers
+
+        duck_cursor = mock_db.duckdb.return_value.__enter__.return_value
+        sqlite_conn = mock_db.sqlite.return_value.__enter__.return_value
+
+        duck_cursor.execute.return_value.fetchone.return_value = (20.0,)
+
+        sqlite_conn.execute.return_value.fetchone.side_effect = [
+            {"nan_count": 0},
+            {"ban_count": 0},  # No IP ban
+        ]
+
+        triggers = check_automated_triggers(config=mock_config, db=mock_db)
+        assert not any("418" in t or "ban" in t.lower() for t in triggers)
 
     def test_no_triggers_active(
         self,
@@ -412,13 +514,68 @@ class TestAutomatedTriggers:
         """PROD-07: Returns empty list when no triggers are active."""
         from swingrl.execution.emergency import check_automated_triggers
 
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        duck_cursor = mock_db.duckdb.return_value.__enter__.return_value
+        sqlite_conn = mock_db.sqlite.return_value.__enter__.return_value
 
-        conn.execute.return_value.fetchone.side_effect = [
-            {"vix_close": 20.0},  # VIX OK -- drawdown query NOT called
-            {"nan_count": 0},  # NaN OK
-            None,  # No IP ban
+        duck_cursor.execute.return_value.fetchone.return_value = (20.0,)
+
+        sqlite_conn.execute.return_value.fetchone.side_effect = [
+            {"nan_count": 0},
+            {"ban_count": 0},
         ]
 
         triggers = check_automated_triggers(config=mock_config, db=mock_db)
         assert triggers == []
+
+    def test_combined_triggers(
+        self,
+        mock_db: MagicMock,
+        mock_config: MagicMock,
+    ) -> None:
+        """PROD-07: Returns combined list when multiple triggers fire."""
+        from swingrl.execution.emergency import check_automated_triggers
+
+        duck_cursor = mock_db.duckdb.return_value.__enter__.return_value
+        sqlite_conn = mock_db.sqlite.return_value.__enter__.return_value
+
+        # VIX > 40
+        duck_cursor.execute.return_value.fetchone.return_value = (45.0,)
+
+        # All triggers fire
+        sqlite_conn.execute.return_value.fetchone.side_effect = [
+            {"worst_dd": 0.15},  # drawdown trigger
+            {"nan_count": 3},  # NaN trigger
+            {"ban_count": 1},  # IP ban trigger
+        ]
+
+        triggers = check_automated_triggers(config=mock_config, db=mock_db)
+        assert len(triggers) == 3
+
+    def test_graceful_failure_duckdb_unavailable(
+        self,
+        mock_db: MagicMock,
+        mock_config: MagicMock,
+    ) -> None:
+        """PROD-07: VIX trigger fails gracefully when DuckDB unavailable."""
+        from swingrl.execution.emergency import check_automated_triggers
+
+        # DuckDB raises
+        mock_db.duckdb.return_value.__enter__.side_effect = ConnectionError("DuckDB down")
+
+        sqlite_conn = mock_db.sqlite.return_value.__enter__.return_value
+
+        sqlite_conn.execute.return_value.fetchone.side_effect = [
+            {"nan_count": 0},
+            {"ban_count": 0},
+        ]
+
+        # Should not raise, just skip VIX trigger
+        triggers = check_automated_triggers(config=mock_config, db=mock_db)
+        assert not any("VIX" in t for t in triggers)
+
+    def test_cb_drawdown_trigger_uses_positive_fraction(self) -> None:
+        """PROD-07: _CB_DRAWDOWN_TRIGGER is positive fraction (0.13), not negative pct."""
+        from swingrl.execution.emergency import _CB_DRAWDOWN_TRIGGER
+
+        assert _CB_DRAWDOWN_TRIGGER == 0.13
+        assert _CB_DRAWDOWN_TRIGGER > 0

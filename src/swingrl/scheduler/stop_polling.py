@@ -58,7 +58,7 @@ def _poll_stop_prices(
 
     Runs in an infinite loop. Each iteration:
     1. Check halt flag -- skip if halted
-    2. Query open crypto positions from position_tracker
+    2. Query open crypto positions from positions table
     3. For each position with stop/TP levels, check current price
     4. Log and alert if triggered
 
@@ -79,7 +79,7 @@ def _poll_stop_prices(
             with db.sqlite() as conn:
                 rows = conn.execute(
                     "SELECT symbol, side, quantity, stop_loss_price, take_profit_price "
-                    "FROM position_tracker "
+                    "FROM positions "
                     "WHERE environment = 'crypto' AND quantity > 0"
                 ).fetchall()
 

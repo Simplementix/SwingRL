@@ -31,8 +31,9 @@ log = structlog.get_logger(__name__)
 
 EquityStrategy = Literal["limit_at_bid", "limit_extended", "queue_for_open"]
 
-# CB fires at -15% combined drawdown; trigger when within 2% (i.e., > -13%)
-_CB_DRAWDOWN_TRIGGER = -13.0
+# CB fires at -15% combined drawdown; trigger when within 2% (i.e., >= 13%)
+# Stored as positive fraction matching how drawdown_pct is stored in portfolio_snapshots
+_CB_DRAWDOWN_TRIGGER = 0.13
 _VIX_TRIGGER = 40.0
 _NAN_INFERENCE_THRESHOLD = 2
 _IP_BAN_STATUS_CODE = 418
@@ -413,9 +414,11 @@ def check_automated_triggers(
     """Check for automated emergency stop triggers.
 
     Three triggers are checked:
-    1. VIX > 40 AND global CB within 2% of firing (combined DD > -13%)
-    2. 2+ consecutive NaN inference outputs in 24h
-    3. Binance.US IP ban (HTTP 418)
+    1. VIX > 40 (from DuckDB macro_features) AND drawdown >= 13% (from SQLite portfolio_snapshots)
+    2. 2+ NaN inference outputs in 24h (from SQLite inference_outcomes)
+    3. Binance.US IP ban HTTP 418 (from SQLite api_errors)
+
+    Each trigger manages its own DB connection independently and fails gracefully.
 
     Args:
         config: Validated SwingRLConfig.
@@ -426,60 +429,65 @@ def check_automated_triggers(
     """
     triggers: list[str] = []
 
+    # Trigger 1: VIX + CB threshold
+    # VIX comes from DuckDB macro_features, drawdown from SQLite portfolio_snapshots
+    try:
+        with db.duckdb() as cursor:
+            vix_row = cursor.execute(
+                "SELECT value FROM macro_features "
+                "WHERE series_id = 'VIXCLS' ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+
+        if vix_row is not None and vix_row[0] > _VIX_TRIGGER:
+            with db.sqlite() as conn:
+                dd_row = conn.execute(
+                    "SELECT MAX(drawdown_pct) as worst_dd FROM portfolio_snapshots "
+                    "WHERE timestamp > datetime('now', '-24 hours')"
+                ).fetchone()
+
+            if (
+                dd_row is not None
+                and dd_row["worst_dd"] is not None
+                and dd_row["worst_dd"] >= _CB_DRAWDOWN_TRIGGER
+            ):
+                triggers.append(
+                    f"VIX={vix_row[0]:.1f} > {_VIX_TRIGGER} "
+                    f"AND drawdown={dd_row['worst_dd']:.1%} "
+                    f"(CB threshold: {_CB_DRAWDOWN_TRIGGER:.0%})"
+                )
+    except Exception:
+        log.warning("trigger_check_vix_cb_failed", exc_info=True)
+
+    # Trigger 2: NaN inference count in last 24h
     try:
         with db.sqlite() as conn:
-            # Trigger 1: VIX + CB threshold
-            try:
-                vix_row = conn.execute(
-                    "SELECT vix_close FROM market_indicators ORDER BY timestamp DESC LIMIT 1"
-                ).fetchone()
+            nan_row = conn.execute(
+                "SELECT COUNT(*) as nan_count FROM inference_outcomes "
+                "WHERE had_nan = 1 AND timestamp > datetime('now', '-24 hours')"
+            ).fetchone()
 
-                if vix_row is not None and vix_row["vix_close"] > _VIX_TRIGGER:
-                    dd_row = conn.execute(
-                        "SELECT combined_drawdown FROM portfolio_snapshots "
-                        "ORDER BY timestamp DESC LIMIT 1"
-                    ).fetchone()
-
-                    if dd_row is not None and dd_row["combined_drawdown"] < _CB_DRAWDOWN_TRIGGER:
-                        triggers.append(
-                            f"VIX={vix_row['vix_close']:.1f} > {_VIX_TRIGGER} "
-                            f"AND drawdown={dd_row['combined_drawdown']:.1f}% "
-                            f"(CB threshold: {_CB_DRAWDOWN_TRIGGER}%)"
-                        )
-            except Exception:
-                log.warning("trigger_check_vix_cb_failed", exc_info=True)
-
-            # Trigger 2: Consecutive NaN inferences
-            try:
-                nan_row = conn.execute(
-                    "SELECT nan_count FROM inference_log "
-                    "WHERE timestamp > datetime('now', '-24 hours') "
-                    "ORDER BY timestamp DESC LIMIT 1"
-                ).fetchone()
-
-                if nan_row is not None and nan_row["nan_count"] >= _NAN_INFERENCE_THRESHOLD:
-                    triggers.append(
-                        f"NaN inference: {nan_row['nan_count']} consecutive "
-                        f"NaN outputs in last 24h (threshold: {_NAN_INFERENCE_THRESHOLD})"
-                    )
-            except Exception:
-                log.warning("trigger_check_nan_failed", exc_info=True)
-
-            # Trigger 3: Binance.US IP ban (418)
-            try:
-                ban_row = conn.execute(
-                    "SELECT status_code FROM api_status_log "
-                    "WHERE broker = 'binance_us' "
-                    "ORDER BY timestamp DESC LIMIT 1"
-                ).fetchone()
-
-                if ban_row is not None and ban_row["status_code"] == _IP_BAN_STATUS_CODE:
-                    triggers.append(f"Binance.US IP ban detected (HTTP {_IP_BAN_STATUS_CODE})")
-            except Exception:
-                log.warning("trigger_check_ip_ban_failed", exc_info=True)
-
+        if nan_row is not None and nan_row["nan_count"] >= _NAN_INFERENCE_THRESHOLD:
+            triggers.append(
+                f"NaN inference: {nan_row['nan_count']} NaN outputs "
+                f"in last 24h (threshold: {_NAN_INFERENCE_THRESHOLD})"
+            )
     except Exception:
-        log.warning("trigger_check_db_failed", exc_info=True)
+        log.warning("trigger_check_nan_failed", exc_info=True)
+
+    # Trigger 3: Binance.US IP ban (HTTP 418)
+    try:
+        with db.sqlite() as conn:
+            ban_row = conn.execute(
+                "SELECT COUNT(*) as ban_count FROM api_errors "
+                "WHERE broker = 'binance_us' AND status_code = ? "
+                "AND timestamp > datetime('now', '-24 hours')",
+                (_IP_BAN_STATUS_CODE,),
+            ).fetchone()
+
+        if ban_row is not None and ban_row["ban_count"] > 0:
+            triggers.append(f"Binance.US IP ban detected (HTTP {_IP_BAN_STATUS_CODE})")
+    except Exception:
+        log.warning("trigger_check_ip_ban_failed", exc_info=True)
 
     if triggers:
         log.warning("automated_triggers_detected", triggers=triggers)
