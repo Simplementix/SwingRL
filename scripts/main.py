@@ -1,7 +1,8 @@
 """SwingRL production entrypoint -- APScheduler with cron jobs and stop-price polling.
 
-Initializes all components, registers 11 jobs (6 trading + 3 backup + 1 shadow + 1 trigger),
-starts crypto stop-price polling daemon thread, and blocks until SIGTERM/SIGINT.
+Initializes all components, registers 12 jobs (6 trading + 3 backup + 1 shadow + 1 trigger +
+1 reconciliation), starts crypto stop-price polling daemon thread, and blocks until
+SIGTERM/SIGINT.
 
 Usage:
     python scripts/main.py --config config/swingrl.yaml
@@ -33,6 +34,7 @@ from swingrl.scheduler.jobs import (
     init_job_context,
     monthly_macro_job,
     monthly_offsite_job,
+    reconciliation_job,
     shadow_promotion_check_job,
     stuck_agent_check_job,
     weekly_duckdb_backup_job,
@@ -62,7 +64,7 @@ def create_scheduler_and_register_jobs(
     scheduler: Any,
     config: Any,
 ) -> None:
-    """Register all 11 jobs on the scheduler (6 trading + 3 backup + 1 shadow + 1 trigger).
+    """Register all 12 jobs on the scheduler (6 trading + 3 backup + 1 shadow + 1 trigger + 1 reconciliation).
 
     Args:
         scheduler: APScheduler BackgroundScheduler instance.
@@ -183,7 +185,18 @@ def create_scheduler_and_register_jobs(
         replace_existing=True,
     )
 
-    log.info("scheduler_jobs_registered", count=11)
+    # Daily equity position reconciliation (5 PM ET, after 4:15 PM equity cycle)
+    scheduler.add_job(
+        reconciliation_job,
+        trigger="cron",
+        hour=17,
+        minute=0,
+        timezone="America/New_York",
+        id="daily_reconciliation",
+        replace_existing=True,
+    )
+
+    log.info("scheduler_jobs_registered", count=12)
 
 
 def make_signal_handler(
@@ -247,7 +260,7 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
         db=db,
         feature_pipeline=feature_pipeline,
         alerter=alerter,
-        models_dir=Path(config.paths.models_dir) / "active",
+        models_dir=Path(config.paths.models_dir),
     )
 
     init_job_context(config=config, db=db, pipeline=pipeline, alerter=alerter)
@@ -279,7 +292,7 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
     log.info(
         "swingrl_app_built",
         jobstore_path=config.scheduler.apscheduler_db_path,
-        job_count=11,
+        job_count=12,
     )
 
     return {

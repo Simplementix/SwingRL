@@ -249,6 +249,119 @@ class TestMonthlyMacroJob:
         monthly_macro_job()
 
 
+class TestReconciliationJob:
+    """reconciliation_job wraps PositionReconciler with halt check and failure tracking."""
+
+    @patch("swingrl.scheduler.jobs._ctx", new=None)
+    def test_reconciliation_success(self) -> None:
+        """PAPER-09: reconciliation_job calls reconcile('equity') on success path."""
+        from swingrl.scheduler.jobs import init_job_context, reconciliation_job
+
+        mock_alerter = MagicMock()
+        mock_pipeline = MagicMock()
+        mock_db = MagicMock()
+        mock_config = MagicMock()
+
+        init_job_context(
+            config=mock_config, db=mock_db, pipeline=mock_pipeline, alerter=mock_alerter
+        )
+
+        mock_reconciler = MagicMock()
+        mock_reconciler.reconcile.return_value = []
+
+        with patch("swingrl.scheduler.jobs.is_halted", return_value=False):
+            with patch(
+                "swingrl.execution.reconciliation.PositionReconciler",
+                return_value=mock_reconciler,
+            ):
+                with patch(
+                    "swingrl.execution.adapters.alpaca_adapter.AlpacaAdapter"
+                ) as mock_adapter_cls:
+                    mock_adapter_cls.return_value = MagicMock()
+                    reconciliation_job()
+
+        mock_reconciler.reconcile.assert_called_once_with("equity")
+
+    @patch("swingrl.scheduler.jobs._ctx", new=None)
+    def test_skips_when_halted(self) -> None:
+        """PAPER-09: reconciliation_job skips reconcile when halt flag is active."""
+        from swingrl.scheduler.jobs import init_job_context, reconciliation_job
+
+        mock_alerter = MagicMock()
+        mock_pipeline = MagicMock()
+        mock_db = MagicMock()
+        mock_config = MagicMock()
+
+        init_job_context(
+            config=mock_config, db=mock_db, pipeline=mock_pipeline, alerter=mock_alerter
+        )
+
+        mock_reconciler = MagicMock()
+
+        with patch("swingrl.scheduler.jobs.is_halted", return_value=True):
+            with patch(
+                "swingrl.execution.reconciliation.PositionReconciler",
+                return_value=mock_reconciler,
+            ):
+                reconciliation_job()
+
+        mock_reconciler.reconcile.assert_not_called()
+
+    @patch("swingrl.scheduler.jobs._ctx", new=None)
+    @patch("swingrl.scheduler.jobs._reconciliation_failures", new=0)
+    def test_consecutive_failures_escalate(self) -> None:
+        """PAPER-09: 3+ consecutive failures send critical alert; success resets counter."""
+        import swingrl.scheduler.jobs as jobs_module
+        from swingrl.scheduler.jobs import init_job_context, reconciliation_job
+
+        mock_alerter = MagicMock()
+        mock_pipeline = MagicMock()
+        mock_db = MagicMock()
+        mock_config = MagicMock()
+
+        init_job_context(
+            config=mock_config, db=mock_db, pipeline=mock_pipeline, alerter=mock_alerter
+        )
+
+        # Reset failure counter
+        jobs_module._reconciliation_failures = 0
+
+        def raise_error(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("broker connection refused")
+
+        with patch("swingrl.scheduler.jobs.is_halted", return_value=False):
+            with patch(
+                "swingrl.execution.adapters.alpaca_adapter.AlpacaAdapter"
+            ) as mock_adapter_cls:
+                mock_adapter_cls.return_value = MagicMock()
+                with patch(
+                    "swingrl.execution.reconciliation.PositionReconciler"
+                ) as mock_reconciler_cls:
+                    mock_reconciler_cls.return_value.reconcile.side_effect = raise_error
+
+                    # First failure: warning
+                    reconciliation_job()
+                    first_alert_level = mock_alerter.send_alert.call_args_list[-1].args[0]
+                    assert first_alert_level == "warning"
+
+                    # Second failure: still warning
+                    reconciliation_job()
+                    second_alert_level = mock_alerter.send_alert.call_args_list[-1].args[0]
+                    assert second_alert_level == "warning"
+
+                    # Third failure: escalates to critical
+                    reconciliation_job()
+                    third_alert_level = mock_alerter.send_alert.call_args_list[-1].args[0]
+                    assert third_alert_level == "critical"
+
+                    # Now simulate success — counter resets
+                    mock_reconciler_cls.return_value.reconcile.side_effect = None
+                    mock_reconciler_cls.return_value.reconcile.return_value = []
+                    reconciliation_job()
+
+        assert jobs_module._reconciliation_failures == 0
+
+
 class TestFredImportPath:
     """Verify FRED jobs import from correct module path and use correct API."""
 

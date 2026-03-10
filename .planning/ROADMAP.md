@@ -24,6 +24,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 10: Production Hardening** - Backup, model deployment pipeline, shadow mode, security review, and disaster recovery verified (completed 2026-03-10)
 - [x] **Phase 11: Production Startup Wiring** - Fix main.py ExecutionPipeline constructor, wire feature table init, fix FRED import path (gap closure, completed 2026-03-10)
 - [x] **Phase 12: Schema Alignment and Emergency Triggers** - Fix stop_polling table reference, fix emergency trigger queries against missing tables (gap closure) (completed 2026-03-10)
+- [x] **Phase 13: Model Path Fix and Reconciliation Scheduling** - Fix model path double-nesting bug and wire PositionReconciler to scheduler (gap closure) (completed 2026-03-10)
+- [ ] **Phase 14: Feature Pipeline Wiring** - Wire compare_features() consumer and integrate sentiment features into observation vector (gap closure)
 
 ## Phase Details
 
@@ -236,10 +238,36 @@ Plans:
 Plans:
 - [ ] 12-01-PLAN.md — Fix stop_polling table/column references, fix or create tables for emergency trigger queries
 
+### Phase 13: Model Path Fix and Reconciliation Scheduling
+**Goal**: The production trading cycle finds trained models and executes trades, and position reconciliation runs daily to prevent drift between DB and broker state
+**Depends on**: Phase 12
+**Requirements**: PAPER-02, PAPER-09
+**Gap Closure:** Closes PAPER-02 (model path), PAPER-09 (reconciler scheduling), integration gap (main.py → pipeline.py), broken flow (Production Trading Cycle). Also fixes PAPER-01, TRAIN-06, PROD-02 (same root cause).
+**Success Criteria** (what must be TRUE):
+  1. `ExecutionPipeline._load_models()` finds models at `models/active/{env}/{algo}/model.zip` — no double "active" in path
+  2. `execute_cycle("equity")` with a trained model present produces non-zero fills (model loaded → ensemble → signals → orders)
+  3. A reconciliation job is registered in APScheduler and calls `PositionReconciler.reconcile()` daily after equity market close
+
+Plans:
+- [ ] 13-01-PLAN.md — Fix model path double-nesting in main.py, add reconciler job to scheduler
+
+### Phase 14: Feature Pipeline Wiring
+**Goal**: Feature A/B comparison has a production consumer and sentiment features integrate into the observation vector when enabled
+**Depends on**: Phase 13
+**Requirements**: FEAT-09, FEAT-10
+**Gap Closure:** Closes FEAT-09 (compare_features consumer), FEAT-10 (sentiment integration)
+**Success Criteria** (what must be TRUE):
+  1. `compare_features()` is callable from a CLI entrypoint or scheduled job that produces A/B comparison results
+  2. When `SentimentConfig.enabled=True`, `get_sentiment_features()` output is included in the equity observation vector assembly
+  3. When `SentimentConfig.enabled=False` (default), observation vector dimensions remain unchanged (156 equity, 45 crypto)
+
+Plans:
+- [ ] 14-01-PLAN.md — Wire compare_features() consumer and integrate sentiment into observation assembly
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 -> 12
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 -> 12 -> 13 -> 14
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -255,3 +283,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 10. Production Hardening | 8/8 | Complete    | 2026-03-10 |
 | 11. Production Startup Wiring | 1/1 | Complete    | 2026-03-10 |
 | 12. Schema Alignment and Emergency Triggers | 1/1 | Complete    | 2026-03-10 |
+| 13. Model Path Fix and Reconciliation Scheduling | 1/1 | Complete    | 2026-03-10 |
+| 14. Feature Pipeline Wiring | 0/1 | Not started | - |

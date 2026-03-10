@@ -49,8 +49,8 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **FEAT-06**: Rolling z-score normalization with per-environment windows (252 bars equity, 360 bars crypto)
 - [x] **FEAT-07**: Observation space assembly: 156 dimensions equity, 45 dimensions crypto
 - [x] **FEAT-08**: Feature addition protocol: new features kept only if validation Sharpe improves by at least 0.05 in A/B test
-- [x] **FEAT-09**: Correlation pruning: remove features with pairwise Pearson r > 0.85
-- [x] **FEAT-10**: Weekly-derived features (SMA trend direction, weekly RSI-14) computed from aggregated weekly bars, not fetched separately
+- [ ] **FEAT-09**: Correlation pruning: remove features with pairwise Pearson r > 0.85
+- [ ] **FEAT-10**: Weekly-derived features (SMA trend direction, weekly RSI-14) computed from aggregated weekly bars, not fetched separately
 - [x] **FEAT-11**: Per-environment feature tables in DuckDB: features_equity (DATE key), features_crypto (TIMESTAMP key)
 
 ### RL Training
@@ -197,8 +197,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FEAT-06 | Phase 5 | Complete |
 | FEAT-07 | Phase 5 | Complete |
 | FEAT-08 | Phase 5 | Complete |
-| FEAT-09 | Phase 5 | Complete |
-| FEAT-10 | Phase 5 | Complete |
+| FEAT-09 | Phase 14 | Pending |
+| FEAT-10 | Phase 14 | Pending |
 | FEAT-11 | Phase 11 | Complete |
 | TRAIN-01 | Phase 6 | Complete |
 | TRAIN-02 | Phase 6 | Complete |
@@ -221,14 +221,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 | VAL-07 | Phase 7 | Complete |
 | VAL-08 | Phase 7 | Complete |
 | PAPER-01 | Phase 11 | Complete |
-| PAPER-02 | Phase 11 | Complete |
+| PAPER-02 | Phase 13 | Complete |
 | PAPER-03 | Phase 8 | Complete |
 | PAPER-04 | Phase 8 | Complete |
 | PAPER-05 | Phase 8 | Complete |
 | PAPER-06 | Phase 8 | Complete |
 | PAPER-07 | Phase 8 | Complete |
 | PAPER-08 | Phase 8 | Complete |
-| PAPER-09 | Phase 8 | Complete |
+| PAPER-09 | Phase 13 | Complete |
 | PAPER-10 | Phase 12 | Complete |
 | PAPER-11 | Phase 8 | Complete |
 | PAPER-18 | Phase 8 | Complete |
@@ -258,8 +258,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 **Coverage:**
 - v1 requirements: 74 total
 - Mapped to phases: 74
-- Complete: 72
-- Pending (gap closure): 2 (PAPER-10, PROD-07)
+- Complete: 70
+- Pending (gap closure): 4 (PAPER-02, PAPER-09, FEAT-09, FEAT-10)
 - Unmapped: 0
 
 ---
