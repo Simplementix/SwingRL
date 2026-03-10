@@ -1,0 +1,249 @@
+"""SwingRL production entrypoint -- APScheduler with cron jobs and stop-price polling.
+
+Initializes all components, registers 6 cron jobs, starts crypto stop-price
+polling daemon thread, and blocks until SIGTERM/SIGINT.
+
+Usage:
+    python scripts/main.py --config config/swingrl.yaml
+"""
+
+from __future__ import annotations
+
+import argparse
+import signal
+import sys
+import threading
+from typing import TYPE_CHECKING, Any
+
+import structlog
+
+from swingrl.config.schema import load_config
+from swingrl.data.db import DatabaseManager
+from swingrl.execution.pipeline import ExecutionPipeline
+from swingrl.monitoring.alerter import Alerter
+from swingrl.scheduler.halt_check import init_emergency_flags
+from swingrl.scheduler.jobs import (
+    crypto_cycle,
+    daily_summary_job,
+    equity_cycle,
+    init_job_context,
+    monthly_macro_job,
+    stuck_agent_check_job,
+    weekly_fundamentals_job,
+)
+from swingrl.scheduler.stop_polling import start_stop_polling_thread
+from swingrl.utils.logging import configure_logging
+
+if TYPE_CHECKING:
+    from types import FrameType
+
+
+log = structlog.get_logger(__name__)
+
+# Lazy import to allow mocking in tests
+try:
+    from apscheduler.executors.pool import ThreadPoolExecutor
+    from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+    from apscheduler.schedulers.background import BackgroundScheduler
+except ImportError:  # pragma: no cover
+    BackgroundScheduler = None  # type: ignore[assignment,misc]
+    SQLAlchemyJobStore = None  # type: ignore[assignment,misc]
+    ThreadPoolExecutor = None  # type: ignore[assignment,misc]
+
+
+def create_scheduler_and_register_jobs(
+    scheduler: Any,
+    config: Any,
+) -> None:
+    """Register all 6 cron jobs on the scheduler.
+
+    Args:
+        scheduler: APScheduler BackgroundScheduler instance.
+        config: Validated SwingRLConfig.
+    """
+    scheduler.add_job(
+        equity_cycle,
+        trigger="cron",
+        hour=16,
+        minute=15,
+        timezone="America/New_York",
+        id="equity_cycle",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        crypto_cycle,
+        trigger="cron",
+        hour="0,4,8,12,16,20",
+        minute=5,
+        timezone="UTC",
+        id="crypto_cycle",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        daily_summary_job,
+        trigger="cron",
+        hour=18,
+        minute=0,
+        timezone="America/New_York",
+        id="daily_summary",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        stuck_agent_check_job,
+        trigger="cron",
+        hour=17,
+        minute=30,
+        timezone="America/New_York",
+        id="stuck_agent_check",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        weekly_fundamentals_job,
+        trigger="cron",
+        day_of_week="sun",
+        hour=18,
+        minute=0,
+        timezone="America/New_York",
+        id="weekly_fundamentals",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        monthly_macro_job,
+        trigger="cron",
+        day=1,
+        hour=18,
+        minute=0,
+        timezone="America/New_York",
+        id="monthly_macro",
+        replace_existing=True,
+    )
+
+    log.info("scheduler_jobs_registered", count=6)
+
+
+def make_signal_handler(
+    scheduler: Any,
+    stop_event: threading.Event,
+) -> Any:
+    """Create a signal handler that shuts down the scheduler and sets the stop event.
+
+    Args:
+        scheduler: APScheduler BackgroundScheduler instance.
+        stop_event: Threading event to unblock main thread.
+
+    Returns:
+        Signal handler callable.
+    """
+
+    def handler(signum: int, frame: FrameType | None) -> None:
+        sig_name = signal.Signals(signum).name
+        log.info("shutdown_signal_received", signal=sig_name)
+        scheduler.shutdown(wait=False)
+        stop_event.set()
+
+    return handler
+
+
+def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
+    """Build all application components without starting the scheduler.
+
+    Args:
+        config_path: Path to YAML config file.
+
+    Returns:
+        Dict with scheduler, stop_event, and config for the caller to start.
+    """
+    config = load_config(config_path)
+    configure_logging(json_logs=config.logging.json_logs, log_level=config.logging.level)
+
+    log.info(
+        "swingrl_starting",
+        config_path=config_path,
+        trading_mode=config.trading_mode,
+    )
+
+    db = DatabaseManager(config)
+    init_emergency_flags(db)
+
+    pipeline = ExecutionPipeline(config=config, db=db)
+    alerter = Alerter(
+        webhook_url=config.alerting.alerts_webhook_url,
+        alerts_webhook_url=config.alerting.alerts_webhook_url,
+        daily_webhook_url=config.alerting.daily_webhook_url,
+        cooldown_minutes=config.alerting.alert_cooldown_minutes,
+        consecutive_failures_before_alert=config.alerting.consecutive_failures_before_alert,
+        db=db,
+    )
+
+    init_job_context(config=config, db=db, pipeline=pipeline, alerter=alerter)
+
+    jobstores = {
+        "default": SQLAlchemyJobStore(url=f"sqlite:///{config.scheduler.apscheduler_db_path}"),
+    }
+    executors = {
+        "default": ThreadPoolExecutor(max_workers=config.scheduler.max_workers),
+    }
+    job_defaults = {
+        "coalesce": True,
+        "max_instances": 1,
+        "misfire_grace_time": config.scheduler.misfire_grace_time,
+    }
+
+    scheduler = BackgroundScheduler(
+        jobstores=jobstores,
+        executors=executors,
+        job_defaults=job_defaults,
+    )
+
+    create_scheduler_and_register_jobs(scheduler, config)
+
+    stop_event = threading.Event()
+
+    start_stop_polling_thread(config, db)
+
+    log.info(
+        "swingrl_app_built",
+        jobstore_path=config.scheduler.apscheduler_db_path,
+        job_count=6,
+    )
+
+    return {
+        "scheduler": scheduler,
+        "stop_event": stop_event,
+        "config": config,
+    }
+
+
+def main() -> None:
+    """Parse args, build app, start scheduler, and block until signal."""
+    parser = argparse.ArgumentParser(description="SwingRL production entrypoint")
+    parser.add_argument(
+        "--config",
+        default="config/swingrl.yaml",
+        help="Path to SwingRL YAML config (default: config/swingrl.yaml)",
+    )
+    args = parser.parse_args()
+
+    app = build_app(config_path=args.config)
+    scheduler = app["scheduler"]
+    stop_event = app["stop_event"]
+
+    handler = make_signal_handler(scheduler, stop_event)
+    signal.signal(signal.SIGTERM, handler)
+    signal.signal(signal.SIGINT, handler)
+
+    scheduler.start()
+    log.info("scheduler_started")
+
+    stop_event.wait()
+    log.info("swingrl_exiting")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

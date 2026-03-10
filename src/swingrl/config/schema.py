@@ -173,10 +173,22 @@ class SystemConfig(BaseModel):
 
 
 class AlertingConfig(BaseModel):
-    """Alert rate-limiting and threshold configuration."""
+    """Alert rate-limiting, threshold, and webhook configuration."""
 
     alert_cooldown_minutes: int = Field(default=30, ge=1)
     consecutive_failures_before_alert: int = Field(default=3, ge=1)
+    alerts_webhook_url: str = Field(default="")
+    daily_webhook_url: str = Field(default="")
+    healthchecks_equity_url: str = Field(default="")
+    healthchecks_crypto_url: str = Field(default="")
+
+
+class SchedulerConfig(BaseModel):
+    """APScheduler configuration."""
+
+    apscheduler_db_path: str = Field(default="db/apscheduler_jobs.sqlite")
+    misfire_grace_time: int = Field(default=300, ge=60)
+    max_workers: int = Field(default=4, ge=1)
 
 
 class SwingRLConfig(BaseSettings):
@@ -201,6 +213,7 @@ class SwingRLConfig(BaseSettings):
     environment: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
     system: SystemConfig = Field(default_factory=SystemConfig)
     alerting: AlertingConfig = Field(default_factory=AlertingConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 
 
 def load_config(path: Path | str = "config/swingrl.yaml") -> SwingRLConfig:

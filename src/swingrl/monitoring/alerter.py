@@ -4,12 +4,18 @@ Provides alert infrastructure for ingestion failures, circuit breakers,
 daily summaries, and stuck agents. Critical/warning alerts fire immediately;
 info alerts buffer into a daily digest.
 
+Supports two-webhook routing: critical/warning to alerts channel,
+info/daily digest to daily channel. Falls back to single webhook_url
+if specific URLs not provided.
+
 Usage:
     from swingrl.monitoring.alerter import Alerter
     from swingrl.data.db import DatabaseManager
 
     alerter = Alerter(
         webhook_url="https://discord.com/api/webhooks/...",
+        alerts_webhook_url="https://discord.com/api/webhooks/alerts/...",
+        daily_webhook_url="https://discord.com/api/webhooks/daily/...",
         cooldown_minutes=30,
         db=DatabaseManager(config),
     )
@@ -51,6 +57,9 @@ class Alerter:
     Info alerts are buffered and flushed as a single daily digest embed.
     Cooldown prevents duplicate critical/warning alerts within a configurable window.
     Thread-safe for concurrent APScheduler calls.
+
+    Supports two-webhook routing: alerts_webhook_url for critical/warning,
+    daily_webhook_url for info/digest. Falls back to webhook_url if not set.
     """
 
     def __init__(
@@ -59,6 +68,8 @@ class Alerter:
         cooldown_minutes: int = 30,
         consecutive_failures_before_alert: int = 3,
         db: DatabaseManager | None = None,
+        alerts_webhook_url: str | None = None,
+        daily_webhook_url: str | None = None,
     ) -> None:
         """Initialize alerter.
 
@@ -69,8 +80,14 @@ class Alerter:
                 before alerting. First N-1 occurrences are suppressed.
             db: Optional DatabaseManager for alert_log SQLite writes. If None,
                 alert_log is skipped.
+            alerts_webhook_url: Optional webhook URL for critical/warning alerts.
+                Falls back to webhook_url if not provided.
+            daily_webhook_url: Optional webhook URL for info alerts and daily digest.
+                Falls back to webhook_url if not provided.
         """
         self._webhook_url: str = webhook_url or ""
+        self._alerts_webhook_url: str = alerts_webhook_url or ""
+        self._daily_webhook_url: str = daily_webhook_url or ""
         self._cooldown_minutes: int = cooldown_minutes
         self._consecutive_failures_before_alert: int = consecutive_failures_before_alert
         self._db: DatabaseManager | None = db
@@ -79,6 +96,20 @@ class Alerter:
         self._last_alert_times: dict[str, datetime] = {}
         self._failure_counts: dict[str, int] = {}
         self._seen_hashes: set[str] = set()
+
+    def _get_webhook_for_level(self, level: str) -> str:
+        """Return the appropriate webhook URL for the given alert level.
+
+        Args:
+            level: Alert level string.
+
+        Returns:
+            Webhook URL string (may be empty if disabled).
+        """
+        if level in ("critical", "warning"):
+            return self._alerts_webhook_url or self._webhook_url
+        # info and daily digest
+        return self._daily_webhook_url or self._webhook_url
 
     def send_alert(
         self,
@@ -138,11 +169,32 @@ class Alerter:
 
         # Build and send
         payload = self._build_embed(level, title, message, environment)
-        success = self._post_webhook(payload, level, title, msg_hash)
+        webhook_url = self._get_webhook_for_level(level)
+        success = self._post_webhook(payload, level, title, msg_hash, webhook_url=webhook_url)
 
         if success:
             with self._lock:
                 self._last_alert_times[cooldown_key] = datetime.now(UTC)
+
+    def send_embed(
+        self,
+        level: AlertLevel,
+        embed: dict[str, list[dict[str, object]]],
+        webhook_url: str | None = None,
+    ) -> None:
+        """Send a pre-built embed dict to the correct webhook.
+
+        Args:
+            level: Alert severity for routing to correct webhook.
+            embed: Pre-built Discord webhook payload dict.
+            webhook_url: Optional override webhook URL.
+        """
+        target_url = webhook_url or self._get_webhook_for_level(level)
+        title = ""
+        if embed.get("embeds"):
+            title = str(embed["embeds"][0].get("title", ""))
+        msg_hash = self._compute_hash(title, str(embed))
+        self._post_webhook(embed, level, title, msg_hash, webhook_url=target_url)
 
     def send_daily_digest(self) -> None:
         """Flush buffered info alerts as a single Discord digest embed."""
@@ -156,7 +208,8 @@ class Alerter:
         description = "\n".join(f"- **{item['title']}**: {item['message']}" for item in items)
         payload = self._build_embed("info", "Daily Digest", description)
         msg_hash = self._compute_hash("Daily Digest", description)
-        self._post_webhook(payload, "info", "Daily Digest", msg_hash)
+        webhook_url = self._get_webhook_for_level("info")
+        self._post_webhook(payload, "info", "Daily Digest", msg_hash, webhook_url=webhook_url)
 
     def _buffer_info(self, title: str, message: str, msg_hash: str) -> None:
         """Add an info alert to the digest buffer if not duplicate.
@@ -213,6 +266,7 @@ class Alerter:
         level: str,
         title: str,
         message_hash: str,
+        webhook_url: str | None = None,
     ) -> bool:
         """POST payload to Discord webhook and log to alert_log.
 
@@ -221,16 +275,18 @@ class Alerter:
             level: Alert level string.
             title: Alert title for logging.
             message_hash: Hash for dedup tracking.
+            webhook_url: Optional override URL. Falls back to _webhook_url.
 
         Returns:
             True on successful send, False on failure or disabled mode.
         """
-        if not self._webhook_url:
+        url = webhook_url or self._webhook_url
+        if not url:
             log.info("alert_disabled", level=level, title=title, reason="no_webhook_url")
             return False
 
         try:
-            response = httpx.post(self._webhook_url, json=payload, timeout=10.0)
+            response = httpx.post(url, json=payload, timeout=10.0)
             response.raise_for_status()
             log.info("alert_sent", level=level, title=title)
             self._log_alert(level, title, message_hash, sent=True)

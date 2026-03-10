@@ -49,6 +49,15 @@ system:
 alerting:
   alert_cooldown_minutes: 30               # minimum minutes between repeat alerts
   consecutive_failures_before_alert: 3     # failures before triggering alert
+  alerts_webhook_url: ""                   # Discord webhook for critical/warning alerts
+  daily_webhook_url: ""                    # Discord webhook for daily summary/info
+  healthchecks_equity_url: ""              # Healthchecks.io equity cycle ping URL
+  healthchecks_crypto_url: ""              # Healthchecks.io crypto cycle ping URL
+
+scheduler:
+  apscheduler_db_path: db/apscheduler_jobs.sqlite  # SEPARATE from trading_ops.db
+  misfire_grace_time: 300                  # seconds to tolerate late job execution
+  max_workers: 4                           # APScheduler thread pool size
 
 features:
   equity_zscore_window: 252        # rolling z-score window for equity (trading days)

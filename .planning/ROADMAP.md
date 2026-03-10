@@ -20,7 +20,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 6: RL Environments** - Gymnasium-compatible trading environments passing step/reset contracts
 - [x] **Phase 7: Agent Training and Validation** - PPO/A2C/SAC ensemble trained and walk-forward validated against performance gates
 - [x] **Phase 8: Paper Trading Core** - Broker connections live with risk management veto layer and execution middleware (completed 2026-03-09)
-- [ ] **Phase 9: Automation and Monitoring** - Scheduled execution, Discord alerting, dashboard, and dead man's switch running
+- [x] **Phase 9: Automation and Monitoring** - Scheduled execution, Discord alerting, dashboard, and dead man's switch running (completed 2026-03-09)
 - [ ] **Phase 10: Production Hardening** - Backup, model deployment pipeline, shadow mode, security review, and disaster recovery verified
 
 ## Phase Details
@@ -178,7 +178,13 @@ Plans:
   3. If the equity environment stays 100% cash for 10 consecutive trading days, a "stuck agent" Discord alert fires
   4. The Streamlit dashboard displays traffic-light status for both environments and the last 5 trade executions without manual refresh
   5. Healthchecks.io receives a heartbeat ping within the 70-minute crypto window and the 25-hour equity window; missing either sends a Discord alert
-**Plans**: TBD
+**Plans:** 4/4 plans complete
+
+Plans:
+- [ ] 09-01-PLAN.md — Scheduler infrastructure: config extensions, halt check, job functions, HC ping, emergency scripts
+- [ ] 09-02-PLAN.md — Discord alerting: embed builders, two-webhook Alerter, stuck agent detection, wash sale scanner
+- [ ] 09-03-PLAN.md — Streamlit multi-page dashboard with separate Docker container
+- [ ] 09-04-PLAN.md — main.py entrypoint wiring, stop-price polling, Dockerfile CMD, production compose with dashboard
 
 ### Phase 10: Production Hardening
 **Goal**: The system is fully hardened for sustained operation — backups automated, models deploy via script, shadow mode validates new models before promotion, security reviewed, and disaster recovery tested
@@ -207,5 +213,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 6. RL Environments | 0/3 | Not started | - |
 | 7. Agent Training and Validation | 2/3 | In Progress|  |
 | 8. Paper Trading Core | 5/5 | Complete   | 2026-03-09 |
-| 9. Automation and Monitoring | 0/TBD | Not started | - |
+| 9. Automation and Monitoring | 4/4 | Complete   | 2026-03-09 |
 | 10. Production Hardening | 0/TBD | Not started | - |

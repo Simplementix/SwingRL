@@ -415,3 +415,146 @@ class TestAlertLog:
             sent_values = [dict(r)["sent"] for r in rows]
             assert 1 in sent_values
             assert 0 in sent_values
+
+
+# ---------------------------------------------------------------------------
+# Test: Two-webhook routing
+# ---------------------------------------------------------------------------
+
+
+class TestTwoWebhookRouting:
+    """PAPER-13: Alerter routes critical/warning to alerts webhook, info/daily to daily webhook."""
+
+    def test_critical_routes_to_alerts_webhook(self, mocker: Any) -> None:
+        """Critical alert posts to alerts_webhook_url, not daily_webhook_url."""
+        a = Alerter(
+            webhook_url=None,
+            alerts_webhook_url="https://discord.com/api/webhooks/alerts/token",
+            daily_webhook_url="https://discord.com/api/webhooks/daily/token",
+            consecutive_failures_before_alert=1,
+        )
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+
+        a.send_alert("critical", "Test", "msg")
+
+        mock_post.assert_called_once()
+        url = mock_post.call_args[0][0]
+        assert url == "https://discord.com/api/webhooks/alerts/token"
+
+    def test_warning_routes_to_alerts_webhook(self, mocker: Any) -> None:
+        """Warning alert posts to alerts_webhook_url."""
+        a = Alerter(
+            webhook_url=None,
+            alerts_webhook_url="https://discord.com/api/webhooks/alerts/token",
+            daily_webhook_url="https://discord.com/api/webhooks/daily/token",
+            consecutive_failures_before_alert=1,
+        )
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+
+        a.send_alert("warning", "Test", "msg")
+
+        url = mock_post.call_args[0][0]
+        assert url == "https://discord.com/api/webhooks/alerts/token"
+
+    def test_daily_digest_routes_to_daily_webhook(self, mocker: Any) -> None:
+        """Daily digest posts to daily_webhook_url."""
+        a = Alerter(
+            webhook_url=None,
+            alerts_webhook_url="https://discord.com/api/webhooks/alerts/token",
+            daily_webhook_url="https://discord.com/api/webhooks/daily/token",
+        )
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+
+        a.send_alert("info", "Item", "msg")
+        a.send_daily_digest()
+
+        url = mock_post.call_args[0][0]
+        assert url == "https://discord.com/api/webhooks/daily/token"
+
+    def test_fallback_to_single_webhook(self, mocker: Any) -> None:
+        """Without specific URLs, falls back to webhook_url for all levels."""
+        a = Alerter(
+            webhook_url="https://discord.com/api/webhooks/single/token",
+            consecutive_failures_before_alert=1,
+        )
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+
+        a.send_alert("critical", "Test", "msg")
+
+        url = mock_post.call_args[0][0]
+        assert url == "https://discord.com/api/webhooks/single/token"
+
+
+# ---------------------------------------------------------------------------
+# Test: send_embed method
+# ---------------------------------------------------------------------------
+
+
+class TestSendEmbed:
+    """PAPER-13: send_embed sends pre-built embed dict to correct webhook."""
+
+    def test_send_embed_posts_payload(self, mocker: Any) -> None:
+        """send_embed sends the embed dict directly as embeds payload."""
+        a = Alerter(
+            webhook_url="https://discord.com/api/webhooks/test/token",
+            consecutive_failures_before_alert=1,
+        )
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+
+        embed = {"embeds": [{"title": "Test Embed", "color": 0xFF0000}]}
+        a.send_embed("critical", embed)
+
+        mock_post.assert_called_once()
+        payload = mock_post.call_args[1]["json"]
+        assert payload["embeds"][0]["title"] == "Test Embed"
+
+    def test_send_embed_routes_by_level(self, mocker: Any) -> None:
+        """send_embed routes to correct webhook based on level."""
+        a = Alerter(
+            webhook_url=None,
+            alerts_webhook_url="https://discord.com/api/webhooks/alerts/token",
+            daily_webhook_url="https://discord.com/api/webhooks/daily/token",
+            consecutive_failures_before_alert=1,
+        )
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+
+        embed = {"embeds": [{"title": "Info Embed", "color": 0x3498DB}]}
+        a.send_embed("info", embed)
+
+        url = mock_post.call_args[0][0]
+        assert url == "https://discord.com/api/webhooks/daily/token"
+
+
+# ---------------------------------------------------------------------------
+# Test: Backward compatibility
+# ---------------------------------------------------------------------------
+
+
+class TestBackwardCompatibility:
+    """PAPER-13: Existing single-webhook usage unchanged after extension."""
+
+    def test_existing_constructor_still_works(self, mocker: Any) -> None:
+        """Original constructor signature still works."""
+        a = Alerter(
+            webhook_url="https://discord.com/api/webhooks/test/token",
+            cooldown_minutes=30,
+            consecutive_failures_before_alert=1,
+        )
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+
+        a.send_alert("critical", "Compat", "msg")
+        mock_post.assert_called_once()

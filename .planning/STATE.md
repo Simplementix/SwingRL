@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 08-05-PLAN.md (Phase 8 complete)
-last_updated: "2026-03-09T17:01:55.970Z"
-last_activity: "2026-03-09 -- Phase 8 Plan 05: Docker production build and deployment"
+stopped_at: Completed 09-04-PLAN.md
+last_updated: "2026-03-09T22:00:44.549Z"
+last_activity: "2026-03-09 -- Phase 9 Plan 04: Entrypoint wiring"
 progress:
   total_phases: 10
-  completed_phases: 8
-  total_plans: 31
-  completed_plans: 31
+  completed_phases: 9
+  total_plans: 35
+  completed_plans: 35
   percent: 100
 ---
 
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 ## Current Position
 
-Phase: 8 of 10 (Paper Trading Core)
-Plan: 5 of 5 in phase 08 (Plan 05 complete -- Phase 8 COMPLETE)
-Status: Phase 08 complete -- Docker production build and full paper trading infrastructure
-Last activity: 2026-03-09 -- Phase 8 Plan 05: Docker production build and deployment
+Phase: 9 of 10 (Automation & Monitoring)
+Plan: 4 of 4 in phase 09 (Phase 09 complete)
+Status: Phase 09 complete -- all 4 plans executed
+Last activity: 2026-03-09 -- Phase 9 Plan 04: Entrypoint wiring
 
 Progress: [██████████] 100%
 
@@ -82,6 +82,10 @@ Progress: [██████████] 100%
 | Phase 08 P01 | 14 | 2 tasks | 11 files |
 | Phase 08 P04 | 8 | 2 tasks | 9 files |
 | Phase 08 P05 | 5 | 2 tasks | 4 files |
+| Phase 09 P03 | 3 | 2 tasks | 9 files |
+| Phase 09 P02 | 5 | 2 tasks | 8 files |
+| Phase 09 P01 | 7 | 2 tasks | 11 files |
+| Phase 09 P04 | 8 | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -173,6 +177,13 @@ Recent decisions affecting current work:
 - [Phase 08]: [Phase 08-05]: Phase 8 placeholder CMD (sleep loop) in production Dockerfile -- Phase 9 replaces with APScheduler
 - [Phase 08]: [Phase 08-05]: HEALTHCHECK skips missing DBs gracefully on first startup (no false unhealthy)
 - [Phase 08]: [Phase 08-05]: Production image selective COPY (src/, config/, scripts/) excludes tests/docs/.planning
+- [Phase 09]: Dashboard as separate repo-root directory with own requirements.txt (not inside src/swingrl/)
+- [Phase 09]: Traffic-light windows: 26h equity, 5h crypto; read-only SQLite URI mode enforced
+- [Phase 09]: Stuck agent threshold 10 for equity, 30 for crypto; two-webhook routing with single-URL fallback
+- [Phase 09]: Module-level _ctx: JobContext | None pattern for APScheduler job functions
+- [Phase 09]: threading.Event().wait() over signal.pause() for cross-platform main blocking
+- [Phase 09]: Stop-price polling daemon thread at 60s intervals with daemon=True
+- [Phase 09]: Dashboard service 512MB/0.5 CPU with read-only DB mounts
 
 ### Pending Todos
 
@@ -186,6 +197,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-09T16:57:00Z
-Stopped at: Completed 08-05-PLAN.md (Phase 8 complete)
+Last session: 2026-03-09T21:57:19.548Z
+Stopped at: Completed 09-04-PLAN.md
 Resume file: None

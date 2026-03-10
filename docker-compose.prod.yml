@@ -38,3 +38,21 @@ services:
       - ./config:/app/config
       - ./status:/app/status
     restart: unless-stopped
+
+  swingrl-dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile.dashboard
+    mem_limit: 512m
+    cpus: 0.5
+    environment:
+      - SWINGRL_DB_DIR=/app/db
+      - TZ=America/New_York
+    volumes:
+      - ./db:/app/db:ro        # Read-only access to databases
+      - ./models:/app/models:ro  # Read-only for model metadata
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    depends_on:
+      - swingrl
