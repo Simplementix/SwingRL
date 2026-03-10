@@ -201,14 +201,14 @@ Plans:
 **Plans:** 8/8 plans complete
 
 Plans:
-- [ ] 10-01-PLAN.md — Config extensions (Backup/Shadow/Sentiment/Security), dependencies, retry decorator, file-based JSON logging
-- [ ] 10-02-PLAN.md — Backup automation: daily SQLite, weekly DuckDB, monthly off-site rsync, APScheduler jobs
-- [ ] 10-03-PLAN.md — Model deployment pipeline (deploy_model.sh), model lifecycle state machine, 6-point smoke test
-- [ ] 10-04-PLAN.md — Shadow mode: parallel inference, hypothetical trades, auto-promotion with 3 criteria
-- [ ] 10-05-PLAN.md — FinBERT sentiment pipeline, news fetcher (Alpaca + Finnhub), A/B experiment infrastructure
-- [ ] 10-06-PLAN.md — Four-tier emergency stop protocol, 3 automated triggers, CLI update
-- [ ] 10-07-PLAN.md — Security review checklist, disaster recovery test script, key rotation runbook, Jupyter notebooks
-- [ ] 10-08-PLAN.md — [GAP CLOSURE] Wire _generate_hypothetical_trades stub to feature pipeline, model inference, and signal interpretation
+- [x] 10-01-PLAN.md — Config extensions (Backup/Shadow/Sentiment/Security), dependencies, retry decorator, file-based JSON logging
+- [x] 10-02-PLAN.md — Backup automation: daily SQLite, weekly DuckDB, monthly off-site rsync, APScheduler jobs
+- [x] 10-03-PLAN.md — Model deployment pipeline (deploy_model.sh), model lifecycle state machine, 6-point smoke test
+- [x] 10-04-PLAN.md — Shadow mode: parallel inference, hypothetical trades, auto-promotion with 3 criteria
+- [x] 10-05-PLAN.md — FinBERT sentiment pipeline, news fetcher (Alpaca + Finnhub), A/B experiment infrastructure
+- [x] 10-06-PLAN.md — Four-tier emergency stop protocol, 3 automated triggers, CLI update
+- [x] 10-07-PLAN.md — Security review checklist, disaster recovery test script, key rotation runbook, Jupyter notebooks
+- [x] 10-08-PLAN.md — [GAP CLOSURE] Wire _generate_hypothetical_trades stub to feature pipeline, model inference, and signal interpretation
 
 ### Phase 11: Production Startup Wiring
 **Goal**: The production entrypoint (main.py) starts without error, feature tables are initialized as part of standard DB setup, and scheduler jobs import from correct module paths
