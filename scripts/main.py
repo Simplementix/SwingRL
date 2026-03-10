@@ -1,6 +1,6 @@
 """SwingRL production entrypoint -- APScheduler with cron jobs and stop-price polling.
 
-Initializes all components, registers 10 jobs (6 trading + 3 backup + 1 trigger check),
+Initializes all components, registers 11 jobs (6 trading + 3 backup + 1 shadow + 1 trigger),
 starts crypto stop-price polling daemon thread, and blocks until SIGTERM/SIGINT.
 
 Usage:
@@ -31,6 +31,7 @@ from swingrl.scheduler.jobs import (
     init_job_context,
     monthly_macro_job,
     monthly_offsite_job,
+    shadow_promotion_check_job,
     stuck_agent_check_job,
     weekly_duckdb_backup_job,
     weekly_fundamentals_job,
@@ -59,7 +60,7 @@ def create_scheduler_and_register_jobs(
     scheduler: Any,
     config: Any,
 ) -> None:
-    """Register all 10 jobs on the scheduler (6 trading + 3 backup + 1 trigger check).
+    """Register all 11 jobs on the scheduler (6 trading + 3 backup + 1 shadow + 1 trigger).
 
     Args:
         scheduler: APScheduler BackgroundScheduler instance.
@@ -160,6 +161,17 @@ def create_scheduler_and_register_jobs(
         replace_existing=True,
     )
 
+    # Shadow promotion check (daily at 7 PM ET, after daily summary)
+    scheduler.add_job(
+        shadow_promotion_check_job,
+        trigger="cron",
+        hour=19,
+        minute=0,
+        timezone="America/New_York",
+        id="shadow_promotion_check",
+        replace_existing=True,
+    )
+
     # Automated emergency trigger check (runs even when halted)
     scheduler.add_job(
         automated_trigger_check_job,
@@ -169,7 +181,7 @@ def create_scheduler_and_register_jobs(
         replace_existing=True,
     )
 
-    log.info("scheduler_jobs_registered", count=10)
+    log.info("scheduler_jobs_registered", count=11)
 
 
 def make_signal_handler(
@@ -255,7 +267,7 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
     log.info(
         "swingrl_app_built",
         jobstore_path=config.scheduler.apscheduler_db_path,
-        job_count=10,
+        job_count=11,
     )
 
     return {
