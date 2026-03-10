@@ -42,16 +42,16 @@ def mock_fill() -> MagicMock:
 
 
 class TestMainRegistersJobs:
-    """Verify that main.py registers all 11 cron jobs."""
+    """Verify that main.py registers all 12 cron jobs."""
 
     def test_main_registers_all_jobs(self, mock_config: MagicMock) -> None:
-        """PAPER-12: main.py registers 11 cron jobs with correct IDs."""
+        """PAPER-12: main.py registers 12 cron jobs with correct IDs."""
         from scripts.main import create_scheduler_and_register_jobs
 
         mock_scheduler = MagicMock()
         create_scheduler_and_register_jobs(mock_scheduler, mock_config)
 
-        assert mock_scheduler.add_job.call_count == 11
+        assert mock_scheduler.add_job.call_count == 12
 
         job_ids = {c.kwargs["id"] for c in mock_scheduler.add_job.call_args_list}
         expected_ids = {
@@ -66,6 +66,7 @@ class TestMainRegistersJobs:
             "monthly_offsite",
             "shadow_promotion_check",
             "automated_trigger_check",
+            "daily_reconciliation",
         }
         assert job_ids == expected_ids
 
@@ -108,6 +109,23 @@ class TestMainRegistersJobs:
             assert c.kwargs.get("replace_existing") is True, (
                 f"Job {c.kwargs.get('id')} missing replace_existing=True"
             )
+
+    def test_daily_reconciliation_schedule(self, mock_config: MagicMock) -> None:
+        """PAPER-09: daily_reconciliation fires at 5:00 PM ET."""
+        from scripts.main import create_scheduler_and_register_jobs
+
+        mock_scheduler = MagicMock()
+        create_scheduler_and_register_jobs(mock_scheduler, mock_config)
+
+        recon_call = next(
+            c
+            for c in mock_scheduler.add_job.call_args_list
+            if c.kwargs["id"] == "daily_reconciliation"
+        )
+        assert recon_call.kwargs["trigger"] == "cron"
+        assert recon_call.kwargs["hour"] == 17
+        assert recon_call.kwargs["minute"] == 0
+        assert recon_call.kwargs["timezone"] == "America/New_York"
 
 
 class TestMainInitSequence:
@@ -189,6 +207,47 @@ class TestMainInitSequence:
 
         # FeaturePipeline must have been constructed
         mock_feature_pipeline_cls.assert_called_once()
+
+    @patch("scripts.main.init_emergency_flags")
+    @patch("scripts.main.init_job_context")
+    @patch("scripts.main.load_config")
+    @patch("scripts.main.configure_logging")
+    def test_build_app_passes_bare_models_dir_to_pipeline(
+        self,
+        mock_logging: MagicMock,
+        mock_load_config: MagicMock,
+        mock_init_job_ctx: MagicMock,
+        mock_init_flags: MagicMock,
+        mock_config: MagicMock,
+    ) -> None:
+        """PAPER-02: build_app passes bare models_dir (no / 'active') to ExecutionPipeline."""
+        from pathlib import Path
+
+        mock_load_config.return_value = mock_config
+        mock_config.paths.models_dir = "models"
+
+        from scripts.main import build_app
+
+        mock_scheduler = MagicMock()
+        mock_pipeline_cls = MagicMock()
+
+        with patch("scripts.main.BackgroundScheduler", return_value=mock_scheduler):
+            with patch("scripts.main.SQLAlchemyJobStore"):
+                with patch("scripts.main.ThreadPoolExecutor"):
+                    with patch("scripts.main.DatabaseManager"):
+                        with patch("scripts.main.ExecutionPipeline", mock_pipeline_cls):
+                            with patch("scripts.main.Alerter"):
+                                with patch("scripts.main.start_stop_polling_thread"):
+                                    with patch("scripts.main.FeaturePipeline"):
+                                        build_app(config_path="config/test.yaml")
+
+        call_kwargs = mock_pipeline_cls.call_args.kwargs
+        models_dir = call_kwargs["models_dir"]
+        # Must be exactly Path("models") — no "/ active" suffix
+        assert models_dir == Path("models"), (
+            f"Expected Path('models'), got {models_dir!r}. "
+            "Double 'active' nesting bug may be present."
+        )
 
 
 class TestMainSignalHandler:

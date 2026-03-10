@@ -220,3 +220,48 @@ class TestPipelineInit:
     def test_models_not_loaded_on_init(self, pipeline: ExecutionPipeline) -> None:
         """Models are lazy-loaded, not loaded on construction."""
         assert pipeline._models == {}
+
+    def test_load_models_path_no_double_active(
+        self,
+        exec_config: Any,
+        mock_db: Any,
+        mock_feature_pipeline: MagicMock,
+        mock_alerter: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """PAPER-02: _load_models constructs path as models_dir/active/{env}/{algo}/model.zip.
+
+        When pipeline receives a bare models_dir (not models_dir/active), it must
+        internally append 'active/{env}/{algo}/model.zip' — no double 'active' nesting.
+        """
+        bare_models_dir = tmp_path / "models"
+        bare_models_dir.mkdir(parents=True, exist_ok=True)
+
+        pipe = ExecutionPipeline(
+            config=exec_config,
+            db=mock_db,
+            feature_pipeline=mock_feature_pipeline,
+            alerter=mock_alerter,
+            models_dir=bare_models_dir,
+        )
+
+        # Create a model file at the correct (non-double-nested) path
+        expected_path = bare_models_dir / "active" / "equity" / "ppo" / "model.zip"
+        expected_path.parent.mkdir(parents=True, exist_ok=True)
+        expected_path.write_bytes(b"fake-model-zip")
+
+        # Verify the double-nested path does NOT exist (proves no double nesting)
+        double_nested = bare_models_dir / "active" / "active" / "equity" / "ppo" / "model.zip"
+        assert not double_nested.exists()
+        assert expected_path.exists()
+
+        # _load_models should find model at bare_models_dir/active/equity/ppo/model.zip
+        # We mock the actual SB3 load to avoid needing a real model
+        with patch("swingrl.execution.pipeline.PPO") as mock_ppo_cls:
+            mock_ppo_cls.load.return_value = MagicMock()
+            # Patch A2C and SAC to not find files (only PPO path exists)
+            models = pipe._load_models("equity")
+
+        # PPO model was found and loaded from the non-double-nested path
+        assert "ppo" in models
+        mock_ppo_cls.load.assert_called_once_with(str(expected_path))
