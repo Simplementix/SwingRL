@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -121,6 +122,14 @@ def equity_cycle() -> list[FillResult]:
     except Exception:
         log.exception("equity_healthcheck_ping_failed")
 
+    # Shadow inference (non-blocking, never affects active)
+    try:
+        from swingrl.shadow.shadow_runner import run_shadow_inference  # noqa: PLC0415
+
+        run_shadow_inference(ctx, "equity")
+    except Exception:
+        log.exception("shadow_inference_failed", environment="equity")
+
     return fills
 
 
@@ -163,6 +172,14 @@ def crypto_cycle() -> list[FillResult]:
         ping_healthcheck(ctx.config.alerting.healthchecks_crypto_url)
     except Exception:
         log.exception("crypto_healthcheck_ping_failed")
+
+    # Shadow inference (non-blocking, never affects active)
+    try:
+        from swingrl.shadow.shadow_runner import run_shadow_inference  # noqa: PLC0415
+
+        run_shadow_inference(ctx, "crypto")
+    except Exception:
+        log.exception("shadow_inference_failed", environment="crypto")
 
     return fills
 
@@ -368,6 +385,46 @@ def monthly_offsite_job() -> None:
         log.info("monthly_offsite_job_complete", success=success)
     except Exception:
         log.exception("monthly_offsite_job_failed")
+
+
+def shadow_promotion_check_job() -> None:
+    """Evaluate shadow models for promotion daily at 7 PM ET.
+
+    For each environment (equity, crypto), runs auto-promotion criteria
+    evaluation. Import-guarded so shadow module is optional.
+    Wraps in try/except to never crash the scheduler.
+    """
+    ctx = _get_ctx()
+
+    if is_halted(ctx.db):
+        log.warning("shadow_promotion_check_skipped", reason="halt_flag_active")
+        return
+
+    try:
+        from swingrl.shadow.lifecycle import ModelLifecycle  # noqa: PLC0415
+        from swingrl.shadow.promoter import evaluate_shadow_promotion  # noqa: PLC0415
+
+        models_dir = Path(ctx.config.paths.models_dir)
+        lifecycle = ModelLifecycle(models_dir)
+
+        for env_name in ("equity", "crypto"):
+            try:
+                promoted = evaluate_shadow_promotion(
+                    config=ctx.config,
+                    db=ctx.db,
+                    env_name=env_name,
+                    lifecycle=lifecycle,
+                    alerter=ctx.alerter,
+                )
+                log.info(
+                    "shadow_promotion_check_complete",
+                    environment=env_name,
+                    promoted=promoted,
+                )
+            except Exception:
+                log.exception("shadow_promotion_check_env_failed", environment=env_name)
+    except Exception:
+        log.exception("shadow_promotion_check_job_failed")
 
 
 def automated_trigger_check_job() -> None:
