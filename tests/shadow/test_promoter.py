@@ -103,46 +103,49 @@ def _make_mock_db(db_path: Path) -> MagicMock:
     return mock_db
 
 
-def _insert_shadow_trades(
+def _insert_trades_with_prices(
     db_path: Path,
-    count: int,
+    table: str,
+    prices: list[float],
     env: str = "equity",
-    base_price: float = 100.0,
-    price_delta: float = 1.0,
 ) -> None:
-    """Insert shadow trades with ascending prices (profitable)."""
+    """Insert trades with explicit price series into shadow_trades or trades."""
     conn = sqlite3.connect(str(db_path))
-    for i in range(count):
+    is_shadow = table == "shadow_trades"
+    for i, price in enumerate(prices):
         side = "buy" if i % 2 == 0 else "sell"
-        price = base_price + (i * price_delta)
-        conn.execute(
-            "INSERT INTO shadow_trades "
-            "(trade_id, timestamp, symbol, side, quantity, price, environment, model_version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (f"shadow-{i}", f"2026-03-{i + 1:02d}T00:00:00Z", "SPY", side, 10, price, env, "v2"),
-        )
-    conn.commit()
-    conn.close()
-
-
-def _insert_active_trades(
-    db_path: Path,
-    count: int,
-    env: str = "equity",
-    base_price: float = 100.0,
-    price_delta: float = 0.5,
-) -> None:
-    """Insert active trades with smaller price increases (lower performance)."""
-    conn = sqlite3.connect(str(db_path))
-    for i in range(count):
-        side = "buy" if i % 2 == 0 else "sell"
-        price = base_price + (i * price_delta)
-        conn.execute(
-            "INSERT INTO trades "
-            "(trade_id, timestamp, symbol, side, quantity, price, environment) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (f"active-{i}", f"2026-03-{i + 1:02d}T00:00:00Z", "SPY", side, 10, price, env),
-        )
+        if is_shadow:
+            conn.execute(
+                "INSERT INTO shadow_trades "
+                "(trade_id, timestamp, symbol, side, quantity, price, "
+                "environment, model_version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"shadow-{i}",
+                    f"2026-03-{i + 1:02d}T00:00:00Z",
+                    "SPY",
+                    side,
+                    10,
+                    price,
+                    env,
+                    "v2",
+                ),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO trades "
+                "(trade_id, timestamp, symbol, side, quantity, price, environment) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"active-{i}",
+                    f"2026-03-{i + 1:02d}T00:00:00Z",
+                    "SPY",
+                    side,
+                    10,
+                    price,
+                    env,
+                ),
+            )
     conn.commit()
     conn.close()
 
@@ -160,6 +163,103 @@ def _insert_cb_event(db_path: Path, env: str = "equity") -> None:
     conn.close()
 
 
+# Steady upward: high Sharpe (consistent ~1% gains)
+_HIGH_SHARPE_PRICES = [
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+]
+
+# Noisy flat: low Sharpe (gains offset by losses)
+_LOW_SHARPE_PRICES = [
+    100,
+    102,
+    99,
+    101,
+    98,
+    100,
+    97,
+    99,
+    96,
+    98,
+    100,
+    103,
+    100,
+    102,
+    99,
+    101,
+    98,
+    100,
+    97,
+    99,
+]
+
+# Big drawdown then recovery: high MDD
+_HIGH_MDD_PRICES = [
+    100,
+    102,
+    80,
+    60,
+    70,
+    75,
+    78,
+    80,
+    85,
+    90,
+    92,
+    95,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+]
+
+# Small oscillation: low MDD
+_LOW_MDD_PRICES = [
+    100,
+    101,
+    100.5,
+    101,
+    101.5,
+    102,
+    102.5,
+    103,
+    103.5,
+    104,
+    104.5,
+    105,
+    105.5,
+    106,
+    106.5,
+    107,
+    107.5,
+    108,
+    108.5,
+    109,
+]
+
+
 class TestInsufficientData:
     """PROD-04: Returns False when fewer than minimum cycles completed."""
 
@@ -169,7 +269,7 @@ class TestInsufficientData:
 
         db_path = tmp_path / "trading_ops.db"
         _setup_db(db_path)
-        _insert_shadow_trades(db_path, count=5, env="equity")  # < 10
+        _insert_trades_with_prices(db_path, "shadow_trades", _HIGH_SHARPE_PRICES[:5], env="equity")
 
         config = _FakeConfig()
         mock_db = _make_mock_db(db_path)
@@ -185,7 +285,7 @@ class TestInsufficientData:
 
         db_path = tmp_path / "trading_ops.db"
         _setup_db(db_path)
-        _insert_shadow_trades(db_path, count=15, env="crypto")  # < 30
+        _insert_trades_with_prices(db_path, "shadow_trades", _HIGH_SHARPE_PRICES[:15], env="crypto")
 
         config = _FakeConfig(shadow=_FakeShadow(crypto_eval_cycles=30))
         mock_db = _make_mock_db(db_path)
@@ -205,10 +305,8 @@ class TestPromotionCriteria:
 
         db_path = tmp_path / "trading_ops.db"
         _setup_db(db_path)
-        # Shadow with better performance
-        _insert_shadow_trades(db_path, count=20, env="equity", price_delta=2.0)
-        # Active with worse performance
-        _insert_active_trades(db_path, count=20, env="equity", price_delta=0.5)
+        _insert_trades_with_prices(db_path, "shadow_trades", _HIGH_SHARPE_PRICES, env="equity")
+        _insert_trades_with_prices(db_path, "trades", _LOW_SHARPE_PRICES, env="equity")
 
         config = _FakeConfig()
         mock_db = _make_mock_db(db_path)
@@ -225,10 +323,8 @@ class TestPromotionCriteria:
 
         db_path = tmp_path / "trading_ops.db"
         _setup_db(db_path)
-        # Shadow with lower performance
-        _insert_shadow_trades(db_path, count=20, env="equity", price_delta=0.1)
-        # Active with higher performance
-        _insert_active_trades(db_path, count=20, env="equity", price_delta=3.0)
+        _insert_trades_with_prices(db_path, "shadow_trades", _LOW_SHARPE_PRICES, env="equity")
+        _insert_trades_with_prices(db_path, "trades", _HIGH_SHARPE_PRICES, env="equity")
 
         config = _FakeConfig()
         mock_db = _make_mock_db(db_path)
@@ -244,81 +340,8 @@ class TestPromotionCriteria:
 
         db_path = tmp_path / "trading_ops.db"
         _setup_db(db_path)
-        # Shadow trades with a big drawdown (price drops significantly)
-        conn = sqlite3.connect(str(db_path))
-        prices = [
-            100,
-            102,
-            80,
-            60,
-            70,
-            75,
-            78,
-            80,
-            85,
-            90,
-            92,
-            95,
-            97,
-            98,
-            99,
-            100,
-            101,
-            102,
-            103,
-            104,
-        ]
-        for i, price in enumerate(prices):
-            side = "buy" if i % 2 == 0 else "sell"
-            conn.execute(
-                "INSERT INTO shadow_trades "
-                "(trade_id, timestamp, symbol, side, quantity, price, environment, model_version) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    f"shadow-{i}",
-                    f"2026-03-{i + 1:02d}T00:00:00Z",
-                    "SPY",
-                    side,
-                    10,
-                    price,
-                    "equity",
-                    "v2",
-                ),
-            )
-        # Active trades with very small drawdown
-        for i, price in enumerate(
-            [
-                100,
-                101,
-                100.5,
-                101,
-                101.5,
-                102,
-                102.5,
-                103,
-                103.5,
-                104,
-                104.5,
-                105,
-                105.5,
-                106,
-                106.5,
-                107,
-                107.5,
-                108,
-                108.5,
-                109,
-            ]
-        ):
-            side = "buy" if i % 2 == 0 else "sell"
-            conn.execute(
-                "INSERT INTO trades "
-                "(trade_id, timestamp, symbol, side, quantity, price, environment) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (f"active-{i}", f"2026-03-{i + 1:02d}T00:00:00Z", "SPY", side, 10, price, "equity"),
-            )
-        conn.commit()
-        conn.close()
+        _insert_trades_with_prices(db_path, "shadow_trades", _HIGH_MDD_PRICES, env="equity")
+        _insert_trades_with_prices(db_path, "trades", _LOW_MDD_PRICES, env="equity")
 
         config = _FakeConfig()
         mock_db = _make_mock_db(db_path)
@@ -334,8 +357,8 @@ class TestPromotionCriteria:
 
         db_path = tmp_path / "trading_ops.db"
         _setup_db(db_path)
-        _insert_shadow_trades(db_path, count=20, env="equity", price_delta=2.0)
-        _insert_active_trades(db_path, count=20, env="equity", price_delta=0.5)
+        _insert_trades_with_prices(db_path, "shadow_trades", _HIGH_SHARPE_PRICES, env="equity")
+        _insert_trades_with_prices(db_path, "trades", _LOW_SHARPE_PRICES, env="equity")
         _insert_cb_event(db_path, env="equity")
 
         config = _FakeConfig()
@@ -356,8 +379,8 @@ class TestPromotionLifecycle:
 
         db_path = tmp_path / "trading_ops.db"
         _setup_db(db_path)
-        _insert_shadow_trades(db_path, count=20, env="equity", price_delta=2.0)
-        _insert_active_trades(db_path, count=20, env="equity", price_delta=0.5)
+        _insert_trades_with_prices(db_path, "shadow_trades", _HIGH_SHARPE_PRICES, env="equity")
+        _insert_trades_with_prices(db_path, "trades", _LOW_SHARPE_PRICES, env="equity")
 
         config = _FakeConfig()
         mock_db = _make_mock_db(db_path)
@@ -373,8 +396,8 @@ class TestPromotionLifecycle:
 
         db_path = tmp_path / "trading_ops.db"
         _setup_db(db_path)
-        _insert_shadow_trades(db_path, count=20, env="equity", price_delta=2.0)
-        _insert_active_trades(db_path, count=20, env="equity", price_delta=0.5)
+        _insert_trades_with_prices(db_path, "shadow_trades", _HIGH_SHARPE_PRICES, env="equity")
+        _insert_trades_with_prices(db_path, "trades", _LOW_SHARPE_PRICES, env="equity")
 
         config = _FakeConfig()
         mock_db = _make_mock_db(db_path)
@@ -396,9 +419,8 @@ class TestFailedShadowArchival:
 
         db_path = tmp_path / "trading_ops.db"
         _setup_db(db_path)
-        # Shadow with lower performance (will fail)
-        _insert_shadow_trades(db_path, count=20, env="equity", price_delta=0.1)
-        _insert_active_trades(db_path, count=20, env="equity", price_delta=3.0)
+        _insert_trades_with_prices(db_path, "shadow_trades", _LOW_SHARPE_PRICES, env="equity")
+        _insert_trades_with_prices(db_path, "trades", _HIGH_SHARPE_PRICES, env="equity")
 
         config = _FakeConfig()
         mock_db = _make_mock_db(db_path)
@@ -415,8 +437,8 @@ class TestFailedShadowArchival:
 
         db_path = tmp_path / "trading_ops.db"
         _setup_db(db_path)
-        _insert_shadow_trades(db_path, count=20, env="equity", price_delta=0.1)
-        _insert_active_trades(db_path, count=20, env="equity", price_delta=3.0)
+        _insert_trades_with_prices(db_path, "shadow_trades", _LOW_SHARPE_PRICES, env="equity")
+        _insert_trades_with_prices(db_path, "trades", _HIGH_SHARPE_PRICES, env="equity")
 
         config = _FakeConfig()
         mock_db = _make_mock_db(db_path)

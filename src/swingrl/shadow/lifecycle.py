@@ -133,6 +133,27 @@ class ModelLifecycle:
 
         return self._archive_model(active_models[0], env_name)
 
+    def archive_shadow(self, env_name: str) -> Path:
+        """Move the shadow model to archive (failed evaluation).
+
+        Args:
+            env_name: Environment name (equity or crypto).
+
+        Returns:
+            Path to the archived shadow model.
+
+        Raises:
+            ModelError: If no shadow model exists for the environment.
+        """
+        shadow_dir = self._models_dir / "shadow" / env_name
+        shadow_models = list(shadow_dir.glob("*.zip")) if shadow_dir.exists() else []
+
+        if not shadow_models:
+            log.error("no_shadow_model_to_archive", env=env_name)
+            raise ModelError(f"No shadow model found for {env_name}")
+
+        return self._archive_model(shadow_models[0], env_name)
+
     def rollback(self, env_name: str) -> Path:
         """Restore the most recent archived model to active.
 
