@@ -368,3 +368,33 @@ def monthly_offsite_job() -> None:
         log.info("monthly_offsite_job_complete", success=success)
     except Exception:
         log.exception("monthly_offsite_job_failed")
+
+
+def automated_trigger_check_job() -> None:
+    """Check for automated emergency stop triggers every 5 minutes.
+
+    Checks VIX+CB threshold, consecutive NaN inferences, and Binance.US IP ban.
+    If any triggers detected, executes the full four-tier emergency stop.
+    No halt check -- triggers must be evaluated even when halted (idempotent halt set).
+    Wraps in try/except to never crash the scheduler.
+    """
+    ctx = _get_ctx()
+
+    try:
+        from swingrl.execution.emergency import check_automated_triggers, execute_emergency_stop
+
+        triggers = check_automated_triggers(config=ctx.config, db=ctx.db)
+
+        if triggers:
+            reason = "; ".join(triggers)
+            log.critical("automated_triggers_firing", triggers=triggers)
+            execute_emergency_stop(
+                config=ctx.config,
+                db=ctx.db,
+                alerter=ctx.alerter,
+                reason=reason,
+            )
+        else:
+            log.debug("automated_trigger_check_clear")
+    except Exception:
+        log.exception("automated_trigger_check_job_failed")
