@@ -139,6 +139,22 @@ class ExecutionPipeline:
         env_literal: Literal["equity", "crypto"] = "equity" if env_name == "equity" else "crypto"
         observation = self._feature_pipeline.get_observation(env_literal, current_date_str)
 
+        # Step 3b: Track NaN observations in inference_outcomes table
+        had_nan = bool(np.isnan(observation).any())
+        try:
+            with self._db.sqlite() as conn:
+                conn.execute(
+                    "INSERT INTO inference_outcomes (timestamp, environment, had_nan) "
+                    "VALUES (?, ?, ?)",
+                    (datetime.now(UTC).isoformat(), env_name, int(had_nan)),
+                )
+        except Exception:
+            log.warning("inference_outcome_tracking_failed", exc_info=True)
+
+        if had_nan:
+            log.warning("nan_observation_detected", env=env_name)
+            return []
+
         # Step 4: Get portfolio state (used by ObservationAssembler in future)
         _portfolio_state = self._position_tracker.get_portfolio_state_array(env_name)
 
