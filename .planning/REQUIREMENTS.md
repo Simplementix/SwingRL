@@ -118,7 +118,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **PROD-04**: Shadow mode auto-promotion criteria: Shadow Sharpe >= Active Sharpe, Shadow MDD <= 120% Active MDD, no circuit breakers
 - [x] **PROD-05**: Model lifecycle: Training -> Shadow -> Active -> Archive -> Deletion
 - [x] **PROD-06**: Security review: non-root containers, env_file (chmod 600), Binance.US IP allowlisting, 90-day key rotation (staggered)
-- [ ] **PROD-07**: emergency_stop.py: four-tier kill switch — halt jobs, cancel orders, liquidate crypto immediately, queue equity for market open
+- [x] **PROD-07**: emergency_stop.py: four-tier kill switch — halt jobs, cancel orders, liquidate crypto immediately, queue equity for market open
 - [x] **PROD-08**: Disaster recovery test: stop container, delete volumes, restore from backup, verify system resumes correctly
 - [x] **PROD-09**: 9-step quarterly recovery checklist (starting M6)
 
@@ -251,7 +251,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PROD-04 | Phase 10 | Complete |
 | PROD-05 | Phase 10 | Complete |
 | PROD-06 | Phase 10 | Complete |
-| PROD-07 | Phase 10 | Pending |
+| PROD-07 | Phase 10 | Complete |
 | PROD-08 | Phase 10 | Complete |
 | PROD-09 | Phase 10 | Complete |
 
