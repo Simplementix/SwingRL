@@ -25,7 +25,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 11: Production Startup Wiring** - Fix main.py ExecutionPipeline constructor, wire feature table init, fix FRED import path (gap closure, completed 2026-03-10)
 - [x] **Phase 12: Schema Alignment and Emergency Triggers** - Fix stop_polling table reference, fix emergency trigger queries against missing tables (gap closure) (completed 2026-03-10)
 - [x] **Phase 13: Model Path Fix and Reconciliation Scheduling** - Fix model path double-nesting bug and wire PositionReconciler to scheduler (gap closure) (completed 2026-03-10)
-- [ ] **Phase 14: Feature Pipeline Wiring** - Wire compare_features() consumer and integrate sentiment features into observation vector (gap closure)
+- [x] **Phase 14: Feature Pipeline Wiring** - Wire compare_features() consumer and integrate sentiment features into observation vector (gap closure) (completed 2026-03-10)
 
 ## Phase Details
 
@@ -284,4 +284,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 11. Production Startup Wiring | 1/1 | Complete    | 2026-03-10 |
 | 12. Schema Alignment and Emergency Triggers | 1/1 | Complete    | 2026-03-10 |
 | 13. Model Path Fix and Reconciliation Scheduling | 1/1 | Complete    | 2026-03-10 |
-| 14. Feature Pipeline Wiring | 0/1 | Not started | - |
+| 14. Feature Pipeline Wiring | 1/1 | Complete    | 2026-03-10 |
