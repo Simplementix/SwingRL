@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 10-06-PLAN.md
-last_updated: "2026-03-10T03:45:13.000Z"
-last_activity: "2026-03-10 -- Phase 10 Plan 06: Emergency stop protocol"
+stopped_at: Completed 10-04-PLAN.md
+last_updated: "2026-03-10T03:50:33.664Z"
+last_activity: "2026-03-10 -- Phase 10 Plan 04: Shadow mode inference and auto-promotion"
 progress:
   total_phases: 10
   completed_phases: 9
   total_plans: 42
-  completed_plans: 38
+  completed_plans: 41
   percent: 100
 ---
 
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 
 Phase: 10 of 10 (Production Hardening)
 Plan: 6 of 6 in phase 10
-Status: Plan 10-06 complete -- Emergency stop protocol
-Last activity: 2026-03-10 -- Phase 10 Plan 06: Emergency stop protocol
+Status: Plan 10-06 complete -- Emergency stop protocol (10-04 shadow mode also complete)
+Last activity: 2026-03-10 -- Phase 10 Plan 04: Shadow mode inference and auto-promotion
 
 Progress: [██████████] 100%
 
@@ -91,6 +91,7 @@ Progress: [██████████] 100%
 | Phase 10 P03 | 5 | 2 tasks | 6 files |
 | Phase 10-production-hardening P02 | 6 | 2 tasks | 9 files |
 | Phase 10-production-hardening P06 | 5 | 2 tasks | 5 files |
+| Phase 10-production-hardening P04 | 9 | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -196,6 +197,8 @@ Recent decisions affecting current work:
 - [Phase 10-production-hardening]: nosec B608 on DuckDB backup table name interpolation (module constant tuple)
 - [Phase 10-production-hardening]: _transformers module-level global for lazy import to avoid ruff N814 CamelCase alias violations
 - [Phase 10-production-hardening]: nosec B107 on NewsFetcher __init__ for empty-string API key defaults (test-friendly)
+- [Phase 10-production-hardening]: nosec B608 on promoter SQL table name interpolation (constrained to shadow_trades/trades)
+- [Phase 10-production-hardening]: archive_shadow lifecycle method added for shadow->archive transition (separate from active->archive)
 
 ### Pending Todos
 
@@ -209,6 +212,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-10T03:36:23Z
-Stopped at: Completed 10-06-PLAN.md
-Resume file: .planning/phases/10-production-hardening/10-06-SUMMARY.md
+Last session: 2026-03-10T03:50:33.659Z
+Stopped at: Completed 10-04-PLAN.md
+Resume file: None

@@ -114,8 +114,8 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 - [x] **PROD-01**: Backup automation: daily SQLite (trading_ops.db), weekly DuckDB (market_data.ddb), monthly off-site rsync via Tailscale
 - [x] **PROD-02**: deploy_model.sh: SCP model transfer from M1 Mac to homelab with integrity verification and automated smoke test
-- [ ] **PROD-03**: Shadow mode: new models run parallel with active model generating hypothetical trades (10 equity days, 30 crypto cycles)
-- [ ] **PROD-04**: Shadow mode auto-promotion criteria: Shadow Sharpe >= Active Sharpe, Shadow MDD <= 120% Active MDD, no circuit breakers
+- [x] **PROD-03**: Shadow mode: new models run parallel with active model generating hypothetical trades (10 equity days, 30 crypto cycles)
+- [x] **PROD-04**: Shadow mode auto-promotion criteria: Shadow Sharpe >= Active Sharpe, Shadow MDD <= 120% Active MDD, no circuit breakers
 - [x] **PROD-05**: Model lifecycle: Training -> Shadow -> Active -> Archive -> Deletion
 - [ ] **PROD-06**: Security review: non-root containers, env_file (chmod 600), Binance.US IP allowlisting, 90-day key rotation (staggered)
 - [ ] **PROD-07**: emergency_stop.py: four-tier kill switch — halt jobs, cancel orders, liquidate crypto immediately, queue equity for market open
@@ -247,8 +247,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | HARD-05 | Phase 10 | Complete |
 | PROD-01 | Phase 10 | Complete |
 | PROD-02 | Phase 10 | Complete |
-| PROD-03 | Phase 10 | Pending |
-| PROD-04 | Phase 10 | Pending |
+| PROD-03 | Phase 10 | Complete |
+| PROD-04 | Phase 10 | Complete |
 | PROD-05 | Phase 10 | Complete |
 | PROD-06 | Phase 10 | Pending |
 | PROD-07 | Phase 10 | Pending |
