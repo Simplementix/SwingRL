@@ -376,8 +376,12 @@ class TestGenerateHypotheticalTrades:
         ctx, mock_model = self._make_ctx()
 
         with (
-            patch("swingrl.shadow.shadow_runner.SignalInterpreter") as mock_si_cls,
-            patch("swingrl.shadow.shadow_runner.PositionSizer") as mock_ps_cls,
+            patch(
+                "swingrl.execution.signal_interpreter.SignalInterpreter",
+            ) as mock_si_cls,
+            patch(
+                "swingrl.execution.position_sizer.PositionSizer",
+            ) as mock_ps_cls,
         ):
             mock_si = mock_si_cls.return_value
             mock_si.interpret.return_value = []  # no signals for simplicity
@@ -413,7 +417,7 @@ class TestGenerateHypotheticalTrades:
             actions=np.array([0.5, -0.5], dtype=np.float32),
         )
 
-        with patch("swingrl.shadow.shadow_runner.PositionSizer") as mock_ps_cls:
+        with patch("swingrl.execution.position_sizer.PositionSizer") as mock_ps_cls:
             mock_ps = mock_ps_cls.return_value
             mock_ps.size.return_value = None  # negative Kelly
 
