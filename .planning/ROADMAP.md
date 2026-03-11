@@ -26,7 +26,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 12: Schema Alignment and Emergency Triggers** - Fix stop_polling table reference, fix emergency trigger queries against missing tables (gap closure) (completed 2026-03-10)
 - [x] **Phase 13: Model Path Fix and Reconciliation Scheduling** - Fix model path double-nesting bug and wire PositionReconciler to scheduler (gap closure) (completed 2026-03-10)
 - [x] **Phase 14: Feature Pipeline Wiring** - Wire compare_features() consumer and integrate sentiment features into observation vector (gap closure) (completed 2026-03-10)
-- [ ] **Phase 15: Training CLI Observation Assembly** - Fix train.py to use ObservationAssembler instead of raw DuckDB columns (gap closure)
+- [x] **Phase 15: Training CLI Observation Assembly** - Fix train.py to use ObservationAssembler instead of raw DuckDB columns (gap closure) (completed 2026-03-11)
 - [ ] **Phase 16: Crypto Stop Price Persistence** - Persist stop/TP prices from FillProcessor to positions table for stop_polling (gap closure)
 - [ ] **Phase 17: Doc Housekeeping** - Fix stale counters, descriptions, and plan counts in REQUIREMENTS.md and ROADMAP.md (gap closure)
 
@@ -327,6 +327,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 12. Schema Alignment and Emergency Triggers | 1/1 | Complete    | 2026-03-10 |
 | 13. Model Path Fix and Reconciliation Scheduling | 1/1 | Complete    | 2026-03-10 |
 | 14. Feature Pipeline Wiring | 1/1 | Complete    | 2026-03-10 |
-| 15. Training CLI Observation Assembly | 0/1 | Not started | - |
+| 15. Training CLI Observation Assembly | 1/1 | Complete   | 2026-03-11 |
 | 16. Crypto Stop Price Persistence | 0/1 | Not started | - |
 | 17. Doc Housekeeping | 0/1 | Not started | - |

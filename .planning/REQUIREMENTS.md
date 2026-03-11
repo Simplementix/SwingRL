@@ -55,9 +55,9 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### RL Training
 
-- [ ] **TRAIN-01**: StockTradingEnv — Gymnasium-compatible, daily bars, 8 ETFs, 156-dim observation, continuous action space (target portfolio weights)
-- [ ] **TRAIN-02**: CryptoTradingEnv — Gymnasium-compatible, 4H bars, BTC/ETH, 45-dim observation, continuous action space
-- [ ] **TRAIN-03**: PPO agent training with hyperparameters: lr=0.0003, n_steps=2048, batch_size=64, ent_coef=0.01, clip_range=0.2, gamma=0.99
+- [x] **TRAIN-01**: StockTradingEnv — Gymnasium-compatible, daily bars, 8 ETFs, 156-dim observation, continuous action space (target portfolio weights)
+- [x] **TRAIN-02**: CryptoTradingEnv — Gymnasium-compatible, 4H bars, BTC/ETH, 45-dim observation, continuous action space
+- [x] **TRAIN-03**: PPO agent training with hyperparameters: lr=0.0003, n_steps=2048, batch_size=64, ent_coef=0.01, clip_range=0.2, gamma=0.99
 - [x] **TRAIN-04**: A2C agent training with hyperparameters: lr=0.0007, n_steps=5, vf_coef=0.5, ent_coef=0.01, gamma=0.99
 - [x] **TRAIN-05**: SAC agent training with hyperparameters: lr=0.0003, batch_size=256, tau=0.005, ent_coef="auto", gamma=0.99
 - [x] **TRAIN-06**: Sharpe-weighted softmax ensemble blending using per-environment validation windows (63 trading days equity, 126 4H bars crypto)
@@ -70,7 +70,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### Validation
 
-- [ ] **VAL-01**: Walk-forward backtesting framework with 3-month test folds for both environments
+- [x] **VAL-01**: Walk-forward backtesting framework with 3-month test folds for both environments
 - [x] **VAL-02**: 200-bar purge gap and 1% embargo between training and test folds to prevent data leakage
 - [x] **VAL-03**: Performance metric calculators: Sharpe, Sortino, Calmar, Rachev ratios, MDD, average drawdown, drawdown duration
 - [x] **VAL-04**: Trade-level metrics: win rate, Profit Factor, trade frequency (2-10 trades per week)
@@ -200,19 +200,19 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FEAT-09 | Phase 14 | Complete |
 | FEAT-10 | Phase 14 | Complete |
 | FEAT-11 | Phase 11 | Complete |
-| TRAIN-01 | Phase 15 | Pending |
-| TRAIN-02 | Phase 15 | Pending |
+| TRAIN-01 | Phase 15 | Complete |
+| TRAIN-02 | Phase 15 | Complete |
 | TRAIN-07 | Phase 6 | Complete |
 | TRAIN-08 | Phase 6 | Complete |
 | TRAIN-09 | Phase 6 | Complete |
 | TRAIN-10 | Phase 6 | Complete |
 | TRAIN-11 | Phase 6 | Complete |
-| TRAIN-03 | Phase 15 | Pending |
+| TRAIN-03 | Phase 15 | Complete |
 | TRAIN-04 | Phase 7 | Complete |
 | TRAIN-05 | Phase 7 | Complete |
 | TRAIN-06 | Phase 7 | Complete |
 | TRAIN-12 | Phase 7 | Complete |
-| VAL-01 | Phase 15 | Pending |
+| VAL-01 | Phase 15 | Complete |
 | VAL-02 | Phase 7 | Complete |
 | VAL-03 | Phase 7 | Complete |
 | VAL-04 | Phase 7 | Complete |
