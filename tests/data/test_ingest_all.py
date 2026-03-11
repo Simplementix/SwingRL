@@ -337,7 +337,6 @@ class TestRunPipeline:
     ) -> None:
         """DATA-05: Feature computation skipped when total rows_added == 0."""
         from swingrl.data.ingest_all import run_pipeline
-
         from swingrl.data.verification import VerificationResult
 
         mock_db = _make_duckdb_ctx_mock(row_count=0)
@@ -371,7 +370,6 @@ class TestRunPipeline:
     ) -> None:
         """DATA-05: Feature computation runs when rows_added > 0."""
         from swingrl.data.ingest_all import run_pipeline
-
         from swingrl.data.verification import VerificationResult
 
         # Rows: before=0, after=50 for equity; same zero for crypto/macro
@@ -425,7 +423,6 @@ class TestRunPipeline:
     ) -> None:
         """DATA-05: Returns non-zero exit code when verification fails."""
         from swingrl.data.ingest_all import run_pipeline
-
         from swingrl.data.verification import VerificationResult
 
         mock_db = _make_duckdb_ctx_mock(row_count=0)
@@ -458,7 +455,6 @@ class TestRunPipeline:
     ) -> None:
         """DATA-05: Returns 0 exit code when verification passes."""
         from swingrl.data.ingest_all import run_pipeline
-
         from swingrl.data.verification import VerificationResult
 
         mock_db = _make_duckdb_ctx_mock(row_count=0)
@@ -523,12 +519,16 @@ class TestModuleImportable:
 
 
 class TestCliHelp2:
-    """DATA-05: CLI integration via subprocess."""
+    """DATA-05: CLI integration via subprocess using current interpreter."""
 
     def test_cli_help(self) -> None:
-        """DATA-05: subprocess --help returns exit 0 and contains --backfill."""
+        """DATA-05: subprocess --help returns exit 0 and contains --backfill.
+
+        Uses sys.executable (current venv python) to avoid uv subprocess
+        environment registration issues with editable installs.
+        """
         result = subprocess.run(
-            ["uv", "run", "python", "-m", "swingrl.data.ingest_all", "--help"],
+            [sys.executable, "-m", "swingrl.data.ingest_all", "--help"],
             capture_output=True,
             text=True,
             cwd="/Users/varunpanchal/Documents/Projects/Simplementix/SwingRL",
@@ -543,7 +543,6 @@ class TestFullPipelineMock:
     def test_full_pipeline_mock(self, loaded_config: SwingRLConfig) -> None:
         """DATA-05: Full pipeline wires all ingestors, features, and verification."""
         from swingrl.data.ingest_all import run_pipeline
-
         from swingrl.data.verification import CheckResult, VerificationResult
 
         # Setup: row counts return 0 before and 10 after equity ingest so features run
