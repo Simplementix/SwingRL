@@ -328,5 +328,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 13. Model Path Fix and Reconciliation Scheduling | 1/1 | Complete    | 2026-03-10 |
 | 14. Feature Pipeline Wiring | 1/1 | Complete    | 2026-03-10 |
 | 15. Training CLI Observation Assembly | 1/1 | Complete    | 2026-03-11 |
-| 16. Crypto Stop Price Persistence | 0/1 | Not started | - |
+| 16. Crypto Stop Price Persistence | 0/1 | Complete    | 2026-03-11 |
 | 17. Doc Housekeeping | 0/1 | Not started | - |
