@@ -178,7 +178,13 @@ class DataValidator:
 
         return clean_df, quarantine_df
 
-    def validate_batch(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    def validate_batch(
+        self,
+        df: pd.DataFrame,
+        symbol: str,
+        *,
+        skip_staleness: bool = False,
+    ) -> pd.DataFrame:
         """Apply batch-level validation steps 8-12.
 
         Returns the (potentially deduplicated) DataFrame. Raises DataError
@@ -188,6 +194,8 @@ class DataValidator:
         Args:
             df: OHLCV DataFrame (already row-validated).
             symbol: Symbol for logging context.
+            skip_staleness: If True, skip the staleness check (step 10).
+                Useful during backfill where API data may lag by hours.
 
         Returns:
             DataFrame after deduplication (step 8).
@@ -212,7 +220,8 @@ class DataValidator:
         self._detect_gaps(df, symbol)
 
         # Step 10: Stale data check
-        self._check_staleness(df, symbol)
+        if not skip_staleness:
+            self._check_staleness(df, symbol)
 
         # Step 11: Row count threshold
         if len(df) < 2:
