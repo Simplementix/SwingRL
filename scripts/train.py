@@ -8,6 +8,7 @@ Usage:
     python scripts/train.py --env equity --algo ppo
     python scripts/train.py --env equity --algo all
     python scripts/train.py --env crypto --algo all --timesteps 500000
+    python scripts/train.py --env equity --algo all --dry-run
 """
 
 from __future__ import annotations
@@ -17,12 +18,15 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import numpy as np
 import structlog
 
-from swingrl.config.schema import load_config
+from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.features.assembler import ObservationAssembler
+from swingrl.features.pipeline import _CRYPTO_FEATURE_COLS, _EQUITY_FEATURE_COLS
 from swingrl.training.ensemble import EnsembleBlender
 from swingrl.training.trainer import ALGO_MAP, TrainingOrchestrator
 from swingrl.utils.logging import configure_logging
@@ -30,6 +34,9 @@ from swingrl.utils.logging import configure_logging
 log = structlog.get_logger(__name__)
 
 ALGO_NAMES = list(ALGO_MAP.keys())
+
+# Macro series IDs to (6,) array position mapping
+_MACRO_SERIES_IDS = ["VIXCLS", "T10Y2Y", "DFF", "CPIAUCSL", "UNRATE"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,6 +54,7 @@ Examples:
   python scripts/train.py --env equity --algo all
   python scripts/train.py --env crypto --algo all --timesteps 500000
   python scripts/train.py --env equity --algo sac --config config/swingrl.yaml
+  python scripts/train.py --env equity --dry-run
 """,
     )
 
@@ -80,51 +88,366 @@ Examples:
         default="models",
         help="Root directory for model storage (default: models).",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help=(
+            "Validate feature loading and model construction without training. "
+            "Loads features, checks shapes, and exits with code 0 on success."
+        ),
+    )
 
     return parser
 
 
+def _get_macro_array(conn: Any, date_str: str) -> np.ndarray:
+    """Fetch macro features as (6,) array from macro_features table.
+
+    Reads latest value per series_id on or before date_str. Falls back to
+    zeros for missing series. The 6 positions map to: [VIXCLS, T10Y2Y,
+    yield_curve_direction, DFF, CPIAUCSL, UNRATE].
+
+    Args:
+        conn: DuckDB connection.
+        date_str: ISO date string (YYYY-MM-DD) used as upper bound for ASOF lookup.
+
+    Returns:
+        (6,) float64 array.
+    """
+    try:
+        rows = conn.execute(
+            """
+            SELECT series_id, value FROM macro_features
+            WHERE date <= CAST(? AS DATE)
+            ORDER BY date DESC
+            """,
+            [date_str],
+        ).fetchdf()
+
+        if rows.empty:
+            return np.zeros(6)
+
+        # Get latest value per series_id
+        latest: dict[str, float] = {}
+        for _, row in rows.iterrows():
+            sid = str(row["series_id"])
+            if sid not in latest:
+                latest[sid] = float(row["value"])
+
+        vix = latest.get("VIXCLS", 0.0)
+        spread = latest.get("T10Y2Y", 0.0)
+        direction = 1.0 if spread > 0 else 0.0
+        fed = latest.get("DFF", 0.0)
+        cpi = latest.get("CPIAUCSL", 0.0)
+        unemp = latest.get("UNRATE", 0.0)
+        return np.array([vix, spread, direction, fed, cpi, unemp])
+    except Exception:
+        log.warning("macro_fetch_failed", date=date_str)
+        return np.zeros(6)
+
+
+def _get_hmm_probs(conn: Any, environment: str, date_str: str) -> np.ndarray:
+    """Fetch HMM regime probabilities as (2,) array from hmm_state_history.
+
+    Returns [0.5, 0.5] when no state history exists yet.
+
+    Args:
+        conn: DuckDB connection.
+        environment: "equity" or "crypto".
+        date_str: ISO date/datetime string used as upper bound.
+
+    Returns:
+        (2,) float64 array [p_bull, p_bear].
+    """
+    try:
+        row = conn.execute(
+            """
+            SELECT p_bull, p_bear FROM hmm_state_history
+            WHERE environment = ? AND date <= CAST(? AS DATE)
+            ORDER BY date DESC
+            LIMIT 1
+            """,
+            [environment, date_str],
+        ).fetchdf()
+
+        if row.empty:
+            return np.array([0.5, 0.5])
+        return np.array([float(row["p_bull"].iloc[0]), float(row["p_bear"].iloc[0])])
+    except Exception:
+        return np.array([0.5, 0.5])
+
+
 def _load_features_prices(
-    conn: duckdb.DuckDBPyConnection,
+    conn: Any,
     env_name: str,
+    config: SwingRLConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Load features and prices from DuckDB for the given environment.
+
+    Assembles observation matrices using ObservationAssembler so the output
+    shapes match the SB3 environment observation_space dimensions:
+    - equity: (N, 156) features, (N, 8) prices
+    - crypto: (N, 45) features, (N, 2) prices
 
     Args:
         conn: Active DuckDB connection.
         env_name: Environment name ("equity" or "crypto").
+        config: Validated SwingRLConfig for symbol lists and sentiment flag.
 
     Returns:
-        Tuple of (features_array, prices_array).
+        Tuple of (features_array, prices_array) both float32.
 
     Raises:
-        RuntimeError: If no data found in DuckDB.
+        RuntimeError: If no data found in the feature table.
     """
-    table_name = f"features_{env_name}"
-    df = conn.execute(f"SELECT * FROM {table_name} ORDER BY rowid").fetchdf()  # noqa: S608  # nosec B608
+    assembler = ObservationAssembler(config)
 
-    if df.empty:
-        msg = f"No data found in {table_name} table"
+    if env_name == "equity":
+        return _load_equity(conn, config, assembler)
+    return _load_crypto(conn, config, assembler)
+
+
+def _load_equity(
+    conn: Any,
+    config: SwingRLConfig,
+    assembler: ObservationAssembler,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load equity features and prices from DuckDB.
+
+    Groups features_equity rows by date, calls assembler.assemble_equity() per
+    timestep with macro/HMM context, and aligns with OHLCV close prices via
+    INNER JOIN on date.
+
+    Args:
+        conn: DuckDB connection.
+        config: SwingRLConfig with equity symbol list.
+        assembler: ObservationAssembler initialized from config.
+
+    Returns:
+        Tuple of ((N, 156) features, (N, n_symbols) prices) float32.
+    """
+    equity_symbols = sorted(config.equity.symbols)
+    per_asset_size = 15  # EQUITY_PER_ASSET_BASE
+
+    # Load all feature rows INNER JOINed with OHLCV dates to ensure alignment
+    feat_df = conn.execute(
+        """
+        SELECT
+            f.date,
+            f.symbol,
+            {feat_cols}
+        FROM features_equity f
+        INNER JOIN (
+            SELECT DISTINCT date FROM ohlcv_daily
+        ) o ON f.date = o.date
+        ORDER BY f.date, f.symbol
+        """.format(feat_cols=", ".join(f"f.{c}" for c in _EQUITY_FEATURE_COLS))  # nosec B608
+    ).fetchdf()
+
+    if feat_df.empty:
+        msg = "No data found in features_equity table"
         raise RuntimeError(msg)
 
-    # Price columns are the close prices; features are everything else
-    # Convention: first columns are metadata, rest are feature values
-    # For now, extract as numpy arrays
-    features = df.select_dtypes(include=[np.number]).values.astype(np.float32)
-    prices = features[:, 0:1]  # First numeric column as price proxy
+    # Load close prices — pivot to (dates x symbols)
+    prices_df = conn.execute(
+        """
+        SELECT date, symbol, close
+        FROM ohlcv_daily
+        WHERE symbol IN ({sym_list})
+        ORDER BY date, symbol
+        """.format(sym_list=", ".join(f"'{s}'" for s in equity_symbols))  # nosec B608
+    ).fetchdf()
+
+    # Build set of dates present in features (already filtered by INNER JOIN)
+    feat_dates = sorted(feat_df["date"].unique())
+
+    # Bulk-load macro and HMM for all dates to avoid N+1 queries
+    macro_map: dict[str, np.ndarray] = {}
+    hmm_map: dict[str, np.ndarray] = {}
+    for d in feat_dates:
+        date_str = str(d)[:10]
+        macro_map[date_str] = _get_macro_array(conn, date_str)
+        hmm_map[date_str] = _get_hmm_probs(conn, "equity", date_str)
+
+    # Pivot prices to DataFrame indexed by date for fast lookup
+    prices_pivot = prices_df.pivot_table(index="date", columns="symbol", values="close")
+    # Ensure all expected symbols are present; fill missing with zeros
+    for sym in equity_symbols:
+        if sym not in prices_pivot.columns:
+            prices_pivot[sym] = 0.0
+    prices_pivot = prices_pivot[equity_symbols]  # enforce alpha-sorted column order
+
+    # Assemble one observation vector per date
+    obs_rows: list[np.ndarray] = []
+    price_rows: list[np.ndarray] = []
+
+    for date_val in feat_dates:
+        date_str = str(date_val)[:10]
+        sym_group = feat_df[feat_df["date"] == date_val]
+
+        # Build per_asset dict — fill missing symbols with zeros
+        per_asset: dict[str, np.ndarray] = {}
+        for sym in equity_symbols:
+            sym_row = sym_group[sym_group["symbol"] == sym]
+            if sym_row.empty:
+                per_asset[sym] = np.zeros(per_asset_size)
+            else:
+                vals = sym_row[_EQUITY_FEATURE_COLS].values[0]
+                per_asset[sym] = np.nan_to_num(np.array(vals, dtype=float), nan=0.0)
+
+        macro = macro_map[date_str]
+        hmm = hmm_map[date_str]
+
+        obs = assembler.assemble_equity(
+            per_asset_features=per_asset,
+            macro=macro,
+            hmm_probs=hmm,
+            turbulence=0.0,
+            portfolio_state=None,
+        )
+        obs_rows.append(obs)
+
+        # Extract prices for this date
+        if date_val in prices_pivot.index:
+            price_row = prices_pivot.loc[date_val].values.astype(np.float32)
+        else:
+            price_row = np.ones(len(equity_symbols), dtype=np.float32)
+        price_rows.append(price_row)
+
+    features = np.array(obs_rows, dtype=np.float32)
+    prices = np.array(price_rows, dtype=np.float32)
 
     log.info(
         "data_loaded",
-        env_name=env_name,
-        rows=len(df),
-        feature_cols=features.shape[1],
+        env_name="equity",
+        rows=len(feat_dates),
+        obs_dim=features.shape[1],
+        n_symbols=len(equity_symbols),
+    )
+
+    return features, prices
+
+
+def _load_crypto(
+    conn: Any,
+    config: SwingRLConfig,
+    assembler: ObservationAssembler,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load crypto features and prices from DuckDB.
+
+    Groups features_crypto rows by datetime, calls assembler.assemble_crypto() per
+    timestep with macro/HMM context, and aligns with ohlcv_4h close prices via
+    INNER JOIN on datetime.
+
+    Args:
+        conn: DuckDB connection.
+        config: SwingRLConfig with crypto symbol list.
+        assembler: ObservationAssembler initialized from config.
+
+    Returns:
+        Tuple of ((N, 45) features, (N, n_symbols) prices) float32.
+    """
+    crypto_symbols = sorted(config.crypto.symbols)
+    per_asset_size = 13  # CRYPTO_PER_ASSET
+
+    # Load all feature rows INNER JOINed with ohlcv_4h datetimes
+    feat_df = conn.execute(
+        """
+        SELECT
+            f.datetime,
+            f.symbol,
+            {feat_cols}
+        FROM features_crypto f
+        INNER JOIN (
+            SELECT DISTINCT datetime FROM ohlcv_4h
+        ) o ON f.datetime = o.datetime
+        ORDER BY f.datetime, f.symbol
+        """.format(feat_cols=", ".join(f"f.{c}" for c in _CRYPTO_FEATURE_COLS))  # nosec B608
+    ).fetchdf()
+
+    if feat_df.empty:
+        msg = "No data found in features_crypto table"
+        raise RuntimeError(msg)
+
+    # Load close prices — pivot to (datetimes x symbols)
+    prices_df = conn.execute(
+        """
+        SELECT datetime, symbol, close
+        FROM ohlcv_4h
+        WHERE symbol IN ({sym_list})
+        ORDER BY datetime, symbol
+        """.format(sym_list=", ".join(f"'{s}'" for s in crypto_symbols))  # nosec B608
+    ).fetchdf()
+
+    feat_datetimes = sorted(feat_df["datetime"].unique())
+
+    # Bulk-load macro and HMM for all timestamps
+    macro_map: dict[str, np.ndarray] = {}
+    hmm_map: dict[str, np.ndarray] = {}
+    for dt in feat_datetimes:
+        date_str = str(dt)[:10]
+        macro_map[str(dt)] = _get_macro_array(conn, date_str)
+        hmm_map[str(dt)] = _get_hmm_probs(conn, "crypto", date_str)
+
+    # Pivot prices
+    prices_pivot = prices_df.pivot_table(index="datetime", columns="symbol", values="close")
+    for sym in crypto_symbols:
+        if sym not in prices_pivot.columns:
+            prices_pivot[sym] = 0.0
+    prices_pivot = prices_pivot[crypto_symbols]
+
+    obs_rows: list[np.ndarray] = []
+    price_rows: list[np.ndarray] = []
+
+    for dt_val in feat_datetimes:
+        dt_str = str(dt_val)
+        sym_group = feat_df[feat_df["datetime"] == dt_val]
+
+        per_asset: dict[str, np.ndarray] = {}
+        for sym in crypto_symbols:
+            sym_row = sym_group[sym_group["symbol"] == sym]
+            if sym_row.empty:
+                per_asset[sym] = np.zeros(per_asset_size)
+            else:
+                vals = sym_row[_CRYPTO_FEATURE_COLS].values[0]
+                per_asset[sym] = np.nan_to_num(np.array(vals, dtype=float), nan=0.0)
+
+        macro = macro_map[dt_str]
+        hmm = hmm_map[dt_str]
+
+        obs = assembler.assemble_crypto(
+            per_asset_features=per_asset,
+            macro=macro,
+            hmm_probs=hmm,
+            turbulence=0.0,
+            overnight_context=0.0,
+            portfolio_state=None,
+        )
+        obs_rows.append(obs)
+
+        if dt_val in prices_pivot.index:
+            price_row = prices_pivot.loc[dt_val].values.astype(np.float32)
+        else:
+            price_row = np.ones(len(crypto_symbols), dtype=np.float32)
+        price_rows.append(price_row)
+
+    features = np.array(obs_rows, dtype=np.float32)
+    prices = np.array(price_rows, dtype=np.float32)
+
+    log.info(
+        "data_loaded",
+        env_name="crypto",
+        rows=len(feat_datetimes),
+        obs_dim=features.shape[1],
+        n_symbols=len(crypto_symbols),
     )
 
     return features, prices
 
 
 def _write_model_metadata(
-    conn: duckdb.DuckDBPyConnection,
+    conn: Any,
     env_name: str,
     algo_name: str,
     model_path: Path,
@@ -203,12 +526,14 @@ def main(argv: list[str] | None = None) -> int:
     algos = ALGO_NAMES if args.algo == "all" else [args.algo]
     models_dir = Path(args.models_dir)
     total_timesteps: int = args.timesteps
+    dry_run: bool = args.dry_run
 
     log.info(
         "training_pipeline_started",
         env_name=env_name,
         algos=algos,
         total_timesteps=total_timesteps,
+        dry_run=dry_run,
     )
 
     start_time = time.monotonic()
@@ -219,8 +544,24 @@ def main(argv: list[str] | None = None) -> int:
     conn = duckdb.connect(str(db_path))
 
     try:
-        # Load features and prices
-        features, prices = _load_features_prices(conn, env_name)
+        # Load features and prices using ObservationAssembler
+        features, prices = _load_features_prices(conn, env_name, config)
+
+        log.info(
+            "features_validated",
+            env_name=env_name,
+            features_shape=list(features.shape),
+            prices_shape=list(prices.shape),
+        )
+
+        if dry_run:
+            log.info(
+                "dry_run_complete",
+                env_name=env_name,
+                obs_dim=features.shape[1],
+                n_timesteps=features.shape[0],
+            )
+            return 0
 
         orchestrator = TrainingOrchestrator(
             config=config,
