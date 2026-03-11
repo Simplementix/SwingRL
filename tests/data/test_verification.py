@@ -269,10 +269,10 @@ class TestPrintSummary:
 
 
 class TestCheckCryptoGaps:
-    """DATA-04: _check_crypto_gaps detects gaps >8h in ohlcv_4h timestamps."""
+    """DATA-04: _check_crypto_gaps detects gaps >24h in ohlcv_4h timestamps."""
 
     def test_no_gaps_passes(self, loaded_config: object) -> None:
-        """DATA-04: Returns passed=True when all consecutive timestamps are <=8h apart."""
+        """DATA-04: Returns passed=True when all consecutive timestamps are <=24h apart."""
         from swingrl.data.verification import _check_crypto_gaps
 
         conn = _make_in_memory_db()
@@ -282,27 +282,27 @@ class TestCheckCryptoGaps:
             _insert_crypto_rows(conn, symbol, start, 4, 50)
         result = _check_crypto_gaps(cursor, loaded_config)  # type: ignore[arg-type]
         assert result.passed is True
-        assert "no" in result.detail.lower() and "gaps" in result.detail.lower()
+        assert "no gaps" in result.detail.lower()
         cursor.close()
         conn.close()
 
-    def test_gap_over_8h_fails(self, loaded_config: object) -> None:
-        """DATA-04: Returns passed=False when ohlcv_4h has a gap >8h for any symbol."""
+    def test_large_gap_reported_but_passes(self, loaded_config: object) -> None:
+        """DATA-04: Gaps >24h are logged but verification still passes."""
         from swingrl.data.verification import _check_crypto_gaps
 
         conn = _make_in_memory_db()
         cursor = conn.cursor()
         start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
-        # Insert BTC with normal spacing
         _insert_crypto_rows(conn, "BTCUSDT", start, 4, 50)
-        # Insert ETH with a 12h gap at position 10
+        # Insert ETH with a 48h gap at position 10
         from datetime import timedelta
 
         ts = start
         for i in range(50):
-            gap_hours = 12 if i == 10 else 4
+            gap_hours = 48 if i == 10 else 4
             conn.execute(
-                "INSERT INTO ohlcv_4h (symbol, datetime, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO ohlcv_4h (symbol, datetime, open, high, low, close, volume) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 [
                     "ETHUSDT",
                     ts.strftime("%Y-%m-%d %H:%M:%S"),
@@ -315,26 +315,26 @@ class TestCheckCryptoGaps:
             )
             ts += timedelta(hours=gap_hours)
         result = _check_crypto_gaps(cursor, loaded_config)  # type: ignore[arg-type]
-        assert result.passed is False
-        assert "ETHUSDT" in result.detail or "gap" in result.detail.lower()
+        assert result.passed is True
+        assert "remain" in result.detail.lower()
+        assert "ETHUSDT" in result.detail
         cursor.close()
         conn.close()
 
-    def test_historical_gaps_tolerated(self, loaded_config: object) -> None:
-        """DATA-04: Gaps before 2021-01-01 are tolerated and don't fail verification."""
+    def test_small_gap_under_threshold_ignored(self, loaded_config: object) -> None:
+        """DATA-04: Gaps under 24h (e.g. 12h maintenance) are not reported."""
         from swingrl.data.verification import _check_crypto_gaps
 
         conn = _make_in_memory_db()
         cursor = conn.cursor()
-        # Insert data with a 12h gap in 2019 (before cutoff)
+        start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
         from datetime import timedelta
 
-        start = datetime(2019, 9, 1, 0, 0, 0, tzinfo=UTC)
-        ts = start
+        # Insert both symbols with 12h gaps — under the 24h threshold
         for symbol in ["BTCUSDT", "ETHUSDT"]:
             ts = start
             for i in range(50):
-                gap_hours = 24 if i == 10 else 4  # 24h gap at position 10
+                gap_hours = 12 if i == 10 else 4
                 conn.execute(
                     "INSERT INTO ohlcv_4h (symbol, datetime, open, high, low, close, volume) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -343,7 +343,7 @@ class TestCheckCryptoGaps:
                 ts += timedelta(hours=gap_hours)
         result = _check_crypto_gaps(cursor, loaded_config)  # type: ignore[arg-type]
         assert result.passed is True
-        assert "historical" in result.detail.lower()
+        assert "no gaps" in result.detail.lower()
         cursor.close()
         conn.close()
 

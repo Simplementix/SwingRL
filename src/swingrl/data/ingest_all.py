@@ -23,6 +23,7 @@ from swingrl.data.alpaca import AlpacaIngestor
 from swingrl.data.binance import BinanceIngestor
 from swingrl.data.db import DatabaseManager
 from swingrl.data.fred import FREDIngestor
+from swingrl.data.gap_fill import detect_and_fill_crypto_gaps
 from swingrl.data.verification import (
     VerificationResult,
     print_summary,
@@ -236,9 +237,21 @@ def run_pipeline(config: SwingRLConfig, backfill: bool) -> int:
     crypto_delta = run_crypto(config, backfill=backfill)
     macro_delta = run_macro(config, backfill=backfill)
 
+    # Detect and fill crypto gaps from alternate sources (Binance Global)
+    gap_results = detect_and_fill_crypto_gaps(config)
+    gaps_filled = sum(1 for g in gap_results if g.filled)
+    gaps_remaining = sum(1 for g in gap_results if not g.filled)
+    if gap_results:
+        log.info(
+            "crypto_gap_fill_summary",
+            total=len(gap_results),
+            filled=gaps_filled,
+            remaining=gaps_remaining,
+        )
+
     total_rows_added = equity_delta + crypto_delta + macro_delta
 
-    if total_rows_added > 0:
+    if total_rows_added > 0 or gaps_filled > 0:
         log.info("running_feature_computation", total_rows_added=total_rows_added)
         run_features(config)
     else:
