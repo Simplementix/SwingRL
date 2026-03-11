@@ -258,10 +258,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 **Coverage:**
 - v1 requirements: 74 total
 - Mapped to phases: 74
-- Complete: 70
-- Pending (gap closure): 4 (TRAIN-01, TRAIN-02, TRAIN-03, VAL-01 → Phase 15; PAPER-07, PAPER-10 → Phase 16 complete)
+- Complete: 74
+- Pending: 0
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-06*
-*Last updated: 2026-03-06 after roadmap creation — traceability complete*
+*Last updated: 2026-03-10 — all 74 v1 requirements complete (Phases 1-16)*

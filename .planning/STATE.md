@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: "Completed 16-01-PLAN.md: Crypto Stop Price Persistence"
+stopped_at: "Completed Phase 17: Doc Housekeeping — all planning docs updated"
 last_updated: "2026-03-11T01:59:36.169Z"
 last_activity: "2026-03-10 -- Phase 12 Plan 01: Schema alignment and emergency triggers"
 progress:
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-06)
 
 **Core value:** Capital preservation through disciplined, automated risk management — never lose more than you can recover from
-**Current focus:** Phase 6: RL Environments
+**Current focus:** Phase 17: Doc Housekeeping
 
 ## Current Position
 
-Phase: 12 of 12 (Schema Alignment and Emergency Triggers)
-Plan: 1 of 1 in phase 12
-Status: Plan 12-01 complete -- Schema alignment and emergency trigger rewrites
-Last activity: 2026-03-10 -- Phase 12 Plan 01: Schema alignment and emergency triggers
+Phase: 17 of 17 (Doc Housekeeping)
+Plan: 1 of 1 in phase 17
+Status: Complete — all stale counters and plan counts fixed
+Last activity: 2026-03-10 -- Phase 17: Doc Housekeeping complete
 
 Progress: [██████████] 100%
 

@@ -16,9 +16,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Developer Experience** - Claude skills, config schema, smoke tests, and models scaffold (completed 2026-03-06)
 - [x] **Phase 3: Data Ingestion** - Raw OHLCV and macro data flowing from Alpaca, Binance.US, and FRED (completed 2026-03-06)
 - [x] **Phase 4: Data Storage and Validation** - DuckDB/SQLite schema operational with validation, quarantine, and alerting (completed 2026-03-06)
-- [x] **Phase 5: Feature Engineering** - Full 156-dim equity and 45-dim crypto observation vectors assembled and verified
-- [x] **Phase 6: RL Environments** - Gymnasium-compatible trading environments passing step/reset contracts
-- [x] **Phase 7: Agent Training and Validation** - PPO/A2C/SAC ensemble trained and walk-forward validated against performance gates
+- [x] **Phase 5: Feature Engineering** - Full 156-dim equity and 45-dim crypto observation vectors assembled and verified (completed 2026-03-06)
+- [x] **Phase 6: RL Environments** - Gymnasium-compatible trading environments passing step/reset contracts (completed 2026-03-07)
+- [x] **Phase 7: Agent Training and Validation** - PPO/A2C/SAC ensemble trained and walk-forward validated against performance gates (completed 2026-03-08)
 - [x] **Phase 8: Paper Trading Core** - Broker connections live with risk management veto layer and execution middleware (completed 2026-03-09)
 - [x] **Phase 9: Automation and Monitoring** - Scheduled execution, Discord alerting, dashboard, and dead man's switch running (completed 2026-03-09)
 - [x] **Phase 10: Production Hardening** - Backup, model deployment pipeline, shadow mode, security review, and disaster recovery verified (completed 2026-03-10)
@@ -28,7 +28,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 14: Feature Pipeline Wiring** - Wire compare_features() consumer and integrate sentiment features into observation vector (gap closure) (completed 2026-03-10)
 - [x] **Phase 15: Training CLI Observation Assembly** - Fix train.py to use ObservationAssembler instead of raw DuckDB columns (gap closure) (completed 2026-03-11)
 - [x] **Phase 16: Crypto Stop Price Persistence** - Persist stop/TP prices from FillProcessor to positions table for stop_polling (gap closure) (completed 2026-03-10)
-- [ ] **Phase 17: Doc Housekeeping** - Fix stale counters, descriptions, and plan counts in REQUIREMENTS.md and ROADMAP.md (gap closure)
+- [x] **Phase 17: Doc Housekeeping** - Fix stale counters, descriptions, and plan counts in REQUIREMENTS.md and ROADMAP.md (gap closure, completed 2026-03-10)
 
 ## Phase Details
 
@@ -113,7 +113,7 @@ Plans:
   3. HMM regime detection produces two continuous probabilities (P(bull), P(bear)) that sum to 1.0 for every bar in both environments
   4. Rolling z-score normalization uses a 252-bar window for equity and a 360-bar window for crypto, and the per-environment feature tables exist in DuckDB (features_equity, features_crypto)
   5. A new candidate feature added to the pipeline is rejected when its A/B Sharpe improvement is less than 0.05, and accepted when it meets the threshold
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 - [ ] 05-01-PLAN.md — Config schema (FeaturesConfig), DuckDB DDL (4 tables), technical indicator calculator, test infrastructure
@@ -132,7 +132,7 @@ Plans:
   3. The rolling 20-day Sharpe reward function returns an expanding-window warmup value for the first 19 bars, then a proper Sharpe ratio thereafter
   4. Actions within +/-0.02 of zero result in a "hold" (no trade executed), confirmed by inspecting the trade log after a random rollout
   5. Equity episodes run for 252-day segments; crypto episodes run for 540 4H bars with a random start — confirmed by running 10 episodes each and checking lengths
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 
 Plans:
 - [ ] 06-01-PLAN.md — EnvironmentConfig schema, PortfolioSimulator, RollingSharpeReward, action processing utilities, test fixtures
@@ -149,7 +149,7 @@ Plans:
   3. Walk-forward backtesting produces results across at least 3 non-overlapping 3-month folds with a 200-bar purge gap verified between each fold
   4. All four validation gates pass: Sharpe > 0.7 per environment, MDD < 15%, Profit Factor > 1.5, overfitting gap < 20%
   5. Backtest results are stored in the DuckDB backtest_results table with per-model and per-fold rows queryable via SQL
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [ ] 07-01-PLAN.md — Performance metrics (Sharpe, Sortino, Calmar, Rachev, MDD, trade metrics), validation gates, overfitting detection, DuckDB DDL
@@ -317,9 +317,9 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 2. Developer Experience | 4/4 | Complete   | 2026-03-06 |
 | 3. Data Ingestion | 4/4 | Complete   | 2026-03-06 |
 | 4. Data Storage and Validation | 4/4 | Complete   | 2026-03-06 |
-| 5. Feature Engineering | 4/5 | In Progress|  |
-| 6. RL Environments | 0/3 | Not started | - |
-| 7. Agent Training and Validation | 2/3 | In Progress|  |
+| 5. Feature Engineering | 5/5 | Complete   | 2026-03-06 |
+| 6. RL Environments | 3/3 | Complete   | 2026-03-07 |
+| 7. Agent Training and Validation | 3/3 | Complete   | 2026-03-08 |
 | 8. Paper Trading Core | 5/5 | Complete   | 2026-03-09 |
 | 9. Automation and Monitoring | 4/4 | Complete   | 2026-03-09 |
 | 10. Production Hardening | 8/8 | Complete    | 2026-03-10 |
@@ -328,5 +328,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 13. Model Path Fix and Reconciliation Scheduling | 1/1 | Complete    | 2026-03-10 |
 | 14. Feature Pipeline Wiring | 1/1 | Complete    | 2026-03-10 |
 | 15. Training CLI Observation Assembly | 1/1 | Complete    | 2026-03-11 |
-| 16. Crypto Stop Price Persistence | 0/1 | Complete    | 2026-03-11 |
-| 17. Doc Housekeeping | 0/1 | Not started | - |
+| 16. Crypto Stop Price Persistence | 1/1 | Complete    | 2026-03-11 |
+| 17. Doc Housekeeping | 1/1 | Complete    | 2026-03-10 |
