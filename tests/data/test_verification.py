@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import duckdb
 import numpy as np
 import pytest
+
 from swingrl.data.verification import (
     CheckResult,
     VerificationResult,
@@ -69,10 +70,14 @@ def _make_in_memory_db() -> duckdb.DuckDBPyConnection:
 
 def _insert_equity_rows(conn: duckdb.DuckDBPyConnection, symbol: str, count: int) -> None:
     """Insert `count` rows for `symbol` into ohlcv_daily."""
+    from datetime import date, timedelta
+
+    base = date(2020, 1, 1)
     for i in range(count):
+        d = (base + timedelta(days=i)).isoformat()
         conn.execute(
             "INSERT INTO ohlcv_daily (symbol, date, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [symbol, f"2020-01-{i + 1:02d}", 100.0, 101.0, 99.0, 100.5, 1000000],
+            [symbol, d, 100.0, 101.0, 99.0, 100.5, 1000000],
         )
 
 
