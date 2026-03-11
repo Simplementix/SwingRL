@@ -282,7 +282,7 @@ class TestCheckCryptoGaps:
             _insert_crypto_rows(conn, symbol, start, 4, 50)
         result = _check_crypto_gaps(cursor, loaded_config)  # type: ignore[arg-type]
         assert result.passed is True
-        assert "no gaps" in result.detail.lower()
+        assert "no" in result.detail.lower() and "gaps" in result.detail.lower()
         cursor.close()
         conn.close()
 
@@ -317,6 +317,33 @@ class TestCheckCryptoGaps:
         result = _check_crypto_gaps(cursor, loaded_config)  # type: ignore[arg-type]
         assert result.passed is False
         assert "ETHUSDT" in result.detail or "gap" in result.detail.lower()
+        cursor.close()
+        conn.close()
+
+    def test_historical_gaps_tolerated(self, loaded_config: object) -> None:
+        """DATA-04: Gaps before 2021-01-01 are tolerated and don't fail verification."""
+        from swingrl.data.verification import _check_crypto_gaps
+
+        conn = _make_in_memory_db()
+        cursor = conn.cursor()
+        # Insert data with a 12h gap in 2019 (before cutoff)
+        from datetime import timedelta
+
+        start = datetime(2019, 9, 1, 0, 0, 0, tzinfo=UTC)
+        ts = start
+        for symbol in ["BTCUSDT", "ETHUSDT"]:
+            ts = start
+            for i in range(50):
+                gap_hours = 24 if i == 10 else 4  # 24h gap at position 10
+                conn.execute(
+                    "INSERT INTO ohlcv_4h (symbol, datetime, open, high, low, close, volume) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [symbol, ts.strftime("%Y-%m-%d %H:%M:%S"), 100.0, 101.0, 99.0, 100.5, 1.0],
+                )
+                ts += timedelta(hours=gap_hours)
+        result = _check_crypto_gaps(cursor, loaded_config)  # type: ignore[arg-type]
+        assert result.passed is True
+        assert "historical" in result.detail.lower()
         cursor.close()
         conn.close()
 

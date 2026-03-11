@@ -42,6 +42,11 @@ _CRYPTO_OBS_DIM: int = 45
 # Gap threshold for crypto 4H data
 _CRYPTO_GAP_THRESHOLD = timedelta(hours=8)
 
+# Gaps before this date are logged as warnings but don't fail verification.
+# Binance.US launched Sep 2019; early data has legitimate exchange maintenance
+# gaps (12h windows) and a ~22-day gap during the Binance→Binance.US migration.
+_CRYPTO_HISTORICAL_CUTOFF = "2021-01-01"
+
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -203,14 +208,22 @@ def _check_crypto_date_range(cursor: Any, config: SwingRLConfig) -> CheckResult:
 def _check_crypto_gaps(cursor: Any, config: SwingRLConfig) -> CheckResult:
     """Detect gaps >8 hours in consecutive ohlcv_4h timestamps for each symbol.
 
+    Gaps before _CRYPTO_HISTORICAL_CUTOFF are logged as warnings but do not
+    fail verification — early Binance.US data has legitimate exchange maintenance
+    gaps and the ~22-day Binance→Binance.US migration gap (Sep 2019).
+
     Args:
         cursor: Active DuckDB cursor.
         config: Validated SwingRLConfig with crypto.symbols.
 
     Returns:
-        CheckResult with passed=False if any gap >8h found, passed=True otherwise.
+        CheckResult with passed=False if any recent gap >8h found.
     """
-    gap_reports: list[str] = []
+    from datetime import datetime  # noqa: PLC0415
+
+    cutoff = datetime.fromisoformat(_CRYPTO_HISTORICAL_CUTOFF)
+    recent_gaps: list[str] = []
+    historical_gaps: list[str] = []
 
     for symbol in config.crypto.symbols:
         rows = cursor.execute(
@@ -229,31 +242,50 @@ def _check_crypto_gaps(cursor: Any, config: SwingRLConfig) -> CheckResult:
 
             # Handle both datetime objects and string timestamps
             if isinstance(prev_ts, str):
-                from datetime import datetime  # noqa: PLC0415
-
                 prev_ts = datetime.fromisoformat(prev_ts)
             if isinstance(curr_ts, str):
-                from datetime import datetime  # noqa: PLC0415
-
                 curr_ts = datetime.fromisoformat(curr_ts)
 
             gap = curr_ts - prev_ts
             if gap > _CRYPTO_GAP_THRESHOLD:
-                gap_reports.append(f"{symbol}: gap of {gap} at {prev_ts} -> {curr_ts}")
-                log.warning(
-                    "crypto_gap_detected",
-                    symbol=symbol,
-                    gap_hours=gap.total_seconds() / 3600,
-                    from_ts=str(prev_ts),
-                    to_ts=str(curr_ts),
-                )
+                report = f"{symbol}: gap of {gap} at {prev_ts} -> {curr_ts}"
+                if curr_ts < cutoff:
+                    historical_gaps.append(report)
+                    log.info(
+                        "crypto_historical_gap",
+                        symbol=symbol,
+                        gap_hours=gap.total_seconds() / 3600,
+                        from_ts=str(prev_ts),
+                        to_ts=str(curr_ts),
+                    )
+                else:
+                    recent_gaps.append(report)
+                    log.warning(
+                        "crypto_gap_detected",
+                        symbol=symbol,
+                        gap_hours=gap.total_seconds() / 3600,
+                        from_ts=str(prev_ts),
+                        to_ts=str(curr_ts),
+                    )
 
-    if gap_reports:
-        detail = f"Crypto gaps >8h found: {'; '.join(gap_reports)}"
+    if historical_gaps:
+        log.info(
+            "crypto_historical_gaps_tolerated",
+            count=len(historical_gaps),
+            cutoff=_CRYPTO_HISTORICAL_CUTOFF,
+        )
+
+    if recent_gaps:
+        detail = (
+            f"Crypto gaps >8h found after {_CRYPTO_HISTORICAL_CUTOFF}: {'; '.join(recent_gaps)}"
+        )
         return CheckResult(name="crypto_gaps", passed=False, detail=detail)
 
-    detail = "No gaps >8h found in crypto 4H data"
-    log.info("crypto_gaps_check_passed")
+    historical_note = (
+        f" ({len(historical_gaps)} historical gaps tolerated)" if historical_gaps else ""
+    )
+    detail = f"No recent gaps >8h in crypto 4H data{historical_note}"
+    log.info("crypto_gaps_check_passed", historical_tolerated=len(historical_gaps))
     return CheckResult(name="crypto_gaps", passed=True, detail=detail)
 
 
