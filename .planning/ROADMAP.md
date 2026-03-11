@@ -54,7 +54,10 @@
   3. FRED macro series (VIX, T10Y2Y, DFF, CPI, UNRATE) are aligned to OHLCV date ranges with no NaN in shared windows
   4. Feature pipeline produces complete 156-dim equity and 45-dim crypto observation vectors with zero NaN columns
   5. Data ingestion runs end-to-end by executing commands on the homelab Docker container — no M1 Mac involvement required
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 18-01-PLAN.md — Verification module with DuckDB quality checks
+- [ ] 18-02-PLAN.md — Ingest-all orchestrator CLI with pipeline stages and tests
 
 ### Phase 19: Model Training
 **Goal**: PPO/A2C/SAC agents for equity and crypto are trained on homelab CPU, pass all walk-forward validation gates, and are deployed to models/active/ alongside their VecNormalize statistics
@@ -144,7 +147,7 @@
 | 15. Training CLI Obs Assembly | v1.0 | 1/1 | Complete | 2026-03-11 |
 | 16. Crypto Stop Persistence | v1.0 | 1/1 | Complete | 2026-03-11 |
 | 17. Doc Housekeeping | v1.0 | 1/1 | Complete | 2026-03-10 |
-| 18. Data Ingestion | v1.1 | 0/TBD | Not started | - |
+| 18. Data Ingestion | v1.1 | 0/2 | Planning | - |
 | 19. Model Training | v1.1 | 0/TBD | Not started | - |
 | 20. Production Deployment | v1.1 | 0/TBD | Not started | - |
 | 21. Discord Alert Suite | v1.1 | 0/TBD | Not started | - |
