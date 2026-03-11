@@ -94,46 +94,46 @@ Deferred to v1.2+ milestones.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DATA-01 | TBD | Pending |
-| DATA-02 | TBD | Pending |
-| DATA-03 | TBD | Pending |
-| DATA-04 | TBD | Pending |
-| DATA-05 | TBD | Pending |
-| TRAIN-01 | TBD | Pending |
-| TRAIN-02 | TBD | Pending |
-| TRAIN-03 | TBD | Pending |
-| TRAIN-04 | TBD | Pending |
-| TRAIN-05 | TBD | Pending |
-| TRAIN-06 | TBD | Pending |
-| TRAIN-07 | TBD | Pending |
-| DEPLOY-01 | TBD | Pending |
-| DEPLOY-02 | TBD | Pending |
-| DEPLOY-03 | TBD | Pending |
-| DEPLOY-04 | TBD | Pending |
-| DEPLOY-05 | TBD | Pending |
-| DISC-01 | TBD | Pending |
-| DISC-02 | TBD | Pending |
-| DISC-03 | TBD | Pending |
-| DISC-04 | TBD | Pending |
-| RETRAIN-01 | TBD | Pending |
-| RETRAIN-02 | TBD | Pending |
-| RETRAIN-03 | TBD | Pending |
-| RETRAIN-04 | TBD | Pending |
-| RETRAIN-05 | TBD | Pending |
-| MON-01 | TBD | Pending |
-| MON-02 | TBD | Pending |
-| MON-03 | TBD | Pending |
-| DOC-01 | TBD | Pending |
-| DOC-02 | TBD | Pending |
-| DOC-03 | TBD | Pending |
-| DOC-04 | TBD | Pending |
-| DOC-05 | TBD | Pending |
+| DATA-01 | Phase 18 | Pending |
+| DATA-02 | Phase 18 | Pending |
+| DATA-03 | Phase 18 | Pending |
+| DATA-04 | Phase 18 | Pending |
+| DATA-05 | Phase 18 | Pending |
+| TRAIN-01 | Phase 19 | Pending |
+| TRAIN-02 | Phase 19 | Pending |
+| TRAIN-03 | Phase 19 | Pending |
+| TRAIN-04 | Phase 19 | Pending |
+| TRAIN-05 | Phase 19 | Pending |
+| TRAIN-06 | Phase 19 | Pending |
+| TRAIN-07 | Phase 19 | Pending |
+| DEPLOY-01 | Phase 20 | Pending |
+| DEPLOY-02 | Phase 20 | Pending |
+| DEPLOY-03 | Phase 20 | Pending |
+| DEPLOY-04 | Phase 20 | Pending |
+| DEPLOY-05 | Phase 20 | Pending |
+| DISC-01 | Phase 21 | Pending |
+| DISC-02 | Phase 21 | Pending |
+| DISC-03 | Phase 21 | Pending |
+| DISC-04 | Phase 21 | Pending |
+| RETRAIN-01 | Phase 22 | Pending |
+| RETRAIN-02 | Phase 22 | Pending |
+| RETRAIN-03 | Phase 22 | Pending |
+| RETRAIN-04 | Phase 22 | Pending |
+| RETRAIN-05 | Phase 22 | Pending |
+| MON-01 | Phase 23 | Pending |
+| MON-02 | Phase 23 | Pending |
+| MON-03 | Phase 23 | Pending |
+| DOC-01 | Phase 24 | Pending |
+| DOC-02 | Phase 24 | Pending |
+| DOC-03 | Phase 24 | Pending |
+| DOC-04 | Phase 24 | Pending |
+| DOC-05 | Phase 24 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 34 total
-- Mapped to phases: 0
-- Unmapped: 34
+- Mapped to phases: 34
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-10*
-*Last updated: 2026-03-10 after initial definition*
+*Last updated: 2026-03-10 after roadmap creation*

@@ -3,6 +3,7 @@
 ## Milestones
 
 - ✅ **v1.0 MVP** — Phases 1-17 (shipped 2026-03-11)
+- 🚧 **v1.1 Operational Deployment** — Phases 18-24 (in progress)
 
 ## Phases
 
@@ -29,6 +30,99 @@
 
 </details>
 
+### 🚧 v1.1 Operational Deployment (In Progress)
+
+**Milestone Goal:** SwingRL runs hands-off on the homelab in paper trading mode with automated retraining, Discord alerts, and complete operator documentation.
+
+- [ ] **Phase 18: Data Ingestion** - Populate homelab DuckDB with maximum historical depth, aligned observation vectors
+- [ ] **Phase 19: Model Training** - Train and validate PPO/A2C/SAC ensemble on homelab CPU, pass all walk-forward gates
+- [ ] **Phase 20: Production Deployment** - Docker stack running on homelab with paper trading firing on schedule
+- [ ] **Phase 21: Discord Alert Suite** - Full alert coverage wired and smoke-tested across all severity channels
+- [ ] **Phase 22: Automated Retraining** - Equity monthly + crypto biweekly retraining with validated shadow promotion
+- [ ] **Phase 23: Monitoring and Observability** - Degradation alerts, structured validation logs, and dead man's switch active
+- [ ] **Phase 24: Operator Runbook** - Comprehensive step-by-step documentation covering all workflows and failure modes
+
+## Phase Details
+
+### Phase 18: Data Ingestion
+**Goal**: Homelab DuckDB is populated with maximum available historical OHLCV, macro, and feature data — all observation vector dimensions non-NaN and ready for training
+**Depends on**: Phase 17 (v1.0 codebase)
+**Requirements**: DATA-01, DATA-02, DATA-03, DATA-04, DATA-05
+**Success Criteria** (what must be TRUE):
+  1. DuckDB on homelab contains equity bars for all 8 ETFs at maximum Alpaca history depth with no date gaps
+  2. DuckDB contains crypto 4H bars for BTC/ETH at maximum Binance.US history depth, with pre-2019 archive stitched
+  3. FRED macro series (VIX, T10Y2Y, DFF, CPI, UNRATE) are aligned to OHLCV date ranges with no NaN in shared windows
+  4. Feature pipeline produces complete 156-dim equity and 45-dim crypto observation vectors with zero NaN columns
+  5. Data ingestion runs end-to-end by executing commands on the homelab Docker container — no M1 Mac involvement required
+**Plans**: TBD
+
+### Phase 19: Model Training
+**Goal**: PPO/A2C/SAC agents for equity and crypto are trained on homelab CPU, pass all walk-forward validation gates, and are deployed to models/active/ alongside their VecNormalize statistics
+**Depends on**: Phase 18
+**Requirements**: TRAIN-01, TRAIN-02, TRAIN-03, TRAIN-04, TRAIN-05, TRAIN-06, TRAIN-07
+**Success Criteria** (what must be TRUE):
+  1. All 3 algorithms (PPO, A2C, SAC) complete training for equity (3-year rolling window) and crypto (1-year rolling window) on homelab CPU with no MPS dependency
+  2. Walk-forward validation records Sharpe, max drawdown, and profit factor for each algorithm and the ensemble blend
+  3. Sharpe-weighted ensemble blending produces non-placeholder weight assignments derived from actual walk-forward Sharpe ratios
+  4. Each trained model.zip has a corresponding vec_normalize.pkl present in models/active/{env}/{algo}/
+  5. Ensemble passes the training success gate: Sharpe > 1.0 and max drawdown < 15% before any deployment step proceeds
+**Plans**: TBD
+
+### Phase 20: Production Deployment
+**Goal**: The homelab Docker stack runs both containers healthy, paper trading fires on schedule for equity (4:15 PM ET) and crypto (every 4H), and end-to-end trade execution completes without error
+**Depends on**: Phase 19
+**Requirements**: DEPLOY-01, DEPLOY-02, DEPLOY-03, DEPLOY-04, DEPLOY-05
+**Success Criteria** (what must be TRUE):
+  1. Both Docker containers (swingrl + dashboard) report healthy status on homelab with all bind-mount directories writable by the container user
+  2. Homelab .env contains all required API keys and Discord webhook URLs, and startup validation confirms broker credentials and DB tables on container boot
+  3. APScheduler fires the equity cycle at 4:15 PM ET and the crypto cycle every 4 hours — verified by inspecting next-run times in scheduler logs, not UTC times
+  4. Paper trading executes a complete end-to-end cycle for both environments: signal generation → position sizing → risk validation → order submission → fill confirmation logged
+**Plans**: TBD
+
+### Phase 21: Discord Alert Suite
+**Goal**: All Discord alert types are wired, routed to the correct channels, and confirmed delivered — including four new retrain lifecycle embeds required by Phase 22
+**Depends on**: Phase 20
+**Requirements**: DISC-01, DISC-02, DISC-03, DISC-04
+**Success Criteria** (what must be TRUE):
+  1. Discord webhook URLs for both channels (#alerts for critical/warning, #daily for summaries) are configured and respond to a smoke-test ping from the running container
+  2. A simulated circuit breaker trigger, broker auth failure, and stuck agent each produce a critical embed in the #alerts channel
+  3. The daily summary embed posts with Sharpe, P&L, and position summary fields populated from actual paper trading data
+  4. Four retrain embed types are implemented and render correctly: retrain started, retrain completed (old vs new Sharpe), retrain failed, and shadow promoted/rejected
+**Plans**: TBD
+
+### Phase 22: Automated Retraining
+**Goal**: Equity retraining runs monthly and crypto retraining runs biweekly as APScheduler subprocesses — each running walk-forward validation before shadow deployment, with a bootstrap guard preventing spurious promotion on fresh deployments
+**Depends on**: Phase 21
+**Requirements**: RETRAIN-01, RETRAIN-02, RETRAIN-03, RETRAIN-04, RETRAIN-05
+**Success Criteria** (what must be TRUE):
+  1. equity_retrain_job fires monthly on Saturday at 2 AM ET and crypto_retrain_job fires biweekly on Sunday at 3 AM ET — both scheduled as subprocesses (not threads) with misfire_grace_time configured
+  2. Each retraining job explicitly runs all 4 walk-forward validation gates before calling deploy_to_shadow() — a gate failure aborts shadow deployment and fires a retrain-failed Discord alert
+  3. After shadow deployment, the existing shadow_promotion_check_job evaluates the new model the following day using the 3-criteria promotion logic
+  4. The shadow promoter bootstrap guard returns False and skips auto-promotion when the trades table contains fewer than the minimum required rows, preventing spurious promotion on fresh deployments
+**Plans**: TBD
+
+### Phase 23: Monitoring and Observability
+**Goal**: Paper trading performance is continuously tracked with degradation alerts, structured validation logs, and a dead man's switch confirming each cycle completed
+**Depends on**: Phase 22
+**Requirements**: MON-01, MON-02, MON-03
+**Success Criteria** (what must be TRUE):
+  1. A rolling Sharpe degradation alert fires in the #alerts Discord channel when paper trading Sharpe drops below the configured threshold — threshold is configurable via swingrl.yaml, not hardcoded
+  2. Every trading cycle writes a structured log entry with daily P&L, current drawdown, and fill latency in JSON format readable by structlog
+  3. Healthchecks.io receives a ping after each completed trading cycle — a missed ping generates an external notification confirming the dead man's switch is live
+**Plans**: TBD
+
+### Phase 24: Operator Runbook
+**Goal**: A complete operator runbook documents every workflow and failure mode with step-by-step procedures derived from verified system behavior — enabling the operator to run SwingRL without source code archaeology
+**Depends on**: Phase 23
+**Requirements**: DOC-01, DOC-02, DOC-03, DOC-04, DOC-05
+**Success Criteria** (what must be TRUE):
+  1. Runbook covers initial setup end-to-end: homelab prerequisites, Docker installation, .env population, data ingestion commands, and expected output at each step
+  2. Runbook covers the first training run with expected log output, validation gate pass/fail criteria, and the command to verify models/active/ is populated correctly
+  3. Runbook covers the retraining workflow including how to interpret shadow promotion decisions and when to manually intervene vs. let auto-promotion proceed
+  4. Runbook covers emergency stop (all 4 tiers), model rollback procedure, and disaster recovery steps with explicit commands and expected outputs
+  5. Runbook covers common failure diagnosis: at least 8 failure scenarios with symptoms, root cause, and resolution steps drawn from research pitfalls
+**Plans**: TBD
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -50,5 +144,12 @@
 | 15. Training CLI Obs Assembly | v1.0 | 1/1 | Complete | 2026-03-11 |
 | 16. Crypto Stop Persistence | v1.0 | 1/1 | Complete | 2026-03-11 |
 | 17. Doc Housekeeping | v1.0 | 1/1 | Complete | 2026-03-10 |
+| 18. Data Ingestion | v1.1 | 0/TBD | Not started | - |
+| 19. Model Training | v1.1 | 0/TBD | Not started | - |
+| 20. Production Deployment | v1.1 | 0/TBD | Not started | - |
+| 21. Discord Alert Suite | v1.1 | 0/TBD | Not started | - |
+| 22. Automated Retraining | v1.1 | 0/TBD | Not started | - |
+| 23. Monitoring and Observability | v1.1 | 0/TBD | Not started | - |
+| 24. Operator Runbook | v1.1 | 0/TBD | Not started | - |
 
-**Full details:** `.planning/milestones/v1.0-ROADMAP.md`
+**Full v1.0 details:** `.planning/milestones/v1.0-ROADMAP.md`
