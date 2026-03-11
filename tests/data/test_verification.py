@@ -425,6 +425,7 @@ def _build_passing_cursor_mock(config: object) -> MagicMock:
     """Build a cursor mock that returns data sufficient to pass all checks."""
 
     from swingrl.config.schema import SwingRLConfig
+    from swingrl.data.fred import ALL_SERIES as FRED_ALL_SERIES
 
     cfg: SwingRLConfig = config  # type: ignore[assignment]
 
@@ -433,7 +434,7 @@ def _build_passing_cursor_mock(config: object) -> MagicMock:
     # We'll use side_effect to return different data based on the SQL
     equity_symbols = cfg.equity.symbols
     crypto_symbols = cfg.crypto.symbols
-    fred_series = cfg.fred.series
+    fred_series = FRED_ALL_SERIES
 
     equity_rows = [(sym, 150) for sym in equity_symbols]
     crypto_rows = [(sym, 150) for sym in crypto_symbols]
