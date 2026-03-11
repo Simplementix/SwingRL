@@ -145,9 +145,11 @@ class FREDIngestor(BaseIngestor):
                 "value": raw["value"].values,
                 "vintage_date": raw["realtime_start"].values,
             },
-            index=raw.index,
+            index=pd.to_datetime(raw.index),
         )
         df.index.name = "observation_date"
+        # Keep only the latest vintage per observation date
+        df = df.sort_values("vintage_date").groupby(level=0).last()
         return df
 
     def _call_with_retry(
