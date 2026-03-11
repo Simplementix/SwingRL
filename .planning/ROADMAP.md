@@ -69,7 +69,11 @@ Plans:
   3. Sharpe-weighted ensemble blending produces non-placeholder weight assignments derived from actual walk-forward Sharpe ratios
   4. Each trained model.zip has a corresponding vec_normalize.pkl present in models/active/{env}/{algo}/
   5. Ensemble passes the training success gate: Sharpe > 1.0 and max drawdown < 15% before any deployment step proceeds
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 19-01-PLAN.md — Hyperparams override + pipeline helper functions with tests
+- [ ] 19-02-PLAN.md — Full train_pipeline.py orchestration CLI with integration tests
+- [ ] 19-03-PLAN.md — Homelab training execution and verification checkpoint
 
 ### Phase 20: Production Deployment
 **Goal**: The homelab Docker stack runs both containers healthy, paper trading fires on schedule for equity (4:15 PM ET) and crypto (every 4H), and end-to-end trade execution completes without error
@@ -148,7 +152,7 @@ Plans:
 | 16. Crypto Stop Persistence | v1.0 | 1/1 | Complete | 2026-03-11 |
 | 17. Doc Housekeeping | v1.0 | 1/1 | Complete | 2026-03-10 |
 | 18. Data Ingestion | 2/2 | Complete   | 2026-03-11 | - |
-| 19. Model Training | v1.1 | 0/TBD | Not started | - |
+| 19. Model Training | v1.1 | 0/3 | Not started | - |
 | 20. Production Deployment | v1.1 | 0/TBD | Not started | - |
 | 21. Discord Alert Suite | v1.1 | 0/TBD | Not started | - |
 | 22. Automated Retraining | v1.1 | 0/TBD | Not started | - |
