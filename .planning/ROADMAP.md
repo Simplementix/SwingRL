@@ -34,7 +34,7 @@
 
 **Milestone Goal:** SwingRL runs hands-off on the homelab in paper trading mode with automated retraining, Discord alerts, and complete operator documentation.
 
-- [ ] **Phase 18: Data Ingestion** - Populate homelab DuckDB with maximum historical depth, aligned observation vectors
+- [x] **Phase 18: Data Ingestion** - Populate homelab DuckDB with maximum historical depth, aligned observation vectors (completed 2026-03-11)
 - [ ] **Phase 19: Model Training** - Train and validate PPO/A2C/SAC ensemble on homelab CPU, pass all walk-forward gates
 - [ ] **Phase 20: Production Deployment** - Docker stack running on homelab with paper trading firing on schedule
 - [ ] **Phase 21: Discord Alert Suite** - Full alert coverage wired and smoke-tested across all severity channels
@@ -54,7 +54,7 @@
   3. FRED macro series (VIX, T10Y2Y, DFF, CPI, UNRATE) are aligned to OHLCV date ranges with no NaN in shared windows
   4. Feature pipeline produces complete 156-dim equity and 45-dim crypto observation vectors with zero NaN columns
   5. Data ingestion runs end-to-end by executing commands on the homelab Docker container — no M1 Mac involvement required
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 18-01-PLAN.md — Verification module with DuckDB quality checks
 - [ ] 18-02-PLAN.md — Ingest-all orchestrator CLI with pipeline stages and tests
@@ -147,7 +147,7 @@ Plans:
 | 15. Training CLI Obs Assembly | v1.0 | 1/1 | Complete | 2026-03-11 |
 | 16. Crypto Stop Persistence | v1.0 | 1/1 | Complete | 2026-03-11 |
 | 17. Doc Housekeeping | v1.0 | 1/1 | Complete | 2026-03-10 |
-| 18. Data Ingestion | 1/2 | In Progress|  | - |
+| 18. Data Ingestion | 2/2 | Complete   | 2026-03-11 | - |
 | 19. Model Training | v1.1 | 0/TBD | Not started | - |
 | 20. Production Deployment | v1.1 | 0/TBD | Not started | - |
 | 21. Discord Alert Suite | v1.1 | 0/TBD | Not started | - |
