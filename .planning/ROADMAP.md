@@ -26,6 +26,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 12: Schema Alignment and Emergency Triggers** - Fix stop_polling table reference, fix emergency trigger queries against missing tables (gap closure) (completed 2026-03-10)
 - [x] **Phase 13: Model Path Fix and Reconciliation Scheduling** - Fix model path double-nesting bug and wire PositionReconciler to scheduler (gap closure) (completed 2026-03-10)
 - [x] **Phase 14: Feature Pipeline Wiring** - Wire compare_features() consumer and integrate sentiment features into observation vector (gap closure) (completed 2026-03-10)
+- [ ] **Phase 15: Training CLI Observation Assembly** - Fix train.py to use ObservationAssembler instead of raw DuckDB columns (gap closure)
+- [ ] **Phase 16: Crypto Stop Price Persistence** - Persist stop/TP prices from FillProcessor to positions table for stop_polling (gap closure)
+- [ ] **Phase 17: Doc Housekeeping** - Fix stale counters, descriptions, and plan counts in REQUIREMENTS.md and ROADMAP.md (gap closure)
 
 ## Phase Details
 
@@ -264,10 +267,49 @@ Plans:
 Plans:
 - [ ] 14-01-PLAN.md — Wire compare_features() consumer and integrate sentiment into observation assembly
 
+### Phase 15: Training CLI Observation Assembly
+**Goal**: The training CLI (train.py) produces correctly shaped observation matrices by using ObservationAssembler, so SB3 model construction succeeds on both environments
+**Depends on**: Phase 14
+**Requirements**: TRAIN-01, TRAIN-02, TRAIN-03, VAL-01
+**Gap Closure:** Closes INT-GAP-01 (train.py → env obs_space shape mismatch), Flow "Training Pipeline (CLI → Model)"
+**Success Criteria** (what must be TRUE):
+  1. `train.py _load_features_prices()` calls `ObservationAssembler.assemble_equity()` / `assemble_crypto()` to produce full observation matrices
+  2. Equity observations have shape (N, 156) and crypto observations have shape (N, 45) — matching env observation_space
+  3. `python scripts/train.py --env equity --dry-run` completes model construction without shape mismatch error
+
+Plans:
+- [ ] 15-01-PLAN.md — Fix train.py to use ObservationAssembler for feature-to-observation transformation
+
+### Phase 16: Crypto Stop Price Persistence
+**Goal**: Stop-loss and take-profit prices flow from the execution pipeline through FillProcessor into the positions table, enabling stop_polling to enforce crypto stops
+**Depends on**: Phase 15
+**Requirements**: PAPER-07, PAPER-10
+**Gap Closure:** Closes INT-GAP-02 (FillProcessor → positions table → stop_polling), Flow "Crypto Stop-Loss Enforcement"
+**Success Criteria** (what must be TRUE):
+  1. `FillProcessor._update_position()` writes `stop_loss_price` and `take_profit_price` to the positions table
+  2. After a crypto fill, `SELECT stop_loss_price, take_profit_price FROM positions WHERE environment='crypto'` returns non-NULL values
+  3. `stop_polling._check_stop_levels()` reads valid stop/TP prices and can trigger liquidation when breached
+
+Plans:
+- [ ] 16-01-PLAN.md — Update FillProcessor to persist stop/TP prices and verify stop_polling integration
+
+### Phase 17: Doc Housekeeping
+**Goal**: Planning documents accurately reflect the current state of all 74 requirements, phase completion, and gap closure work
+**Depends on**: Phase 16
+**Requirements**: None (documentation only)
+**Gap Closure:** Closes tech debt items from v1.0 re-audit
+**Success Criteria** (what must be TRUE):
+  1. REQUIREMENTS.md coverage counter matches actual state (all 74 complete)
+  2. REQUIREMENTS.md descriptions for FEAT-09/10 and PAPER-02/09 accurately reflect gap closure work
+  3. ROADMAP.md progress table shows correct plan counts for all phases
+
+Plans:
+- [ ] 17-01-PLAN.md — Fix stale counters, descriptions, and plan counts in planning docs
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 -> 12 -> 13 -> 14
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -285,3 +327,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 12. Schema Alignment and Emergency Triggers | 1/1 | Complete    | 2026-03-10 |
 | 13. Model Path Fix and Reconciliation Scheduling | 1/1 | Complete    | 2026-03-10 |
 | 14. Feature Pipeline Wiring | 1/1 | Complete    | 2026-03-10 |
+| 15. Training CLI Observation Assembly | 0/1 | Not started | - |
+| 16. Crypto Stop Price Persistence | 0/1 | Not started | - |
+| 17. Doc Housekeeping | 0/1 | Not started | - |

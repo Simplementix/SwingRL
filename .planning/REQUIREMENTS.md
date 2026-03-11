@@ -55,9 +55,9 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### RL Training
 
-- [x] **TRAIN-01**: StockTradingEnv — Gymnasium-compatible, daily bars, 8 ETFs, 156-dim observation, continuous action space (target portfolio weights)
-- [x] **TRAIN-02**: CryptoTradingEnv — Gymnasium-compatible, 4H bars, BTC/ETH, 45-dim observation, continuous action space
-- [x] **TRAIN-03**: PPO agent training with hyperparameters: lr=0.0003, n_steps=2048, batch_size=64, ent_coef=0.01, clip_range=0.2, gamma=0.99
+- [ ] **TRAIN-01**: StockTradingEnv — Gymnasium-compatible, daily bars, 8 ETFs, 156-dim observation, continuous action space (target portfolio weights)
+- [ ] **TRAIN-02**: CryptoTradingEnv — Gymnasium-compatible, 4H bars, BTC/ETH, 45-dim observation, continuous action space
+- [ ] **TRAIN-03**: PPO agent training with hyperparameters: lr=0.0003, n_steps=2048, batch_size=64, ent_coef=0.01, clip_range=0.2, gamma=0.99
 - [x] **TRAIN-04**: A2C agent training with hyperparameters: lr=0.0007, n_steps=5, vf_coef=0.5, ent_coef=0.01, gamma=0.99
 - [x] **TRAIN-05**: SAC agent training with hyperparameters: lr=0.0003, batch_size=256, tau=0.005, ent_coef="auto", gamma=0.99
 - [x] **TRAIN-06**: Sharpe-weighted softmax ensemble blending using per-environment validation windows (63 trading days equity, 126 4H bars crypto)
@@ -70,7 +70,7 @@ Requirements for M0-M6 software build (pre-live-trading).
 
 ### Validation
 
-- [x] **VAL-01**: Walk-forward backtesting framework with 3-month test folds for both environments
+- [ ] **VAL-01**: Walk-forward backtesting framework with 3-month test folds for both environments
 - [x] **VAL-02**: 200-bar purge gap and 1% embargo between training and test folds to prevent data leakage
 - [x] **VAL-03**: Performance metric calculators: Sharpe, Sortino, Calmar, Rachev ratios, MDD, average drawdown, drawdown duration
 - [x] **VAL-04**: Trade-level metrics: win rate, Profit Factor, trade frequency (2-10 trades per week)
@@ -87,10 +87,10 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **PAPER-04**: Circuit breakers: equity -10% DD / -2% daily, crypto -12% DD / -3% daily, global -15% DD / -3% combined
 - [x] **PAPER-05**: Circuit breaker cooldown: 5 business days equity, 3 calendar days crypto, with 25%/50%/75%/100% ramp-up
 - [x] **PAPER-06**: Halt-state persistence in circuit_breaker_events table across container restarts
-- [x] **PAPER-07**: Position sizing: modified Kelly criterion (quarter-Kelly Phase 1), 2% max risk per trade, ATR(2x) stop-losses
+- [ ] **PAPER-07**: Position sizing: modified Kelly criterion (quarter-Kelly Phase 1), 2% max risk per trade, ATR(2x) stop-losses
 - [x] **PAPER-08**: Binance.US $10 minimum order floor: max(kelly_sized_amount, $10.00)
 - [x] **PAPER-09**: 5-stage execution middleware: Signal Interpreter, Position Sizer, Order Validator, Exchange Adapter, Fill Processor
-- [x] **PAPER-10**: Bracket orders: OTO for Alpaca (ATR stop-loss, R:R take-profit), two-step OCO for Binance.US
+- [ ] **PAPER-10**: Bracket orders: OTO for Alpaca (ATR stop-loss, R:R take-profit), two-step OCO for Binance.US
 - [x] **PAPER-11**: Cost gate: reject orders where estimated round-trip transaction costs exceed 2.0% of order value
 - [x] **PAPER-12**: APScheduler: equity daily at 4:15 PM ET, crypto every 4H at 5 min past bar close, pre-cycle halt checks
 - [x] **PAPER-13**: Discord webhook alerting: trade executions, circuit breakers, daily summary (6 PM ET), stuck agent detection
@@ -200,19 +200,19 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FEAT-09 | Phase 14 | Complete |
 | FEAT-10 | Phase 14 | Complete |
 | FEAT-11 | Phase 11 | Complete |
-| TRAIN-01 | Phase 6 | Complete |
-| TRAIN-02 | Phase 6 | Complete |
+| TRAIN-01 | Phase 15 | Pending |
+| TRAIN-02 | Phase 15 | Pending |
 | TRAIN-07 | Phase 6 | Complete |
 | TRAIN-08 | Phase 6 | Complete |
 | TRAIN-09 | Phase 6 | Complete |
 | TRAIN-10 | Phase 6 | Complete |
 | TRAIN-11 | Phase 6 | Complete |
-| TRAIN-03 | Phase 7 | Complete |
+| TRAIN-03 | Phase 15 | Pending |
 | TRAIN-04 | Phase 7 | Complete |
 | TRAIN-05 | Phase 7 | Complete |
 | TRAIN-06 | Phase 7 | Complete |
 | TRAIN-12 | Phase 7 | Complete |
-| VAL-01 | Phase 7 | Complete |
+| VAL-01 | Phase 15 | Pending |
 | VAL-02 | Phase 7 | Complete |
 | VAL-03 | Phase 7 | Complete |
 | VAL-04 | Phase 7 | Complete |
@@ -226,10 +226,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PAPER-04 | Phase 8 | Complete |
 | PAPER-05 | Phase 8 | Complete |
 | PAPER-06 | Phase 8 | Complete |
-| PAPER-07 | Phase 8 | Complete |
+| PAPER-07 | Phase 16 | Pending |
 | PAPER-08 | Phase 8 | Complete |
 | PAPER-09 | Phase 13 | Complete |
-| PAPER-10 | Phase 12 | Complete |
+| PAPER-10 | Phase 16 | Pending |
 | PAPER-11 | Phase 8 | Complete |
 | PAPER-18 | Phase 8 | Complete |
 | PAPER-19 | Phase 8 | Complete |
@@ -258,8 +258,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 **Coverage:**
 - v1 requirements: 74 total
 - Mapped to phases: 74
-- Complete: 70
-- Pending (gap closure): 4 (PAPER-02, PAPER-09, FEAT-09, FEAT-10)
+- Complete: 68
+- Pending (gap closure): 6 (TRAIN-01, TRAIN-02, TRAIN-03, VAL-01 → Phase 15; PAPER-07, PAPER-10 → Phase 16)
 - Unmapped: 0
 
 ---
