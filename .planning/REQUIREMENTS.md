@@ -12,7 +12,7 @@ Requirements for operational deployment milestone. Each maps to roadmap phases.
 - [ ] **DATA-01**: System ingests maximum available equity OHLCV history from Alpaca (all 8 ETFs) into homelab DuckDB
 - [ ] **DATA-02**: System ingests maximum available crypto 4H OHLCV history from Binance.US (BTC/ETH) into homelab DuckDB
 - [ ] **DATA-03**: System ingests FRED macro data (VIX, T10Y2Y, DFF, CPI, UNRATE) aligned to OHLCV date ranges
-- [ ] **DATA-04**: All observation vector dimensions are populated without NaN (156-dim equity, 45-dim crypto) after feature pipeline runs
+- [x] **DATA-04**: All observation vector dimensions are populated without NaN (156-dim equity, 45-dim crypto) after feature pipeline runs
 - [ ] **DATA-05**: Data ingestion runs directly on the homelab Docker container (no M1 Mac dependency)
 
 ### Training
@@ -97,7 +97,7 @@ Deferred to v1.2+ milestones.
 | DATA-01 | Phase 18 | Pending |
 | DATA-02 | Phase 18 | Pending |
 | DATA-03 | Phase 18 | Pending |
-| DATA-04 | Phase 18 | Pending |
+| DATA-04 | Phase 18 | Complete |
 | DATA-05 | Phase 18 | Pending |
 | TRAIN-01 | Phase 19 | Pending |
 | TRAIN-02 | Phase 19 | Pending |
