@@ -6,6 +6,7 @@ run_pipeline, and CLI invocation.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -17,6 +18,23 @@ import pytest
 
 from swingrl.config.schema import SwingRLConfig
 from swingrl.utils.exceptions import DataError
+
+# Repo root and src path for subprocess tests
+_REPO_ROOT = Path(__file__).parent.parent.parent
+_SRC_PATH = str(_REPO_ROOT / "src")
+
+
+def _subprocess_env() -> dict[str, str]:
+    """Return environment dict with PYTHONPATH set to include src/.
+
+    Required because editable install .pth files may not be processed
+    by the subprocess's Python when running from a uv-managed venv.
+    """
+    env = os.environ.copy()
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{_SRC_PATH}:{existing_pp}" if existing_pp else _SRC_PATH
+    return env
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -492,7 +510,8 @@ class TestCliHelp:
             [sys.executable, "-m", "swingrl.data.ingest_all", "--help"],
             capture_output=True,
             text=True,
-            cwd="/Users/varunpanchal/Documents/Projects/Simplementix/SwingRL",
+            cwd=str(_REPO_ROOT),
+            env=_subprocess_env(),
         )
         assert result.returncode == 0
         assert "--backfill" in result.stdout
@@ -524,14 +543,15 @@ class TestCliHelp2:
     def test_cli_help(self) -> None:
         """DATA-05: subprocess --help returns exit 0 and contains --backfill.
 
-        Uses sys.executable (current venv python) to avoid uv subprocess
-        environment registration issues with editable installs.
+        Uses sys.executable + explicit PYTHONPATH so the subprocess can
+        locate swingrl regardless of editable install .pth processing state.
         """
         result = subprocess.run(
             [sys.executable, "-m", "swingrl.data.ingest_all", "--help"],
             capture_output=True,
             text=True,
-            cwd="/Users/varunpanchal/Documents/Projects/Simplementix/SwingRL",
+            cwd=str(_REPO_ROOT),
+            env=_subprocess_env(),
         )
         assert result.returncode == 0
         assert "--backfill" in result.stdout
