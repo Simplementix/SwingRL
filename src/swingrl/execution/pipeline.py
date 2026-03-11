@@ -233,7 +233,7 @@ class ExecutionPipeline:
                 fill = adapter.submit_order(validated_order)
 
                 # Stage 5: Fill processing
-                self._fill_processor.process(fill)
+                self._fill_processor.process(fill, sized_order=sized_order)
 
                 fills.append(fill)
 
