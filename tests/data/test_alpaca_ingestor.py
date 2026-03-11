@@ -93,10 +93,10 @@ class TestAlpacaFetch:
         assert result.index.tz is not None  # UTC timezone
         assert len(result) == 5
 
-    def test_fetch_uses_iex_feed(
+    def test_fetch_backfill_uses_sip_feed(
         self, alpaca_ingestor: AlpacaIngestor, mock_bars_df: pd.DataFrame
     ) -> None:
-        """DATA-01: StockBarsRequest uses feed=DataFeed.IEX."""
+        """DATA-01: backfill (since=None) uses SIP feed for full historical depth."""
         from alpaca.data.enums import DataFeed
 
         mock_barset = MagicMock()
@@ -105,9 +105,26 @@ class TestAlpacaFetch:
         with patch.object(
             alpaca_ingestor._client, "get_stock_bars", return_value=mock_barset
         ) as mock_get:
-            alpaca_ingestor.fetch("SPY")
+            alpaca_ingestor.fetch("SPY")  # since=None → backfill → SIP
 
-        call_args = mock_get.call_args[0][0]  # First positional arg (StockBarsRequest)
+        call_args = mock_get.call_args[0][0]
+        assert call_args.feed == DataFeed.SIP
+
+    def test_fetch_incremental_uses_iex_feed(
+        self, alpaca_ingestor: AlpacaIngestor, mock_bars_df: pd.DataFrame
+    ) -> None:
+        """DATA-01: incremental fetch uses IEX feed for paper/live trading."""
+        from alpaca.data.enums import DataFeed
+
+        mock_barset = MagicMock()
+        mock_barset.df = mock_bars_df
+
+        with patch.object(
+            alpaca_ingestor._client, "get_stock_bars", return_value=mock_barset
+        ) as mock_get:
+            alpaca_ingestor.fetch("SPY", since="incremental")
+
+        call_args = mock_get.call_args[0][0]
         assert call_args.feed == DataFeed.IEX
 
     def test_fetch_adjustment_all(

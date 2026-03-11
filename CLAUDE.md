@@ -21,6 +21,21 @@ Phases: 1 Foundation → 2 DX → 3 Data → 4 Storage → 5 Features → 6 Envs
 6. **User merges** (branch protection requires approval).
 7. **After merge** (User): `git checkout main && git pull origin main` before starting next phase.
 
+## Git Workflow — Milestone Closeout
+
+After the final phase of a milestone is merged to `main`:
+
+1. **Tag the release** on `main`:
+   ```bash
+   git tag -a v{X.Y}.0 -m "v{X.Y} {Milestone Name}"
+   git push origin v{X.Y}.0
+   ```
+2. **Create GitHub release**:
+   ```bash
+   gh release create v{X.Y}.0 --title "v{X.Y} {Milestone Name}" --notes "..."
+   ```
+3. **Archive milestone** via `/gsd:complete-milestone`.
+
 ## Critical Rules — Never Violate
 
 - **No hardcoded values**: Never hardcode ticker symbols, API keys, file paths, or dollar amounts.

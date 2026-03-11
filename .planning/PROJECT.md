@@ -34,13 +34,17 @@ Capital preservation through disciplined, automated risk management — the syst
 
 ### Active
 
-- [ ] Live trading deployment at $447 ($47 crypto + $400 equity) with Phase 1 risk overrides
-- [ ] Per-environment trading mode toggles (paper/live independent switching)
-- [ ] Paper trading validation period: confirm system operates correctly for 2+ weeks on homelab
+- [ ] Historical data ingestion with complete dimension alignment (OHLCV + macro + features)
+- [ ] Agent training pipeline: PPO/A2C/SAC for equity and crypto with walk-forward validation
+- [ ] Homelab Docker deployment with production config and environment setup
+- [ ] Discord webhook setup with full alert suite (critical, warning, daily summary)
+- [ ] Automated retraining: equity monthly, crypto biweekly with shadow promotion
+- [ ] Operator runbook with detailed walkthroughs for all workflows
+- [ ] 6-month paper trading validation period on homelab
 
 ### Out of Scope
 
-- SPX options environment and IBKR integration (Phase 3, M8-M11) — requires $2K+ capital
+- SPX options environment and Charles Schwab integration (Phase 3, M8-M11) — requires $2K+ capital
 - Mobile app or web frontend beyond Streamlit dashboard — Discord + Streamlit sufficient
 - Multi-user support — single operator system by design
 - Real-time streaming data (WebSocket) — scheduled batch processing sufficient for swing trading
@@ -55,7 +59,7 @@ Capital preservation through disciplined, automated risk management — the syst
 
 **Architecture:** Two-machine setup. M1 MacBook Pro (32GB RAM) for development, backtesting, model training (MPS). Intel i5-13th gen homelab (64GB RAM) for 24/7 Docker production. Models transfer ARM→x86 without conversion.
 
-**Brokers:** Alpaca (equities, commission-free), Binance.US (crypto, 0.10% maker/taker, $10 floor). IBKR deferred.
+**Brokers:** Alpaca (equities, commission-free), Binance.US (crypto, 0.10% maker/taker, $10 floor). Charles Schwab (SPX options) deferred.
 
 **Database:** SQLite (trading_ops.db, OLTP) + DuckDB (market_data.ddb, OLAP). 28 tables (10 SQLite + 18 DuckDB). Cross-database joins via sqlite_scanner.
 
@@ -69,7 +73,7 @@ Capital preservation through disciplined, automated risk management — the syst
 
 - **Python version**: 3.11 — FinRL/pyfolio compatibility (breaks on 3.12+)
 - **Package manager**: uv — installed on both M1 Mac and homelab
-- **Training hardware**: M1 Mac only (MPS). Homelab does NOT train.
+- **Training hardware**: Homelab CPU (Intel i5, 64GB RAM). CPU-only training for automated retraining.
 - **Budget**: Free data sources only. $295 reserved for DiscountOptionData (Phase 3).
 - **Homelab validation**: Every milestone must pass ci-homelab.sh
 - **Config schema**: Pydantic v2 typed schema (Doc 05 §10.7)
@@ -86,11 +90,25 @@ Capital preservation through disciplined, automated risk management — the syst
 | Incremental DB schema | Create tables per phase, not all 28 upfront | ✓ Good — clean phase boundaries |
 | stockstats over pandas_ta | pandas_ta requires Python 3.12+ | ✓ Good — FinRL-native TA library |
 | ruff-format replaces black in pre-commit | Avoid formatting conflicts between tools | ✓ Good — single formatter |
-| Dedicated broker per asset class | Alpaca equities, Binance.US crypto, IBKR options | ✓ Good — clean separation |
+| Dedicated broker per asset class | Alpaca equities, Binance.US crypto, Charles Schwab options | ✓ Good — clean separation |
 | CPU-only torch in Docker | Homelab has no GPU; MPS stays on M1 Mac | ✓ Good — smaller image |
 | FinBERT as optional dep group | 2GB+ install when disabled via `[sentiment]` | ✓ Good — default install stays light |
 | Shadow mode zero portfolio weights | Shadow has no real positions | ✓ Good — clean hypothetical trades |
 | Quarter-Kelly position sizing | Conservative Phase 1 risk management | — Pending live validation |
 
+| Homelab trains (CPU) | Fully hands-off operation; M1 Mac not required for retraining | — Pending |
+
+## Current Milestone: v1.1 Operational Deployment
+
+**Goal:** Get SwingRL running on the homelab in paper trading mode with automated retraining, Discord alerts, and operator documentation — fully hands-off after initial setup.
+
+**Target features:**
+- Complete data ingestion pipeline (max historical depth, aligned dimensions)
+- Trained PPO/A2C/SAC agents for both equity and crypto
+- Homelab Docker deployment with paper trading
+- Discord webhook with full alert suite
+- Automated retraining (equity monthly, crypto biweekly) with shadow promotion
+- Comprehensive operator runbook with detailed walkthroughs
+
 ---
-*Last updated: 2026-03-11 after v1.0 milestone*
+*Last updated: 2026-03-10 after v1.1 milestone start*

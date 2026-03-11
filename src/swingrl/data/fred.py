@@ -135,19 +135,21 @@ class FREDIngestor(BaseIngestor):
             DataFrame with observation_date index, value and vintage_date columns.
         """
         raw = self._call_with_retry(
-            lambda: self._fred.get_series_all_releases(symbol, observation_start=start_date),
+            lambda: self._fred.get_series_all_releases(symbol, realtime_start=start_date),
             symbol=symbol,
         )
-        # get_series_all_releases returns DataFrame with date index,
-        # realtime_start, and value columns
+        # get_series_all_releases returns DataFrame with integer index and
+        # columns: date, realtime_start, value
         df = pd.DataFrame(
             {
                 "value": raw["value"].values,
-                "vintage_date": raw["realtime_start"].values,
+                "vintage_date": pd.to_datetime(raw["realtime_start"]).values,
             },
-            index=raw.index,
+            index=pd.to_datetime(raw["date"]),
         )
         df.index.name = "observation_date"
+        # Keep only the latest vintage per observation date
+        df = df.sort_values("vintage_date").groupby(level=0).last()
         return df
 
     def _call_with_retry(
@@ -187,7 +189,12 @@ class FREDIngestor(BaseIngestor):
         log.error("fred_fetch_failed", series=symbol, error=str(last_error))
         raise DataError(msg)
 
-    def validate(self, df: pd.DataFrame, symbol: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    def validate(
+        self,
+        df: pd.DataFrame,
+        symbol: str,
+        skip_staleness: bool = False,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Validate FRED data with fred-specific checks.
 
         FRED data has only value (+ optional vintage_date), not OHLCV.
@@ -197,6 +204,8 @@ class FREDIngestor(BaseIngestor):
         Args:
             df: Raw FRED DataFrame.
             symbol: Series ID for logging context.
+            skip_staleness: If True, skip staleness check (vintage series
+                have ~45-day release lag that exceeds the 35-day threshold).
 
         Returns:
             Tuple of (clean_df, quarantine_df).
@@ -221,7 +230,11 @@ class FREDIngestor(BaseIngestor):
 
         # Batch-level checks via DataValidator (steps 8-10: dedup, gap, stale)
         if not clean_df.empty:
-            clean_df = self._validator.validate_batch(clean_df, symbol)
+            clean_df = self._validator.validate_batch(
+                clean_df,
+                symbol,
+                skip_staleness=skip_staleness,
+            )
 
         return clean_df, quarantine_df
 

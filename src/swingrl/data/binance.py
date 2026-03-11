@@ -238,19 +238,26 @@ class BinanceIngestor(BaseIngestor):
 
         return self._parse_klines(all_klines)
 
-    def validate(self, df: pd.DataFrame, symbol: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    def validate(
+        self,
+        df: pd.DataFrame,
+        symbol: str,
+        *,
+        skip_staleness: bool = False,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Validate crypto OHLCV data using the 12-step DataValidator.
 
         Args:
             df: Raw OHLCV DataFrame.
             symbol: Trading pair for logging context.
+            skip_staleness: If True, skip staleness check during backfill.
 
         Returns:
             Tuple of (clean_df, quarantine_df).
         """
         clean, quarantine = self._validator.validate_rows(df, symbol)
         if not clean.empty:
-            clean = self._validator.validate_batch(clean, symbol)
+            clean = self._validator.validate_batch(clean, symbol, skip_staleness=skip_staleness)
         return clean, quarantine
 
     def store(self, df: pd.DataFrame, symbol: str) -> Path:
@@ -448,12 +455,14 @@ class BinanceIngestor(BaseIngestor):
 
         log.info("backfill_complete", symbol=symbol, total_bars=len(combined))
 
-        # Validate and store
-        clean, quarantine = self.validate(combined, symbol)
+        # Validate and store — skip staleness during backfill since API data
+        # may lag by hours and the check is meant for incremental freshness.
+        clean, quarantine = self.validate(combined, symbol, skip_staleness=True)
         if not quarantine.empty:
             self._store_quarantine(quarantine, symbol)
         if not clean.empty:
             self.store(clean, symbol)
+            self._sync_to_duckdb(clean, symbol)
 
         return combined
 
