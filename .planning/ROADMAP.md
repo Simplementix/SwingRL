@@ -27,7 +27,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 13: Model Path Fix and Reconciliation Scheduling** - Fix model path double-nesting bug and wire PositionReconciler to scheduler (gap closure) (completed 2026-03-10)
 - [x] **Phase 14: Feature Pipeline Wiring** - Wire compare_features() consumer and integrate sentiment features into observation vector (gap closure) (completed 2026-03-10)
 - [x] **Phase 15: Training CLI Observation Assembly** - Fix train.py to use ObservationAssembler instead of raw DuckDB columns (gap closure) (completed 2026-03-11)
-- [ ] **Phase 16: Crypto Stop Price Persistence** - Persist stop/TP prices from FillProcessor to positions table for stop_polling (gap closure)
+- [x] **Phase 16: Crypto Stop Price Persistence** - Persist stop/TP prices from FillProcessor to positions table for stop_polling (gap closure) (completed 2026-03-10)
 - [ ] **Phase 17: Doc Housekeeping** - Fix stale counters, descriptions, and plan counts in REQUIREMENTS.md and ROADMAP.md (gap closure)
 
 ## Phase Details
@@ -291,7 +291,7 @@ Plans:
   3. `stop_polling._check_stop_levels()` reads valid stop/TP prices and can trigger liquidation when breached
 
 Plans:
-- [ ] 16-01-PLAN.md — Update FillProcessor to persist stop/TP prices and verify stop_polling integration
+- [x] 16-01-PLAN.md — Update FillProcessor to persist stop/TP prices and verify stop_polling integration
 
 ### Phase 17: Doc Housekeeping
 **Goal**: Planning documents accurately reflect the current state of all 74 requirements, phase completion, and gap closure work

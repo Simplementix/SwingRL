@@ -87,10 +87,10 @@ Requirements for M0-M6 software build (pre-live-trading).
 - [x] **PAPER-04**: Circuit breakers: equity -10% DD / -2% daily, crypto -12% DD / -3% daily, global -15% DD / -3% combined
 - [x] **PAPER-05**: Circuit breaker cooldown: 5 business days equity, 3 calendar days crypto, with 25%/50%/75%/100% ramp-up
 - [x] **PAPER-06**: Halt-state persistence in circuit_breaker_events table across container restarts
-- [ ] **PAPER-07**: Position sizing: modified Kelly criterion (quarter-Kelly Phase 1), 2% max risk per trade, ATR(2x) stop-losses
+- [x] **PAPER-07**: Position sizing: modified Kelly criterion (quarter-Kelly Phase 1), 2% max risk per trade, ATR(2x) stop-losses
 - [x] **PAPER-08**: Binance.US $10 minimum order floor: max(kelly_sized_amount, $10.00)
 - [x] **PAPER-09**: 5-stage execution middleware: Signal Interpreter, Position Sizer, Order Validator, Exchange Adapter, Fill Processor
-- [ ] **PAPER-10**: Bracket orders: OTO for Alpaca (ATR stop-loss, R:R take-profit), two-step OCO for Binance.US
+- [x] **PAPER-10**: Bracket orders: OTO for Alpaca (ATR stop-loss, R:R take-profit), two-step OCO for Binance.US
 - [x] **PAPER-11**: Cost gate: reject orders where estimated round-trip transaction costs exceed 2.0% of order value
 - [x] **PAPER-12**: APScheduler: equity daily at 4:15 PM ET, crypto every 4H at 5 min past bar close, pre-cycle halt checks
 - [x] **PAPER-13**: Discord webhook alerting: trade executions, circuit breakers, daily summary (6 PM ET), stuck agent detection
@@ -226,10 +226,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PAPER-04 | Phase 8 | Complete |
 | PAPER-05 | Phase 8 | Complete |
 | PAPER-06 | Phase 8 | Complete |
-| PAPER-07 | Phase 16 | Pending |
+| PAPER-07 | Phase 16 | Complete |
 | PAPER-08 | Phase 8 | Complete |
 | PAPER-09 | Phase 13 | Complete |
-| PAPER-10 | Phase 16 | Pending |
+| PAPER-10 | Phase 16 | Complete |
 | PAPER-11 | Phase 8 | Complete |
 | PAPER-18 | Phase 8 | Complete |
 | PAPER-19 | Phase 8 | Complete |
@@ -258,8 +258,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 **Coverage:**
 - v1 requirements: 74 total
 - Mapped to phases: 74
-- Complete: 68
-- Pending (gap closure): 6 (TRAIN-01, TRAIN-02, TRAIN-03, VAL-01 → Phase 15; PAPER-07, PAPER-10 → Phase 16)
+- Complete: 70
+- Pending (gap closure): 4 (TRAIN-01, TRAIN-02, TRAIN-03, VAL-01 → Phase 15; PAPER-07, PAPER-10 → Phase 16 complete)
 - Unmapped: 0
 
 ---

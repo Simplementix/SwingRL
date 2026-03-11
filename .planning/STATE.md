@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: "Completed 15-01-PLAN.md: Training CLI Observation Assembly"
-last_updated: "2026-03-11T01:14:18.693Z"
+stopped_at: "Completed 16-01-PLAN.md: Crypto Stop Price Persistence"
+last_updated: "2026-03-10T21:55:00.000Z"
 last_activity: "2026-03-10 -- Phase 12 Plan 01: Schema alignment and emergency triggers"
 progress:
   total_phases: 17
@@ -99,6 +99,7 @@ Progress: [██████████] 100%
 | Phase 13 P01 | 9 | 2 tasks | 5 files |
 | Phase 14-feature-pipeline-wiring P01 | 11 | 2 tasks | 6 files |
 | Phase 15-training-cli-observation-assembly P01 | 6 | 2 tasks | 2 files |
+| Phase 16-crypto-stop-price-persistence P01 | 12 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -220,6 +221,9 @@ Recent decisions affecting current work:
 - [Phase 15]: INNER JOIN between features and OHLCV tables ensures date alignment for training observation assembly
 - [Phase 15]: turbulence=0.0 default for training observation assembly (circuit breaker, not quality concern)
 - [Phase 15]: --dry-run placed before TrainingOrchestrator construction for pure shape validation without training
+- [Phase 16]: SizedOrder imported at runtime (not TYPE_CHECKING) since it appears in the method signature
+- [Phase 16]: Sell path carry-forward uses existing stop/TP from SELECT result, not sized_order -- sell-side sized_order would carry incorrect sell-side stops
+- [Phase 16]: Second buy updates stop/TP to new sized_order values (replaces, does not average) -- reflects new risk assessment
 
 ### Pending Todos
 
@@ -233,6 +237,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-11T01:09:07.623Z
-Stopped at: Completed 15-01-PLAN.md: Training CLI Observation Assembly
+Last session: 2026-03-10T21:55:00.000Z
+Stopped at: Completed 16-01-PLAN.md: Crypto Stop Price Persistence
 Resume file: None
