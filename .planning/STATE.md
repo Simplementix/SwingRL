@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 14-01-PLAN.md
-last_updated: "2026-03-10T22:08:54.539Z"
+stopped_at: "Completed 16-01-PLAN.md: Crypto Stop Price Persistence"
+last_updated: "2026-03-11T01:59:36.169Z"
 last_activity: "2026-03-10 -- Phase 12 Plan 01: Schema alignment and emergency triggers"
 progress:
-  total_phases: 14
-  completed_phases: 14
-  total_plans: 47
-  completed_plans: 47
+  total_phases: 17
+  completed_phases: 16
+  total_plans: 49
+  completed_plans: 49
   percent: 100
 ---
 
@@ -98,6 +98,8 @@ Progress: [██████████] 100%
 | Phase 12 P01 | 6 | 2 tasks | 8 files |
 | Phase 13 P01 | 9 | 2 tasks | 5 files |
 | Phase 14-feature-pipeline-wiring P01 | 11 | 2 tasks | 6 files |
+| Phase 15-training-cli-observation-assembly P01 | 6 | 2 tasks | 2 files |
+| Phase 16-crypto-stop-price-persistence P01 | 12 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -216,6 +218,12 @@ Recent decisions affecting current work:
 - [Phase 14-feature-pipeline-wiring]: EQUITY_OBS_DIM=156 and EQUITY_PER_ASSET=15 kept as backward-compat aliases at module level
 - [Phase 14-feature-pipeline-wiring]: BaseTradingEnv._obs_dim derived from config.sentiment.enabled at __init__ time via equity_obs_dim()
 - [Phase 14-feature-pipeline-wiring]: tiny_equity_features fixture updated to derive shape from equity_obs_dim() dynamically (Rule 1 fix)
+- [Phase 15]: INNER JOIN between features and OHLCV tables ensures date alignment for training observation assembly
+- [Phase 15]: turbulence=0.0 default for training observation assembly (circuit breaker, not quality concern)
+- [Phase 15]: --dry-run placed before TrainingOrchestrator construction for pure shape validation without training
+- [Phase 16]: SizedOrder imported at runtime (not TYPE_CHECKING) since it appears in the method signature
+- [Phase 16]: Sell path carry-forward uses existing stop/TP from SELECT result, not sized_order -- sell-side sized_order would carry incorrect sell-side stops
+- [Phase 16]: Second buy updates stop/TP to new sized_order values (replaces, does not average) -- reflects new risk assessment
 
 ### Pending Todos
 
@@ -229,6 +237,6 @@ None. Phase 1 complete.
 
 ## Session Continuity
 
-Last session: 2026-03-10T22:04:21.428Z
-Stopped at: Completed 14-01-PLAN.md
+Last session: 2026-03-10T21:55:00.000Z
+Stopped at: Completed 16-01-PLAN.md: Crypto Stop Price Persistence
 Resume file: None

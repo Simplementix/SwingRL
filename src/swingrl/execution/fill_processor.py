@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from swingrl.execution.types import FillResult
+from swingrl.execution.types import FillResult, SizedOrder
 
 if TYPE_CHECKING:
     from swingrl.data.db import DatabaseManager
@@ -41,14 +41,15 @@ class FillProcessor:
         """
         self._db = db
 
-    def process(self, fill: FillResult) -> None:
+    def process(self, fill: FillResult, sized_order: SizedOrder | None = None) -> None:
         """Record a fill to trades table and update positions.
 
         Args:
             fill: FillResult from an exchange adapter.
+            sized_order: Optional SizedOrder with stop/TP prices to persist (crypto buys).
         """
         self._record_trade(fill)
-        self._update_position(fill)
+        self._update_position(fill, sized_order)
 
         log.info(
             "fill_processed",
@@ -141,20 +142,29 @@ class FillProcessor:
                 ),
             )
 
-    def _update_position(self, fill: FillResult) -> None:
+    def _update_position(self, fill: FillResult, sized_order: SizedOrder | None = None) -> None:
         """Update the positions table based on the fill.
 
         Buy: create new position or adjust cost basis (weighted average).
+            Persists stop_loss_price, take_profit_price, and side from sized_order when provided.
         Sell: reduce quantity. Delete row if quantity reaches zero.
+            Carries forward existing stop/TP values on partial sells.
 
         Args:
             fill: FillResult with trade details.
+            sized_order: Optional SizedOrder with stop/TP prices (buy fills only).
         """
         now = datetime.now(UTC).isoformat()
 
+        # Extract stop/TP values from sized_order (buy path only)
+        new_stop = sized_order.stop_loss_price if sized_order is not None else None
+        new_tp = sized_order.take_profit_price if sized_order is not None else None
+        new_side = sized_order.side if sized_order is not None else fill.side
+
         with self._db.sqlite() as conn:
             existing = conn.execute(
-                "SELECT quantity, cost_basis FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT quantity, cost_basis, stop_loss_price, take_profit_price, side "
+                "FROM positions WHERE symbol = ? AND environment = ?",
                 (fill.symbol, fill.environment),
             ).fetchone()
 
@@ -165,8 +175,8 @@ class FillProcessor:
                     conn.execute(
                         "INSERT INTO positions "
                         "(symbol, environment, quantity, cost_basis, last_price, "
-                        "unrealized_pnl, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "unrealized_pnl, updated_at, stop_loss_price, take_profit_price, side) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             fill.symbol,
                             fill.environment,
@@ -175,10 +185,13 @@ class FillProcessor:
                             fill.fill_price,
                             unrealized_pnl,
                             now,
+                            new_stop,
+                            new_tp,
+                            new_side,
                         ),
                     )
                 else:
-                    # Add to existing -- weighted average cost basis
+                    # Add to existing -- weighted average cost basis; update stop/TP to new values
                     old_qty = existing["quantity"]
                     old_cost = existing["cost_basis"]
                     new_qty = old_qty + fill.quantity
@@ -188,8 +201,8 @@ class FillProcessor:
                     conn.execute(
                         "INSERT OR REPLACE INTO positions "
                         "(symbol, environment, quantity, cost_basis, last_price, "
-                        "unrealized_pnl, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "unrealized_pnl, updated_at, stop_loss_price, take_profit_price, side) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             fill.symbol,
                             fill.environment,
@@ -198,6 +211,9 @@ class FillProcessor:
                             fill.fill_price,
                             unrealized_pnl,
                             now,
+                            new_stop,
+                            new_tp,
+                            new_side,
                         ),
                     )
             else:
@@ -212,15 +228,18 @@ class FillProcessor:
                             (fill.symbol, fill.environment),
                         )
                     else:
-                        # Partial sell -- cost basis unchanged
+                        # Partial sell -- cost basis unchanged; carry forward stop/TP from existing
                         old_cost = existing["cost_basis"]
+                        carried_stop = existing["stop_loss_price"]
+                        carried_tp = existing["take_profit_price"]
+                        carried_side = existing["side"]
                         unrealized_pnl = (fill.fill_price - old_cost) * new_qty
 
                         conn.execute(
                             "INSERT OR REPLACE INTO positions "
                             "(symbol, environment, quantity, cost_basis, last_price, "
-                            "unrealized_pnl, updated_at) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            "unrealized_pnl, updated_at, stop_loss_price, take_profit_price, side) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (
                                 fill.symbol,
                                 fill.environment,
@@ -229,5 +248,8 @@ class FillProcessor:
                                 fill.fill_price,
                                 unrealized_pnl,
                                 now,
+                                carried_stop,
+                                carried_tp,
+                                carried_side,
                             ),
                         )

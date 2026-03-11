@@ -200,19 +200,19 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FEAT-09 | Phase 14 | Complete |
 | FEAT-10 | Phase 14 | Complete |
 | FEAT-11 | Phase 11 | Complete |
-| TRAIN-01 | Phase 6 | Complete |
-| TRAIN-02 | Phase 6 | Complete |
+| TRAIN-01 | Phase 15 | Complete |
+| TRAIN-02 | Phase 15 | Complete |
 | TRAIN-07 | Phase 6 | Complete |
 | TRAIN-08 | Phase 6 | Complete |
 | TRAIN-09 | Phase 6 | Complete |
 | TRAIN-10 | Phase 6 | Complete |
 | TRAIN-11 | Phase 6 | Complete |
-| TRAIN-03 | Phase 7 | Complete |
+| TRAIN-03 | Phase 15 | Complete |
 | TRAIN-04 | Phase 7 | Complete |
 | TRAIN-05 | Phase 7 | Complete |
 | TRAIN-06 | Phase 7 | Complete |
 | TRAIN-12 | Phase 7 | Complete |
-| VAL-01 | Phase 7 | Complete |
+| VAL-01 | Phase 15 | Complete |
 | VAL-02 | Phase 7 | Complete |
 | VAL-03 | Phase 7 | Complete |
 | VAL-04 | Phase 7 | Complete |
@@ -226,10 +226,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PAPER-04 | Phase 8 | Complete |
 | PAPER-05 | Phase 8 | Complete |
 | PAPER-06 | Phase 8 | Complete |
-| PAPER-07 | Phase 8 | Complete |
+| PAPER-07 | Phase 16 | Complete |
 | PAPER-08 | Phase 8 | Complete |
 | PAPER-09 | Phase 13 | Complete |
-| PAPER-10 | Phase 12 | Complete |
+| PAPER-10 | Phase 16 | Complete |
 | PAPER-11 | Phase 8 | Complete |
 | PAPER-18 | Phase 8 | Complete |
 | PAPER-19 | Phase 8 | Complete |
@@ -259,7 +259,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 - v1 requirements: 74 total
 - Mapped to phases: 74
 - Complete: 70
-- Pending (gap closure): 4 (PAPER-02, PAPER-09, FEAT-09, FEAT-10)
+- Pending (gap closure): 4 (TRAIN-01, TRAIN-02, TRAIN-03, VAL-01 → Phase 15; PAPER-07, PAPER-10 → Phase 16 complete)
 - Unmapped: 0
 
 ---
