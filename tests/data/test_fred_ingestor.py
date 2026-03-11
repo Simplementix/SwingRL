@@ -26,14 +26,16 @@ def _load_vixcls_series() -> pd.Series:
 
 
 def _load_cpiaucsl_releases() -> pd.DataFrame:
-    """Load mock CPI all-releases from fixture file."""
+    """Load mock CPI all-releases from fixture file.
+
+    Matches fredapi.Fred.get_series_all_releases() return format:
+    integer index with columns date, realtime_start, value.
+    """
     with open(FIXTURES_DIR / "fred_cpiaucsl_releases.json") as f:
         records = json.load(f)
     df = pd.DataFrame(records)
     df["date"] = pd.to_datetime(df["date"])
     df["realtime_start"] = pd.to_datetime(df["realtime_start"])
-    df.index = df["date"]
-    df.index.name = "date"
     return df
 
 

@@ -335,8 +335,8 @@ class DataValidator:
         elif self._source == "crypto":
             threshold = timedelta(hours=_CRYPTO_STALE_HOURS)
         else:
-            # FRED: more lenient — monthly series can be 35 days old
-            threshold = timedelta(days=35)
+            # FRED: lenient — monthly series (CPI, UNRATE) have ~45-day release lag
+            threshold = timedelta(days=50)
 
         age = now - max_ts
         if age > threshold:

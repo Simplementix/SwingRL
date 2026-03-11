@@ -121,7 +121,7 @@ Features to add once the system is running and generating 30+ days of paper data
 ### Future Consideration (v2+)
 
 - [ ] **Live trading promotion workflow** — defer until 6-month paper trading validation period completes with consistent positive Sharpe
-- [ ] **SPX options environment** — requires IBKR account + $2K+ capital; explicitly out of scope for v1
+- [ ] **SPX options environment** — requires Charles Schwab account + $2K+ capital; explicitly out of scope for v1
 
 ---
 

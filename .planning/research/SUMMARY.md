@@ -47,7 +47,7 @@ The v1.1 feature set is entirely P1 (blocking for hands-off paper trading) or P2
 
 **Defer (v2+):**
 - Live trading promotion — requires completed 6-month paper validation period
-- SPX options environment — requires IBKR account + $2K+ capital
+- SPX options environment — requires Charles Schwab account + $2K+ capital
 
 ### Architecture Approach
 

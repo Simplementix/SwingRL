@@ -1,7 +1,8 @@
-"""AlpacaIngestor — equity OHLCV data ingestion via Alpaca IEX feed.
+"""AlpacaIngestor — equity OHLCV data ingestion via Alpaca.
 
 Fetches daily bars for 8 equity ETFs (SPY, QQQ, VTI, XLV, XLI, XLE, XLF, XLK)
-with incremental and 10-year backfill modes. CLI entrypoint at module level.
+with incremental and 10-year backfill modes. Uses SIP feed for historical
+backfill (full depth back to 2016) and IEX feed for incremental/trading.
 
 Usage:
     python -m swingrl.data.alpaca --backfill
@@ -44,10 +45,11 @@ _BASE_BACKOFF_SECONDS = 2
 
 
 class AlpacaIngestor(BaseIngestor):
-    """Concrete ingestor for Alpaca equity daily bars via IEX feed.
+    """Concrete ingestor for Alpaca equity daily bars.
 
+    Uses SIP feed for historical backfill (full depth back to 2016) and
+    IEX feed for incremental fetches (paper/live trading context).
     Reads ALPACA_API_KEY and ALPACA_SECRET_KEY from environment variables.
-    Fetches split+dividend adjusted daily bars for equity ETFs.
 
     Args:
         config: Validated SwingRLConfig instance.
@@ -68,7 +70,10 @@ class AlpacaIngestor(BaseIngestor):
         self._validator = DataValidator(source="equity")
 
     def fetch(self, symbol: str, since: str | None = None) -> pd.DataFrame:
-        """Fetch daily OHLCV bars for an equity symbol from Alpaca IEX feed.
+        """Fetch daily OHLCV bars for an equity symbol from Alpaca.
+
+        Uses SIP feed for backfill (since=None) to get full historical depth
+        back to 2016. Uses IEX feed for incremental fetches (paper/live trading).
 
         Args:
             symbol: Ticker symbol (e.g. "SPY").
@@ -84,12 +89,21 @@ class AlpacaIngestor(BaseIngestor):
         start = self._resolve_start(symbol, since)
         end = datetime.now(UTC)
 
+        # SIP for historical backfill (full depth back to 2016), IEX for
+        # incremental/trading. Free-tier SIP blocks "recent" data, so cap
+        # end at start-of-today (yesterday's close) for SIP requests.
+        if since == "incremental":
+            feed = DataFeed.IEX
+        else:
+            feed = DataFeed.SIP
+            end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+
         request = StockBarsRequest(
             symbol_or_symbols=symbol,
             timeframe=TimeFrame.Day,
             start=start,
             end=end,
-            feed=DataFeed.IEX,
+            feed=feed,
             adjustment=Adjustment.ALL,
         )
 
@@ -98,6 +112,7 @@ class AlpacaIngestor(BaseIngestor):
             symbol=symbol,
             start=start.isoformat(),
             mode="incremental" if since == "incremental" else "backfill",
+            feed=feed.value,
         )
 
         barset = self._fetch_with_retry(request, symbol)

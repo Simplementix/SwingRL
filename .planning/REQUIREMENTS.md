@@ -81,7 +81,7 @@ Deferred to v1.2+ milestones.
 
 | Feature | Reason |
 |---------|--------|
-| SPX options / IBKR integration | Requires $2K+ capital (Phase 3) |
+| SPX options / Charles Schwab integration | Requires $2K+ capital (Phase 3) |
 | GPU training on homelab | Intel i5 has no GPU; CPU training viable for SB3 |
 | Continuous/online retraining | Swing trading frequency too low for online RL; noise not signal |
 | Separate training Docker container | Single-node homelab; subprocess isolation sufficient |
