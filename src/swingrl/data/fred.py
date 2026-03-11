@@ -135,7 +135,7 @@ class FREDIngestor(BaseIngestor):
             DataFrame with observation_date index, value and vintage_date columns.
         """
         raw = self._call_with_retry(
-            lambda: self._fred.get_series_all_releases(symbol, observation_start=start_date),
+            lambda: self._fred.get_series_all_releases(symbol, realtime_start=start_date),
             symbol=symbol,
         )
         # get_series_all_releases returns DataFrame with date index,

@@ -462,6 +462,7 @@ class BinanceIngestor(BaseIngestor):
             self._store_quarantine(quarantine, symbol)
         if not clean.empty:
             self.store(clean, symbol)
+            self._sync_to_duckdb(clean, symbol)
 
         return combined
 
