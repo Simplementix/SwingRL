@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -121,9 +122,18 @@ class TestEquityBaselineTraining:
 
         # All 3 algos produce passing folds
         good_folds = [_make_fold_result(sharpe=1.5, mdd=-0.05)] * 3
-        training_result = _make_training_result(
-            env_name="equity", algo_name="ppo", models_dir=tmp_path
-        )
+
+        # Mock train creates deployment files as a side effect
+        def mock_train_side_effect(
+            env_name: str, algo_name: str, features: Any, prices: Any, **kwargs: Any
+        ) -> Any:
+            d = tmp_path / "active" / env_name / algo_name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "model.zip").write_bytes(b"fake")
+            (d / "vec_normalize.pkl").write_bytes(b"fake")
+            return _make_training_result(
+                env_name=env_name, algo_name=algo_name, models_dir=tmp_path
+            )
 
         mock_conn = MagicMock()
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
@@ -133,21 +143,14 @@ class TestEquityBaselineTraining:
             patch.object(pipeline, "_load_features_prices", return_value=(features, prices)),
             patch("swingrl.agents.backtest.WalkForwardBacktester.run", return_value=good_folds),
             patch(
-                "swingrl.training.trainer.TrainingOrchestrator.train", return_value=training_result
+                "swingrl.training.trainer.TrainingOrchestrator.train",
+                side_effect=mock_train_side_effect,
             ),
             patch("train_pipeline.duckdb") as mock_duckdb,
-            patch("train_pipeline.Path.exists", return_value=False),
         ):
-            mock_duckdb.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_duckdb.connect.return_value.__exit__ = MagicMock(return_value=False)
             mock_duckdb.connect.return_value = mock_conn
-
-            # Create required output dirs
-            for algo in ["ppo", "a2c", "sac"]:
-                d = tmp_path / "active" / "equity" / algo
-                d.mkdir(parents=True, exist_ok=True)
-                (d / "model.zip").write_bytes(b"fake")
-                (d / "vec_normalize.pkl").write_bytes(b"fake")
+            mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+            mock_conn.__exit__ = MagicMock(return_value=False)
 
             result = pipeline.run_environment(
                 env_name="equity",
@@ -384,8 +387,18 @@ class TestJsonReportWritten:
         pipeline = importlib.import_module("train_pipeline")
 
         features, prices = _make_mock_features_prices(n_bars=800)
-        training_result = _make_training_result(env_name="equity", models_dir=tmp_path)
         good_folds = [_make_fold_result(sharpe=1.5, mdd=-0.05)] * 3
+
+        def mock_train_side_effect(
+            env_name: str, algo_name: str, features: Any, prices: Any, **kwargs: Any
+        ) -> Any:
+            d = tmp_path / "active" / env_name / algo_name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "model.zip").write_bytes(b"fake")
+            (d / "vec_normalize.pkl").write_bytes(b"fake")
+            return _make_training_result(
+                env_name=env_name, algo_name=algo_name, models_dir=tmp_path
+            )
 
         mock_conn = MagicMock()
 
@@ -393,19 +406,14 @@ class TestJsonReportWritten:
             patch.object(pipeline, "_load_features_prices", return_value=(features, prices)),
             patch("swingrl.agents.backtest.WalkForwardBacktester.run", return_value=good_folds),
             patch(
-                "swingrl.training.trainer.TrainingOrchestrator.train", return_value=training_result
+                "swingrl.training.trainer.TrainingOrchestrator.train",
+                side_effect=mock_train_side_effect,
             ),
             patch("train_pipeline.duckdb") as mock_duckdb,
         ):
             mock_duckdb.connect.return_value = mock_conn
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
             mock_conn.__exit__ = MagicMock(return_value=False)
-
-            for algo in ["ppo", "a2c", "sac"]:
-                d = tmp_path / "active" / "equity" / algo
-                d.mkdir(parents=True, exist_ok=True)
-                (d / "model.zip").write_bytes(b"fake")
-                (d / "vec_normalize.pkl").write_bytes(b"fake")
 
             report_path = tmp_path / "training_report.json"
             pipeline.run_environment(
@@ -494,22 +502,25 @@ class TestMainCLI:
 
         features, prices = _make_mock_features_prices(n_bars=800)
         good_folds = [_make_fold_result(sharpe=1.5, mdd=-0.05)] * 3
-        training_result = _make_training_result(models_dir=tmp_path)
         mock_conn = MagicMock()
 
-        # Create all model files upfront
-        for env in ["equity", "crypto"]:
-            for algo in ["ppo", "a2c", "sac"]:
-                d = tmp_path / "active" / env / algo
-                d.mkdir(parents=True, exist_ok=True)
-                (d / "model.zip").write_bytes(b"fake")
-                (d / "vec_normalize.pkl").write_bytes(b"fake")
+        def mock_train_side_effect(
+            env_name: str, algo_name: str, features: Any, prices: Any, **kwargs: Any
+        ) -> Any:
+            d = tmp_path / "active" / env_name / algo_name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "model.zip").write_bytes(b"fake")
+            (d / "vec_normalize.pkl").write_bytes(b"fake")
+            return _make_training_result(
+                env_name=env_name, algo_name=algo_name, models_dir=tmp_path
+            )
 
         with (
             patch.object(pipeline, "_load_features_prices", return_value=(features, prices)),
             patch("swingrl.agents.backtest.WalkForwardBacktester.run", return_value=good_folds),
             patch(
-                "swingrl.training.trainer.TrainingOrchestrator.train", return_value=training_result
+                "swingrl.training.trainer.TrainingOrchestrator.train",
+                side_effect=mock_train_side_effect,
             ),
             patch("train_pipeline.duckdb") as mock_duckdb,
             patch("train_pipeline.load_config") as mock_cfg,
