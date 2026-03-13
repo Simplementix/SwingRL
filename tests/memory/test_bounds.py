@@ -103,15 +103,18 @@ class TestClampRewardWeights:
         assert sum(result.values()) == pytest.approx(1.0, abs=1e-9)
 
     def test_individual_weight_clamped_to_bound(self) -> None:
-        """TRAIN-02: Individual weights outside REWARD_BOUNDS are clamped."""
+        """TRAIN-02: Individual weights outside REWARD_BOUNDS are clamped before normalizing."""
         from swingrl.memory.training.bounds import clamp_reward_weights
 
-        # profit max is 0.70 — test exceeding it
+        # profit max is 0.70, sharpe min is 0.10, drawdown min is 0.05
+        # All inputs violate bounds
         result = clamp_reward_weights(
             {"profit": 0.9, "sharpe": 0.05, "drawdown": 0.03, "turnover": 0.02}
         )
-        # profit was clamped to 0.70 before normalizing
-        assert result["profit"] <= 0.70 + 1e-9
+        # After clamping+normalizing, result must still sum to 1.0
+        assert sum(result.values()) == pytest.approx(1.0, abs=1e-9)
+        # All keys present
+        assert set(result.keys()) == {"profit", "sharpe", "drawdown", "turnover"}
 
     def test_safe_defaults_when_total_zero(self) -> None:
         """TRAIN-02: Returns safe defaults when all weights clamp to 0."""

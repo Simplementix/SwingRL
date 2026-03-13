@@ -82,6 +82,18 @@ security:
   key_rotation_days: 90             # reminder threshold for API key rotation
   env_file_permissions: "600"       # expected permissions on .env file
 
+memory_agent:
+  enabled: false                    # memory agent disabled by default — set true to enable
+  meta_training: false              # LLM hyperparameter meta-training (disabled by default)
+  base_url: "http://swingrl-memory:8889"
+  live_endpoints:
+    obs_enrichment: false
+    blend_weights: false
+    position_advice: false
+    trade_veto: false
+    cycle_gate: false
+    risk_thresholds: false
+
 features:
   equity_zscore_window: 252        # rolling z-score window for equity (trading days)
   crypto_zscore_window: 360        # rolling z-score window for crypto (4H bars ~60 days)

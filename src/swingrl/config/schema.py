@@ -226,6 +226,41 @@ class SecurityConfig(BaseModel):
     env_file_permissions: str = Field(default="600")
 
 
+class MemoryLiveEndpointsConfig(BaseModel):
+    """Live memory agent endpoint toggles (all disabled by default)."""
+
+    obs_enrichment: bool = False
+    blend_weights: bool = False
+    position_advice: bool = False
+    trade_veto: bool = False
+    cycle_gate: bool = False
+    risk_thresholds: bool = False
+
+
+class MemoryAgentConfig(BaseModel):
+    """Memory agent (LLM meta-trainer) configuration.
+
+    All fields default to disabled/safe values. Existing CI and paper trading
+    are completely unaffected until memory_agent.enabled is set to true.
+    """
+
+    enabled: bool = False
+    base_url: str = "http://swingrl-memory:8889"
+    timeout_sec: float = 3.0
+    blend_strength: float = 0.30
+    meta_training: bool = False
+    meta_training_timeout_sec: float = 15.0
+    min_run_history_for_meta: int = 3
+    llm_backend: str = "ollama"
+    openai_model: str = "gpt-4o-mini"
+    ollama_fast_model: str = "qwen2.5:3b"
+    ollama_smart_model: str = "qwen3:14b"
+    ollama_embed_model: str = "nomic-embed-text"
+    consolidate_interval_min: int = 30
+    inbox_dir: str = "/data/memory_inbox"
+    live_endpoints: MemoryLiveEndpointsConfig = Field(default_factory=MemoryLiveEndpointsConfig)
+
+
 class SwingRLConfig(BaseSettings):
     """Root SwingRL configuration.
 
@@ -253,6 +288,7 @@ class SwingRLConfig(BaseSettings):
     shadow: ShadowConfig = Field(default_factory=ShadowConfig)
     sentiment: SentimentConfig = Field(default_factory=SentimentConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
+    memory_agent: MemoryAgentConfig = Field(default_factory=MemoryAgentConfig)
 
 
 def load_config(path: Path | str = "config/swingrl.yaml") -> SwingRLConfig:
