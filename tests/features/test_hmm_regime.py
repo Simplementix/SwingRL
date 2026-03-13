@@ -1,6 +1,7 @@
 """Tests for HMM regime detection.
 
-FEAT-05: HMM regime produces P(bull)+P(bear)=1.0 with warm-start and label consistency.
+FEAT-05: HMM regime produces P(bull)+P(bear)+P(crisis)=1.0 with warm-start and label consistency.
+Updated for 3-state (bull/bear/crisis) model per Plan 19-02.
 """
 
 from __future__ import annotations
@@ -78,25 +79,27 @@ class TestComputeHmmInputs:
 class TestInitialFit:
     """Test initial_fit on synthetic data."""
 
-    def test_produces_two_state_model(
+    def test_produces_three_state_model(
         self, config: SwingRLConfig, bull_bear_close: pd.Series
     ) -> None:
-        """initial_fit returns a GaussianHMM with 2 states."""
+        """initial_fit returns a GaussianHMM with 3 states (bull/bear/crisis)."""
         from swingrl.features.hmm_regime import HMMRegimeDetector
 
         detector = HMMRegimeDetector(environment="equity", config=config)
         model = detector.initial_fit(bull_bear_close)
-        assert model.n_components == 2
+        assert model.n_components == 3
 
     def test_label_ordering_bull_state0(
         self, config: SwingRLConfig, bull_bear_close: pd.Series
     ) -> None:
-        """After fit, state 0 has higher mean return (bull)."""
+        """After fit, state 0 has highest mean return (bull), state 2 has lowest (crisis)."""
         from swingrl.features.hmm_regime import HMMRegimeDetector
 
         detector = HMMRegimeDetector(environment="equity", config=config)
         model = detector.initial_fit(bull_bear_close)
+        # Bull state 0 must have highest mean return
         assert model.means_[0, 0] >= model.means_[1, 0]
+        assert model.means_[1, 0] >= model.means_[2, 0]
 
     def test_multiple_inits_selects_best(self, config: SwingRLConfig) -> None:
         """Multiple random initializations select the model with best log-likelihood."""
@@ -115,14 +118,14 @@ class TestPredictProba:
     """Test predict_proba returns valid probabilities."""
 
     def test_shape_and_sum(self, config: SwingRLConfig, bull_bear_close: pd.Series) -> None:
-        """predict_proba returns (n, 2) where each row sums to 1.0."""
+        """predict_proba returns (n, 3) where each row sums to 1.0 (bull+bear+crisis)."""
         from swingrl.features.hmm_regime import HMMRegimeDetector
 
         detector = HMMRegimeDetector(environment="equity", config=config)
         detector.initial_fit(bull_bear_close)
         probs = detector.predict_proba(bull_bear_close)
         assert probs.ndim == 2
-        assert probs.shape[1] == 2
+        assert probs.shape[1] == 3  # 3 states: bull, bear, crisis
         np.testing.assert_allclose(probs.sum(axis=1), 1.0, atol=1e-6)
 
 
@@ -130,7 +133,7 @@ class TestWarmStartRefit:
     """Test warm-start refit with ridge regularization."""
 
     def test_produces_valid_model(self, config: SwingRLConfig, bull_bear_close: pd.Series) -> None:
-        """warm_start_refit produces a valid model without ValueError."""
+        """warm_start_refit produces a valid 3-state model without ValueError."""
         from swingrl.features.hmm_regime import HMMRegimeDetector
 
         detector = HMMRegimeDetector(environment="equity", config=config)
@@ -138,12 +141,12 @@ class TestWarmStartRefit:
         # Refit on slightly different data
         shifted = bull_bear_close.iloc[10:].reset_index(drop=True)
         model = detector.warm_start_refit(shifted)
-        assert model.n_components == 2
+        assert model.n_components == 3
 
     def test_preserves_label_ordering(
         self, config: SwingRLConfig, bull_bear_close: pd.Series
     ) -> None:
-        """warm_start_refit preserves bull=state0 ordering."""
+        """warm_start_refit preserves bull=state0 (highest return) ordering."""
         from swingrl.features.hmm_regime import HMMRegimeDetector
 
         detector = HMMRegimeDetector(environment="equity", config=config)
@@ -155,7 +158,7 @@ class TestWarmStartRefit:
     def test_probabilities_sum_after_refit(
         self, config: SwingRLConfig, bull_bear_close: pd.Series
     ) -> None:
-        """Probabilities still sum to 1.0 after warm-start refit."""
+        """Probabilities (3-state) still sum to 1.0 after warm-start refit."""
         from swingrl.features.hmm_regime import HMMRegimeDetector
 
         detector = HMMRegimeDetector(environment="equity", config=config)
@@ -163,6 +166,7 @@ class TestWarmStartRefit:
         shifted = bull_bear_close.iloc[10:].reset_index(drop=True)
         detector.warm_start_refit(shifted)
         probs = detector.predict_proba(shifted)
+        assert probs.shape[1] == 3
         np.testing.assert_allclose(probs.sum(axis=1), 1.0, atol=1e-6)
 
 
@@ -170,14 +174,14 @@ class TestColdStartFit:
     """Test cold-start with informed priors for limited data."""
 
     def test_works_with_few_bars(self, config: SwingRLConfig) -> None:
-        """cold_start_fit works with < 500 bars of data."""
+        """cold_start_fit works with < 500 bars and produces 3-state model."""
         from swingrl.features.hmm_regime import HMMRegimeDetector
 
         detector = HMMRegimeDetector(environment="equity", config=config)
         short_close = _make_bull_bear_close(n_bull=100, n_bear=100)
         model = detector.cold_start_fit(short_close)
-        assert model.n_components == 2
-        # Label ordering still holds
+        assert model.n_components == 3
+        # Label ordering: bull (state 0) has highest mean return
         assert model.means_[0, 0] >= model.means_[1, 0]
 
 
@@ -199,14 +203,16 @@ class TestCovarianceTypes:
         assert detector.covariance_type == "diag"
 
     def test_crypto_fit_diag(self, config: SwingRLConfig) -> None:
-        """Crypto HMM fits with diag covariance successfully."""
+        """Crypto HMM fits with diag covariance and returns 3-state probabilities."""
         from swingrl.features.hmm_regime import HMMRegimeDetector
 
         detector = HMMRegimeDetector(environment="crypto", config=config)
         close = _make_bull_bear_close(seed=99)
         model = detector.initial_fit(close)
         assert model.covariance_type == "diag"
+        assert model.n_components == 3
         probs = detector.predict_proba(close)
+        assert probs.shape[1] == 3
         np.testing.assert_allclose(probs.sum(axis=1), 1.0, atol=1e-6)
 
 
@@ -214,12 +220,13 @@ class TestStoreHmmState:
     """Test store_hmm_state writes to DuckDB."""
 
     def test_calls_db_with_correct_data(self, config: SwingRLConfig) -> None:
-        """store_hmm_state writes p_bull, p_bear, log_likelihood."""
+        """store_hmm_state writes p_bull, p_bear, p_crisis, log_likelihood."""
         from swingrl.features.hmm_regime import HMMRegimeDetector
 
         detector = HMMRegimeDetector(environment="equity", config=config)
         mock_db = MagicMock()
-        probs = np.array([[0.8, 0.2]])
+        # 3-state probabilities: bull=0.7, bear=0.2, crisis=0.1
+        probs = np.array([[0.7, 0.2, 0.1]])
         detector.store_hmm_state(
             db=mock_db,
             dt=date(2026, 1, 15),
@@ -230,8 +237,22 @@ class TestStoreHmmState:
         call_args = mock_db.execute.call_args
         sql = call_args[0][0]
         assert "hmm_state_history" in sql
+        assert "p_crisis" in sql  # 3-state schema
         params = call_args[0][1]
         assert params[0] == "equity"
-        assert params[2] == pytest.approx(0.8)
-        assert params[3] == pytest.approx(0.2)
-        assert params[4] == pytest.approx(-100.5)
+        assert params[2] == pytest.approx(0.7)  # p_bull
+        assert params[3] == pytest.approx(0.2)  # p_bear
+        assert params[4] == pytest.approx(0.1)  # p_crisis
+        assert params[5] == pytest.approx(-100.5)  # log_likelihood
+
+    def test_ensure_3state_schema(self, config: SwingRLConfig) -> None:
+        """ensure_3state_schema runs ALTER TABLE ADD COLUMN IF NOT EXISTS."""
+        from swingrl.features.hmm_regime import HMMRegimeDetector
+
+        detector = HMMRegimeDetector(environment="equity", config=config)
+        mock_db = MagicMock()
+        detector.ensure_3state_schema(mock_db)
+        mock_db.execute.assert_called_once()
+        sql = mock_db.execute.call_args[0][0]
+        assert "p_crisis" in sql
+        assert "ADD COLUMN IF NOT EXISTS" in sql
