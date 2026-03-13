@@ -2,8 +2,8 @@
 phase: 19
 slug: model-training
 status: draft
-nyquist_compliant: false
-wave_0_complete: false
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-03-11
 ---
 
@@ -38,13 +38,16 @@ created: 2026-03-11
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 19-01-01 | 01 | 1 | TRAIN-01 | integration | `uv run pytest tests/training/test_pipeline.py::test_equity_baseline_training -x` | ❌ W0 | ⬜ pending |
-| 19-01-02 | 01 | 1 | TRAIN-02 | integration | `uv run pytest tests/training/test_pipeline.py::test_crypto_baseline_training -x` | ❌ W0 | ⬜ pending |
-| 19-01-03 | 01 | 1 | TRAIN-03 | unit | `uv run pytest tests/training/test_pipeline.py::test_wf_metrics_recorded -x` | ❌ W0 | ⬜ pending |
-| 19-01-04 | 01 | 1 | TRAIN-04 | unit | `uv run pytest tests/training/test_pipeline.py::test_tuning_triggers_on_low_sharpe -x` | ❌ W0 | ⬜ pending |
-| 19-01-05 | 01 | 1 | TRAIN-05 | unit | `uv run pytest tests/training/test_pipeline.py::test_ensemble_weights_from_wf_sharpe -x` | ❌ W0 | ⬜ pending |
-| 19-01-06 | 01 | 1 | TRAIN-06 | unit | `uv run pytest tests/training/test_pipeline.py::test_model_files_deployed -x` | ❌ W0 | ⬜ pending |
-| 19-01-07 | 01 | 1 | TRAIN-07 | unit | `uv run pytest tests/training/test_pipeline.py::test_ensemble_gate_blocks_deployment -x` | ❌ W0 | ⬜ pending |
+| 19-01-01 | 01 | 1 | TRAIN-01, TRAIN-04 | unit | `uv run pytest tests/memory/test_bounds.py -x` | Yes (Plan 01 Task 1) | ⬜ pending |
+| 19-01-02 | 01 | 1 | TRAIN-02, TRAIN-05 | unit | `uv run pytest tests/training/test_pipeline_helpers.py -x` | Yes (Plan 01 Task 2) | ⬜ pending |
+| 19-02-01 | 02 | 2 | TRAIN-03 | unit | `uv run pytest tests/memory/test_reward_wrapper.py tests/features/test_hmm_regime.py -x` | Yes (Plan 02 Task 1) | ⬜ pending |
+| 19-02-02 | 02 | 2 | TRAIN-01 | integration | `uv run pytest tests/training/test_pipeline.py::test_equity_baseline_training -x` | Yes (Plan 02 Task 2) | ⬜ pending |
+| 19-02-03 | 02 | 2 | TRAIN-02 | integration | `uv run pytest tests/training/test_pipeline.py::test_crypto_baseline_training -x` | Yes (Plan 02 Task 2) | ⬜ pending |
+| 19-02-04 | 02 | 2 | TRAIN-03 | unit | `uv run pytest tests/training/test_pipeline.py::test_wf_metrics_recorded -x` | Yes (Plan 02 Task 2) | ⬜ pending |
+| 19-02-05 | 02 | 2 | TRAIN-04 | unit | `uv run pytest tests/training/test_pipeline.py::test_tuning_triggers_on_low_sharpe -x` | Yes (Plan 02 Task 2) | ⬜ pending |
+| 19-02-06 | 02 | 2 | TRAIN-05 | unit | `uv run pytest tests/training/test_pipeline.py::test_ensemble_weights_from_wf_sharpe -x` | Yes (Plan 02 Task 2) | ⬜ pending |
+| 19-02-07 | 02 | 2 | TRAIN-06 | unit | `uv run pytest tests/training/test_pipeline.py::test_model_files_deployed -x` | Yes (Plan 02 Task 2) | ⬜ pending |
+| 19-02-08 | 02 | 2 | TRAIN-07 | unit | `uv run pytest tests/training/test_pipeline.py::test_ensemble_gate_blocks_deployment -x` | Yes (Plan 02 Task 2) | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -52,7 +55,12 @@ created: 2026-03-11
 
 ## Wave 0 Requirements
 
-- [ ] `tests/training/test_pipeline.py` — stubs for TRAIN-01 through TRAIN-07
+No separate Wave 0 plan needed. Each plan's TDD tasks create their own test files inline:
+
+- Plan 01 Task 1 creates `tests/memory/test_bounds.py`
+- Plan 01 Task 2 creates `tests/training/test_pipeline_helpers.py`
+- Plan 02 Task 1 creates `tests/memory/test_reward_wrapper.py`
+- Plan 02 Task 2 creates `tests/training/test_pipeline.py`
 
 *Existing infrastructure covers all other phase requirements — conftest.py and existing fixtures are sufficient.*
 
@@ -69,11 +77,11 @@ created: 2026-03-11
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 45s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 45s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved (wave 0 handled by TDD pattern within each plan)
