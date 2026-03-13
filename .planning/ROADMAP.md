@@ -35,7 +35,7 @@
 **Milestone Goal:** SwingRL runs hands-off on the homelab in paper trading mode with automated retraining, Discord alerts, and complete operator documentation.
 
 - [x] **Phase 18: Data Ingestion** - Populate homelab DuckDB with maximum historical depth, aligned observation vectors (completed 2026-03-11)
-- [ ] **Phase 19: Model Training** - Train and validate PPO/A2C/SAC ensemble on homelab CPU, pass all walk-forward gates
+- [x] **Phase 19: Model Training** - Train and validate PPO/A2C/SAC ensemble on homelab CPU, pass all walk-forward gates (completed 2026-03-13)
 - [ ] **Phase 20: Production Deployment** - Docker stack running on homelab with paper trading firing on schedule
 - [ ] **Phase 21: Discord Alert Suite** - Full alert coverage wired and smoke-tested across all severity channels
 - [ ] **Phase 22: Automated Retraining** - Equity monthly + crypto biweekly retraining with validated shadow promotion
@@ -69,7 +69,7 @@ Plans:
   3. Sharpe-weighted ensemble blending produces non-placeholder weight assignments derived from actual walk-forward Sharpe ratios
   4. Each trained model.zip has a corresponding vec_normalize.pkl present in models/active/{env}/{algo}/
   5. Ensemble passes the training success gate: Sharpe > 1.0 and max drawdown < 15% before any deployment step proceeds
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 Plans:
 - [ ] 19-01-PLAN.md — Memory agent foundation (config, client, bounds) + pipeline helper functions with tests
 - [ ] 19-02-PLAN.md — Memory training modules (HMM 3-state, reward wrapper, meta-orchestrator) + train_pipeline.py CLI
@@ -152,7 +152,7 @@ Plans:
 | 16. Crypto Stop Persistence | v1.0 | 1/1 | Complete | 2026-03-11 |
 | 17. Doc Housekeeping | v1.0 | 1/1 | Complete | 2026-03-10 |
 | 18. Data Ingestion | 2/2 | Complete   | 2026-03-11 | - |
-| 19. Model Training | 2/3 | In Progress|  | - |
+| 19. Model Training | 3/3 | Complete   | 2026-03-13 | - |
 | 20. Production Deployment | v1.1 | 0/TBD | Not started | - |
 | 21. Discord Alert Suite | v1.1 | 0/TBD | Not started | - |
 | 22. Automated Retraining | v1.1 | 0/TBD | Not started | - |

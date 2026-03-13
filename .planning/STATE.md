@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Operational Deployment
 status: executing
-stopped_at: Completed 19-02-PLAN.md
-last_updated: "2026-03-13T15:11:36.000Z"
-last_activity: 2026-03-11 — 18-02 ingest_all orchestrator complete (19 new tests, 892 total passing, ruff/bandit/mypy clean)
+stopped_at: "Checkpoint: Task 2 (homelab training running in background)"
+last_updated: "2026-03-13T16:08:00.393Z"
+last_activity: 2026-03-13 — 19-03 validate_memory.py, seed_memory_from_backtest.py, schema p_crisis fix, homelab CI pass, training pipeline launched (981 tests passing)
 progress:
   total_phases: 7
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 5
-  completed_plans: 4
+  completed_plans: 5
   percent: 0
 ---
 
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-10)
 
 **Core value:** Capital preservation through disciplined, automated risk management
-**Current focus:** v1.1 Operational Deployment — Phase 18 (Data Ingestion)
+**Current focus:** v1.1 Operational Deployment — Phase 19 (Model Training)
 
 ## Current Position
 
 Phase: 19 of 24 (Model Training)
-Plan: 02 complete — Phase 19 complete (both plans done)
+Plan: 03 at checkpoint — homelab training running in background (docker compose run --rm)
 Status: Executing
-Last activity: 2026-03-13 — 19-02 3-state HMM, memory training modules, train_pipeline.py complete (32 new tests, 123 memory+training tests passing, ruff/mypy clean)
+Last activity: 2026-03-13 — 19-03 validate_memory.py, seed_memory_from_backtest.py, schema p_crisis fix, homelab CI pass, training pipeline launched (981 tests passing)
 
-Progress: [░░░░░░░░░░] 0% (v1.1)
+Progress: [██████████] 100% (v1.1 — all 5 plans written; training in progress)
 
 ## Accumulated Context
 
@@ -58,6 +58,8 @@ Progress: [░░░░░░░░░░] 0% (v1.1)
 - [Phase 19-02]: MetaTrainingOrchestrator.run() delegates actual train() call to TrainingOrchestrator (no SB3 internals injected yet)
 - [Phase 19-02]: train_pipeline._load_features_prices imports scripts/train.py via importlib.util to avoid circular import
 - [Phase 19-02]: TDD mock_train_side_effect creates real files as side effect so _verify_deployment() passes on real filesystem
+- [Phase 19-03]: validate_memory.py exits 1 with diagnostic for any schema gap; exits 0 only when all checks pass
+- [Phase 19-03]: hmm_state_history base DDL now includes p_crisis DOUBLE DEFAULT 0.0 — 3-state schema fully reflected in schema.py
 
 ### Pending Todos
 
@@ -71,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-13T15:11:36.000Z
-Stopped at: Completed 19-02-PLAN.md
+Last session: 2026-03-13T16:08:00.391Z
+Stopped at: Checkpoint: Task 2 (homelab training running in background)
 Resume file: None
