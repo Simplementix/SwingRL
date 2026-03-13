@@ -136,7 +136,13 @@ class BaseTradingEnv(gymnasium.Env):
         super().reset(seed=seed)
 
         self._current_step = self._select_start_step()
-        self._max_step = self._current_step + self._episode_bars
+        # Cap max_step so step() never indexes past the last row of prices/features.
+        # step() increments current_step then reads prices[current_step], so the
+        # highest valid current_step after increment is len-1.
+        self._max_step = min(
+            self._current_step + self._episode_bars,
+            len(self._features) - 1,
+        )
 
         # Reset portfolio and reward
         self._portfolio.reset(self._initial_amount)
@@ -220,8 +226,8 @@ class BaseTradingEnv(gymnasium.Env):
         portfolio_state = self._get_portfolio_state(new_prices)
         obs = self._build_observation(portfolio_state)
 
-        # 9. Termination: after exactly episode_bars steps
-        terminated = self._step_count >= self._episode_bars
+        # 9. Termination: when we reach the capped max_step boundary
+        terminated = self._current_step >= self._max_step
         truncated = False
 
         # 10. Build info
