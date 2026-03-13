@@ -69,7 +69,7 @@ Plans:
   3. Sharpe-weighted ensemble blending produces non-placeholder weight assignments derived from actual walk-forward Sharpe ratios
   4. Each trained model.zip has a corresponding vec_normalize.pkl present in models/active/{env}/{algo}/
   5. Ensemble passes the training success gate: Sharpe > 1.0 and max drawdown < 15% before any deployment step proceeds
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 Plans:
 - [ ] 19-01-PLAN.md — Memory agent foundation (config, client, bounds) + pipeline helper functions with tests
 - [ ] 19-02-PLAN.md — Memory training modules (HMM 3-state, reward wrapper, meta-orchestrator) + train_pipeline.py CLI
@@ -152,7 +152,7 @@ Plans:
 | 16. Crypto Stop Persistence | v1.0 | 1/1 | Complete | 2026-03-11 |
 | 17. Doc Housekeeping | v1.0 | 1/1 | Complete | 2026-03-10 |
 | 18. Data Ingestion | 2/2 | Complete   | 2026-03-11 | - |
-| 19. Model Training | 1/3 | In Progress|  | - |
+| 19. Model Training | 2/3 | In Progress|  | - |
 | 20. Production Deployment | v1.1 | 0/TBD | Not started | - |
 | 21. Discord Alert Suite | v1.1 | 0/TBD | Not started | - |
 | 22. Automated Retraining | v1.1 | 0/TBD | Not started | - |

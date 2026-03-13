@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Operational Deployment
 status: executing
-stopped_at: Completed 19-01-PLAN.md
-last_updated: "2026-03-13T14:54:04.434Z"
+stopped_at: Completed 19-02-PLAN.md
+last_updated: "2026-03-13T15:11:36.000Z"
 last_activity: 2026-03-11 — 18-02 ingest_all orchestrator complete (19 new tests, 892 total passing, ruff/bandit/mypy clean)
 progress:
   total_phases: 7
   completed_phases: 1
   total_plans: 5
-  completed_plans: 3
+  completed_plans: 4
   percent: 0
 ---
 
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-10)
 
 ## Current Position
 
-Phase: 18 of 24 (Data Ingestion)
-Plan: 02 complete — Phase 18 complete (both plans done)
+Phase: 19 of 24 (Model Training)
+Plan: 02 complete — Phase 19 complete (both plans done)
 Status: Executing
-Last activity: 2026-03-11 — 18-02 ingest_all orchestrator complete (19 new tests, 892 total passing, ruff/bandit/mypy clean)
+Last activity: 2026-03-13 — 19-02 3-state HMM, memory training modules, train_pipeline.py complete (32 new tests, 123 memory+training tests passing, ruff/mypy clean)
 
 Progress: [░░░░░░░░░░] 0% (v1.1)
 
@@ -51,6 +51,13 @@ Progress: [░░░░░░░░░░] 0% (v1.1)
 - [Phase 19-01]: clamp_reward_weights: bounds applied pre-normalization only; post-normalized values may exceed bound (correct behavior)
 - [Phase 19-01]: TUNING_GRID variants never include net_arch — all variants inherit [64,64] from TrainingOrchestrator
 - [Phase 19-01]: check_ensemble_gate: MDD stored as negative float; gate checks abs(mdd) < 0.15
+- [Phase 19-02]: hmmlearn stores diag covariances as (n,d,d) internally; covars_ setter expects (n,d) — extract np.diag() before setting
+- [Phase 19-02]: HMM _ensure_label_order applies ridge regularization during reorder to prevent near-singular matrix errors from setter validation
+- [Phase 19-02]: train_pipeline.py walk-forward blocks are per-DuckDB-connection (open/close per algo), not held pipeline-wide
+- [Phase 19-02]: Checkpoint resume uses model.zip existence check (not DuckDB), --force bypasses
+- [Phase 19-02]: MetaTrainingOrchestrator.run() delegates actual train() call to TrainingOrchestrator (no SB3 internals injected yet)
+- [Phase 19-02]: train_pipeline._load_features_prices imports scripts/train.py via importlib.util to avoid circular import
+- [Phase 19-02]: TDD mock_train_side_effect creates real files as side effect so _verify_deployment() passes on real filesystem
 
 ### Pending Todos
 
@@ -60,10 +67,10 @@ None.
 
 - [Research]: APScheduler and SQLAlchemy are missing from pyproject.toml — must be added in Phase 20 before Docker stack deployment.
 - [Research]: SAC buffer_size=200_000 cap is conservative but unvalidated against crypto policy quality. Monitor shadow Sharpe after first retrain cycle.
-- [Research]: Ensemble Sharpe weights are placeholder in train.py (known tech debt). Phase 19 must resolve this before paper trading begins.
+- [Research]: Ensemble Sharpe weights placeholder (TRAIN-05) RESOLVED in Phase 19-02 — real WF OOS Sharpe used.
 
 ## Session Continuity
 
-Last session: 2026-03-13T14:54:04.431Z
-Stopped at: Completed 19-01-PLAN.md
+Last session: 2026-03-13T15:11:36.000Z
+Stopped at: Completed 19-02-PLAN.md
 Resume file: None
