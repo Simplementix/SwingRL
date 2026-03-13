@@ -60,7 +60,7 @@ Plans:
 - [ ] 18-02-PLAN.md — Ingest-all orchestrator CLI with pipeline stages and tests
 
 ### Phase 19: Model Training
-**Goal**: PPO/A2C/SAC agents for equity and crypto are trained on homelab CPU, pass all walk-forward validation gates, and are deployed to models/active/ alongside their VecNormalize statistics
+**Goal**: PPO/A2C/SAC agents for equity and crypto are trained on homelab CPU with LLM-powered meta-training loop, pass all walk-forward validation gates, and are deployed to models/active/ alongside their VecNormalize statistics
 **Depends on**: Phase 18
 **Requirements**: TRAIN-01, TRAIN-02, TRAIN-03, TRAIN-04, TRAIN-05, TRAIN-06, TRAIN-07
 **Success Criteria** (what must be TRUE):
@@ -71,9 +71,9 @@ Plans:
   5. Ensemble passes the training success gate: Sharpe > 1.0 and max drawdown < 15% before any deployment step proceeds
 **Plans:** 3 plans
 Plans:
-- [ ] 19-01-PLAN.md — Hyperparams override + pipeline helper functions with tests
-- [ ] 19-02-PLAN.md — Full train_pipeline.py orchestration CLI with integration tests
-- [ ] 19-03-PLAN.md — Homelab training execution and verification checkpoint
+- [ ] 19-01-PLAN.md — Memory agent foundation (config, client, bounds) + pipeline helper functions with tests
+- [ ] 19-02-PLAN.md — Memory training modules (HMM 3-state, reward wrapper, meta-orchestrator) + train_pipeline.py CLI
+- [ ] 19-03-PLAN.md — Memory validation scripts + homelab training execution and verification checkpoint
 
 ### Phase 20: Production Deployment
 **Goal**: The homelab Docker stack runs both containers healthy, paper trading fires on schedule for equity (4:15 PM ET) and crypto (every 4H), and end-to-end trade execution completes without error
