@@ -120,6 +120,7 @@ class TrainingOrchestrator:
         features: np.ndarray,
         prices: np.ndarray,
         total_timesteps: int = 1_000_000,
+        hyperparams_override: dict[str, Any] | None = None,
     ) -> TrainingResult:
         """Train an SB3 algorithm on the specified environment.
 
@@ -133,6 +134,9 @@ class TrainingOrchestrator:
             features: Feature array for the environment.
             prices: Price array for the environment.
             total_timesteps: Total training timesteps.
+            hyperparams_override: Optional dict of hyperparameter overrides to
+                merge on top of HYPERPARAMS[algo_name]. Override values win.
+                Used by meta-training tuning rounds to test alternate configs.
 
         Returns:
             TrainingResult with paths and metadata.
@@ -157,6 +161,8 @@ class TrainingOrchestrator:
         # Instantiate algorithm with locked hyperparams
         algo_cls = ALGO_MAP[algo_name]
         params = HYPERPARAMS[algo_name].copy()
+        if hyperparams_override:
+            params.update(hyperparams_override)
         seed = SEED_MAP[algo_name]
 
         tb_log = str(self._logs_dir / "tensorboard")
