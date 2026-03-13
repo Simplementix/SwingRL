@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Operational Deployment
 status: executing
-stopped_at: Phase 19 context updated with memory agent integration
-last_updated: "2026-03-13T14:16:07.416Z"
+stopped_at: Completed 19-01-PLAN.md
+last_updated: "2026-03-13T14:54:04.434Z"
 last_activity: 2026-03-11 — 18-02 ingest_all orchestrator complete (19 new tests, 892 total passing, ruff/bandit/mypy clean)
 progress:
   total_phases: 7
   completed_phases: 1
   total_plans: 5
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -46,6 +46,11 @@ Progress: [░░░░░░░░░░] 0% (v1.1)
 - [v1.1 Roadmap]: MON requirements assigned to Phase 23 (dedicated monitoring phase) rather than merged into Phase 20, consistent with fine granularity.
 - [v1.0]: CPU-only training on homelab (no MPS transfer). DummyVecEnv over SubprocVecEnv. SAC buffer_size=200_000 for Docker.
 - [v1.0]: APScheduler must be pinned <4.0. SQLAlchemy>=2.0,<3 required as companion dep.
+- [Phase 19-01]: ollama_smart_model defaults to qwen3:14b per CONTEXT.md override (not qwen2.5:14b from spec)
+- [Phase 19-01]: MemoryClient uses stdlib urllib (fail-open, no new dependency); nosec annotations for bandit B310/B101
+- [Phase 19-01]: clamp_reward_weights: bounds applied pre-normalization only; post-normalized values may exceed bound (correct behavior)
+- [Phase 19-01]: TUNING_GRID variants never include net_arch — all variants inherit [64,64] from TrainingOrchestrator
+- [Phase 19-01]: check_ensemble_gate: MDD stored as negative float; gate checks abs(mdd) < 0.15
 
 ### Pending Todos
 
@@ -59,6 +64,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-13T14:16:07.413Z
-Stopped at: Phase 19 context updated with memory agent integration
-Resume file: .planning/phases/19-model-training/19-CONTEXT.md
+Last session: 2026-03-13T14:54:04.431Z
+Stopped at: Completed 19-01-PLAN.md
+Resume file: None

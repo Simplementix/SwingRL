@@ -17,11 +17,11 @@ Requirements for operational deployment milestone. Each maps to roadmap phases.
 
 ### Training
 
-- [ ] **TRAIN-01**: Baseline training runs with default hyperparameters (no tuning) for all 3 algos on equity (3-year rolling window)
-- [ ] **TRAIN-02**: Baseline training runs with default hyperparameters (no tuning) for all 3 algos on crypto (1-year rolling window)
+- [x] **TRAIN-01**: Baseline training runs with default hyperparameters (no tuning) for all 3 algos on equity (3-year rolling window)
+- [x] **TRAIN-02**: Baseline training runs with default hyperparameters (no tuning) for all 3 algos on crypto (1-year rolling window)
 - [ ] **TRAIN-03**: Walk-forward validation records Sharpe, max drawdown, and profit factor per agent and ensemble
-- [ ] **TRAIN-04**: If baseline ensemble Sharpe < 0.5, targeted tuning phase runs (PPO first, then A2C/SAC)
-- [ ] **TRAIN-05**: Sharpe-weighted ensemble blending produces valid ensemble weights from backtest results
+- [x] **TRAIN-04**: If baseline ensemble Sharpe < 0.5, targeted tuning phase runs (PPO first, then A2C/SAC)
+- [x] **TRAIN-05**: Sharpe-weighted ensemble blending produces valid ensemble weights from backtest results
 - [ ] **TRAIN-06**: Trained models deploy to `models/active/{env}/{algo}/` with VecNormalize files
 - [ ] **TRAIN-07**: Training success gate: ensemble Sharpe > 1.0 and MDD < 15% before proceeding to paper trading
 
@@ -99,11 +99,11 @@ Deferred to v1.2+ milestones.
 | DATA-03 | Phase 18 | Complete |
 | DATA-04 | Phase 18 | Complete |
 | DATA-05 | Phase 18 | Complete |
-| TRAIN-01 | Phase 19 | Pending |
-| TRAIN-02 | Phase 19 | Pending |
+| TRAIN-01 | Phase 19 | Complete |
+| TRAIN-02 | Phase 19 | Complete |
 | TRAIN-03 | Phase 19 | Pending |
-| TRAIN-04 | Phase 19 | Pending |
-| TRAIN-05 | Phase 19 | Pending |
+| TRAIN-04 | Phase 19 | Complete |
+| TRAIN-05 | Phase 19 | Complete |
 | TRAIN-06 | Phase 19 | Pending |
 | TRAIN-07 | Phase 19 | Pending |
 | DEPLOY-01 | Phase 20 | Pending |
