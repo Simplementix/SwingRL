@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS hmm_state_history (
     date DATE NOT NULL,
     p_bull DOUBLE,
     p_bear DOUBLE,
+    p_crisis DOUBLE DEFAULT 0.0,
     log_likelihood DOUBLE,
     fitted_at TIMESTAMP,
     PRIMARY KEY (environment, date)
