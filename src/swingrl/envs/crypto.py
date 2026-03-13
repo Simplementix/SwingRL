@@ -58,6 +58,8 @@ class CryptoTradingEnv(BaseTradingEnv):
             Random starting index into features/prices arrays.
         """
         max_start = len(self._features) - self._episode_bars
+        if max_start <= 0:
+            return 0
         return int(self.np_random.integers(0, max_start))
 
     @classmethod
