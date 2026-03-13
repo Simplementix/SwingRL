@@ -209,7 +209,6 @@ class TestDecideFinalTimesteps:
             ESCALATED_TIMESTEPS,
             decide_final_timesteps,
         )
-
         from swingrl.training.trainer import TrainingResult
 
         result = TrainingResult(
@@ -226,7 +225,6 @@ class TestDecideFinalTimesteps:
     def test_returns_default_when_converged_early(self) -> None:
         """TRAIN-05: decide_final_timesteps returns DEFAULT when converged_at_step is set."""
         from swingrl.training.pipeline_helpers import DEFAULT_TIMESTEPS, decide_final_timesteps
-
         from swingrl.training.trainer import TrainingResult
 
         result = TrainingResult(
@@ -246,7 +244,6 @@ class TestDecideFinalTimesteps:
             ESCALATED_TIMESTEPS,
             decide_final_timesteps,
         )
-
         from swingrl.training.trainer import TrainingResult
 
         result = TrainingResult(
