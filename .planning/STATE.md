@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Operational Deployment
 status: executing
-stopped_at: "Checkpoint: Task 2 (homelab training running in background)"
-last_updated: "2026-03-13T16:08:00.393Z"
+stopped_at: Phase 19.1 context gathered
+last_updated: "2026-03-14T20:22:15.540Z"
 last_activity: 2026-03-13 — 19-03 validate_memory.py, seed_memory_from_backtest.py, schema p_crisis fix, homelab CI pass, training pipeline launched (981 tests passing)
 progress:
-  total_phases: 7
+  total_phases: 8
   completed_phases: 2
   total_plans: 5
   completed_plans: 5
-  percent: 0
+  percent: 100
 ---
 
 # Project State
@@ -65,6 +65,10 @@ Progress: [██████████] 100% (v1.1 — all 5 plans written; t
 
 None.
 
+### Roadmap Evolution
+
+- Phase 19.1 inserted after Phase 19: Memory Agent Infrastructure and Training (URGENT) — Deploy Ollama with Qwen models as Docker service, build swingrl-memory REST API, re-run training with memory_agent.enabled=true
+
 ### Blockers/Concerns
 
 - [Research]: APScheduler and SQLAlchemy are missing from pyproject.toml — must be added in Phase 20 before Docker stack deployment.
@@ -73,6 +77,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-13T16:08:00.391Z
-Stopped at: Checkpoint: Task 2 (homelab training running in background)
-Resume file: None
+Last session: 2026-03-14T20:22:15.538Z
+Stopped at: Phase 19.1 context gathered
+Resume file: .planning/phases/19.1-memory-agent-infrastructure-and-training/19.1-CONTEXT.md
