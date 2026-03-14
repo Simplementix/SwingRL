@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Operational Deployment
 status: executing
-stopped_at: Phase 19.1 context gathered
-last_updated: "2026-03-14T20:22:15.540Z"
+stopped_at: Completed 19.1-01-PLAN.md — swingrl-memory FastAPI service built and tested
+last_updated: "2026-03-14T22:33:54.982Z"
 last_activity: 2026-03-13 — 19-03 validate_memory.py, seed_memory_from_backtest.py, schema p_crisis fix, homelab CI pass, training pipeline launched (981 tests passing)
 progress:
   total_phases: 8
   completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
+  total_plans: 9
+  completed_plans: 6
   percent: 100
 ---
 
@@ -60,6 +60,9 @@ Progress: [██████████] 100% (v1.1 — all 5 plans written; t
 - [Phase 19-02]: TDD mock_train_side_effect creates real files as side effect so _verify_deployment() passes on real filesystem
 - [Phase 19-03]: validate_memory.py exits 1 with diagnostic for any schema gap; exits 0 only when all checks pass
 - [Phase 19-03]: hmm_state_history base DDL now includes p_crisis DOUBLE DEFAULT 0.0 — 3-state schema fully reflected in schema.py
+- [Phase 19.1-01]: services/memory/ is fully self-contained — all config via env vars, zero src/swingrl imports (Pitfall 4 avoided)
+- [Phase 19.1-01]: consolidation_quality table stored in SQLite memory.db (not DuckDB) — operational data belongs with what it logs
+- [Phase 19.1-01]: Ollama Docker healthcheck uses wget not curl — curl absent from ollama/ollama image
 
 ### Pending Todos
 
@@ -77,6 +80,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-14T20:22:15.538Z
-Stopped at: Phase 19.1 context gathered
-Resume file: .planning/phases/19.1-memory-agent-infrastructure-and-training/19.1-CONTEXT.md
+Last session: 2026-03-14T22:33:54.980Z
+Stopped at: Completed 19.1-01-PLAN.md — swingrl-memory FastAPI service built and tested
+Resume file: None
