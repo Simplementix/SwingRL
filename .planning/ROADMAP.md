@@ -75,6 +75,16 @@ Plans:
 - [ ] 19-02-PLAN.md — Memory training modules (HMM 3-state, reward wrapper, meta-orchestrator) + train_pipeline.py CLI
 - [ ] 19-03-PLAN.md — Memory validation scripts + homelab training execution and verification checkpoint
 
+### Phase 19.1: Memory Agent Infrastructure and Training (INSERTED)
+
+**Goal:** Ollama runs as a Docker service on the homelab serving Qwen models (qwen2.5:3b, qwen3:14b — no embeddings), the swingrl-memory FastAPI service exposes /ingest, /consolidate, /health, /training/run_config, /training/epoch_advice, and debug endpoints with API key auth, model weights persist in a named Docker volume, and 6 training iterations complete (1 baseline + 5 memory-enhanced) with automated comparison and best-per-algo deployment (Sortino rank, Calmar tiebreak)
+**Requirements**: TRAIN-06, TRAIN-07
+**Depends on:** Phase 19
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 19.1 to break down)
+
 ### Phase 20: Production Deployment
 **Goal**: The homelab Docker stack runs both containers healthy, paper trading fires on schedule for equity (4:15 PM ET) and crypto (every 4H), and end-to-end trade execution completes without error
 **Depends on**: Phase 19
