@@ -258,7 +258,21 @@ class MemoryAgentConfig(BaseModel):
     ollama_embed_model: str = "nomic-embed-text"
     consolidate_interval_min: int = 30
     inbox_dir: str = "/data/memory_inbox"
+    api_key: str = ""  # Populated from SWINGRL_MEMORY_AGENT__API_KEY env var; empty = no auth
     live_endpoints: MemoryLiveEndpointsConfig = Field(default_factory=MemoryLiveEndpointsConfig)
+
+
+class TrainingConfig(BaseModel):
+    """Training pipeline configuration."""
+
+    sac_buffer_size: int = Field(
+        default=500_000,
+        gt=0,
+        description=(
+            "SAC replay buffer size. Default 500K fits with 24GB Ollama allocation. "
+            "Override via SWINGRL_TRAINING__SAC_BUFFER_SIZE. Proven 200K works on constrained RAM."
+        ),
+    )
 
 
 class SwingRLConfig(BaseSettings):
@@ -289,6 +303,7 @@ class SwingRLConfig(BaseSettings):
     sentiment: SentimentConfig = Field(default_factory=SentimentConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     memory_agent: MemoryAgentConfig = Field(default_factory=MemoryAgentConfig)
+    training: TrainingConfig = Field(default_factory=TrainingConfig)
 
 
 def load_config(path: Path | str = "config/swingrl.yaml") -> SwingRLConfig:

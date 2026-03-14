@@ -30,15 +30,19 @@ class MemoryClient:
     Args:
         base_url: Base URL of the memory agent service.
         default_timeout: Default request timeout in seconds.
+        api_key: API key sent as X-API-Key header on every request.
+                 Empty string (default) means no auth header — backward compatible.
     """
 
     def __init__(
         self,
         base_url: str = "http://swingrl-memory:8889",
         default_timeout: float = 5.0,
+        api_key: str = "",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._default_timeout = default_timeout
+        self._api_key = api_key
 
     def ingest(
         self,
@@ -67,10 +71,13 @@ class MemoryClient:
             import json
 
             data = json.dumps(payload).encode("utf-8")
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if self._api_key:
+                headers["X-API-Key"] = self._api_key
             req = urllib.request.Request(
                 url,
                 data=data,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=effective_timeout) as resp:  # noqa: S310  # nosec B310
@@ -128,10 +135,13 @@ class MemoryClient:
 
         try:
             data = json.dumps({}).encode("utf-8")
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if self._api_key:
+                headers["X-API-Key"] = self._api_key
             req = urllib.request.Request(
                 url,
                 data=data,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310
