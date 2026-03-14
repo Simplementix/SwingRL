@@ -36,6 +36,7 @@
 
 - [x] **Phase 18: Data Ingestion** - Populate homelab DuckDB with maximum historical depth, aligned observation vectors (completed 2026-03-11)
 - [x] **Phase 19: Model Training** - Train and validate PPO/A2C/SAC ensemble on homelab CPU, pass all walk-forward gates (completed 2026-03-13)
+- [ ] **Phase 19.1: Memory Agent Infrastructure and Training** - Deploy Ollama + memory service, run 6 training iterations with best-model deployment
 - [ ] **Phase 20: Production Deployment** - Docker stack running on homelab with paper trading firing on schedule
 - [ ] **Phase 21: Discord Alert Suite** - Full alert coverage wired and smoke-tested across all severity channels
 - [ ] **Phase 22: Automated Retraining** - Equity monthly + crypto biweekly retraining with validated shadow promotion
@@ -80,10 +81,13 @@ Plans:
 **Goal:** Ollama runs as a Docker service on the homelab serving Qwen models (qwen2.5:3b, qwen3:14b — no embeddings), the swingrl-memory FastAPI service exposes /ingest, /consolidate, /health, /training/run_config, /training/epoch_advice, and debug endpoints with API key auth, model weights persist in a named Docker volume, and 6 training iterations complete (1 baseline + 5 memory-enhanced) with automated comparison and best-per-algo deployment (Sortino rank, Calmar tiebreak)
 **Requirements**: TRAIN-06, TRAIN-07
 **Depends on:** Phase 19
-**Plans:** 0 plans
+**Plans:** 4 plans
 
 Plans:
-- [ ] TBD (run /gsd:plan-phase 19.1 to break down)
+- [ ] 19.1-01-PLAN.md — swingrl-memory FastAPI service + Docker compose + Ollama setup + unit tests
+- [ ] 19.1-02-PLAN.md — DuckDB migrations + config schema updates + MemoryClient API key support
+- [ ] 19.1-03-PLAN.md — Multi-iteration training loop with resumable state + best-model deployment
+- [ ] 19.1-04-PLAN.md — CI updates + homelab deployment + 6 training iterations + verification checkpoint
 
 ### Phase 20: Production Deployment
 **Goal**: The homelab Docker stack runs both containers healthy, paper trading fires on schedule for equity (4:15 PM ET) and crypto (every 4H), and end-to-end trade execution completes without error
@@ -161,8 +165,9 @@ Plans:
 | 15. Training CLI Obs Assembly | v1.0 | 1/1 | Complete | 2026-03-11 |
 | 16. Crypto Stop Persistence | v1.0 | 1/1 | Complete | 2026-03-11 |
 | 17. Doc Housekeeping | v1.0 | 1/1 | Complete | 2026-03-10 |
-| 18. Data Ingestion | 2/2 | Complete   | 2026-03-11 | - |
-| 19. Model Training | 3/3 | Complete   | 2026-03-13 | - |
+| 18. Data Ingestion | v1.1 | 2/2 | Complete | 2026-03-11 |
+| 19. Model Training | v1.1 | 3/3 | Complete | 2026-03-13 |
+| 19.1. Memory Agent Infra | v1.1 | 0/4 | Planning | - |
 | 20. Production Deployment | v1.1 | 0/TBD | Not started | - |
 | 21. Discord Alert Suite | v1.1 | 0/TBD | Not started | - |
 | 22. Automated Retraining | v1.1 | 0/TBD | Not started | - |
