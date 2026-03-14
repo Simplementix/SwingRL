@@ -14,6 +14,50 @@
 #   DISCORD_WEBHOOK_URL=...
 
 services:
+  swingrl-ollama:
+    image: ollama/ollama
+    # 24 GB RAM / 8 CPUs for qwen3:14b (requires ~10 GB VRAM/RAM).
+    # Adjust mem_limit if homelab has different RAM allocation.
+    mem_limit: 24g
+    cpus: 8.0
+    volumes:
+      # Named volume persists model weights across container restarts.
+      # Models are pulled once by scripts/setup_ollama.sh (idempotent).
+      - ollama_models:/root/.ollama
+    healthcheck:
+      # Ollama image does NOT include curl — use wget instead (Pitfall 1).
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:11434/api/tags || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    # No host port — accessed via internal Docker DNS as swingrl-ollama:11434.
+
+  swingrl-memory:
+    build:
+      context: ./services/memory
+      dockerfile: Dockerfile
+    # Port exposed to host for validation scripts and operator curl commands.
+    ports:
+      - "8889:8889"
+    mem_limit: 512m
+    cpus: 0.5
+    env_file: .env
+    volumes:
+      - ./db:/app/db
+      - ./data:/app/data
+      - ./config:/app/config
+    depends_on:
+      swingrl-ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8889/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   swingrl:
     build:
       context: .
@@ -37,6 +81,9 @@ services:
       - ./logs:/app/logs
       - ./config:/app/config
       - ./status:/app/status
+    depends_on:
+      swingrl-memory:
+        condition: service_healthy
     restart: unless-stopped
 
   swingrl-dashboard:
@@ -56,3 +103,8 @@ services:
     restart: unless-stopped
     depends_on:
       - swingrl
+
+volumes:
+  # Named volume for Ollama model weights — persists across container restarts.
+  # Models survive `docker compose down` but not `docker compose down --volumes`.
+  ollama_models:
