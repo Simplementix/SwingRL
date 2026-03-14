@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import sys
 import time
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +33,7 @@ import numpy as np
 import structlog
 
 from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.memory.client import MemoryClient
 from swingrl.training.pipeline_helpers import (
     DEFAULT_TIMESTEPS,
     TUNING_GRID,
@@ -48,6 +52,390 @@ ALGO_NAMES: list[str] = ["ppo", "a2c", "sac"]
 
 # Tuning round 1 triggers when baseline ensemble Sharpe is below this threshold
 _TUNING_SHARPE_THRESHOLD: float = 0.5
+
+# Default paths for multi-iteration state and comparison report
+_DEFAULT_STATE_PATH: str = "data/training_state.json"
+_DEFAULT_COMPARISON_PATH: str = "data/training_comparison.json"
+
+# Memory service health check endpoint
+_MEMORY_HEALTH_ENDPOINT: str = "/health"
+
+
+# ---------------------------------------------------------------------------
+# Multi-iteration training state helpers
+# ---------------------------------------------------------------------------
+
+
+def save_training_state(state: dict[str, Any], path: Path) -> None:
+    """Atomically write training state to JSON file.
+
+    Uses write-to-temp-then-rename pattern (POSIX atomic) to survive power outages.
+
+    Args:
+        state: Training state dict to serialize.
+        path: Destination path for the JSON state file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2, default=str))
+    os.replace(str(tmp), str(path))
+    log.debug("training_state_saved", path=str(path))
+
+
+def load_training_state(path: Path) -> dict[str, Any]:
+    """Load training state from JSON, returning defaults if file is absent.
+
+    Args:
+        path: Path to training_state.json.
+
+    Returns:
+        State dict with 'completed_iterations' (list) and 'current_iteration' (int).
+    """
+    if not path.exists():
+        return {"completed_iterations": [], "current_iteration": 0}
+    try:
+        return json.loads(path.read_text())  # type: ignore[no-any-return]
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("training_state_load_failed", path=str(path), error=str(exc))
+        return {"completed_iterations": [], "current_iteration": 0}
+
+
+# ---------------------------------------------------------------------------
+# Best-model selection and deployment
+# ---------------------------------------------------------------------------
+
+
+def select_best_per_algo_env(
+    state: dict[str, Any],
+) -> dict[str, dict[str, int]]:
+    """Select best iteration per algo x env by Sortino ratio (Calmar as tiebreak).
+
+    Looks at final_training per-algo Sortino/Calmar. Falls back to ensemble Sharpe
+    if per-algo metrics are missing.
+
+    Args:
+        state: Training state dict from load_training_state().
+
+    Returns:
+        Dict[env_name][algo_name] -> best_iteration_index.
+    """
+    envs = ["equity", "crypto"]
+    algos = ["ppo", "a2c", "sac"]
+
+    # best[env][algo] = {"iter": int, "sortino": float, "calmar": float}
+    best: dict[str, dict[str, dict[str, Any]]] = {e: {} for e in envs}
+
+    for key, iter_data in state.items():
+        if not str(key).startswith("iteration_") or not str(key).endswith("_result"):
+            continue
+        # key format: "iteration_N_result"
+        parts = str(key).split("_")
+        try:
+            idx = int(parts[1])
+        except (IndexError, ValueError):
+            continue
+
+        for env_name in envs:
+            env_result = iter_data.get(env_name, {}) if isinstance(iter_data, dict) else {}
+            final_training = (
+                env_result.get("final_training", {}) if isinstance(env_result, dict) else {}
+            )
+            ensemble_sharpe: float = 0.0
+            if isinstance(env_result, dict) and "ensemble_gate" in env_result:
+                ensemble_sharpe = float(env_result["ensemble_gate"].get("sharpe", 0.0))
+
+            for algo_name in algos:
+                ft = final_training.get(algo_name, {}) if isinstance(final_training, dict) else {}
+                sortino = float(ft.get("sortino", ensemble_sharpe)) if isinstance(ft, dict) else 0.0
+                calmar = float(ft.get("calmar", 0.0)) if isinstance(ft, dict) else 0.0
+
+                current = best[env_name].get(algo_name)
+                if current is None:
+                    best[env_name][algo_name] = {"iter": idx, "sortino": sortino, "calmar": calmar}
+                elif sortino > current["sortino"] or (
+                    sortino == current["sortino"] and calmar > current["calmar"]
+                ):
+                    best[env_name][algo_name] = {"iter": idx, "sortino": sortino, "calmar": calmar}
+
+    # If state has no iteration results, fall back to completed_iterations list
+    for env_name in envs:
+        for algo_name in algos:
+            if algo_name not in best[env_name]:
+                # Default to first completed iteration
+                completed = state.get("completed_iterations", [])
+                best[env_name][algo_name] = {
+                    "iter": completed[0] if completed else 0,
+                    "sortino": 0.0,
+                    "calmar": 0.0,
+                }
+
+    return {
+        env: {algo: v["iter"] for algo, v in algos_map.items()} for env, algos_map in best.items()
+    }
+
+
+def deploy_best_models(
+    winners: dict[str, dict[str, int]],
+    models_dir: Path,
+) -> None:
+    """Copy best iteration models from iterations/ to active/.
+
+    Args:
+        winners: Dict[env_name][algo_name] -> best_iteration_index.
+        models_dir: Root models directory (contains iterations/ and active/).
+    """
+    for env_name, algo_winners in winners.items():
+        for algo_name, iter_idx in algo_winners.items():
+            src_dir = models_dir / "iterations" / f"iter_{iter_idx}" / env_name / algo_name
+            dst_dir = models_dir / "active" / env_name / algo_name
+            dst_dir.mkdir(parents=True, exist_ok=True)
+
+            for filename in ["model.zip", "vec_normalize.pkl"]:
+                src = src_dir / filename
+                dst = dst_dir / filename
+                if src.exists():
+                    shutil.copy2(str(src), str(dst))
+                    log.info(
+                        "best_model_deployed",
+                        env=env_name,
+                        algo=algo_name,
+                        iter=iter_idx,
+                        file=filename,
+                    )
+                else:
+                    log.warning(
+                        "best_model_file_missing",
+                        env=env_name,
+                        algo=algo_name,
+                        iter=iter_idx,
+                        file=filename,
+                        src=str(src),
+                    )
+
+
+def write_comparison_report(
+    state: dict[str, Any],
+    report_path: Path,
+    winners: dict[str, dict[str, int]],
+) -> None:
+    """Write data/training_comparison.json with per-iteration metrics.
+
+    Args:
+        state: Training state dict.
+        report_path: Output path for the comparison JSON.
+        winners: Best iteration per algo x env (from select_best_per_algo_env).
+    """
+    report: dict[str, Any] = {
+        "generated_at": datetime.now(tz=UTC).isoformat(),
+        "winners": winners,
+    }
+
+    for key, iter_data in state.items():
+        if not str(key).startswith("iteration_") or not str(key).endswith("_result"):
+            continue
+        parts = str(key).split("_")
+        try:
+            idx = int(parts[1])
+        except (IndexError, ValueError):
+            continue
+
+        iter_key = f"iteration_{idx}"
+        is_memory = idx > 0
+        report[iter_key] = {
+            "memory_enabled": is_memory,
+            "results": iter_data,
+        }
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2, default=str))
+    log.info("comparison_report_written", path=str(report_path))
+
+
+# ---------------------------------------------------------------------------
+# Memory service health helpers
+# ---------------------------------------------------------------------------
+
+
+def check_memory_service_health(base_url: str, timeout: float = 5.0) -> bool:
+    """Check if the swingrl-memory service is healthy.
+
+    Args:
+        base_url: Base URL of the memory service (e.g. "http://localhost:8889").
+        timeout: HTTP request timeout in seconds.
+
+    Returns:
+        True if /health returns HTTP 200, False otherwise.
+    """
+    url = base_url.rstrip("/") + _MEMORY_HEALTH_ENDPOINT
+    try:
+        req = urllib.request.Request(url)  # noqa: S310  # nosec B310
+        resp = urllib.request.urlopen(req, timeout=timeout)  # noqa: S310  # nosec B310
+        return resp.status == 200  # type: ignore[no-any-return]
+    except Exception:
+        return False
+
+
+def wait_for_memory_service(base_url: str, poll_interval: float = 30.0) -> None:
+    """Poll memory service health endpoint until healthy.
+
+    Logs a warning on each failed poll. Runs indefinitely until healthy.
+
+    Args:
+        base_url: Base URL of the memory service.
+        poll_interval: Seconds between health polls.
+    """
+    log.warning("memory_service_unhealthy_polling_start", base_url=base_url)
+    while not check_memory_service_health(base_url):
+        log.warning(
+            "memory_service_unhealthy_retrying",
+            base_url=base_url,
+            retry_in_s=poll_interval,
+        )
+        time.sleep(poll_interval)
+    log.info("memory_service_healthy", base_url=base_url)
+
+
+# ---------------------------------------------------------------------------
+# Multi-iteration orchestration
+# ---------------------------------------------------------------------------
+
+
+def run_all_iterations(
+    base_config: SwingRLConfig,
+    iterations: int,
+    state_path: Path,
+    models_dir: Path,
+    report_path: Path,
+    comparison_path: Path,
+) -> dict[str, Any]:
+    """Run baseline + N memory-enhanced training iterations.
+
+    Iteration 0 = baseline (memory disabled).
+    Iterations 1..N = memory-enhanced (memory + meta_training enabled).
+
+    State is persisted atomically to state_path between iterations so training
+    can resume after power outages.
+
+    Args:
+        base_config: Base SwingRLConfig (deep-copied per iteration).
+        iterations: Number of memory-enhanced iterations (0 = baseline only).
+        state_path: Path for data/training_state.json (atomic writes).
+        models_dir: Root models directory.
+        report_path: Path for the final training_report.json.
+        comparison_path: Path for data/training_comparison.json.
+
+    Returns:
+        Dict summarising all iterations and winners.
+    """
+    state = load_training_state(state_path)
+    total = iterations + 1  # 0..N inclusive
+
+    for i in range(total):
+        if i in state.get("completed_iterations", []):
+            log.info("iteration_skipped_checkpointed", iteration=i, total=total)
+            continue
+
+        # Deep-copy config and configure memory per iteration
+        cfg = base_config.model_copy(deep=True)
+        if i == 0:
+            # Baseline: memory disabled
+            cfg.memory_agent.enabled = False
+            cfg.memory_agent.meta_training = False
+            log.info("iteration_start_baseline", iteration=i, total=total)
+        else:
+            # Memory-enhanced
+            cfg.memory_agent.enabled = True
+            cfg.memory_agent.meta_training = True
+            log.info("iteration_start_memory", iteration=i, total=total)
+            # Wait for memory service before running memory iterations
+            if not check_memory_service_health(cfg.memory_agent.base_url):
+                wait_for_memory_service(cfg.memory_agent.base_url)
+
+        state["current_iteration"] = i
+        save_training_state(state, state_path)
+
+        # Isolated model directory per iteration
+        iter_models_dir = models_dir / "iterations" / f"iter_{i}"
+
+        iter_result: dict[str, Any] = {}
+        for env_name in ["equity", "crypto"]:
+            try:
+                env_result = run_environment(
+                    env_name=env_name,
+                    config=cfg,
+                    models_dir=iter_models_dir,
+                    force=True,  # Always force within iterations — each has own directory
+                    report={},
+                )
+                iter_result[env_name] = env_result
+            except Exception as exc:
+                log.error(
+                    "iteration_env_failed_retry",
+                    iteration=i,
+                    env=env_name,
+                    error=str(exc),
+                )
+                # Retry once
+                try:
+                    env_result = run_environment(
+                        env_name=env_name,
+                        config=cfg,
+                        models_dir=iter_models_dir,
+                        force=True,
+                        report={},
+                    )
+                    iter_result[env_name] = env_result
+                except Exception as exc2:
+                    log.error(
+                        "iteration_env_failed_skip",
+                        iteration=i,
+                        env=env_name,
+                        error=str(exc2),
+                    )
+                    iter_result[env_name] = {"error": str(exc2)}
+
+        # Save iteration results
+        state[f"iteration_{i}_result"] = iter_result
+        completed = state.get("completed_iterations", [])
+        completed.append(i)
+        state["completed_iterations"] = completed
+        save_training_state(state, state_path)
+
+        log.info("iteration_complete", iteration=i, total=total)
+
+        # Consolidate memories after each memory-enabled iteration
+        if i > 0:
+            try:
+                memory_client = MemoryClient(
+                    base_url=cfg.memory_agent.base_url,
+                    default_timeout=cfg.memory_agent.timeout_sec,
+                    api_key=getattr(cfg.memory_agent, "api_key", ""),
+                )
+                memory_client.consolidate(timeout=120.0)
+                log.info("memory_consolidated", after_iteration=i)
+            except Exception as exc:
+                log.warning("memory_consolidation_failed", iteration=i, error=str(exc))
+
+    # Select best per algo x env by Sortino (Calmar tiebreak)
+    winners = select_best_per_algo_env(state)
+    log.info("best_models_selected", winners=winners)
+
+    # Deploy winners to models/active/
+    deploy_best_models(winners, models_dir)
+
+    # Write comparison report
+    write_comparison_report(state, comparison_path, winners)
+
+    # Build final summary
+    final_report: dict[str, Any] = {
+        "generated_at": datetime.now(tz=UTC).isoformat(),
+        "total_iterations": total,
+        "winners": winners,
+        "comparison_report": str(comparison_path),
+    }
+    _write_json_report(final_report, report_path)
+
+    return final_report
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +1140,27 @@ Examples:
         default=False,
         help="Re-run even if checkpoints exist.",
     )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=0,
+        help=(
+            "Number of memory-enhanced iterations after baseline (default: 0 = baseline only). "
+            "When N > 0: runs iteration 0 (baseline, memory off) then N iterations with memory on."
+        ),
+    )
+    parser.add_argument(
+        "--state-path",
+        type=str,
+        default=_DEFAULT_STATE_PATH,
+        help=f"Path to training state JSON for resume support (default: {_DEFAULT_STATE_PATH}).",
+    )
+    parser.add_argument(
+        "--comparison-path",
+        type=str,
+        default=_DEFAULT_COMPARISON_PATH,
+        help=f"Path to write training comparison JSON (default: {_DEFAULT_COMPARISON_PATH}).",
+    )
     return parser
 
 
@@ -773,6 +1182,7 @@ def main(argv: list[str] | None = None) -> int:
     models_dir = Path(args.models_dir)
     report_path = Path(args.report)
     force: bool = args.force
+    iterations: int = args.iterations
 
     env_arg: str = args.env
     envs = ["equity", "crypto"] if env_arg == "all" else [env_arg]
@@ -783,10 +1193,43 @@ def main(argv: list[str] | None = None) -> int:
         models_dir=str(models_dir),
         report=str(report_path),
         force=force,
+        iterations=iterations,
     )
 
     start_time = time.monotonic()
 
+    # ---------------------------------------------------------------------------
+    # Multi-iteration mode (--iterations N > 0): hand off to run_all_iterations()
+    # ---------------------------------------------------------------------------
+    if iterations > 0:
+        state_path = Path(args.state_path)
+        comparison_path = Path(args.comparison_path)
+        try:
+            run_all_iterations(
+                base_config=config,
+                iterations=iterations,
+                state_path=state_path,
+                models_dir=models_dir,
+                report_path=report_path,
+                comparison_path=comparison_path,
+            )
+        except Exception:
+            log.exception("training_pipeline_iterations_failed")
+            return 1
+
+        elapsed = time.monotonic() - start_time
+        log.info(
+            "training_pipeline_complete",
+            envs=envs,
+            elapsed_seconds=round(elapsed, 1),
+            iterations=iterations,
+            success=True,
+        )
+        return 0
+
+    # ---------------------------------------------------------------------------
+    # Single-run mode (--iterations 0, default): existing per-env loop
+    # ---------------------------------------------------------------------------
     report: dict[str, Any] = {
         "generated_at": datetime.now(tz=UTC).isoformat(),
     }

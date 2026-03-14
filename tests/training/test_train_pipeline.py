@@ -441,7 +441,10 @@ class TestIterationLoop:
 
         comparison_path = tmp_path / "training_comparison.json"
 
-        with patch.object(pipeline, "run_environment", side_effect=mock_run_environment):
+        with (
+            patch.object(pipeline, "run_environment", side_effect=mock_run_environment),
+            patch.object(pipeline, "check_memory_service_health", return_value=True),
+        ):
             pipeline.run_all_iterations(
                 base_config=cfg,
                 iterations=1,
