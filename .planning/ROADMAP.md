@@ -81,7 +81,7 @@ Plans:
 **Goal:** Ollama runs as a Docker service on the homelab serving Qwen models (qwen2.5:3b, qwen3:14b — no embeddings), the swingrl-memory FastAPI service exposes /ingest, /consolidate, /health, /training/run_config, /training/epoch_advice, and debug endpoints with API key auth, model weights persist in a named Docker volume, and 6 training iterations complete (1 baseline + 5 memory-enhanced) with automated comparison and best-per-algo deployment (Sortino rank, Calmar tiebreak)
 **Requirements**: TRAIN-06, TRAIN-07
 **Depends on:** Phase 19
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 
 Plans:
 - [ ] 19.1-01-PLAN.md — swingrl-memory FastAPI service + Docker compose + Ollama setup + unit tests
@@ -167,7 +167,7 @@ Plans:
 | 17. Doc Housekeeping | v1.0 | 1/1 | Complete | 2026-03-10 |
 | 18. Data Ingestion | v1.1 | 2/2 | Complete | 2026-03-11 |
 | 19. Model Training | v1.1 | 3/3 | Complete | 2026-03-13 |
-| 19.1. Memory Agent Infra | 1/4 | In Progress|  | - |
+| 19.1. Memory Agent Infra | 2/4 | In Progress|  | - |
 | 20. Production Deployment | v1.1 | 0/TBD | Not started | - |
 | 21. Discord Alert Suite | v1.1 | 0/TBD | Not started | - |
 | 22. Automated Retraining | v1.1 | 0/TBD | Not started | - |
