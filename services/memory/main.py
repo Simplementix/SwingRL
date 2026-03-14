@@ -18,11 +18,12 @@ All config via environment variables:
 
 from __future__ import annotations
 
-import asyncio
 import os
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import anyio
 import httpx
 import structlog
 from agents.consolidate import ConsolidateAgent
@@ -60,10 +61,10 @@ async def _wait_for_ollama(
         RuntimeError: If Ollama does not become healthy within timeout_sec.
     """
     ollama_url = url or os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
-    deadline = asyncio.get_event_loop().time() + timeout_sec
+    deadline = time.monotonic() + timeout_sec
     log.info("waiting_for_ollama", url=ollama_url, timeout_sec=timeout_sec)
 
-    while asyncio.get_event_loop().time() < deadline:
+    while time.monotonic() < deadline:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(f"{ollama_url}/api/tags")
@@ -72,7 +73,7 @@ async def _wait_for_ollama(
                     return
         except Exception:  # nosec B110 — intentional: connection refused is expected during startup
             pass
-        await asyncio.sleep(5)
+        await anyio.sleep(5)
 
     raise RuntimeError(f"Ollama not healthy after {timeout_sec}s at {ollama_url}")
 

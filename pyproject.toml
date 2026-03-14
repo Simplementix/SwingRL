@@ -87,6 +87,11 @@ dev = [
     "pytest-cov>=7.0.0",
     "responses>=0.25",
     "pytest-mock>=3.12",
+    # Memory service test dependencies (services/memory/ tests run inside swingrl container)
+    "fastapi>=0.110",
+    "apscheduler>=3.10,<4",
+    "anyio[trio]>=4.0",
+    "pytest-anyio>=0.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -122,7 +127,7 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["finrl.*", "pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*", "fredapi.*", "exchange_calendars.*", "duckdb.*", "httpx.*", "yfinance.*", "stable_baselines3.*", "tenacity.*"]
+module = ["finrl.*", "pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*", "fredapi.*", "exchange_calendars.*", "duckdb.*", "httpx.*", "yfinance.*", "stable_baselines3.*", "tenacity.*", "fastapi.*", "apscheduler.*", "starlette.*"]
 ignore_missing_imports = true
 
 [tool.bandit]
