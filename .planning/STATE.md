@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Operational Deployment
 status: executing
-stopped_at: Completed 19.1-02-PLAN.md
-last_updated: "2026-03-14T22:46:01.173Z"
+stopped_at: Completed 19.1-03-PLAN.md
+last_updated: "2026-03-14T23:06:48.765Z"
 last_activity: 2026-03-13 — 19-03 validate_memory.py, seed_memory_from_backtest.py, schema p_crisis fix, homelab CI pass, training pipeline launched (981 tests passing)
 progress:
   total_phases: 8
   completed_phases: 2
   total_plans: 9
-  completed_plans: 7
+  completed_plans: 8
   percent: 100
 ---
 
@@ -65,6 +65,8 @@ Progress: [██████████] 100% (v1.1 — all 5 plans written; t
 - [Phase 19.1-01]: Ollama Docker healthcheck uses wget not curl — curl absent from ollama/ollama image
 - [Phase 19.1-02]: Use DuckDB CREATE SEQUENCE IF NOT EXISTS for auto-incrementing PKs — DuckDB INTEGER PRIMARY KEY does not auto-increment unlike SQLite
 - [Phase 19.1-02]: TrainingConfig added as new model on SwingRLConfig for sac_buffer_size — cleaner separation from MemoryAgentConfig
+- [Phase 19.1]: WF OOS Sortino (from final_training dict) used as ranking metric for best-model selection — option (a) from RESEARCH.md Open Question 1 (simpler, consistent)
+- [Phase 19.1-03]: run_all_iterations uses force=True within each iteration since each has its own isolated models_dir (avoids Pitfall 7 from RESEARCH.md)
 
 ### Pending Todos
 
@@ -82,6 +84,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-14T22:46:01.170Z
-Stopped at: Completed 19.1-02-PLAN.md
+Last session: 2026-03-14T23:06:48.763Z
+Stopped at: Completed 19.1-03-PLAN.md
 Resume file: None
