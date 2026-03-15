@@ -79,7 +79,7 @@ USER trader
 # Docker HEALTHCHECK: verify process liveness and DB connectivity.
 # Interval 60s, timeout 10s, 3 retries before marking unhealthy.
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
-    CMD ["python", "scripts/healthcheck.py"]
+    CMD ["uv", "run", "python", "scripts/healthcheck.py"]
 
 # Production entrypoint: APScheduler with cron jobs and stop-price polling.
-CMD ["python", "scripts/main.py"]
+CMD ["uv", "run", "python", "scripts/main.py"]
