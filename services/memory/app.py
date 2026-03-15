@@ -26,9 +26,9 @@ from contextlib import asynccontextmanager
 import anyio
 import httpx
 import structlog
-from agents.consolidate import ConsolidateAgent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
+from memory_agents.consolidate import ConsolidateAgent
 from routers import core, debug, training
 
 from db import init_db

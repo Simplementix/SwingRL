@@ -10,10 +10,10 @@ import os
 
 import httpx
 import structlog
-from agents.consolidate import ConsolidateAgent
-from agents.ingest import IngestAgent
 from auth import verify_api_key
 from fastapi import APIRouter, Depends
+from memory_agents.consolidate import ConsolidateAgent
+from memory_agents.ingest import IngestAgent
 from pydantic import BaseModel
 
 from db import get_connection

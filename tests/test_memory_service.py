@@ -16,16 +16,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # Add services/memory to sys.path so the service modules can be imported
-# This mirrors how uvicorn serves main.py with WORKDIR=/app/services/memory
+# This mirrors how uvicorn serves app.py with WORKDIR=/app/services/memory
 _MEMORY_SERVICE_DIR = Path(__file__).parent.parent / "services" / "memory"
 _MEMORY_MODULE_NAMES = [
-    "main",
+    "app",
     "db",
     "auth",
-    "agents",
-    "agents.ingest",
-    "agents.consolidate",
-    "agents.query",
+    "memory_agents",
+    "memory_agents.ingest",
+    "memory_agents.consolidate",
+    "memory_agents.query",
     "routers",
     "routers.core",
     "routers.training",
@@ -55,25 +55,12 @@ def memory_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture()
 def api_client(memory_db_env: Path):  # type: ignore[no-untyped-def]
-    """Return a FastAPI TestClient with Ollama wait mocked out.
-
-    Evicts stale sys.modules entries before importing so that tests run after
-    other test files that add scripts/ to sys.path still import from
-    services/memory/ rather than scripts/main.py.
-    """
+    """Return a FastAPI TestClient with Ollama wait mocked out."""
     from fastapi.testclient import TestClient
 
-    # Evict any stale cached modules from previous test files that may have
-    # added scripts/ to sys.path and imported 'main' from there.
+    # Evict cached memory service modules to ensure clean imports.
     for mod_name in list(_MEMORY_MODULE_NAMES):
         sys.modules.pop(mod_name, None)
-
-    # Re-insert services/memory at position 0 so agents.consolidate resolves
-    # correctly even if another test file modified sys.path ordering.
-    mem_dir = str(_MEMORY_SERVICE_DIR)
-    if mem_dir in sys.path:
-        sys.path.remove(mem_dir)
-    sys.path.insert(0, mem_dir)
 
     import db as memory_db_module
 
@@ -82,10 +69,10 @@ def api_client(memory_db_env: Path):  # type: ignore[no-untyped-def]
     async def _mock_wait(*args: Any, **kwargs: Any) -> None:
         return
 
-    with patch("main._wait_for_ollama", _mock_wait):
-        import main
+    with patch("app._wait_for_ollama", _mock_wait):
+        import app
 
-        client = TestClient(main.app, raise_server_exceptions=True)
+        client = TestClient(app.app, raise_server_exceptions=True)
         yield client
 
     # Clean up memory service modules after each test to avoid cross-test pollution
@@ -252,7 +239,7 @@ class TestTrainingEndpoints:
             "rationale": "test_advice",
         }
 
-        with patch("agents.query.httpx.AsyncClient") as mock_client_class:
+        with patch("memory_agents.query.httpx.AsyncClient") as mock_client_class:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -274,7 +261,7 @@ class TestTrainingEndpoints:
         self, api_client: Any, auth_headers: dict[str, str]
     ) -> None:
         """TRAIN-06: /training/run_config returns safe defaults when Ollama fails."""
-        with patch("agents.query.httpx.AsyncClient") as mock_client_class:
+        with patch("memory_agents.query.httpx.AsyncClient") as mock_client_class:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -301,7 +288,7 @@ class TestTrainingEndpoints:
             "rationale": "maintain_current_weights",
         }
 
-        with patch("agents.query.httpx.AsyncClient") as mock_client_class:
+        with patch("memory_agents.query.httpx.AsyncClient") as mock_client_class:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -331,7 +318,7 @@ class TestTrainingEndpoints:
             "rationale": "aggressive_profit",
         }
 
-        with patch("agents.query.httpx.AsyncClient") as mock_client_class:
+        with patch("memory_agents.query.httpx.AsyncClient") as mock_client_class:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -453,7 +440,7 @@ class TestConsolidation:
             "confidence": 0.8,
         }
 
-        with patch("agents.consolidate.httpx.AsyncClient") as mock_client_class:
+        with patch("memory_agents.consolidate.httpx.AsyncClient") as mock_client_class:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -478,7 +465,7 @@ class TestConsolidation:
 
         malformed_response = {"some_field": "missing required fields"}
 
-        with patch("agents.consolidate.httpx.AsyncClient") as mock_client_class:
+        with patch("memory_agents.consolidate.httpx.AsyncClient") as mock_client_class:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -523,7 +510,7 @@ class TestConsolidation:
             "confidence": 0.7,
         }
 
-        with patch("agents.consolidate.httpx.AsyncClient") as mock_client_class:
+        with patch("memory_agents.consolidate.httpx.AsyncClient") as mock_client_class:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -599,16 +586,10 @@ class TestWaitForOllama:
     """Tests for the _wait_for_ollama startup helper."""
 
     @pytest.fixture(autouse=True)
-    def evict_stale_main(self) -> None:  # type: ignore[return]
-        """Evict stale sys.modules and ensure services/memory/ is first on sys.path."""
+    def evict_stale_modules(self) -> None:  # type: ignore[return]
+        """Evict cached memory service modules for clean import."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
-        # Re-insert services/memory at position 0 so agents.consolidate resolves
-        # correctly even if another test file modified sys.path ordering.
-        mem_dir = str(_MEMORY_SERVICE_DIR)
-        if mem_dir in sys.path:
-            sys.path.remove(mem_dir)
-        sys.path.insert(0, mem_dir)
         yield
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -616,29 +597,29 @@ class TestWaitForOllama:
     @pytest.mark.anyio
     async def test_wait_for_ollama_raises_on_timeout(self) -> None:
         """TRAIN-06: _wait_for_ollama raises RuntimeError when Ollama never responds."""
-        import main
+        import app
 
-        with patch("main.httpx.AsyncClient") as mock_client_class:
+        with patch("app.httpx.AsyncClient") as mock_client_class:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
             mock_cm.get = AsyncMock(side_effect=ConnectionError("refused"))
 
             with pytest.raises(RuntimeError, match="not healthy"):
-                await main._wait_for_ollama(url="http://fake:11434", timeout_sec=1)
+                await app._wait_for_ollama(url="http://fake:11434", timeout_sec=1)
 
     @pytest.mark.anyio
     async def test_wait_for_ollama_returns_when_healthy(self) -> None:
         """TRAIN-06: _wait_for_ollama returns immediately when Ollama responds 200."""
-        import main
+        import app
 
-        with patch("main.httpx.AsyncClient") as mock_client_class:
+        with patch("app.httpx.AsyncClient") as mock_client_class:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
             mock_cm.get = AsyncMock(return_value=_make_tags_response())
 
-            await main._wait_for_ollama(url="http://mock:11434", timeout_sec=10)
+            await app._wait_for_ollama(url="http://mock:11434", timeout_sec=10)
 
 
 # ---------------------------------------------------------------------------

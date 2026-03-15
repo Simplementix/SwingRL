@@ -10,9 +10,9 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
-from agents.query import QueryAgent
 from auth import verify_api_key
 from fastapi import APIRouter, Depends
+from memory_agents.query import QueryAgent
 from pydantic import BaseModel
 
 log = structlog.get_logger(__name__)
