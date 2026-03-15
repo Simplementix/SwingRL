@@ -74,12 +74,15 @@ COPY --chown=trader:trader pyproject.toml uv.lock /app/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev
 
+# Set venv ownership to trader so runtime uv run doesn't need root.
+RUN chown -R trader:trader /app/.venv
+
 USER trader
 
 # Docker HEALTHCHECK: verify process liveness and DB connectivity.
 # Interval 60s, timeout 10s, 3 retries before marking unhealthy.
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
-    CMD ["uv", "run", "python", "scripts/healthcheck.py"]
+    CMD ["/app/.venv/bin/python", "scripts/healthcheck.py"]
 
 # Production entrypoint: APScheduler with cron jobs and stop-price polling.
-CMD ["uv", "run", "python", "scripts/main.py"]
+CMD ["/app/.venv/bin/python", "scripts/main.py"]
