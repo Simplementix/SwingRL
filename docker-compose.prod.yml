@@ -25,8 +25,8 @@ services:
       # Models are pulled once by scripts/setup_ollama.sh (idempotent).
       - ollama_models:/root/.ollama
     healthcheck:
-      # Ollama image does NOT include curl — use wget instead (Pitfall 1).
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:11434/api/tags || exit 1"]
+      # Ollama image includes neither curl nor wget — use the ollama CLI.
+      test: ["CMD", "ollama", "list"]
       interval: 15s
       timeout: 10s
       retries: 10
@@ -52,7 +52,7 @@ services:
       swingrl-ollama:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8889/health || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8889/health\")'"]
       interval: 10s
       timeout: 5s
       retries: 5
