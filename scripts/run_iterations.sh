@@ -14,4 +14,9 @@ ITERATIONS="${ITERATIONS:-5}"
 
 cd "$REPO_DIR"
 
-exec python scripts/train_pipeline.py --env all --iterations "$ITERATIONS" --force "$@"
+# Use venv python if available (Docker), otherwise fall back to uv run (local dev)
+if [ -x /app/.venv/bin/python ]; then
+    exec /app/.venv/bin/python scripts/train_pipeline.py --env all --iterations "$ITERATIONS" --force "$@"
+else
+    exec uv run python scripts/train_pipeline.py --env all --iterations "$ITERATIONS" --force "$@"
+fi
