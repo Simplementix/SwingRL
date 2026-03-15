@@ -9,7 +9,7 @@ resume, CLI parsing, and iteration memory configuration.
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import json
 import os
 import sys
@@ -23,15 +23,36 @@ from unittest.mock import MagicMock, patch
 
 _SCRIPTS_DIR = Path(__file__).parents[2] / "scripts"
 
+_pipeline_module: Any = None
+
 
 def _import_pipeline() -> Any:
-    """Import train_pipeline module from scripts/.
+    """Import train_pipeline module from scripts/ without polluting sys.path.
+
+    Uses importlib.util.spec_from_file_location to avoid adding scripts/ to
+    sys.path, which would cause import collisions with services/memory/main.py.
 
     Returns:
         The train_pipeline module object.
     """
+    global _pipeline_module  # noqa: PLW0603
+    if _pipeline_module is not None:
+        return _pipeline_module
+
+    module_path = _SCRIPTS_DIR / "train_pipeline.py"
+    spec = importlib.util.spec_from_file_location("train_pipeline", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["train_pipeline"] = module
+    # Temporarily add scripts/ so train_pipeline's own imports resolve,
+    # then remove it to avoid contaminating subsequent test imports.
     sys.path.insert(0, str(_SCRIPTS_DIR))
-    return importlib.import_module("train_pipeline")
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(_SCRIPTS_DIR))
+    _pipeline_module = module
+    return module
 
 
 # ---------------------------------------------------------------------------

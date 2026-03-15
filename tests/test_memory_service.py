@@ -18,8 +18,24 @@ import pytest
 # Add services/memory to sys.path so the service modules can be imported
 # This mirrors how uvicorn serves main.py with WORKDIR=/app/services/memory
 _MEMORY_SERVICE_DIR = Path(__file__).parent.parent / "services" / "memory"
-if str(_MEMORY_SERVICE_DIR) not in sys.path:
-    sys.path.insert(0, str(_MEMORY_SERVICE_DIR))
+_MEMORY_MODULE_NAMES = [
+    "main",
+    "db",
+    "auth",
+    "agents",
+    "agents.ingest",
+    "agents.consolidate",
+    "agents.query",
+    "routers",
+    "routers.core",
+    "routers.training",
+    "routers.debug",
+]
+
+# Ensure services/memory/ is always first on sys.path to prevent shadowing by scripts/
+if str(_MEMORY_SERVICE_DIR) in sys.path:
+    sys.path.remove(str(_MEMORY_SERVICE_DIR))
+sys.path.insert(0, str(_MEMORY_SERVICE_DIR))
 
 
 # ---------------------------------------------------------------------------
@@ -39,8 +55,25 @@ def memory_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture()
 def api_client(memory_db_env: Path):  # type: ignore[no-untyped-def]
-    """Return a FastAPI TestClient with Ollama wait mocked out."""
+    """Return a FastAPI TestClient with Ollama wait mocked out.
+
+    Evicts stale sys.modules entries before importing so that tests run after
+    other test files that add scripts/ to sys.path still import from
+    services/memory/ rather than scripts/main.py.
+    """
     from fastapi.testclient import TestClient
+
+    # Evict any stale cached modules from previous test files that may have
+    # added scripts/ to sys.path and imported 'main' from there.
+    for mod_name in list(_MEMORY_MODULE_NAMES):
+        sys.modules.pop(mod_name, None)
+
+    # Re-insert services/memory at position 0 so agents.consolidate resolves
+    # correctly even if another test file modified sys.path ordering.
+    mem_dir = str(_MEMORY_SERVICE_DIR)
+    if mem_dir in sys.path:
+        sys.path.remove(mem_dir)
+    sys.path.insert(0, mem_dir)
 
     import db as memory_db_module
 
@@ -54,6 +87,10 @@ def api_client(memory_db_env: Path):  # type: ignore[no-untyped-def]
 
         client = TestClient(main.app, raise_server_exceptions=True)
         yield client
+
+    # Clean up memory service modules after each test to avoid cross-test pollution
+    for mod_name in list(_MEMORY_MODULE_NAMES):
+        sys.modules.pop(mod_name, None)
 
 
 @pytest.fixture()
@@ -560,6 +597,21 @@ class TestAuth:
 
 class TestWaitForOllama:
     """Tests for the _wait_for_ollama startup helper."""
+
+    @pytest.fixture(autouse=True)
+    def evict_stale_main(self) -> None:  # type: ignore[return]
+        """Evict stale sys.modules and ensure services/memory/ is first on sys.path."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        # Re-insert services/memory at position 0 so agents.consolidate resolves
+        # correctly even if another test file modified sys.path ordering.
+        mem_dir = str(_MEMORY_SERVICE_DIR)
+        if mem_dir in sys.path:
+            sys.path.remove(mem_dir)
+        sys.path.insert(0, mem_dir)
+        yield
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
 
     @pytest.mark.anyio
     async def test_wait_for_ollama_raises_on_timeout(self) -> None:
