@@ -98,7 +98,14 @@ Plans:
   2. Homelab .env contains all required API keys and Discord webhook URLs, and startup validation confirms broker credentials and DB tables on container boot
   3. APScheduler fires the equity cycle at 4:15 PM ET and the crypto cycle every 4 hours — verified by inspecting next-run times in scheduler logs, not UTC times
   4. Paper trading executes a complete end-to-end cycle for both environments: signal generation → position sizing → risk validation → order submission → fill confirmation logged
-**Plans**: TBD
+**Plans:** 5 plans
+
+Plans:
+- [ ] 20-01-PLAN.md — Production dependencies, config schema extensions, startup validation, healthcheck
+- [ ] 20-02-PLAN.md — Memory live endpoints (5 /live/ routes in swingrl-memory service)
+- [ ] 20-03-PLAN.md — LiveMemoryClient, FillIngestors, execute_cycle() memory hooks, CB overrides
+- [ ] 20-04-PLAN.md — MacroWatcher, operational scripts, Docker compose updates, main.py wiring
+- [ ] 20-05-PLAN.md — CI updates, homelab deployment, memory seeding, smoke test verification
 
 ### Phase 21: Discord Alert Suite
 **Goal**: All Discord alert types are wired, routed to the correct channels, and confirmed delivered — including four new retrain lifecycle embeds required by Phase 22
@@ -167,8 +174,8 @@ Plans:
 | 17. Doc Housekeeping | v1.0 | 1/1 | Complete | 2026-03-10 |
 | 18. Data Ingestion | v1.1 | 2/2 | Complete | 2026-03-11 |
 | 19. Model Training | v1.1 | 3/3 | Complete | 2026-03-13 |
-| 19.1. Memory Agent Infra | 4/4 | Complete   | 2026-03-15 | - |
-| 20. Production Deployment | v1.1 | 0/TBD | Not started | - |
+| 19.1. Memory Agent Infra | v1.1 | 4/4 | Complete | 2026-03-15 |
+| 20. Production Deployment | v1.1 | 0/5 | Planned | - |
 | 21. Discord Alert Suite | v1.1 | 0/TBD | Not started | - |
 | 22. Automated Retraining | v1.1 | 0/TBD | Not started | - |
 | 23. Monitoring and Observability | v1.1 | 0/TBD | Not started | - |
