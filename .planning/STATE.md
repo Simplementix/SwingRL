@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Operational Deployment
 status: executing
-stopped_at: Completed 19.1-03-PLAN.md
+stopped_at: 19.1-04 Task 1 complete, checkpoint at Task 3 (training verification)
 last_updated: "2026-03-14T23:06:48.765Z"
 last_activity: 2026-03-13 — 19-03 validate_memory.py, seed_memory_from_backtest.py, schema p_crisis fix, homelab CI pass, training pipeline launched (981 tests passing)
 progress:
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-03-10)
 ## Current Position
 
 Phase: 19 of 24 (Model Training)
-Plan: 03 at checkpoint — homelab training running in background (docker compose run --rm)
+Plan: 04 at checkpoint — CI updated, awaiting homelab deploy + training verification
 Status: Executing
-Last activity: 2026-03-13 — 19-03 validate_memory.py, seed_memory_from_backtest.py, schema p_crisis fix, homelab CI pass, training pipeline launched (981 tests passing)
+Last activity: 2026-03-14 — 19.1-04 CI pipeline updated with memory service lint stage, .env.example updated
 
 Progress: [██████████] 100% (v1.1 — all 5 plans written; training in progress)
 
@@ -85,5 +85,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-14T23:06:48.763Z
-Stopped at: Completed 19.1-03-PLAN.md
+Stopped at: 19.1-04 Task 1 complete, checkpoint at Task 3 (training verification)
 Resume file: None
