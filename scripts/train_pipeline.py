@@ -336,6 +336,8 @@ def run_all_iterations(
             log.info("iteration_skipped_checkpointed", iteration=i, total=total)
             continue
 
+        iter_start = time.monotonic()
+
         # Deep-copy config and configure memory per iteration
         cfg = base_config.model_copy(deep=True)
         if i == 0:
@@ -402,7 +404,14 @@ def run_all_iterations(
         state["completed_iterations"] = completed
         save_training_state(state, state_path)
 
-        log.info("iteration_complete", iteration=i, total=total)
+        iter_elapsed = time.monotonic() - iter_start
+        log.info(
+            "iteration_complete",
+            iteration=i,
+            total=total,
+            elapsed_seconds=round(iter_elapsed, 1),
+            elapsed_hours=round(iter_elapsed / 3600, 2),
+        )
 
         # Consolidate memories after each memory-enabled iteration
         if i > 0:
