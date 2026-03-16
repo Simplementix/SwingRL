@@ -3,7 +3,7 @@
 ## Milestones
 
 - ✅ **v1.0 MVP** — Phases 1-17 (shipped 2026-03-11)
-- 🚧 **v1.1 Operational Deployment** — Phases 18-24 (in progress)
+- 🚧 **v1.1 Operational Deployment** — Phases 18-25 (in progress)
 
 ## Phases
 
@@ -42,6 +42,7 @@
 - [ ] **Phase 22: Automated Retraining** - Equity monthly + crypto biweekly retraining with validated shadow promotion
 - [ ] **Phase 23: Monitoring and Observability** - Degradation alerts, structured validation logs, and dead man's switch active
 - [ ] **Phase 24: Operator Runbook** - Comprehensive step-by-step documentation covering all workflows and failure modes
+- [ ] **Phase 25: Dashboard updates** - Dashboard updates
 
 ## Phase Details
 
@@ -132,7 +133,13 @@ Plans:
   2. Each retraining job explicitly runs all 4 walk-forward validation gates before calling deploy_to_shadow() — a gate failure aborts shadow deployment and fires a retrain-failed Discord alert
   3. After shadow deployment, the existing shadow_promotion_check_job evaluates the new model the following day using the 3-criteria promotion logic
   4. The shadow promoter bootstrap guard returns False and skips auto-promotion when the trades table contains fewer than the minimum required rows, preventing spurious promotion on fresh deployments
-**Plans**: TBD
+**Plans:** 4 plans
+
+Plans:
+- [ ] 22-01-PLAN.md — DuckDB short-lived connection fix, RetrainingConfig schema, DB migrations, filelock dependency
+- [ ] 22-02-PLAN.md — RetrainingOrchestrator with data freshness, walk-forward gating, failure counter, rolling Sharpe, memory integration
+- [ ] 22-03-PLAN.md — Bootstrap guard in evaluate_shadow_promotion() with dual-condition check
+- [ ] 22-04-PLAN.md — APScheduler retrain jobs, operator CLI, Discord alerts, performance trigger, verification checkpoint
 
 ### Phase 23: Monitoring and Observability
 **Goal**: Paper trading performance is continuously tracked with degradation alerts, structured validation logs, and a dead man's switch confirming each cycle completed
@@ -155,6 +162,16 @@ Plans:
   4. Runbook covers emergency stop (all 4 tiers), model rollback procedure, and disaster recovery steps with explicit commands and expected outputs
   5. Runbook covers common failure diagnosis: at least 8 failure scenarios with symptoms, root cause, and resolution steps drawn from research pitfalls
 **Plans**: TBD
+
+### Phase 25: Dashboard updates
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 24
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 25 to break down)
 
 ## Progress
 
@@ -182,8 +199,9 @@ Plans:
 | 19.1. Memory Agent Infra | v1.1 | 4/4 | Complete | 2026-03-15 |
 | 20. Production Deployment | v1.1 | 0/5 | Planned | - |
 | 21. Discord Alert Suite | v1.1 | 0/3 | Planned | - |
-| 22. Automated Retraining | v1.1 | 0/TBD | Not started | - |
+| 22. Automated Retraining | v1.1 | 0/4 | Planned | - |
 | 23. Monitoring and Observability | v1.1 | 0/TBD | Not started | - |
 | 24. Operator Runbook | v1.1 | 0/TBD | Not started | - |
+| 25. Dashboard updates | v1.1 | 0/TBD | Not started | - |
 
 **Full v1.0 details:** `.planning/milestones/v1.0-ROADMAP.md`
