@@ -280,9 +280,7 @@ class TrainingOrchestrator:
         env_fns = [_make_env_fn(i) for i in range(n_envs)]
 
         if n_envs > 1 and backend == "subproc":
-            base_env: DummyVecEnv | SubprocVecEnv = SubprocVecEnv(
-                env_fns, start_method="forkserver"
-            )
+            base_env: DummyVecEnv | SubprocVecEnv = SubprocVecEnv(env_fns, start_method="spawn")
         else:
             base_env = DummyVecEnv(env_fns)
 
