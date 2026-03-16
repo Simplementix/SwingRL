@@ -273,6 +273,22 @@ class TrainingConfig(BaseModel):
             "Override via SWINGRL_TRAINING__SAC_BUFFER_SIZE. Proven 200K works on constrained RAM."
         ),
     )
+    n_envs: int = Field(
+        default=6,
+        ge=1,
+        description=(
+            "Number of parallel environments for vectorized training. "
+            "1 uses DummyVecEnv (sequential), >1 uses SubprocVecEnv (parallel). "
+            "Default 6 balances parallelism with 3-algo parallel workers on 20-thread homelab."
+        ),
+    )
+    vecenv_backend: Literal["dummy", "subproc"] = Field(
+        default="subproc",
+        description=(
+            "VecEnv backend: 'dummy' for single-process sequential, "
+            "'subproc' for multiprocess parallel. SubprocVecEnv requires picklable envs."
+        ),
+    )
 
 
 class SwingRLConfig(BaseSettings):

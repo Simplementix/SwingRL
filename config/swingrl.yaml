@@ -97,6 +97,8 @@ memory_agent:
 
 training:
   sac_buffer_size: 500000           # SAC replay buffer size. Default 500K; SWINGRL_TRAINING__SAC_BUFFER_SIZE
+  n_envs: 6                         # Parallel envs per training (SubprocVecEnv). 6 × 3 algo workers = 18 processes.
+  vecenv_backend: subproc            # "subproc" for parallel SubprocVecEnv, "dummy" for sequential DummyVecEnv
 
 features:
   equity_zscore_window: 252        # rolling z-score window for equity (trading days)

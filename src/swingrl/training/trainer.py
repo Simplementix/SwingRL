@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import pickle  # nosec B403 -- required for SB3 VecNormalize serialization
 import time
 from dataclasses import dataclass
@@ -20,9 +21,10 @@ from typing import Any
 
 import numpy as np
 import structlog
+import torch
 from stable_baselines3 import A2C, PPO, SAC
 from stable_baselines3.common.callbacks import EvalCallback
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 from swingrl.config.schema import SwingRLConfig
 from swingrl.envs.crypto import CryptoTradingEnv
@@ -112,6 +114,14 @@ class TrainingOrchestrator:
         self._config = config
         self._models_dir = models_dir
         self._logs_dir = logs_dir
+
+        # Limit PyTorch intra-op threads to avoid oversubscription when
+        # running multiple parallel envs via SubprocVecEnv or parallel algos.
+        n_envs = config.training.n_envs
+        cpu_count = os.cpu_count() or 4
+        torch_threads = max(1, cpu_count // max(n_envs, 2))
+        torch.set_num_threads(torch_threads)
+        log.info("torch_threads_set", threads=torch_threads, cpu_count=cpu_count, n_envs=n_envs)
 
     def train(
         self,
@@ -238,7 +248,10 @@ class TrainingOrchestrator:
         features: np.ndarray,
         prices: np.ndarray,
     ) -> VecNormalize:
-        """Create DummyVecEnv wrapped in VecNormalize.
+        """Create vectorized env wrapped in VecNormalize.
+
+        Uses SubprocVecEnv when n_envs > 1 and vecenv_backend is 'subproc',
+        otherwise falls back to DummyVecEnv.
 
         Args:
             env_name: Environment type ("equity" or "crypto").
@@ -249,17 +262,32 @@ class TrainingOrchestrator:
             VecNormalize-wrapped vectorized environment.
         """
         env_cls = ENV_CLASS_MAP[env_name]
+        n_envs = self._config.training.n_envs
+        backend = self._config.training.vecenv_backend
 
-        def _make_env() -> StockTradingEnv | CryptoTradingEnv:
-            return env_cls(
-                features=features,
-                prices=prices,
-                config=self._config,
+        def _make_env_fn(rank: int) -> Any:
+            """Return a factory closure for env with unique seed offset."""
+
+            def _init() -> StockTradingEnv | CryptoTradingEnv:
+                return env_cls(
+                    features=features,
+                    prices=prices,
+                    config=self._config,
+                )
+
+            return _init
+
+        env_fns = [_make_env_fn(i) for i in range(n_envs)]
+
+        if n_envs > 1 and backend == "subproc":
+            base_env: DummyVecEnv | SubprocVecEnv = SubprocVecEnv(
+                env_fns, start_method="forkserver"
             )
+        else:
+            base_env = DummyVecEnv(env_fns)
 
-        dummy_env = DummyVecEnv([_make_env])
         vec_env: VecNormalize = VecNormalize(
-            dummy_env,
+            base_env,
             norm_obs=True,
             norm_reward=True,
         )

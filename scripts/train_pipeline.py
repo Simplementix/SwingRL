@@ -24,6 +24,7 @@ import shutil
 import sys
 import time
 import urllib.request
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -639,6 +640,141 @@ def _write_model_metadata(
 
 
 # ---------------------------------------------------------------------------
+# Parallelization workers (top-level for picklability with ProcessPoolExecutor)
+# ---------------------------------------------------------------------------
+
+
+def _run_wf_for_algo(
+    env_name: str,
+    algo_name: str,
+    config: SwingRLConfig,
+    features: np.ndarray,
+    prices: np.ndarray,
+    models_dir: Path,
+    timesteps: int,
+) -> tuple[str, list[Any]]:
+    """Run walk-forward validation for one algo. Top-level for picklability.
+
+    Args:
+        env_name: Environment name.
+        algo_name: Algorithm name.
+        config: SwingRLConfig.
+        features: Full feature array.
+        prices: Full price array.
+        models_dir: Models root directory.
+        timesteps: Training timesteps per fold.
+
+    Returns:
+        Tuple of (algo_name, fold_results_list).
+    """
+    from swingrl.agents.backtest import WalkForwardBacktester
+
+    log.info("pipeline_wf_started", env_name=env_name, algo=algo_name, pid=os.getpid())
+
+    backtester = WalkForwardBacktester(config=config, db=None)
+    folds = backtester.run(
+        env_name=env_name,
+        algo_name=algo_name,
+        features=features,
+        prices=prices,
+        models_dir=models_dir,
+        total_timesteps=timesteps,
+    )
+
+    log.info("pipeline_wf_complete", env_name=env_name, algo=algo_name, fold_count=len(folds))
+    return (algo_name, folds)
+
+
+def _train_final_algo(
+    env_name: str,
+    algo_name: str,
+    config: SwingRLConfig,
+    features: np.ndarray,
+    prices: np.ndarray,
+    models_dir: Path,
+    logs_dir: Path,
+    timesteps: int,
+    hp_override: dict[str, Any] | None,
+    use_meta: bool,
+) -> tuple[str, dict[str, Any]]:
+    """Train final deployment model for one algo. Top-level for picklability.
+
+    Args:
+        env_name: Environment name.
+        algo_name: Algorithm name.
+        config: SwingRLConfig.
+        features: Recent feature array for final training.
+        prices: Recent price array for final training.
+        models_dir: Models root directory.
+        logs_dir: Logs directory.
+        timesteps: Training timesteps.
+        hp_override: Optional hyperparameter overrides from tuning.
+        use_meta: Whether to use MetaTrainingOrchestrator.
+
+    Returns:
+        Tuple of (algo_name, result_dict) with training metadata.
+    """
+    from swingrl.training.trainer import TrainingOrchestrator
+
+    t_start = time.monotonic()
+
+    orchestrator = TrainingOrchestrator(
+        config=config,
+        models_dir=models_dir,
+        logs_dir=logs_dir,
+    )
+
+    if use_meta:
+        from swingrl.memory.client import MemoryClient
+        from swingrl.memory.training.meta_orchestrator import MetaTrainingOrchestrator
+
+        client = MemoryClient(
+            base_url=config.memory_agent.base_url,
+            default_timeout=config.memory_agent.timeout_sec,
+        )
+        meta = MetaTrainingOrchestrator(config=config, memory_client=client)
+        train_result = meta.run(
+            env_name=env_name,
+            algo_name=algo_name,
+            trainer=orchestrator,
+            features=features,
+            prices=prices,
+            total_timesteps=timesteps,
+            hyperparams_override=hp_override,
+        )
+    else:
+        train_result = orchestrator.train(
+            env_name=env_name,
+            algo_name=algo_name,
+            features=features,
+            prices=prices,
+            total_timesteps=timesteps,
+            hyperparams_override=hp_override,
+        )
+
+    wall_algo = time.monotonic() - t_start
+
+    result_dict = {
+        "timesteps": timesteps,
+        "wall_clock_s": round(wall_algo, 1),
+        "converged_at": train_result.converged_at_step,
+        "model_path": str(train_result.model_path),
+        "vec_normalize_path": str(train_result.vec_normalize_path),
+    }
+
+    log.info(
+        "pipeline_algo_trained",
+        env_name=env_name,
+        algo=algo_name,
+        timesteps=timesteps,
+        wall_s=round(wall_algo, 1),
+        pid=os.getpid(),
+    )
+
+    return (algo_name, result_dict)
+
+
+# ---------------------------------------------------------------------------
 # Per-environment training flow
 # ---------------------------------------------------------------------------
 
@@ -706,40 +842,42 @@ def run_environment(
     all_wf_results: dict[str, list[Any]] = {}
     tuning_best_params: dict[str, dict[str, Any]] = {}
 
+    # Determine which algos need WF (not checkpointed)
+    algos_to_run: list[str] = []
     for algo_name in ALGO_NAMES:
-        # Checkpoint check
         if not force and _check_algo_checkpoint(env_name, algo_name, models_dir):
-            log.info(
-                "pipeline_checkpoint_skip",
-                env_name=env_name,
-                algo=algo_name,
-            )
-            all_wf_results[algo_name] = []  # no WF results (skipped)
-            continue
+            log.info("pipeline_checkpoint_skip", env_name=env_name, algo=algo_name)
+            all_wf_results[algo_name] = []
+        else:
+            algos_to_run.append(algo_name)
 
-        log.info("pipeline_wf_started", env_name=env_name, algo=algo_name)
-
-        conn = duckdb.connect(str(db_path))
-        try:
-            backtester = WalkForwardBacktester(config=config, db=None)
-            folds = backtester.run(
-                env_name=env_name,
-                algo_name=algo_name,
-                features=features_full,
-                prices=prices_full,
-                models_dir=models_dir,
-                total_timesteps=DEFAULT_TIMESTEPS[env_name],
-            )
-            all_wf_results[algo_name] = folds
-        finally:
-            conn.close()
-
+    # Run walk-forward for all non-checkpointed algos in parallel
+    if algos_to_run:
+        max_workers = min(3, len(algos_to_run))
         log.info(
-            "pipeline_wf_complete",
+            "pipeline_wf_parallel_start",
             env_name=env_name,
-            algo=algo_name,
-            fold_count=len(folds),
+            algos=algos_to_run,
+            max_workers=max_workers,
         )
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _run_wf_for_algo,
+                    env_name,
+                    algo,
+                    config,
+                    features_full,
+                    prices_full,
+                    models_dir,
+                    DEFAULT_TIMESTEPS[env_name],
+                ): algo
+                for algo in algos_to_run
+            }
+            for future in as_completed(futures):
+                algo_name_result, folds = future.result()
+                all_wf_results[algo_name_result] = folds
 
     # If all algos were checkpointed, skip ensemble computation
     has_wf_data = any(len(v) > 0 for v in all_wf_results.values())
@@ -949,13 +1087,11 @@ def run_environment(
         and config.memory_agent.meta_training
     )
 
+    # Prepare per-algo timesteps and overrides
+    algo_configs: dict[str, tuple[int, dict[str, Any] | None]] = {}
     for algo_name in ALGO_NAMES:
-        t_start = time.monotonic()
-
-        # Determine final timesteps based on tuning convergence
         ts = DEFAULT_TIMESTEPS[env_name]
         if all_wf_results.get(algo_name):
-            # Use a dummy TrainingResult-like for decide_final_timesteps
             last_fold = all_wf_results[algo_name][-1] if all_wf_results[algo_name] else None
             if last_fold is not None:
                 from swingrl.training.trainer import TrainingResult
@@ -973,76 +1109,56 @@ def run_environment(
                     total_timesteps=ts,
                 )
                 ts = decide_final_timesteps(env_name, dummy_result)
+        algo_configs[algo_name] = (ts, tuning_best_params.get(algo_name))
 
-        hp_override = tuning_best_params.get(algo_name)
-        conn = duckdb.connect(str(db_path))
+    # Train all 3 algos in parallel
+    max_workers = min(3, len(ALGO_NAMES))
+    log.info(
+        "pipeline_final_training_parallel",
+        env_name=env_name,
+        algos=ALGO_NAMES,
+        max_workers=max_workers,
+    )
 
-        try:
-            orchestrator = TrainingOrchestrator(
-                config=config,
-                models_dir=models_dir,
-                logs_dir=Path(config.paths.logs_dir),
-            )
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _train_final_algo,
+                env_name,
+                algo_name,
+                config,
+                features_recent,
+                prices_recent,
+                models_dir,
+                Path(config.paths.logs_dir),
+                algo_configs[algo_name][0],
+                algo_configs[algo_name][1],
+                use_meta,
+            ): algo_name
+            for algo_name in ALGO_NAMES
+        }
+        for future in as_completed(futures):
+            algo_name = futures[future]
+            _, result_dict = future.result()
+            final_training[algo_name] = result_dict
 
-            if use_meta:
-                from swingrl.memory.client import MemoryClient
-                from swingrl.memory.training.meta_orchestrator import MetaTrainingOrchestrator
-
-                client = MemoryClient(
-                    base_url=config.memory_agent.base_url,
-                    default_timeout=config.memory_agent.timeout_sec,
-                )
-                meta = MetaTrainingOrchestrator(config=config, memory_client=client)
-                train_result = meta.run(
+    # Deferred DuckDB writes — sequential after all parallel training completes
+    conn = duckdb.connect(str(db_path))
+    try:
+        for algo_name in ALGO_NAMES:
+            if algo_name in final_training:
+                _write_model_metadata(
+                    conn=conn,
                     env_name=env_name,
                     algo_name=algo_name,
-                    trainer=orchestrator,
-                    features=features_recent,
-                    prices=prices_recent,
-                    total_timesteps=ts,
-                    hyperparams_override=hp_override,
+                    model_path=Path(final_training[algo_name]["model_path"]),
+                    vec_normalize_path=Path(final_training[algo_name]["vec_normalize_path"]),
+                    total_timesteps=final_training[algo_name]["timesteps"],
+                    converged_at=final_training[algo_name]["converged_at"],
+                    ensemble_weight=ensemble_weights.get(algo_name),
                 )
-            else:
-                train_result = orchestrator.train(
-                    env_name=env_name,
-                    algo_name=algo_name,
-                    features=features_recent,
-                    prices=prices_recent,
-                    total_timesteps=ts,
-                    hyperparams_override=hp_override,
-                )
-
-            wall_algo = time.monotonic() - t_start
-
-            # Write model metadata
-            _write_model_metadata(
-                conn=conn,
-                env_name=env_name,
-                algo_name=algo_name,
-                model_path=train_result.model_path,
-                vec_normalize_path=train_result.vec_normalize_path,
-                total_timesteps=ts,
-                converged_at=train_result.converged_at_step,
-                ensemble_weight=ensemble_weights.get(algo_name),
-            )
-
-            final_training[algo_name] = {
-                "timesteps": ts,
-                "wall_clock_s": round(wall_algo, 1),
-                "converged_at": train_result.converged_at_step,
-                "model_path": str(train_result.model_path),
-            }
-
-            log.info(
-                "pipeline_algo_trained",
-                env_name=env_name,
-                algo=algo_name,
-                timesteps=ts,
-                wall_s=round(wall_algo, 1),
-            )
-
-        finally:
-            conn.close()
+    finally:
+        conn.close()
 
     # -------------------------------------------------------------------
     # Verify deployment files
