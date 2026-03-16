@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -147,6 +148,7 @@ class TestEquityBaselineTraining:
                 side_effect=mock_train_side_effect,
             ),
             patch("train_pipeline.duckdb") as mock_duckdb,
+            patch.object(pipeline, "ProcessPoolExecutor", ThreadPoolExecutor),
         ):
             mock_duckdb.connect.return_value = mock_conn
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
@@ -231,6 +233,7 @@ class TestTuningTriggersOnLowSharpe:
             ),
             patch("train_pipeline.duckdb") as mock_duckdb,
             patch("train_pipeline.Path.exists", return_value=False),
+            patch.object(pipeline, "ProcessPoolExecutor", ThreadPoolExecutor),
         ):
             mock_duckdb.connect.return_value = mock_conn
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
@@ -249,6 +252,7 @@ class TestTuningTriggersOnLowSharpe:
                         memory_agent=MagicMock(meta_training=False, enabled=False),
                         system=MagicMock(duckdb_path=str(tmp_path / "test.ddb")),
                         paths=MagicMock(logs_dir=str(tmp_path / "logs")),
+                        training=MagicMock(n_envs=6),
                     ),
                     models_dir=tmp_path,
                     force=False,
@@ -410,6 +414,7 @@ class TestJsonReportWritten:
                 side_effect=mock_train_side_effect,
             ),
             patch("train_pipeline.duckdb") as mock_duckdb,
+            patch.object(pipeline, "ProcessPoolExecutor", ThreadPoolExecutor),
         ):
             mock_duckdb.connect.return_value = mock_conn
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
@@ -469,6 +474,7 @@ class TestCheckpointResume:
             ) as mock_wf,
             patch("swingrl.training.trainer.TrainingOrchestrator.train"),
             patch("train_pipeline.duckdb") as mock_duckdb,
+            patch.object(pipeline, "ProcessPoolExecutor", ThreadPoolExecutor),
         ):
             mock_duckdb.connect.return_value = mock_conn
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)

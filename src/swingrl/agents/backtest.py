@@ -82,6 +82,94 @@ class FoldResult:
     overfitting: dict[str, Any]
 
 
+def _reconstruct_round_trips(
+    trade_log: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Reconstruct round-trip trades from portfolio trade log using FIFO matching.
+
+    A round-trip starts with a buy and closes (fully or partially) with a sell.
+    PnL = sell_value - buy_value - total_costs. Each trade_log entry must have
+    'asset_idx', 'side', 'shares', 'value', 'price', 'cost'.
+
+    Args:
+        trade_log: List of order dicts from PortfolioSimulator.trade_log.
+
+    Returns:
+        List of round-trip trade dicts, each with 'asset_idx', 'pnl',
+        'entry_price', 'exit_price', 'shares', 'entry_value', 'exit_value',
+        'cost'.
+    """
+    if not trade_log:
+        return []
+
+    # FIFO queue per asset: list of (remaining_shares, price, value_per_share, cost)
+    open_buys: dict[int, list[list[float]]] = {}
+    round_trips: list[dict[str, Any]] = []
+
+    for order in trade_log:
+        asset_idx = int(order["asset_idx"])
+        side = str(order["side"])
+        shares = float(order["shares"])
+        price = float(order["price"])
+        value = float(order["value"])
+        cost = float(order["cost"])
+
+        if shares < 1e-12:
+            continue
+
+        if side == "buy":
+            if asset_idx not in open_buys:
+                open_buys[asset_idx] = []
+            open_buys[asset_idx].append([shares, price, value, cost])
+
+        elif side == "sell":
+            if asset_idx not in open_buys or not open_buys[asset_idx]:
+                continue
+
+            remaining = shares
+            sell_price = price
+            sell_cost = cost
+            # Proportional cost allocation for partial matches
+            cost_per_share = sell_cost / shares if shares > 1e-12 else 0.0
+
+            while remaining > 1e-12 and open_buys.get(asset_idx):
+                entry = open_buys[asset_idx][0]
+                buy_shares, buy_price, buy_value, buy_cost = entry
+
+                matched = min(remaining, buy_shares)
+                buy_fraction = matched / buy_shares if buy_shares > 1e-12 else 0.0
+
+                entry_value = buy_value * buy_fraction
+                exit_value = matched * sell_price
+                total_cost = (buy_cost * buy_fraction) + (cost_per_share * matched)
+                pnl = exit_value - entry_value - total_cost
+
+                round_trips.append(
+                    {
+                        "asset_idx": asset_idx,
+                        "pnl": pnl,
+                        "shares": matched,
+                        "entry_price": buy_price,
+                        "exit_price": sell_price,
+                        "entry_value": entry_value,
+                        "exit_value": exit_value,
+                        "cost": total_cost,
+                    }
+                )
+
+                remaining -= matched
+
+                if matched >= buy_shares - 1e-12:
+                    open_buys[asset_idx].pop(0)
+                else:
+                    leftover = buy_shares - matched
+                    entry[0] = leftover
+                    entry[2] = buy_value * (1.0 - buy_fraction)
+                    entry[3] = buy_cost * (1.0 - buy_fraction)
+
+    return round_trips
+
+
 def generate_folds(
     total_bars: int,
     test_bars: int,
@@ -292,9 +380,15 @@ class WalkForwardBacktester:
             log.info(
                 "fold_complete",
                 fold=fold_idx,
-                oos_sharpe=oos_metrics.get("sharpe"),
                 gate_passed=gate.passed,
+                failures=gate.failures,
+                oos_sharpe=round(oos_metrics.get("sharpe", 0.0), 4),
+                oos_mdd=round(oos_metrics.get("mdd", 0.0), 4),
+                oos_profit_factor=round(oos_metrics.get("profit_factor", 0.0), 4),
+                overfit_gap=round(overfit.get("gap", 0.0), 4),
                 overfit_class=overfit.get("classification"),
+                total_trades=int(oos_metrics.get("total_trades", 0)),
+                win_rate=round(oos_metrics.get("win_rate", 0.0), 4),
             )
 
         return results
@@ -368,7 +462,6 @@ class WalkForwardBacktester:
         # Run through all steps
         obs = vec_env.reset()
         returns: list[float] = []
-        trades: list[dict[str, Any]] = []
         done = False
 
         while not done:
@@ -387,6 +480,11 @@ class WalkForwardBacktester:
 
             done_arr = step_result[2]
             done = bool(done_arr[0]) if hasattr(done_arr, "__len__") else bool(done_arr)
+
+        # Extract trade log from inner env before closing
+        inner_env = vec_env.venv.envs[0]  # type: ignore[attr-defined]
+        raw_trade_log = getattr(getattr(inner_env, "_portfolio", None), "trade_log", [])
+        trades = _reconstruct_round_trips(raw_trade_log)
 
         vec_env.close()
 

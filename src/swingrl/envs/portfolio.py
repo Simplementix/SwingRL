@@ -108,6 +108,8 @@ class PortfolioSimulator:
                     "asset_idx": i,
                     "side": side,
                     "shares": float(abs(delta_shares)),
+                    "price": float(safe_prices[i]),
+                    "value": float(abs(deltas[i])),
                     "cost": float(abs(deltas[i])) * self.transaction_cost_pct,
                 }
                 self.trade_log.append(trade)
