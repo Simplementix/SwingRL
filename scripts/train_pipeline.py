@@ -601,7 +601,13 @@ def _ingest_wf_results_to_memory(
         gate_result: Ensemble gate pass/fail result.
     """
     mem_cfg = getattr(config, "memory_agent", None)
-    if not mem_cfg or not mem_cfg.enabled:
+    if not mem_cfg:
+        return
+    # Always ingest WF results if API key is configured, even during
+    # baseline iterations (memory_agent.enabled=False). Baseline results
+    # give the memory agent a comparison point for memory-enhanced runs.
+    api_key = getattr(mem_cfg, "api_key", "")
+    if not api_key:
         return
 
     try:
@@ -610,7 +616,7 @@ def _ingest_wf_results_to_memory(
         client = MemoryClient(
             base_url=mem_cfg.base_url,
             default_timeout=mem_cfg.timeout_sec,
-            api_key=getattr(mem_cfg, "api_key", ""),
+            api_key=api_key,
         )
 
         # Build per-algo summary
@@ -642,6 +648,7 @@ def _ingest_wf_results_to_memory(
 
         summary_text = (
             f"WALK-FORWARD RESULTS: env={env_name} "
+            f"memory_enabled={mem_cfg.enabled} "
             f"ensemble_sharpe={gate_result.get('sharpe', 0.0):.4f} "
             f"ensemble_mdd={gate_result.get('mdd', 0.0):.4f} "
             f"ensemble_gate_passed={gate_result.get('passed', False)} " + " | ".join(algo_summaries)
