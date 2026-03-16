@@ -1,6 +1,6 @@
 # Phase 22: Automated Retraining - Context
 
-**Gathered:** 2026-03-16 (updated 2026-03-17 — DuckDB contention + SubprocVecEnv decisions)
+**Gathered:** 2026-03-16 (updated 2026-03-17 — DuckDB contention + SubprocVecEnv + fold log enrichment + pre-phase fixes)
 **Status:** Ready for planning
 
 <domain>
@@ -108,6 +108,17 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - **Mock training, real orchestration**: mock SB3 trainer.learn() to return dummy models in seconds. Test full orchestration: data freshness check → training loop → walk-forward validation → gate check → deploy to shadow → Discord alerts → memory ingest
 - **Real model files**: mock side-effect creates real SB3 model.zip + vec_normalize.pkl (tiny networks). Tests verify deployment, shadow copy, smoke tests, promotion — the whole downstream chain. Consistent with Phase 19 TDD pattern
 - **Homelab smoke test**: `--dry-run --timesteps 1000` as part of deployment verification. Full pipeline on real hardware in ~5-10 min. Doesn't deploy to shadow
+
+### Fold Log Enrichment (from backlog)
+- **Add `algo_name` and `env_name` to `fold_complete` log event** in `WalkForwardBacktester.run()`. Both values are already in scope as method args. Single log statement change in `src/swingrl/agents/backtest.py` ~line 378
+- Enables filtering fold results by algo (`grep algo_name=ppo`) and env (`grep env_name=crypto`) during retrain monitoring
+- See `.planning/phases/22-automated-retraining/22-BACKLOG-fold-log-enrichment.md` for exact before/after code
+
+### Pre-Phase 22 Fixes Already Landed (branch: gsd/phase-19.1)
+These fixes are prerequisites for Phase 22 retraining and are already merged:
+- **Profit factor gate fix**: `_reconstruct_round_trips()` FIFO matcher reconstructs round-trip trades from `PortfolioSimulator.trade_log`. Portfolio now logs `price` and `value` per order. Trade log captured in terminal info dict before `DummyVecEnv` auto-reset clears it
+- **WF performance ingestion to memory**: `_ingest_wf_results_to_memory()` in `train_pipeline.py` sends per-algo OOS metrics (sharpe, mdd, sortino, profit_factor, win_rate, trade count) to memory agent after ensemble gate check. Gates on `api_key` presence (not `enabled` flag) so baseline iteration results are also ingested
+- **ProcessPoolExecutor test fix**: Pipeline tests use `ThreadPoolExecutor` to avoid mock object pickling across process boundaries
 
 ### Claude's Discretion
 - Exact cron expression syntax and APScheduler job configuration
