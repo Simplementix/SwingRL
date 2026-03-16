@@ -63,10 +63,10 @@ services:
       context: .
       dockerfile: Dockerfile
       target: production
-    # Resource limits — homelab has 8 GB RAM / 4 cores; cap at 2.5 GB / 1 CPU
-    # to leave headroom for the host OS and other services.
-    mem_limit: 2.5g
-    cpus: 1.0
+    # Resource limits — homelab has 64 GB RAM / 14C-20T; sized for concurrent
+    # live trading + retraining (Phase 22). Stack total ~41.5 GB / 17.5 CPU.
+    mem_limit: 16g
+    cpus: 8.0
     # Secrets: loaded from .env on the host; never baked into the image.
     env_file: .env
     environment:

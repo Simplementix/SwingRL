@@ -3,10 +3,9 @@ services:
     build:
       context: .
       target: ci
-    # Resource limits — homelab has 8 GB RAM / 4 cores; cap at 2.5 GB / 1 CPU
-    # to leave headroom for the host OS and other services.
-    mem_limit: 2.5g
-    cpus: 1.0
+    # Resource limits — homelab has 64 GB RAM / 14C-20T; sized for training.
+    mem_limit: 16g
+    cpus: 8.0
     # Secrets: loaded from .env on the host; never baked into the image.
     # SECURITY: .env must be chmod 600 (owner read/write only).
     #   chmod 600 .env  # Run after any .env modification

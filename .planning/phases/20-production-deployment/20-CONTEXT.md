@@ -100,9 +100,9 @@ Deploy the homelab Docker stack with paper trading firing on schedule (equity 4:
 ### Docker Resource Limits
 - swingrl-ollama: **24GB / 8 CPU** (unchanged)
 - swingrl-memory: **1GB / 1 CPU** (up from 512MB/0.5)
-- swingrl: **8GB / 4 CPU** (up from 2.5GB/1 — sized for retraining headroom)
+- swingrl: **16GB / 8 CPU** (up from 2.5GB/1 — sized for concurrent live trading + retraining in Phase 22)
 - swingrl-dashboard: **512MB / 0.5 CPU** (unchanged)
-- Stack total: ~33.5GB / 13.5 CPU of 64GB / 20T — ~20GB headroom
+- Stack total: ~41.5GB / 17.5 CPU of 64GB / 20T — ~22GB headroom
 
 ### Config Schema Updates
 - `memory_agent.live_endpoints.*`: per-endpoint toggles (cycle_gate, blend_weights, risk_thresholds, position_advice, trade_veto) — all default true
