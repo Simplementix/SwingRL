@@ -349,13 +349,19 @@ class WalkForwardBacktester:
                 config=self._config,
             )
 
+        from stable_baselines3.common.vec_env import VecNormalize
+
         dummy_env = DummyVecEnv([_make_env])
 
-        # Load VecNormalize and set to eval mode
+        # Load saved VecNormalize to extract running stats, then create a
+        # fresh wrapper around the single-env DummyVecEnv. This avoids
+        # shape mismatches when training used SubprocVecEnv with n_envs > 1.
         with Path(vec_normalize_path).open("rb") as f:
-            vec_env = pickle.load(f)  # noqa: S301  # nosec B301
+            saved_vec = pickle.load(f)  # noqa: S301  # nosec B301  -- SB3 VecNormalize requires pickle
 
-        vec_env.venv = dummy_env
+        vec_env = VecNormalize(dummy_env, norm_obs=True, norm_reward=False)
+        vec_env.obs_rms = saved_vec.obs_rms
+        vec_env.ret_rms = saved_vec.ret_rms
         vec_env.training = False
         vec_env.norm_reward = False
 
