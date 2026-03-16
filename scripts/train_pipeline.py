@@ -644,10 +644,19 @@ def _write_model_metadata(
 # ---------------------------------------------------------------------------
 
 
+def _reconstruct_config(config_dict: dict[str, Any]) -> SwingRLConfig:
+    """Reconstruct SwingRLConfig from a dict in a worker process.
+
+    load_config() produces an unpicklable local class (_ConfigWithYaml).
+    Serialize config to dict in the parent and reconstruct in each worker.
+    """
+    return SwingRLConfig(**config_dict)
+
+
 def _run_wf_for_algo(
     env_name: str,
     algo_name: str,
-    config: SwingRLConfig,
+    config_dict: dict[str, Any],
     features: np.ndarray,
     prices: np.ndarray,
     models_dir: Path,
@@ -658,7 +667,7 @@ def _run_wf_for_algo(
     Args:
         env_name: Environment name.
         algo_name: Algorithm name.
-        config: SwingRLConfig.
+        config_dict: SwingRLConfig serialized as dict (avoids pickle issues).
         features: Full feature array.
         prices: Full price array.
         models_dir: Models root directory.
@@ -668,6 +677,8 @@ def _run_wf_for_algo(
         Tuple of (algo_name, fold_results_list).
     """
     from swingrl.agents.backtest import WalkForwardBacktester
+
+    config = _reconstruct_config(config_dict)
 
     log.info("pipeline_wf_started", env_name=env_name, algo=algo_name, pid=os.getpid())
 
@@ -688,7 +699,7 @@ def _run_wf_for_algo(
 def _train_final_algo(
     env_name: str,
     algo_name: str,
-    config: SwingRLConfig,
+    config_dict: dict[str, Any],
     features: np.ndarray,
     prices: np.ndarray,
     models_dir: Path,
@@ -716,6 +727,7 @@ def _train_final_algo(
     """
     from swingrl.training.trainer import TrainingOrchestrator
 
+    config = _reconstruct_config(config_dict)
     t_start = time.monotonic()
 
     orchestrator = TrainingOrchestrator(
@@ -867,7 +879,7 @@ def run_environment(
                     _run_wf_for_algo,
                     env_name,
                     algo,
-                    config,
+                    config.model_dump(),
                     features_full,
                     prices_full,
                     models_dir,
@@ -1126,7 +1138,7 @@ def run_environment(
                 _train_final_algo,
                 env_name,
                 algo_name,
-                config,
+                config.model_dump(),
                 features_recent,
                 prices_recent,
                 models_dir,
