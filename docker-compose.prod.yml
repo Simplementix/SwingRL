@@ -15,6 +15,7 @@
 
 services:
   swingrl-ollama:
+    container_name: swingrl-ollama
     image: ollama/ollama
     # 24 GB RAM / 8 CPUs for qwen3:14b (requires ~10 GB VRAM/RAM).
     # Adjust mem_limit if homelab has different RAM allocation.
@@ -35,6 +36,7 @@ services:
     # No host port — accessed via internal Docker DNS as swingrl-ollama:11434.
 
   swingrl-memory:
+    container_name: swingrl-memory
     build:
       context: ./services/memory
       dockerfile: Dockerfile
@@ -59,6 +61,7 @@ services:
     restart: unless-stopped
 
   swingrl:
+    container_name: swingrl
     build:
       context: .
       dockerfile: Dockerfile
@@ -87,6 +90,7 @@ services:
     restart: unless-stopped
 
   swingrl-dashboard:
+    container_name: swingrl-dashboard
     build:
       context: .
       dockerfile: dashboard/Dockerfile.dashboard

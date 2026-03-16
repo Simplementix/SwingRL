@@ -1,5 +1,6 @@
 services:
   swingrl:
+    container_name: swingrl-ci
     build:
       context: .
       target: ci
