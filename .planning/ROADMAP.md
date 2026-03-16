@@ -116,7 +116,12 @@ Plans:
   2. A simulated circuit breaker trigger, broker auth failure, and stuck agent each produce a critical embed in the #alerts channel
   3. The daily summary embed posts with Sharpe, P&L, and position summary fields populated from actual paper trading data
   4. Four retrain embed types are implemented and render correctly: retrain started, retrain completed (old vs new Sharpe), retrain failed, and shadow promoted/rejected
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 21-01-PLAN.md — AlertingConfig extension, Alerter upgrade (trades webhook, escalating cooldown, rate-limit queue, type/severity filtering)
+- [ ] 21-02-PLAN.md — 9 new embed builders + v1.1 footer upgrade + daily summary rewrite with rolling metrics
+- [ ] 21-03-PLAN.md — Scheduler wiring, lifecycle alerts, startup validation, smoke test Discord section, alert history dashboard
 
 ### Phase 22: Automated Retraining
 **Goal**: Equity retraining runs monthly and crypto retraining runs biweekly as APScheduler subprocesses — each running walk-forward validation before shadow deployment, with a bootstrap guard preventing spurious promotion on fresh deployments
@@ -176,7 +181,7 @@ Plans:
 | 19. Model Training | v1.1 | 3/3 | Complete | 2026-03-13 |
 | 19.1. Memory Agent Infra | v1.1 | 4/4 | Complete | 2026-03-15 |
 | 20. Production Deployment | v1.1 | 0/5 | Planned | - |
-| 21. Discord Alert Suite | v1.1 | 0/TBD | Not started | - |
+| 21. Discord Alert Suite | v1.1 | 0/3 | Planned | - |
 | 22. Automated Retraining | v1.1 | 0/TBD | Not started | - |
 | 23. Monitoring and Observability | v1.1 | 0/TBD | Not started | - |
 | 24. Operator Runbook | v1.1 | 0/TBD | Not started | - |
