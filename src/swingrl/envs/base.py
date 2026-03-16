@@ -241,6 +241,8 @@ class BaseTradingEnv(gymnasium.Env):
         self._prev_value = new_value
 
         if terminated:
+            # Include trade log before DummyVecEnv auto-resets the env
+            info["trade_log"] = list(self._portfolio.trade_log)
             log.info(
                 "episode_complete",
                 environment=self._environment,

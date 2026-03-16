@@ -462,6 +462,7 @@ class WalkForwardBacktester:
         # Run through all steps
         obs = vec_env.reset()
         returns: list[float] = []
+        raw_trade_log: list[dict[str, Any]] = []
         done = False
 
         while not done:
@@ -478,12 +479,14 @@ class WalkForwardBacktester:
             daily_return = step_info.get("daily_return", 0.0)
             returns.append(float(daily_return))
 
+            # DummyVecEnv auto-resets on done=True, clearing the portfolio.
+            # Grab trade_log from terminal info (env embeds it before reset).
+            if "trade_log" in step_info:
+                raw_trade_log = step_info["trade_log"]
+
             done_arr = step_result[2]
             done = bool(done_arr[0]) if hasattr(done_arr, "__len__") else bool(done_arr)
 
-        # Extract trade log from inner env before closing
-        inner_env = vec_env.venv.envs[0]  # type: ignore[attr-defined]
-        raw_trade_log = getattr(getattr(inner_env, "_portfolio", None), "trade_log", [])
         trades = _reconstruct_round_trips(raw_trade_log)
 
         vec_env.close()
