@@ -1,6 +1,6 @@
 # Phase 22: Automated Retraining - Context
 
-**Gathered:** 2026-03-16
+**Gathered:** 2026-03-16 (updated 2026-03-17 — DuckDB contention + SubprocVecEnv decisions)
 **Status:** Ready for planning
 
 <domain>
@@ -49,13 +49,24 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - **Promotion events triple-logged**: memory ingest (with comparison metrics + market conditions) + Discord embed (gold, Phase 21 design) + DuckDB record (model_metadata table)
 
 ### Resource Contention
-- **Subprocess inside swingrl container**: not a separate container. Consistent with REQUIREMENTS.md ("subprocess isolation sufficient")
+- **Subprocess inside swingrl container**: spawned via `subprocess.Popen` (NOT `multiprocessing.Process`). Popen + exec = fresh Python interpreter, no inherited threads/connections from main.py (APScheduler, DB handles). Consistent with REQUIREMENTS.md ("subprocess isolation sufficient")
 - **Bump swingrl container to 16GB / 8CPU**: up from Phase 20's planned 8GB/4CPU. Handles concurrent live trading + retraining. Total stack: ~41.5GB/17.5CPU of 64GB/20T
 - **swingrl-memory stays at 1GB/1CPU** per Phase 20 plan
-- **Concurrent with live trading**: retrain subprocess runs at nice +10. Trading cycles (brief 2-5 min bursts) get CPU preference. Trading never paused during retrain
-- **DummyVecEnv**: single process, consistent with Phase 19. No SubprocVecEnv
-- **Separate DuckDB connection**: retrain subprocess opens its own connection. Avoids write lock contention with live trading cycles
+- **Concurrent with live trading**: retrain subprocess runs at **nice +10** (lower priority). Live trading runs at normal priority (nice 0), gets CPU preference during its brief 2-5 min cycles. Trading never paused during retrain.
+- **SubprocVecEnv(n_envs=6) + 3 algo workers**: same parallelization as initial training (proven at ~800% CPU). `nice +10` applied via `preexec_fn=lambda: os.nice(10)` in Popen, inherited by all SubprocVecEnv fork workers
+- **Memory estimate**: retrain ~1.2GB (3 workers x 6 envs) + live trading ~500MB + Ollama = ~2-3GB total. Well within 16GB
 - **Fail-open on Ollama**: if Ollama/memory agent unavailable during retrain, MetaTrainingOrchestrator falls back to defaults. Retrain continues without LLM guidance
+- **Memory agent concurrent access safe**: live trading uses qwen2.5:3b for /live/ endpoints, retrain uses qwen3:14b for /training/run_config. Ollama queues concurrent requests (higher latency, no errors). FastAPI async handles concurrency. Fail-open + timeouts handle delays
+- **No checkpoint resume**: if retrain dies (crash/power outage), counts as crash failure. Restarts from scratch on next scheduled window. 3-failure auto-disable prevents infinite retries
+
+### DuckDB Concurrent Access (UPDATED from Phase 19.1 findings)
+- **Problem discovered**: DuckDB enforces single-writer lock on `market_data.ddb`. If main.py holds a persistent connection (current `DatabaseManager` pattern), retrain subprocess CANNOT open any write connection. See `22-DUCKDB-CONTENTION.md` for full analysis.
+- **Resolution: short-lived connections everywhere**: change `DatabaseManager.duckdb()` context manager to open a fresh connection and close on exit. One file change (`src/swingrl/data/db.py`), all callers benefit. Persistent singleton removed.
+- **Why this works**: both live trading and retrain only need DuckDB for brief operations. Training loads features once (~2 seconds, in-memory numpy after that). Trading reads prices/writes fills per cycle (~100ms). Lock held milliseconds, collision probability negligible on 4H trading cycles.
+- **No other database conflicts**: SQLite (trading_ops.db) only accessed by main.py. SQLite (memory.db) accessed via HTTP through memory service container (serialized internally). DuckDB is the only concurrent write concern.
+- **DuckDB WAL crash recovery**: if retrain dies mid-write, DuckDB auto-recovers from WAL file on next connect. No data corruption risk.
+- **Config serialization for ProcessPoolExecutor**: `load_config()` creates unpicklable local class `_ConfigWithYaml`. Fix: pass `config.model_dump()` dict to workers, reconstruct via `SwingRLConfig(**config_dict)`. Already implemented in `train_pipeline.py`.
+- **SubprocVecEnv start method**: `fork` (not `forkserver` or `spawn`). Fork works on Linux CPU-only Docker. Forkserver causes broken pipes, spawn fails on cv2/libGL in slim image. Tested and proven during Phase 19.1.
 
 ### Memory Agent Alignment
 - **Consolidate after every retrain**: success or failure. POST /consolidate call synthesizes patterns across all training runs. Helps future retrains benefit from accumulated knowledge
@@ -106,8 +117,8 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - DuckDB schema details for new columns (run_type, trigger_reason, generation)
 - Exact memory ingestion format for retrain-specific events
 - How to detect "performance degradation resolved" state
-- Nice level implementation for subprocess priority
-- Retrain subprocess spawning mechanism (subprocess.Popen vs multiprocessing)
+- ~~Nice level implementation~~ DECIDED: `preexec_fn=lambda: os.nice(10)` in subprocess.Popen
+- ~~Retrain subprocess spawning mechanism~~ DECIDED: `subprocess.Popen` (not multiprocessing.Process). Clean exec isolation from main.py
 
 </decisions>
 
@@ -141,9 +152,13 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - `src/swingrl/memory/training/bounds.py` — Hard clamp for all LLM outputs before trainer contact
 - `services/memory/` — FastAPI service with /ingest, /consolidate, /training/* endpoints
 
+### DuckDB Concurrent Access
+- `.planning/phases/22-automated-retraining/22-DUCKDB-CONTENTION.md` — Full analysis of DuckDB lock contention, resolution options, SubprocVecEnv findings
+- `src/swingrl/data/db.py` — DatabaseManager with persistent DuckDB singleton. MUST change to short-lived connections for Phase 22
+
 ### Config & Schema
-- `src/swingrl/config/schema.py` — SwingRLConfig, ShadowConfig, MemoryAgentConfig, TrainingConfig
-- `config/swingrl.yaml` — Dev config defaults
+- `src/swingrl/config/schema.py` — SwingRLConfig, ShadowConfig, MemoryAgentConfig, TrainingConfig (n_envs, vecenv_backend added)
+- `config/swingrl.yaml` — Dev config defaults (n_envs=6, vecenv_backend=subproc)
 
 ### Prior Phase Context
 - `.planning/phases/19-model-training/19-CONTEXT.md` — Memory agent architecture, safety bounds, meta-trainer scope
@@ -178,10 +193,11 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - TDD: mock side-effects create real SB3 model files (Phase 19 pattern)
 
 ### Integration Points
-- `src/swingrl/scheduler/jobs.py` — add automated_retraining_job(), wire in main.py
+- `src/swingrl/data/db.py` — **CRITICAL**: change DatabaseManager.duckdb() from persistent singleton to short-lived open/close. Prerequisite for concurrent retrain + live trading
+- `src/swingrl/scheduler/jobs.py` — add automated_retraining_job() using subprocess.Popen, wire in main.py
 - `src/swingrl/shadow/promoter.py` — add bootstrap guard to evaluate_shadow_promotion()
 - `src/swingrl/config/schema.py` — add RetrainingConfig class to SwingRLConfig
-- `docker-compose.prod.yml` — bump swingrl to 16GB/8CPU
+- `docker-compose.prod.yml` — already bumped to 16GB/8CPU
 - `src/swingrl/training/` — new retraining.py for RetrainingOrchestrator
 - `scripts/retrain.py` — new operator CLI
 - DuckDB training_runs table — add run_type, trigger_reason, generation columns
@@ -191,7 +207,7 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 <specifics>
 ## Specific Ideas
 
-- Training on homelab takes 23+ hours for a single iteration — all scheduling decisions must account for this reality
+- Training on homelab takes ~11.5hr per env with SubprocVecEnv(6) + 3 algo workers (~23hr per iteration for both envs). Old estimate of 23+ hours was at 1 CPU; parallelization cut this significantly
 - Configurable toggle for memory-enhanced vs baseline gives operator safety valve without losing infrastructure
 - Performance-triggered retraining is more compute-efficient than fixed calendar when training is expensive
 - Rolling Sharpe pulled forward from Phase 23 — Phase 23 builds monitoring/alerting on top of this calculation
