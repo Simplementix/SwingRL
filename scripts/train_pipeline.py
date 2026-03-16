@@ -580,6 +580,80 @@ def _evaluate_gate_and_decide(
     }
 
 
+def _ingest_wf_results_to_memory(
+    config: SwingRLConfig,
+    env_name: str,
+    all_wf_results: dict[str, list[Any]],
+    ensemble_weights: dict[str, float],
+    gate_result: dict[str, Any],
+) -> None:
+    """Ingest walk-forward performance metrics to memory agent.
+
+    Sends per-algo OOS metrics (sharpe, mdd, sortino, profit_factor, win_rate,
+    trade count) and ensemble-level results so the memory agent can learn which
+    configurations produce good outcomes. Fail-open: logs and returns on error.
+
+    Args:
+        config: SwingRLConfig with memory_agent section.
+        env_name: Environment name.
+        all_wf_results: Dict mapping algo name to list of FoldResult.
+        ensemble_weights: Ensemble weights from OOS Sharpe.
+        gate_result: Ensemble gate pass/fail result.
+    """
+    mem_cfg = getattr(config, "memory_agent", None)
+    if not mem_cfg or not mem_cfg.enabled:
+        return
+
+    try:
+        from swingrl.memory.client import MemoryClient
+
+        client = MemoryClient(
+            base_url=mem_cfg.base_url,
+            default_timeout=mem_cfg.timeout_sec,
+            api_key=getattr(mem_cfg, "api_key", ""),
+        )
+
+        # Build per-algo summary
+        algo_summaries: list[str] = []
+        for algo_name, folds in all_wf_results.items():
+            if not folds:
+                continue
+            sharpes = [f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds]
+            mdds = [f.out_of_sample_metrics.get("mdd", 0.0) for f in folds]
+            sortinos = [f.out_of_sample_metrics.get("sortino", 0.0) for f in folds]
+            pfs = [f.out_of_sample_metrics.get("profit_factor", 0.0) for f in folds]
+            win_rates = [f.out_of_sample_metrics.get("win_rate", 0.0) for f in folds]
+            total_trades = [int(f.out_of_sample_metrics.get("total_trades", 0)) for f in folds]
+            gate_pass_count = sum(1 for f in folds if f.gate_result.passed)
+
+            import numpy as np
+
+            algo_summaries.append(
+                f"algo={algo_name.upper()} folds={len(folds)} "
+                f"mean_sharpe={float(np.mean(sharpes)):.4f} "
+                f"mean_mdd={float(np.mean(mdds)):.4f} "
+                f"mean_sortino={float(np.mean(sortinos)):.4f} "
+                f"mean_profit_factor={float(np.mean(pfs)):.4f} "
+                f"mean_win_rate={float(np.mean(win_rates)):.4f} "
+                f"mean_trades_per_fold={float(np.mean(total_trades)):.1f} "
+                f"folds_passed_gate={gate_pass_count}/{len(folds)} "
+                f"ensemble_weight={ensemble_weights.get(algo_name, 0.0):.4f}"
+            )
+
+        summary_text = (
+            f"WALK-FORWARD RESULTS: env={env_name} "
+            f"ensemble_sharpe={gate_result.get('sharpe', 0.0):.4f} "
+            f"ensemble_mdd={gate_result.get('mdd', 0.0):.4f} "
+            f"ensemble_gate_passed={gate_result.get('passed', False)} " + " | ".join(algo_summaries)
+        )
+
+        client.ingest_training(summary_text, source="walk_forward:historical")
+        log.info("wf_results_ingested_to_memory", env_name=env_name)
+
+    except Exception as exc:
+        log.debug("wf_results_memory_ingest_failed", env_name=env_name, error=str(exc))
+
+
 def _write_json_report(report: dict[str, Any], report_path: Path) -> None:
     """Write training report to JSON file.
 
@@ -929,6 +1003,9 @@ def run_environment(
         "mdd": float(ensemble_mdd),
     }
     _evaluate_gate_and_decide(gate_result, ensemble_sharpe, env_name)
+
+    # Ingest WF performance metrics to memory agent (if enabled)
+    _ingest_wf_results_to_memory(config, env_name, all_wf_results, ensemble_weights, gate_result)
 
     tuning_rounds: list[dict[str, Any]] = []
 
