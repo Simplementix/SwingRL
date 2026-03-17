@@ -6,7 +6,7 @@
 <domain>
 ## Phase Boundary
 
-Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler subprocesses with hybrid scheduling (calendar + performance trigger). Walk-forward validation gates retrained models before shadow deployment. Bootstrap guard prevents spurious promotion on fresh deployments. Memory agent integration via MetaTrainingOrchestrator (configurable toggle). Rolling Sharpe calculation pulled forward from Phase 23 for performance-triggered retraining. Operator CLI for manual retrain, status, history, enable/disable. Bump swingrl container to 16GB/8CPU for retrain headroom.
+Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler subprocesses with hybrid scheduling (calendar + performance trigger). Walk-forward validation gates retrained models before shadow deployment. Bootstrap guard prevents spurious promotion on fresh deployments. Memory agent integration via MetaTrainingOrchestrator (configurable toggle). Rolling Sharpe calculation pulled forward from Phase 23 for performance-triggered retraining. Operator CLI for manual retrain, status, history, enable/disable. Docker resource limits already applied in Phase 19.1 (swingrl 24GB/8CPU, Ollama 4GB/4CPU cpuset=0-3).
 
 </domain>
 
@@ -37,7 +37,7 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - **Timeout**: configurable, default 72 hours. Timeout = full failure, no salvage of completed algos. Counts toward the 3-failure auto-disable counter
 - **Re-enable**: CLI command `docker exec swingrl python scripts/retrain.py --enable equity|crypto`. Sets flag in SQLite. No container restart required
 - **--dry-run mode**: full training pipeline runs but skips deploy_to_shadow(). Logs results, fires Discord 'completed' embed with [DRY RUN] tag. Operator verifies pipeline works before enabling auto
-- **SAC buffer cap**: uses existing sac_buffer_size from TrainingConfig (500K). If OOM occurs, caught as crash failure
+- **SAC buffer cap (FIXED in Phase 19.1)**: hardcoded 1M buffer_size removed from HYPERPARAMS, now injected from `config.training.sac_buffer_size` (500K default) at runtime. If OOM occurs, caught as crash failure
 - **Memory agent ingests failure context**: on retrain failure, ingest error details + context (crash type, which algo, system state) to memory. Memory agent can reference this in future run_config suggestions
 
 ### Bootstrap Guard
@@ -50,35 +50,16 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 
 ### Resource Contention
 - **Subprocess inside swingrl container**: spawned via `subprocess.Popen` (NOT `multiprocessing.Process`). Popen + exec = fresh Python interpreter, no inherited threads/connections from main.py (APScheduler, DB handles). Consistent with REQUIREMENTS.md ("subprocess isolation sufficient")
-- **Bump swingrl container to 16GB / 8CPU**: up from Phase 20's planned 8GB/4CPU. Handles concurrent live trading + retraining. Total stack: ~41.5GB/17.5CPU of 64GB/20T
+- **swingrl container has no mem_limit / 8CPU** (applied in Phase 19.1 — 24GB hard cap caused SAC memory thrashing). No docker-compose.prod.yml change needed. Other containers use ~5.5GB of 64GB homelab
 - **swingrl-memory stays at 1GB/1CPU** per Phase 20 plan
 - **Concurrent with live trading**: retrain subprocess runs at **nice +10** (lower priority). Live trading runs at normal priority (nice 0), gets CPU preference during its brief 2-5 min cycles. Trading never paused during retrain.
 - **SubprocVecEnv(n_envs=6) + 3 algo workers**: same parallelization as initial training (proven at ~800% CPU). `nice +10` applied via `preexec_fn=lambda: os.nice(10)` in Popen, inherited by all SubprocVecEnv fork workers
-- **Memory estimate**: retrain ~1.2GB (3 workers x 6 envs) + live trading ~500MB + Ollama = ~2-3GB total. Well within 16GB
+- **Memory estimate**: retrain peak ~12-15GB (3 algo workers × 6+6 SubprocVecEnv forks, SAC 500K buffer ~4GB for equity). No mem_limit — OS manages memory on 64GB homelab
 - **Fail-open on Ollama**: if Ollama/memory agent unavailable during retrain, MetaTrainingOrchestrator falls back to defaults. Retrain continues without LLM guidance
 - **Memory agent concurrent access safe**: live trading uses qwen2.5:3b for /live/ endpoints (local Ollama, pinned P-cores). Retrain uses qwen2.5:3b for /training/run_config (same local Ollama). FastAPI async handles concurrency. Fail-open + timeouts handle delays
-- **Memory consolidation via cloud API**: replace local qwen3:14b consolidation with OpenAI-compatible cloud API. Eliminates Ollama CPU contention — local qwen3:14b timed out under any concurrent load. Memory service consolidation agent uses a generic OpenAI-compatible client configurable via:
-  ```yaml
-  consolidation:
-    provider: "nvidia"  # key into providers map
-    model: "moonshotai/kimi-k2.5"  # override per-provider default
-    providers:
-      nvidia:
-        base_url: "https://integrate.api.nvidia.com/v1"
-        api_key: "${NVIDIA_API_KEY}"
-        default_model: "moonshotai/kimi-k2.5"
-      openrouter:
-        base_url: "https://openrouter.ai/api/v1"
-        api_key: "${OPENROUTER_API_KEY}"
-        default_model: "moonshotai/kimi-k2.5"
-      ollama:
-        base_url: "http://swingrl-ollama:11434/v1"
-        api_key: ""
-        default_model: "qwen3:14b"
-  ```
-  All providers use the same `/v1/chat/completions` endpoint (OpenAI-compatible). Adding a new provider = one YAML block + env var. Default provider: `nvidia` (NVIDIA NIM developer account). Fallback to `ollama` if cloud unavailable. Estimated cost at NVIDIA/OpenRouter: ~$1.50/month at 48 calls/day
+- **Memory consolidation via cloud API (ALREADY IMPLEMENTED in Phase 19.1)**: local qwen3:14b consolidation replaced with OpenAI-compatible cloud API (NVIDIA NIM default, OpenRouter + Ollama fallback). Config in `memory_agent.consolidation` with multi-provider map. `ConsolidationProviderConfig` + `ConsolidationConfig` in schema.py. `consolidate.py` reads mounted config YAML, API keys via env vars. NVIDIA API key tested and working on homelab. No Phase 22 work needed for consolidation infrastructure
 - **Schedule consolidation outside trading windows**: even with cloud consolidation, avoid concurrent Ollama requests during live endpoint calls. Consolidation runs in gaps between trading cycles (equity 4:15 PM ET, crypto every 4H). Configurable via cron or interval with excluded windows
-- **Ollama resource reduction**: with qwen3:14b removed, Ollama only serves qwen2.5:3b (~1.9GB). Reduce Ollama memory allocation from 24GB to 8GB. Ollama pinned to cpuset 0-5 (3 P-cores) per Phase 20 decision
+- **Ollama resource reduction (ALREADY APPLIED in Phase 19.1)**: Ollama reduced to 4GB/4CPU with cpuset=0-3 (2 P-cores). Only serves qwen2.5:3b (~2.4GB). No Phase 22 work needed
 - **No checkpoint resume**: if retrain dies (crash/power outage), counts as crash failure. Restarts from scratch on next scheduled window. 3-failure auto-disable prevents infinite retries
 
 ### DuckDB Concurrent Access (UPDATED from Phase 19.1 findings)
@@ -127,18 +108,17 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - **Trend summary in --status**: last 5 retrains with directional Sharpe arrow (improving/declining)
 
 ### Verification Monitoring Items
-- **Ollama latency under retrain load**: qwen2.5:3b serves 5 live trading endpoints with 3s timeout. Phase 20 pins Ollama to cpuset 0-5 (3 P-cores). Verify during Phase 22 homelab smoke test that qwen2.5:3b responds <3s during concurrent retrain+live. With dedicated P-cores and qwen3:14b removed from Ollama, contention should be eliminated
-- **Cloud consolidation connectivity**: verify memory service can reach OpenRouter API from homelab (firewall, DNS). Test with a single consolidation call before enabling scheduled consolidation
+- **Ollama latency under retrain load**: qwen2.5:3b serves 5 live trading endpoints with 3s timeout. Phase 19.1 pins Ollama to cpuset=0-3 (2 P-cores). Verify during Phase 22 homelab smoke test that qwen2.5:3b responds <3s during concurrent retrain+live. With dedicated P-cores and qwen3:14b removed from Ollama, contention should be eliminated
+- **Cloud consolidation connectivity (VERIFIED in Phase 19.1)**: NVIDIA NIM endpoint tested and working from homelab. `POST /consolidate` returned `consolidated:1` on first attempt. No Phase 22 verification needed
 
 ### Testing Strategy
 - **Mock training, real orchestration**: mock SB3 trainer.learn() to return dummy models in seconds. Test full orchestration: data freshness check → training loop → walk-forward validation → gate check → deploy to shadow → Discord alerts → memory ingest
 - **Real model files**: mock side-effect creates real SB3 model.zip + vec_normalize.pkl (tiny networks). Tests verify deployment, shadow copy, smoke tests, promotion — the whole downstream chain. Consistent with Phase 19 TDD pattern
 - **Homelab smoke test**: `--dry-run --timesteps 1000` as part of deployment verification. Full pipeline on real hardware in ~5-10 min. Doesn't deploy to shadow
 
-### Fold Log Enrichment (from backlog)
-- **Add `algo_name` and `env_name` to `fold_complete` log event** in `WalkForwardBacktester.run()`. Both values are already in scope as method args. Single log statement change in `src/swingrl/agents/backtest.py` ~line 378
-- Enables filtering fold results by algo (`grep algo_name=ppo`) and env (`grep env_name=crypto`) during retrain monitoring
-- See `.planning/phases/22-automated-retraining/22-BACKLOG-fold-log-enrichment.md` for exact before/after code
+### Fold Log Enrichment (DONE in Phase 19.1)
+- **`algo_name` and `env_name` added to `fold_complete` log event** in `src/swingrl/agents/backtest.py`. Already committed and deployed. No Phase 22 work needed
+- See `.planning/phases/22-automated-retraining/22-BACKLOG-fold-log-enrichment.md` for context
 
 ### Pre-Phase 22 Fixes Already Landed (branch: gsd/phase-19.1)
 These fixes are prerequisites for Phase 22 retraining and are already merged:
@@ -234,7 +214,7 @@ These fixes are prerequisites for Phase 22 retraining and are already merged:
 - `src/swingrl/scheduler/jobs.py` — add automated_retraining_job() using subprocess.Popen, wire in main.py
 - `src/swingrl/shadow/promoter.py` — add bootstrap guard to evaluate_shadow_promotion()
 - `src/swingrl/config/schema.py` — add RetrainingConfig class to SwingRLConfig
-- `docker-compose.prod.yml` — already bumped to 16GB/8CPU
+- `docker-compose.prod.yml` — already at 24GB/8CPU (Phase 19.1), no change needed
 - `src/swingrl/training/` — new retraining.py for RetrainingOrchestrator
 - `scripts/retrain.py` — new operator CLI
 - DuckDB training_runs table — add run_type, trigger_reason, generation columns
@@ -263,7 +243,7 @@ These fixes are prerequisites for Phase 22 retraining and are already merged:
 - Per-algo retraining (only retrain the weakest algo) — considered but rejected for ensemble consistency
 - Rolling/one-algo-at-a-time retraining — too complex for initial implementation
 - Separate retrain container — rejected per REQUIREMENTS.md, subprocess isolation sufficient
-- Dynamic Docker resource limits during retrain — fragile, unnecessary with 16GB/8CPU allocation
+- Dynamic Docker resource limits during retrain — fragile, unnecessary with uncapped swingrl on 64GB homelab
 
 </deferred>
 
