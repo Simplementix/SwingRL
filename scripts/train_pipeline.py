@@ -670,12 +670,25 @@ def _ingest_wf_results_to_memory(
                 if features is not None and test_end <= len(features):
                     test_features = features[test_start:test_end]
                     mean_hmm = test_features[:, hmm_start : hmm_start + 2].mean(axis=0)
-                    mean_vix = float(test_features[:, macro_start].mean())
+                    mean_macro = test_features[:, macro_start : macro_start + 6].mean(axis=0)
                     mean_turb = float(test_features[:, turb_idx].mean())
                     regime_ctx = (
                         f"p_bull={mean_hmm[0]:.3f} p_bear={mean_hmm[1]:.3f} "
-                        f"vix={mean_vix:.3f} turbulence={mean_turb:.3f} "
+                        f"vix={mean_macro[0]:.3f} yield_spread={mean_macro[1]:.3f} "
+                        f"rate_direction={mean_macro[2]:.3f} fed_funds={mean_macro[3]:.3f} "
+                        f"cpi_yoy={mean_macro[4]:.3f} unemployment={mean_macro[5]:.3f} "
+                        f"turbulence={mean_turb:.3f} "
                     )
+
+                # In-sample metrics for overfit analysis
+                ins = f.in_sample_metrics
+                ins_ctx = (
+                    f"is_sharpe={ins.get('sharpe', 0.0):.4f} "
+                    f"is_mdd={ins.get('mdd', 0.0):.4f} "
+                    f"is_sortino={ins.get('sortino', 0.0):.4f} "
+                    f"is_profit_factor={ins.get('profit_factor', 0.0):.4f} "
+                    f"is_win_rate={ins.get('win_rate', 0.0):.4f} "
+                )
 
                 fold_lines.append(
                     f"fold={f.fold_number} {date_ctx}{regime_ctx}"
@@ -685,14 +698,25 @@ def _ingest_wf_results_to_memory(
                     f"profit_factor={oos.get('profit_factor', 0.0):.4f} "
                     f"win_rate={oos.get('win_rate', 0.0):.4f} "
                     f"trades={int(oos.get('total_trades', 0))} "
+                    f"{ins_ctx}"
                     f"gate={'PASS' if f.gate_result.passed else 'FAIL'} "
                     f"overfit_class={ovf.get('classification', 'unknown')} "
                     f"overfit_gap={ovf.get('gap', 0.0):.4f}"
                 )
 
+            # Hyperparameters used for this algo
+            from swingrl.training.trainer import HYPERPARAMS
+
+            hp = HYPERPARAMS.get(algo_name, {})
+            hp_parts = [f"{k}={v}" for k, v in hp.items()]
+            if algo_name == "sac":
+                hp_parts.append(f"buffer_size={config.training.sac_buffer_size}")
+            hp_str = " ".join(hp_parts)
+
             algo_text = (
                 f"WALK-FORWARD ALGO RESULTS: env={env_name} algo={algo_name.upper()} "
                 f"memory_enabled={mem_cfg.enabled} "
+                f"hyperparams: {hp_str}\n"
                 f"folds={len(folds)} passed_gate={gate_pass_count}/{len(folds)} "
                 f"mean_sharpe={float(np.mean(sharpes)):.4f} "
                 f"mean_mdd={float(np.mean(mdds)):.4f} "
@@ -713,25 +737,47 @@ def _ingest_wf_results_to_memory(
                 gate_pass_count=gate_pass_count,
             )
 
-        # Ensemble summary (links algo results together)
+        # Ensemble summary with per-algo detail + overall regime context
         algo_summaries = []
         for algo_name, folds in all_wf_results.items():
             if not folds:
                 continue
             sharpes = [f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds]
+            mdds = [f.out_of_sample_metrics.get("mdd", 0.0) for f in folds]
+            sortinos = [f.out_of_sample_metrics.get("sortino", 0.0) for f in folds]
+            pfs = [f.out_of_sample_metrics.get("profit_factor", 0.0) for f in folds]
+            win_rates = [f.out_of_sample_metrics.get("win_rate", 0.0) for f in folds]
             gate_pass_count = sum(1 for f in folds if f.gate_result.passed)
             algo_summaries.append(
                 f"{algo_name.upper()}(sharpe={float(np.mean(sharpes)):.4f} "
+                f"mdd={float(np.mean(mdds)):.4f} "
+                f"sortino={float(np.mean(sortinos)):.4f} "
+                f"profit_factor={float(np.mean(pfs)):.4f} "
+                f"win_rate={float(np.mean(win_rates)):.4f} "
                 f"gate={gate_pass_count}/{len(folds)} "
                 f"weight={ensemble_weights.get(algo_name, 0.0):.4f})"
             )
 
+        # Overall data period and regime context
+        period_ctx = ""
+        if dates is not None and len(dates) > 0:
+            period_ctx = f"data_period={dates[0]}..{dates[-1]} bars={len(dates)} "
+        regime_summary = ""
+        if features is not None:
+            overall_hmm = features[:, hmm_start : hmm_start + 2].mean(axis=0)
+            overall_macro = features[:, macro_start : macro_start + 6].mean(axis=0)
+            regime_summary = (
+                f"overall_p_bull={overall_hmm[0]:.3f} overall_p_bear={overall_hmm[1]:.3f} "
+                f"overall_vix={overall_macro[0]:.3f} overall_yield_spread={overall_macro[1]:.3f} "
+            )
+
         summary_text = (
             f"WALK-FORWARD ENSEMBLE: env={env_name} "
-            f"memory_enabled={mem_cfg.enabled} "
+            f"memory_enabled={mem_cfg.enabled} {period_ctx}{regime_summary}"
             f"ensemble_sharpe={gate_result.get('sharpe', 0.0):.4f} "
             f"ensemble_mdd={gate_result.get('mdd', 0.0):.4f} "
-            f"ensemble_gate_passed={gate_result.get('passed', False)} " + " | ".join(algo_summaries)
+            f"ensemble_gate_passed={gate_result.get('passed', False)}\n"
+            + " | ".join(algo_summaries)
         )
 
         client.ingest_training(summary_text, source="walk_forward:ensemble")
