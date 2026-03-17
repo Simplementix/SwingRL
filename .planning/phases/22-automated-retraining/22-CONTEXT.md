@@ -104,6 +104,10 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - **Duration tracked granularly**: total + PPO + A2C + SAC durations per retrain. Helps identify slow algos. Discord completed embed shows total + slowest algo
 - **Trend summary in --status**: last 5 retrains with directional Sharpe arrow (improving/declining)
 
+### Verification Monitoring Items
+- **Ollama latency under retrain load**: qwen2.5:3b serves 5 live trading endpoints (trade_veto, cycle_gate, blend_weights, risk_thresholds, position_advice) in the critical path. Under current training at nice 0, qwen2.5:3b takes ~6.5s per call. qwen3:14b (consolidation) times out entirely at 120s+. With retrain at nice +10, live trading (nice 0) should get CPU priority and Ollama response times should improve — but this MUST be verified during Phase 22 homelab smoke test. If qwen2.5:3b latency exceeds 3s under retrain+live concurrent load, consider: (a) pausing retrain during trading windows, (b) reducing retrain n_envs during live hours, or (c) increasing Ollama CPU allocation
+- **Consolidation timeout**: Current 60s timeout is insufficient for qwen3:14b under any concurrent load. Increase to 300s or schedule consolidation only when retrain is idle
+
 ### Testing Strategy
 - **Mock training, real orchestration**: mock SB3 trainer.learn() to return dummy models in seconds. Test full orchestration: data freshness check → training loop → walk-forward validation → gate check → deploy to shadow → Discord alerts → memory ingest
 - **Real model files**: mock side-effect creates real SB3 model.zip + vec_normalize.pkl (tiny networks). Tests verify deployment, shadow copy, smoke tests, promotion — the whole downstream chain. Consistent with Phase 19 TDD pattern
