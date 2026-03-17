@@ -98,11 +98,13 @@ Deploy the homelab Docker stack with paper trading firing on schedule (equity 4:
 - **Pass/fail checklist to stdout**: features assembled, model loaded, risk check passed, order submitted, fill logged, memory ingested — exit 0 all pass, exit 1 any fail
 
 ### Docker Resource Limits
-- swingrl-ollama: **24GB / 8 CPU** (unchanged)
-- swingrl-memory: **1GB / 1 CPU** (up from 512MB/0.5)
-- swingrl: **16GB / 8 CPU** (up from 2.5GB/1 — sized for concurrent live trading + retraining in Phase 22)
-- swingrl-dashboard: **512MB / 0.5 CPU** (unchanged)
+- swingrl-ollama: **24GB / 8 CPU, cpuset-cpus=8-15** (pinned to physical cores 8-15)
+- swingrl-memory: **1GB / 1 CPU, cpuset-cpus=16** (pinned to core 16)
+- swingrl: **16GB / 8 CPU, cpuset-cpus=0-7** (pinned to physical cores 0-7 — live trading + Phase 22 retraining)
+- swingrl-dashboard: **512MB / 0.5 CPU** (no pinning, uses whatever is available)
 - Stack total: ~41.5GB / 17.5 CPU of 64GB / 20T — ~22GB headroom
+- **CPU pinning is required**: without `--cpuset-cpus`, Docker `--cpus` is a soft ceiling — all containers share the same physical cores. Under concurrent load (retrain SubprocVecEnv + live trading + Ollama inference), Ollama's qwen2.5:3b response time degrades from <1s to 6.5s+, exceeding the 3s live endpoint timeout. With pinning, Ollama gets dedicated cores that retrain cannot touch. Homelab has 14 physical cores / 20 logical threads (1 socket, HT enabled).
+- **Apply in docker-compose.prod.yml** via `cpuset` key per service
 
 ### Config Schema Updates
 - `memory_agent.live_endpoints.*`: per-endpoint toggles (cycle_gate, blend_weights, risk_thresholds, position_advice, trade_veto) — all default true
