@@ -17,10 +17,12 @@ services:
   swingrl-ollama:
     container_name: swingrl-ollama
     image: ollama/ollama
-    # 24 GB RAM / 8 CPUs for qwen3:14b (requires ~10 GB VRAM/RAM).
-    # Adjust mem_limit if homelab has different RAM allocation.
-    mem_limit: 24g
-    cpus: 8.0
+    # 4 GB RAM / 4 CPUs for qwen2.5:3b (~2.4 GB). qwen3:14b moved to cloud API.
+    # Hard-pinned to P-cores 0-3 (4 HT threads) for <3s inference during
+    # concurrent retrain + live trading.
+    mem_limit: 4g
+    cpus: 4.0
+    cpuset: "0-3"
     volumes:
       # Named volume persists model weights across container restarts.
       # Models are pulled once by scripts/setup_ollama.sh (idempotent).
@@ -43,8 +45,9 @@ services:
     # Port exposed to host for validation scripts and operator curl commands.
     ports:
       - "8889:8889"
-    mem_limit: 512m
-    cpus: 0.5
+    # 1 GB RAM / 1 CPU for consolidation workload headroom. Soft limit, shared CPUs.
+    mem_limit: 1g
+    cpus: 1.0
     env_file: .env
     volumes:
       - ./db:/app/db
@@ -67,8 +70,9 @@ services:
       dockerfile: Dockerfile
       target: production
     # Resource limits — homelab has 64 GB RAM / 14C-20T; sized for concurrent
-    # live trading + retraining (Phase 22). Stack total ~41.5 GB / 17.5 CPU.
-    mem_limit: 16g
+    # live trading + retraining (Phase 22). SAC OOM'd at 16 GB; peak ~10-12 GB
+    # with 500K buffer. Soft limit, shared CPUs. Stack total ~29.5 GB.
+    mem_limit: 24g
     cpus: 8.0
     # Secrets: loaded from .env on the host; never baked into the image.
     env_file: .env

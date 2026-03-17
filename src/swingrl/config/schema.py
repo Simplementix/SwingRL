@@ -237,6 +237,38 @@ class MemoryLiveEndpointsConfig(BaseModel):
     risk_thresholds: bool = False
 
 
+class ConsolidationProviderConfig(BaseModel):
+    """Single consolidation LLM provider."""
+
+    base_url: str
+    api_key: str = ""  # Override via env var (e.g. NVIDIA_API_KEY)
+    default_model: str
+
+
+class ConsolidationConfig(BaseModel):
+    """Multi-provider consolidation configuration."""
+
+    provider: str = "nvidia"  # Key into providers map
+    model: str = ""  # Override per-provider default; empty = use provider's default_model
+    timeout_sec: float = 120.0
+    providers: dict[str, ConsolidationProviderConfig] = Field(
+        default_factory=lambda: {
+            "nvidia": ConsolidationProviderConfig(
+                base_url="https://integrate.api.nvidia.com/v1",
+                default_model="moonshotai/kimi-k2.5",
+            ),
+            "openrouter": ConsolidationProviderConfig(
+                base_url="https://openrouter.ai/api/v1",
+                default_model="moonshotai/kimi-k2.5",
+            ),
+            "ollama": ConsolidationProviderConfig(
+                base_url="http://swingrl-ollama:11434/v1",
+                default_model="qwen3:14b",
+            ),
+        }
+    )
+
+
 class MemoryAgentConfig(BaseModel):
     """Memory agent (LLM meta-trainer) configuration.
 
@@ -260,6 +292,7 @@ class MemoryAgentConfig(BaseModel):
     inbox_dir: str = "/data/memory_inbox"
     api_key: str = ""  # Populated from SWINGRL_MEMORY_AGENT__API_KEY env var; empty = no auth
     live_endpoints: MemoryLiveEndpointsConfig = Field(default_factory=MemoryLiveEndpointsConfig)
+    consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
 
 
 class TrainingConfig(BaseModel):
@@ -269,7 +302,7 @@ class TrainingConfig(BaseModel):
         default=500_000,
         gt=0,
         description=(
-            "SAC replay buffer size. Default 500K fits with 24GB Ollama allocation. "
+            "SAC replay buffer size. Default 500K fits within 24GB swingrl container. "
             "Override via SWINGRL_TRAINING__SAC_BUFFER_SIZE. Proven 200K works on constrained RAM."
         ),
     )

@@ -1,4 +1,10 @@
-"""ConsolidateAgent: synthesizes raw memories into structured patterns via Ollama LLM.
+"""ConsolidateAgent: synthesizes raw memories into structured patterns via LLM.
+
+Supports two backends:
+1. **Cloud API** (default): OpenAI-compatible endpoint (NVIDIA NIM, OpenRouter, etc.)
+   Configured via memory_agent.consolidation in config/swingrl.yaml.
+   API keys flow through env vars (e.g. NVIDIA_API_KEY) for security.
+2. **Local Ollama** (fallback): Used when no cloud API key is available.
 
 Runs as a background job every 30 minutes (scheduled by APScheduler in main.py).
 Can also be triggered explicitly via POST /consolidate.
@@ -6,7 +12,7 @@ Can also be triggered explicitly via POST /consolidate.
 Consolidation flow:
 1. Fetch recent unarchived memories from SQLite
 2. Build a domain-specific prompt with SwingRL context
-3. Call Ollama /api/chat with JSON schema format for structured output
+3. Call LLM with JSON schema format for structured output
 4. Validate the response; retry once if malformed; discard on second failure
 5. Check for contradictions against existing consolidations
 6. Archive source memories and insert the new pattern
@@ -17,10 +23,12 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
 import structlog
+import yaml
 
 from db import (
     archive_memories,
@@ -36,9 +44,42 @@ log = structlog.get_logger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
+
+def _load_consolidation_config() -> tuple[str, str, str, float]:
+    """Load consolidation config from mounted swingrl.yaml, fallback to env vars."""
+    config_path = Path("/app/config/swingrl.yaml")
+    if config_path.exists():
+        cfg = yaml.safe_load(config_path.read_text()) or {}
+        mem = cfg.get("memory_agent", {})
+        cons = mem.get("consolidation", {})
+        provider_key = cons.get("provider", "nvidia")
+        providers = cons.get("providers", {})
+        provider = providers.get(provider_key, {})
+        base_url = provider.get("base_url", "https://integrate.api.nvidia.com/v1")
+        # API key: check env var first (secrets), then config
+        api_key = os.environ.get(f"{provider_key.upper()}_API_KEY", provider.get("api_key", ""))
+        model = cons.get("model") or provider.get("default_model", "moonshotai/kimi-k2.5")
+        timeout = float(cons.get("timeout_sec", 120))
+        return base_url, api_key, model, timeout, provider_key
+    # Fallback to env vars (backward compat)
+    return (
+        os.environ.get("CONSOLIDATION_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+        os.environ.get("CONSOLIDATION_API_KEY", ""),
+        os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5"),
+        float(os.environ.get("CONSOLIDATION_TIMEOUT", "120")),
+        "env",
+    )
+
+
+_CLOUD_BASE_URL, _CLOUD_API_KEY, _CLOUD_MODEL, _CLOUD_TIMEOUT, _PROVIDER = (
+    _load_consolidation_config()
+)
+
+# Local Ollama settings (fallback when no cloud API key is available)
 _OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
-_OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
-_CONSOLIDATION_MODEL = "qwen3:14b"
+_OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "300"))
+_OLLAMA_MODEL = os.environ.get("OLLAMA_CONSOLIDATION_MODEL", "qwen3:14b")
+
 _MEMORY_BATCH_SIZE = 50
 
 # Domain-specific system prompt — hardcoded and version-controlled.
@@ -63,9 +104,16 @@ Focus on:
 
 Output a single consolidated pattern — the most important insight from this memory batch.
 If there is no clear pattern, output a placeholder with low confidence.
+
+Respond with ONLY a JSON object (no markdown, no explanation) with these exact fields:
+- pattern_text: A specific, actionable pattern with numbers
+- affected_algos: Array of algorithm names (ppo, a2c, sac)
+- affected_envs: Array of environment names (equity, crypto)
+- actionable_implication: What the training orchestrator should do differently
+- confidence: Number from 0.0 to 1.0
 """
 
-# JSON schema for structured output
+# JSON schema for structured output (used by Ollama format parameter)
 _CONSOLIDATION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -110,7 +158,7 @@ _REQUIRED_FIELDS = set(_CONSOLIDATION_SCHEMA["required"])
 
 
 class ConsolidateAgent:
-    """Synthesizes raw memories into consolidated patterns via Ollama LLM."""
+    """Synthesizes raw memories into consolidated patterns via LLM."""
 
     async def run(self) -> int:
         """Fetch unarchived memories, consolidate via LLM, archive source rows.
@@ -127,7 +175,7 @@ class ConsolidateAgent:
         memory_texts = "\n\n".join(f"- {m['text']}" for m in memories)
         memory_ids = [m["id"] for m in memories]
 
-        result = await self._call_ollama_with_retry(memory_texts)
+        result = await self._call_llm_with_retry(memory_texts)
 
         if result is None:
             log.warning("consolidation_discarded_all_attempts_failed")
@@ -151,8 +199,8 @@ class ConsolidateAgent:
 
         return 1
 
-    async def _call_ollama_with_retry(self, memory_texts: str) -> dict[str, Any] | None:
-        """Attempt Ollama consolidation with one retry on malformed output.
+    async def _call_llm_with_retry(self, memory_texts: str) -> dict[str, Any] | None:
+        """Attempt LLM consolidation with one retry on malformed output.
 
         Args:
             memory_texts: Concatenated memory texts to consolidate.
@@ -161,7 +209,10 @@ class ConsolidateAgent:
             Parsed consolidation dict, or None if both attempts failed.
         """
         for attempt in range(1, 3):
-            result = await self._call_ollama(memory_texts)
+            if _CLOUD_API_KEY:
+                result = await self._call_cloud_api(memory_texts)
+            else:
+                result = await self._call_ollama(memory_texts)
             if result is not None:
                 log_consolidation_quality(attempt_count=attempt, accepted=True)
                 return result
@@ -174,8 +225,54 @@ class ConsolidateAgent:
         )
         return None
 
+    async def _call_cloud_api(self, memory_texts: str) -> dict[str, Any] | None:
+        """Call OpenAI-compatible cloud API for consolidation.
+
+        Works with NVIDIA NIM, OpenRouter, Together AI, or any provider
+        that implements /v1/chat/completions.
+
+        Args:
+            memory_texts: Formatted memory text batch.
+
+        Returns:
+            Parsed and validated dict, or None if invalid.
+        """
+        user_content = (
+            f"Please consolidate the following training memories into a single pattern:\n\n"
+            f"{memory_texts}\n\n"
+            "Respond with ONLY a JSON object matching the required schema. No markdown."
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=_CLOUD_TIMEOUT) as client:
+                resp = await client.post(
+                    f"{_CLOUD_BASE_URL.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {_CLOUD_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": _CLOUD_MODEL,
+                        "messages": [
+                            {"role": "system", "content": _SYSTEM_PROMPT},
+                            {"role": "user", "content": user_content},
+                        ],
+                        "temperature": 0,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+                resp.raise_for_status()
+                body = resp.json()
+                raw_content = body["choices"][0]["message"]["content"]
+                parsed = json.loads(raw_content)
+        except Exception as exc:
+            log.error("cloud_api_call_failed", provider=_PROVIDER, error=str(exc))
+            return None
+
+        return self._validate_consolidation(parsed)
+
     async def _call_ollama(self, memory_texts: str) -> dict[str, Any] | None:
-        """Single Ollama /api/chat call for consolidation.
+        """Single Ollama /api/chat call for consolidation (local fallback).
 
         Args:
             memory_texts: Formatted memory text batch.
@@ -194,7 +291,7 @@ class ConsolidateAgent:
                 resp = await client.post(
                     f"{_OLLAMA_URL}/api/chat",
                     json={
-                        "model": _CONSOLIDATION_MODEL,
+                        "model": _OLLAMA_MODEL,
                         "messages": [
                             {"role": "system", "content": _SYSTEM_PROMPT},
                             {"role": "user", "content": user_content},

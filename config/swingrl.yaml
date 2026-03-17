@@ -94,6 +94,23 @@ memory_agent:
     trade_veto: false
     cycle_gate: false
     risk_thresholds: false
+  consolidation:
+    provider: "nvidia"                      # key into providers map
+    model: ""                               # empty = use provider's default_model
+    timeout_sec: 120
+    providers:
+      nvidia:
+        base_url: "https://integrate.api.nvidia.com/v1"
+        api_key: ""                         # OVERRIDE via NVIDIA_API_KEY in .env
+        default_model: "moonshotai/kimi-k2.5"
+      openrouter:
+        base_url: "https://openrouter.ai/api/v1"
+        api_key: ""                         # OVERRIDE via OPENROUTER_API_KEY in .env
+        default_model: "moonshotai/kimi-k2.5"
+      ollama:
+        base_url: "http://swingrl-ollama:11434/v1"
+        api_key: ""
+        default_model: "qwen3:14b"
 
 training:
   sac_buffer_size: 500000           # SAC replay buffer size. Default 500K; SWINGRL_TRAINING__SAC_BUFFER_SIZE

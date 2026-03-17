@@ -69,3 +69,6 @@ status/*
 *~
 
 # detect-secrets baseline is committed — not gitignored
+memory_live_enrichment.md
+memory_meta_trainer.md
+memory_storage_spec.md

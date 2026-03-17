@@ -379,6 +379,8 @@ class WalkForwardBacktester:
 
             log.info(
                 "fold_complete",
+                env_name=env_name,
+                algo_name=algo_name,
                 fold=fold_idx,
                 gate_passed=gate.passed,
                 failures=gate.failures,

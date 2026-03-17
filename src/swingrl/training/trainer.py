@@ -62,7 +62,6 @@ HYPERPARAMS: dict[str, dict[str, Any]] = {
         "gamma": 0.99,
         "ent_coef": "auto",
         "learning_starts": 10_000,
-        "buffer_size": 1_000_000,
     },
 }
 
@@ -171,6 +170,9 @@ class TrainingOrchestrator:
         # Instantiate algorithm with locked hyperparams
         algo_cls = ALGO_MAP[algo_name]
         params = HYPERPARAMS[algo_name].copy()
+        # SAC buffer_size from config — not hardcoded in HYPERPARAMS.
+        if algo_name == "sac":
+            params["buffer_size"] = self._config.training.sac_buffer_size
         if hyperparams_override:
             params.update(hyperparams_override)
         seed = SEED_MAP[algo_name]

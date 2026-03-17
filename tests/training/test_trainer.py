@@ -148,7 +148,8 @@ class TestHyperparams:
         assert sac["gamma"] == 0.99
         assert sac["ent_coef"] == "auto"
         assert sac["learning_starts"] == 10_000
-        assert sac["buffer_size"] == 1_000_000
+        # buffer_size is injected at runtime from config.training.sac_buffer_size
+        assert "buffer_size" not in sac
 
     def test_all_algos_present(self) -> None:
         """TRAIN-04: All three algorithms have entries."""
