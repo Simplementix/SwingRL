@@ -98,7 +98,7 @@ Deploy the homelab Docker stack with paper trading firing on schedule (equity 4:
 - **Pass/fail checklist to stdout**: features assembled, model loaded, risk check passed, order submitted, fill logged, memory ingested — exit 0 all pass, exit 1 any fail
 
 ### Docker Resource Limits
-- swingrl-ollama: **24GB / 8 CPU, cpuset-cpus=0-5** (pinned to P-cores 0-2, 6 HT threads at 4.8 GHz — dedicated for LLM inference)
+- swingrl-ollama: **8GB / 8 CPU, cpuset-cpus=0-5** (pinned to P-cores 0-2, 6 HT threads at 4.8 GHz — dedicated for LLM inference. Reduced from 24GB: qwen3:14b moved to cloud API in Phase 22, only qwen2.5:3b local ~1.9GB)
 - swingrl-memory: **1GB / 1 CPU** (unpinned, shares remaining cores)
 - swingrl: **16GB / 8 CPU** (unpinned, shares remaining cores — live trading + Phase 22 retraining)
 - swingrl-dashboard: **512MB / 0.5 CPU** (unpinned)

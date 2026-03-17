@@ -56,7 +56,10 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - **SubprocVecEnv(n_envs=6) + 3 algo workers**: same parallelization as initial training (proven at ~800% CPU). `nice +10` applied via `preexec_fn=lambda: os.nice(10)` in Popen, inherited by all SubprocVecEnv fork workers
 - **Memory estimate**: retrain ~1.2GB (3 workers x 6 envs) + live trading ~500MB + Ollama = ~2-3GB total. Well within 16GB
 - **Fail-open on Ollama**: if Ollama/memory agent unavailable during retrain, MetaTrainingOrchestrator falls back to defaults. Retrain continues without LLM guidance
-- **Memory agent concurrent access safe**: live trading uses qwen2.5:3b for /live/ endpoints, retrain uses qwen3:14b for /training/run_config. Ollama queues concurrent requests (higher latency, no errors). FastAPI async handles concurrency. Fail-open + timeouts handle delays
+- **Memory agent concurrent access safe**: live trading uses qwen2.5:3b for /live/ endpoints (local Ollama, pinned P-cores). Retrain uses qwen2.5:3b for /training/run_config (same local Ollama). FastAPI async handles concurrency. Fail-open + timeouts handle delays
+- **Memory consolidation via cloud API (Kimi K2.5)**: replace local qwen3:14b consolidation with OpenAI-compatible cloud API call to `moonshotai/kimi-k2.5` (32B activated MoE, 256K context, $0.45/$2.20 per M tokens). Eliminates Ollama CPU contention during consolidation — local qwen3:14b timed out under any concurrent load. Cost: ~$1.50/month at 48 calls/day. Provider: OpenRouter (14 providers). Memory service consolidation agent switches from local Ollama HTTP to OpenAI-compatible client with configurable base_url + model + api_key
+- **Schedule consolidation outside trading windows**: even with cloud consolidation, avoid concurrent Ollama requests during live endpoint calls. Consolidation runs in gaps between trading cycles (equity 4:15 PM ET, crypto every 4H). Configurable via cron or interval with excluded windows
+- **Ollama resource reduction**: with qwen3:14b removed, Ollama only serves qwen2.5:3b (~1.9GB). Reduce Ollama memory allocation from 24GB to 8GB. Ollama pinned to cpuset 0-5 (3 P-cores) per Phase 20 decision
 - **No checkpoint resume**: if retrain dies (crash/power outage), counts as crash failure. Restarts from scratch on next scheduled window. 3-failure auto-disable prevents infinite retries
 
 ### DuckDB Concurrent Access (UPDATED from Phase 19.1 findings)
@@ -105,8 +108,8 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - **Trend summary in --status**: last 5 retrains with directional Sharpe arrow (improving/declining)
 
 ### Verification Monitoring Items
-- **Ollama latency under retrain load**: qwen2.5:3b serves 5 live trading endpoints (trade_veto, cycle_gate, blend_weights, risk_thresholds, position_advice) in the critical path with 3s timeout. Without CPU pinning, qwen2.5:3b takes ~6.5s under concurrent training (exceeds timeout, memory agent silently disabled). **Fix**: Phase 20 now pins containers via `cpuset-cpus` — Ollama gets dedicated cores 8-15, swingrl gets 0-7. Verify during Phase 22 homelab smoke test that qwen2.5:3b responds <3s during concurrent retrain+live
-- **Consolidation timeout**: Current 60s timeout is insufficient for qwen3:14b under any concurrent load. Increase to 300s or schedule consolidation only when retrain is idle
+- **Ollama latency under retrain load**: qwen2.5:3b serves 5 live trading endpoints with 3s timeout. Phase 20 pins Ollama to cpuset 0-5 (3 P-cores). Verify during Phase 22 homelab smoke test that qwen2.5:3b responds <3s during concurrent retrain+live. With dedicated P-cores and qwen3:14b removed from Ollama, contention should be eliminated
+- **Cloud consolidation connectivity**: verify memory service can reach OpenRouter API from homelab (firewall, DNS). Test with a single consolidation call before enabling scheduled consolidation
 
 ### Testing Strategy
 - **Mock training, real orchestration**: mock SB3 trainer.learn() to return dummy models in seconds. Test full orchestration: data freshness check → training loop → walk-forward validation → gate check → deploy to shadow → Discord alerts → memory ingest
