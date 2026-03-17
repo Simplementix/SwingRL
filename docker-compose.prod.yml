@@ -69,10 +69,10 @@ services:
       context: .
       dockerfile: Dockerfile
       target: production
-    # Resource limits — homelab has 64 GB RAM / 14C-20T; sized for concurrent
-    # live trading + retraining (Phase 22). SAC OOM'd at 16 GB; peak ~10-12 GB
-    # with 500K buffer. Soft limit, shared CPUs. Stack total ~29.5 GB.
-    mem_limit: 24g
+    # No mem_limit — swingrl is the primary workload on 64 GB homelab.
+    # Other containers use ~5.5 GB (Ollama 4G + memory 1G + dashboard 0.5G).
+    # SAC replay buffer (500K × n_envs=6) + 36 SubprocVecEnv fork workers
+    # peak ~12-15 GB during training. Let the OS manage memory.
     cpus: 8.0
     # Secrets: loaded from .env on the host; never baked into the image.
     env_file: .env
