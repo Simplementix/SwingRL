@@ -586,13 +586,16 @@ def _ingest_wf_results_to_memory(
     all_wf_results: dict[str, list[Any]],
     ensemble_weights: dict[str, float],
     gate_result: dict[str, Any],
+    features: np.ndarray | None = None,
+    dates: np.ndarray | None = None,
 ) -> None:
     """Ingest walk-forward performance metrics to memory agent.
 
-    Sends one memory per algo with fold-level detail, plus one ensemble
-    summary. Per-algo memories enable the consolidation agent to identify
-    algo-specific patterns (e.g. SAC overfits on bear-regime folds, A2C
-    generalizes better across iterations). Fail-open: logs and returns on error.
+    Sends one memory per algo with fold-level detail (including date range
+    and regime context from features), plus one ensemble summary. Per-algo
+    memories enable the consolidation agent to identify algo-specific temporal
+    patterns (e.g. SAC overfits on bear-regime folds, A2C generalizes better
+    across iterations). Fail-open: logs and returns on error.
 
     Args:
         config: SwingRLConfig with memory_agent section.
@@ -600,6 +603,8 @@ def _ingest_wf_results_to_memory(
         all_wf_results: Dict mapping algo name to list of FoldResult.
         ensemble_weights: Ensemble weights from OOS Sharpe.
         gate_result: Ensemble gate pass/fail result.
+        features: Full feature array for extracting regime/macro context per fold.
+        dates: Date strings aligned with features array indices.
     """
     mem_cfg = getattr(config, "memory_agent", None)
     if not mem_cfg:
@@ -622,6 +627,19 @@ def _ingest_wf_results_to_memory(
             api_key=api_key,
         )
 
+        # Compute HMM/macro feature indices from env config
+        # Equity: [n_symbols*15 : +6 macro, +2 hmm, +1 turb]
+        # Crypto: [n_symbols*13 : +6 macro, +2 hmm, +1 turb]
+        if env_name == "equity":
+            n_symbols = len(config.equity.symbols)
+            per_asset = 15
+        else:
+            n_symbols = len(config.crypto.symbols)
+            per_asset = 13
+        macro_start = n_symbols * per_asset
+        hmm_start = macro_start + 6  # after 6 macro features
+        turb_idx = hmm_start + 2  # after 2 HMM probs
+
         # Per-algo ingestion with fold-level detail
         for algo_name, folds in all_wf_results.items():
             if not folds:
@@ -635,13 +653,32 @@ def _ingest_wf_results_to_memory(
             total_trades = [int(f.out_of_sample_metrics.get("total_trades", 0)) for f in folds]
             gate_pass_count = sum(1 for f in folds if f.gate_result.passed)
 
-            # Build fold detail lines
+            # Build fold detail lines with date range and regime context
             fold_lines: list[str] = []
             for f in folds:
                 oos = f.out_of_sample_metrics
                 ovf = f.overfitting
+                test_start, test_end = f.test_range
+
+                # Date range context
+                date_ctx = ""
+                if dates is not None and test_start < len(dates) and test_end <= len(dates):
+                    date_ctx = f"period={dates[test_start]}..{dates[test_end - 1]} "
+
+                # Regime/macro context from features array
+                regime_ctx = ""
+                if features is not None and test_end <= len(features):
+                    test_features = features[test_start:test_end]
+                    mean_hmm = test_features[:, hmm_start : hmm_start + 2].mean(axis=0)
+                    mean_vix = float(test_features[:, macro_start].mean())
+                    mean_turb = float(test_features[:, turb_idx].mean())
+                    regime_ctx = (
+                        f"p_bull={mean_hmm[0]:.3f} p_bear={mean_hmm[1]:.3f} "
+                        f"vix={mean_vix:.3f} turbulence={mean_turb:.3f} "
+                    )
+
                 fold_lines.append(
-                    f"fold={f.fold_number} "
+                    f"fold={f.fold_number} {date_ctx}{regime_ctx}"
                     f"sharpe={oos.get('sharpe', 0.0):.4f} "
                     f"mdd={oos.get('mdd', 0.0):.4f} "
                     f"sortino={oos.get('sortino', 0.0):.4f} "
@@ -964,10 +1001,21 @@ def run_environment(
 
     log.info("pipeline_env_started", env_name=env_name)
 
-    # Load full features + prices (used for walk-forward)
+    # Load full features + prices (used for walk-forward) + dates for memory ingestion
     conn = duckdb.connect(str(db_path))
     try:
         features_full, prices_full = _load_features_prices(conn, env_name, config)
+        # Load dates for memory ingestion context (maps feature indices to calendar dates)
+        if env_name == "equity":
+            dates_df = conn.execute("SELECT DISTINCT date FROM ohlcv_daily ORDER BY date").fetchdf()
+            dates_array = np.array([str(d)[:10] for d in dates_df["date"].values])
+        else:
+            dates_df = conn.execute(
+                "SELECT DISTINCT datetime FROM ohlcv_4h ORDER BY datetime"
+            ).fetchdf()
+            dates_array = np.array([str(d)[:10] for d in dates_df["datetime"].values])
+        # Trim to match feature array length (INNER JOIN may reduce rows)
+        dates_array = dates_array[: len(features_full)]
     finally:
         conn.close()
 
@@ -1055,7 +1103,15 @@ def run_environment(
     _evaluate_gate_and_decide(gate_result, ensemble_sharpe, env_name)
 
     # Ingest WF performance metrics to memory agent (if enabled)
-    _ingest_wf_results_to_memory(config, env_name, all_wf_results, ensemble_weights, gate_result)
+    _ingest_wf_results_to_memory(
+        config,
+        env_name,
+        all_wf_results,
+        ensemble_weights,
+        gate_result,
+        features=features_full,
+        dates=dates_array,
+    )
 
     tuning_rounds: list[dict[str, Any]] = []
 
