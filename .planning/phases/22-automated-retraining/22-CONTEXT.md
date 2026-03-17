@@ -84,6 +84,14 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - **Clamp audit already implemented**: meta_decisions DuckDB table (Phase 19) stores proposed vs clamped config. No additional Phase 22 work needed
 - **Live trading data already flows to memory**: Phase 20 implements post-trade ingest. Memory agent accumulates live performance data between retrains naturally
 
+### Eval Env Memory Optimization (Pre-Phase Fix)
+- **Problem**: `TrainingOrchestrator.train()` creates eval_vec_env via `_create_env()` which uses SubprocVecEnv(n_envs=6). With 3 parallel algos, that's 18 forked eval workers sitting idle 99%+ of the time — they only activate for ~2 seconds per eval round (10 rounds per fold). Wastes **~5.4 GB** of RAM
+- **Root cause**: `trainer.py:168` calls `self._create_env()` for eval, same as train. No separate eval path
+- **Fix**: Add a `_create_eval_env()` method (or `eval=True` flag on `_create_env()`) that always uses DummyVecEnv with `n_envs=1`. EvalCallback runs 5 sequential episodes of 252 inference steps — pure predict+step, no gradients. Parallelism provides zero speedup (IPC overhead actually makes SubprocVecEnv slower for this workload)
+- **Impact**: 36 forked processes → 18. Peak memory drops ~5.4 GB. No speed loss (eval takes ~2s either way). No functionality loss (same convergence detection, same 5-episode mean reward)
+- **Files**: `src/swingrl/training/trainer.py` (add eval env method, change line 168), `tests/training/test_trainer.py` (update if needed)
+- **Verify**: memory monitor log should show lower peak during SAC folds after this change
+
 ### Operator CLI
 - **Single script**: `scripts/retrain.py` with subcommands via flags
   - `--env equity|crypto|all` — target environment
