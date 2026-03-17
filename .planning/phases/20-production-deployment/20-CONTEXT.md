@@ -98,13 +98,15 @@ Deploy the homelab Docker stack with paper trading firing on schedule (equity 4:
 - **Pass/fail checklist to stdout**: features assembled, model loaded, risk check passed, order submitted, fill logged, memory ingested — exit 0 all pass, exit 1 any fail
 
 ### Docker Resource Limits
-- swingrl-ollama: **24GB / 8 CPU, cpuset-cpus=8-15** (pinned to physical cores 8-15)
-- swingrl-memory: **1GB / 1 CPU, cpuset-cpus=16** (pinned to core 16)
-- swingrl: **16GB / 8 CPU, cpuset-cpus=0-7** (pinned to physical cores 0-7 — live trading + Phase 22 retraining)
-- swingrl-dashboard: **512MB / 0.5 CPU** (no pinning, uses whatever is available)
+- swingrl-ollama: **24GB / 8 CPU, cpuset-cpus=0-5** (pinned to P-cores 0-2, 6 HT threads at 4.8 GHz — dedicated for LLM inference)
+- swingrl-memory: **1GB / 1 CPU** (unpinned, shares remaining cores)
+- swingrl: **16GB / 8 CPU** (unpinned, shares remaining cores — live trading + Phase 22 retraining)
+- swingrl-dashboard: **512MB / 0.5 CPU** (unpinned)
 - Stack total: ~41.5GB / 17.5 CPU of 64GB / 20T — ~22GB headroom
-- **CPU pinning is required**: without `--cpuset-cpus`, Docker `--cpus` is a soft ceiling — all containers share the same physical cores. Under concurrent load (retrain SubprocVecEnv + live trading + Ollama inference), Ollama's qwen2.5:3b response time degrades from <1s to 6.5s+, exceeding the 3s live endpoint timeout. With pinning, Ollama gets dedicated cores that retrain cannot touch. Homelab has 14 physical cores / 20 logical threads (1 socket, HT enabled).
-- **Apply in docker-compose.prod.yml** via `cpuset` key per service
+- **Homelab CPU**: Intel i5-13500 — 6 P-cores (0-11, HT, 4.8 GHz) + 8 E-cores (12-19, no HT, 3.5 GHz) = 20 logical threads
+- **Only Ollama is pinned**: 3 P-cores (6 threads) reserved exclusively for Ollama. All other containers + host services share the remaining 3 P-cores (6 threads) + 8 E-cores (8 threads) = 14 unpinned threads
+- **Why only Ollama**: qwen2.5:3b serves 5 live trading endpoints with 3s timeout. Without pinning, concurrent retrain degrades Ollama from <1s to 6.5s+ (exceeds timeout, memory agent silently disabled). Pinning gives Ollama guaranteed fast P-cores regardless of retrain load
+- **Apply in docker-compose.prod.yml** via `cpuset` key on swingrl-ollama only
 
 ### Config Schema Updates
 - `memory_agent.live_endpoints.*`: per-endpoint toggles (cycle_gate, blend_weights, risk_thresholds, position_advice, trade_veto) — all default true
