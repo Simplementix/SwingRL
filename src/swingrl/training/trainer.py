@@ -164,8 +164,10 @@ class TrainingOrchestrator:
         # Create wrapped environment
         vec_env = self._create_env(env_name, features, prices)
 
-        # Create eval environment (separate instance for EvalCallback)
-        eval_vec_env = self._create_env(env_name, features, prices)
+        # Create eval environment (separate instance for EvalCallback).
+        # Uses DummyVecEnv(1) — eval runs 5 sequential inference episodes,
+        # no parallelism benefit. Saves ~1.8 GB vs SubprocVecEnv(n_envs).
+        eval_vec_env = self._create_eval_env(env_name, features, prices)
 
         # Instantiate algorithm with locked hyperparams
         algo_cls = ALGO_MAP[algo_name]
@@ -292,6 +294,39 @@ class TrainingOrchestrator:
             norm_reward=True,
         )
         return vec_env
+
+    def _create_eval_env(
+        self,
+        env_name: str,
+        features: np.ndarray,
+        prices: np.ndarray,
+    ) -> VecNormalize:
+        """Create lightweight eval environment for EvalCallback.
+
+        Always uses DummyVecEnv with n_envs=1. Eval runs 5 sequential
+        inference episodes (~1,260 steps) — no parallelism benefit from
+        SubprocVecEnv. Avoids forking 6 workers that sit idle 99% of
+        training time.
+
+        Args:
+            env_name: Environment type ("equity" or "crypto").
+            features: Feature array for the environment.
+            prices: Price array for the environment.
+
+        Returns:
+            VecNormalize-wrapped single-env DummyVecEnv.
+        """
+        env_cls = ENV_CLASS_MAP[env_name]
+
+        def _init() -> StockTradingEnv | CryptoTradingEnv:
+            return env_cls(
+                features=features,
+                prices=prices,
+                config=self._config,
+            )
+
+        base_env = DummyVecEnv([_init])
+        return VecNormalize(base_env, norm_obs=True, norm_reward=True)
 
     def _save_model(
         self,

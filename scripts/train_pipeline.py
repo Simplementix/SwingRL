@@ -589,9 +589,10 @@ def _ingest_wf_results_to_memory(
 ) -> None:
     """Ingest walk-forward performance metrics to memory agent.
 
-    Sends per-algo OOS metrics (sharpe, mdd, sortino, profit_factor, win_rate,
-    trade count) and ensemble-level results so the memory agent can learn which
-    configurations produce good outcomes. Fail-open: logs and returns on error.
+    Sends one memory per algo with fold-level detail, plus one ensemble
+    summary. Per-algo memories enable the consolidation agent to identify
+    algo-specific patterns (e.g. SAC overfits on bear-regime folds, A2C
+    generalizes better across iterations). Fail-open: logs and returns on error.
 
     Args:
         config: SwingRLConfig with memory_agent section.
@@ -611,6 +612,8 @@ def _ingest_wf_results_to_memory(
         return
 
     try:
+        import numpy as np
+
         from swingrl.memory.client import MemoryClient
 
         client = MemoryClient(
@@ -619,11 +622,11 @@ def _ingest_wf_results_to_memory(
             api_key=api_key,
         )
 
-        # Build per-algo summary
-        algo_summaries: list[str] = []
+        # Per-algo ingestion with fold-level detail
         for algo_name, folds in all_wf_results.items():
             if not folds:
                 continue
+
             sharpes = [f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds]
             mdds = [f.out_of_sample_metrics.get("mdd", 0.0) for f in folds]
             sortinos = [f.out_of_sample_metrics.get("sortino", 0.0) for f in folds]
@@ -632,30 +635,70 @@ def _ingest_wf_results_to_memory(
             total_trades = [int(f.out_of_sample_metrics.get("total_trades", 0)) for f in folds]
             gate_pass_count = sum(1 for f in folds if f.gate_result.passed)
 
-            import numpy as np
+            # Build fold detail lines
+            fold_lines: list[str] = []
+            for f in folds:
+                oos = f.out_of_sample_metrics
+                ovf = f.overfitting
+                fold_lines.append(
+                    f"fold={f.fold_number} "
+                    f"sharpe={oos.get('sharpe', 0.0):.4f} "
+                    f"mdd={oos.get('mdd', 0.0):.4f} "
+                    f"sortino={oos.get('sortino', 0.0):.4f} "
+                    f"profit_factor={oos.get('profit_factor', 0.0):.4f} "
+                    f"win_rate={oos.get('win_rate', 0.0):.4f} "
+                    f"trades={int(oos.get('total_trades', 0))} "
+                    f"gate={'PASS' if f.gate_result.passed else 'FAIL'} "
+                    f"overfit_class={ovf.get('classification', 'unknown')} "
+                    f"overfit_gap={ovf.get('gap', 0.0):.4f}"
+                )
 
-            algo_summaries.append(
-                f"algo={algo_name.upper()} folds={len(folds)} "
+            algo_text = (
+                f"WALK-FORWARD ALGO RESULTS: env={env_name} algo={algo_name.upper()} "
+                f"memory_enabled={mem_cfg.enabled} "
+                f"folds={len(folds)} passed_gate={gate_pass_count}/{len(folds)} "
                 f"mean_sharpe={float(np.mean(sharpes)):.4f} "
                 f"mean_mdd={float(np.mean(mdds)):.4f} "
                 f"mean_sortino={float(np.mean(sortinos)):.4f} "
                 f"mean_profit_factor={float(np.mean(pfs)):.4f} "
                 f"mean_win_rate={float(np.mean(win_rates)):.4f} "
-                f"mean_trades_per_fold={float(np.mean(total_trades)):.1f} "
-                f"folds_passed_gate={gate_pass_count}/{len(folds)} "
-                f"ensemble_weight={ensemble_weights.get(algo_name, 0.0):.4f}"
+                f"mean_trades={float(np.mean(total_trades)):.1f} "
+                f"ensemble_weight={ensemble_weights.get(algo_name, 0.0):.4f}\n"
+                + "\n".join(fold_lines)
+            )
+
+            client.ingest_training(algo_text, source=f"walk_forward:{algo_name}")
+            log.info(
+                "wf_algo_results_ingested",
+                env_name=env_name,
+                algo_name=algo_name,
+                folds=len(folds),
+                gate_pass_count=gate_pass_count,
+            )
+
+        # Ensemble summary (links algo results together)
+        algo_summaries = []
+        for algo_name, folds in all_wf_results.items():
+            if not folds:
+                continue
+            sharpes = [f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds]
+            gate_pass_count = sum(1 for f in folds if f.gate_result.passed)
+            algo_summaries.append(
+                f"{algo_name.upper()}(sharpe={float(np.mean(sharpes)):.4f} "
+                f"gate={gate_pass_count}/{len(folds)} "
+                f"weight={ensemble_weights.get(algo_name, 0.0):.4f})"
             )
 
         summary_text = (
-            f"WALK-FORWARD RESULTS: env={env_name} "
+            f"WALK-FORWARD ENSEMBLE: env={env_name} "
             f"memory_enabled={mem_cfg.enabled} "
             f"ensemble_sharpe={gate_result.get('sharpe', 0.0):.4f} "
             f"ensemble_mdd={gate_result.get('mdd', 0.0):.4f} "
             f"ensemble_gate_passed={gate_result.get('passed', False)} " + " | ".join(algo_summaries)
         )
 
-        client.ingest_training(summary_text, source="walk_forward:historical")
-        log.info("wf_results_ingested_to_memory", env_name=env_name)
+        client.ingest_training(summary_text, source="walk_forward:ensemble")
+        log.info("wf_ensemble_ingested", env_name=env_name)
 
     except Exception as exc:
         log.debug("wf_results_memory_ingest_failed", env_name=env_name, error=str(exc))
