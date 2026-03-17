@@ -57,7 +57,26 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - **Memory estimate**: retrain ~1.2GB (3 workers x 6 envs) + live trading ~500MB + Ollama = ~2-3GB total. Well within 16GB
 - **Fail-open on Ollama**: if Ollama/memory agent unavailable during retrain, MetaTrainingOrchestrator falls back to defaults. Retrain continues without LLM guidance
 - **Memory agent concurrent access safe**: live trading uses qwen2.5:3b for /live/ endpoints (local Ollama, pinned P-cores). Retrain uses qwen2.5:3b for /training/run_config (same local Ollama). FastAPI async handles concurrency. Fail-open + timeouts handle delays
-- **Memory consolidation via cloud API (Kimi K2.5)**: replace local qwen3:14b consolidation with OpenAI-compatible cloud API call to `moonshotai/kimi-k2.5` (32B activated MoE, 256K context, $0.45/$2.20 per M tokens). Eliminates Ollama CPU contention during consolidation — local qwen3:14b timed out under any concurrent load. Cost: ~$1.50/month at 48 calls/day. Provider: OpenRouter (14 providers). Memory service consolidation agent switches from local Ollama HTTP to OpenAI-compatible client with configurable base_url + model + api_key
+- **Memory consolidation via cloud API**: replace local qwen3:14b consolidation with OpenAI-compatible cloud API. Eliminates Ollama CPU contention — local qwen3:14b timed out under any concurrent load. Memory service consolidation agent uses a generic OpenAI-compatible client configurable via:
+  ```yaml
+  consolidation:
+    provider: "nvidia"  # key into providers map
+    model: "moonshotai/kimi-k2.5"  # override per-provider default
+    providers:
+      nvidia:
+        base_url: "https://integrate.api.nvidia.com/v1"
+        api_key: "${NVIDIA_API_KEY}"
+        default_model: "moonshotai/kimi-k2.5"
+      openrouter:
+        base_url: "https://openrouter.ai/api/v1"
+        api_key: "${OPENROUTER_API_KEY}"
+        default_model: "moonshotai/kimi-k2.5"
+      ollama:
+        base_url: "http://swingrl-ollama:11434/v1"
+        api_key: ""
+        default_model: "qwen3:14b"
+  ```
+  All providers use the same `/v1/chat/completions` endpoint (OpenAI-compatible). Adding a new provider = one YAML block + env var. Default provider: `nvidia` (NVIDIA NIM developer account). Fallback to `ollama` if cloud unavailable. Estimated cost at NVIDIA/OpenRouter: ~$1.50/month at 48 calls/day
 - **Schedule consolidation outside trading windows**: even with cloud consolidation, avoid concurrent Ollama requests during live endpoint calls. Consolidation runs in gaps between trading cycles (equity 4:15 PM ET, crypto every 4H). Configurable via cron or interval with excluded windows
 - **Ollama resource reduction**: with qwen3:14b removed, Ollama only serves qwen2.5:3b (~1.9GB). Reduce Ollama memory allocation from 24GB to 8GB. Ollama pinned to cpuset 0-5 (3 P-cores) per Phase 20 decision
 - **No checkpoint resume**: if retrain dies (crash/power outage), counts as crash failure. Restarts from scratch on next scheduled window. 3-failure auto-disable prevents infinite retries
