@@ -17,7 +17,7 @@ import pickle  # nosec B403 -- required for SB3 VecNormalize serialization
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
@@ -31,6 +31,9 @@ from swingrl.envs.crypto import CryptoTradingEnv
 from swingrl.envs.equity import StockTradingEnv
 from swingrl.training.callbacks import ConvergenceCallback
 from swingrl.utils.exceptions import ModelError
+
+if TYPE_CHECKING:
+    from swingrl.memory.client import MemoryClient
 
 log = structlog.get_logger(__name__)
 
@@ -130,6 +133,8 @@ class TrainingOrchestrator:
         prices: np.ndarray,
         total_timesteps: int = 1_000_000,
         hyperparams_override: dict[str, Any] | None = None,
+        memory_client: MemoryClient | None = None,
+        run_id: str | None = None,
     ) -> TrainingResult:
         """Train an SB3 algorithm on the specified environment.
 
@@ -146,6 +151,13 @@ class TrainingOrchestrator:
             hyperparams_override: Optional dict of hyperparameter overrides to
                 merge on top of HYPERPARAMS[algo_name]. Override values win.
                 Used by meta-training tuning rounds to test alternate configs.
+            memory_client: Optional MemoryClient. When provided, wraps the
+                training env in MemoryVecRewardWrapper and attaches
+                MemoryEpochCallback to ingest epoch snapshots and apply
+                LLM-guided reward weight adjustments. Fail-open: if None,
+                training proceeds without memory integration.
+            run_id: Training run identifier for memory tagging (e.g.
+                "equity_ppo_20260318T120000Z"). Auto-generated if None.
 
         Returns:
             TrainingResult with paths and metadata.
@@ -163,6 +175,19 @@ class TrainingOrchestrator:
 
         # Create wrapped environment
         vec_env = self._create_env(env_name, features, prices)
+
+        # Optionally wrap with MemoryVecRewardWrapper for LLM-guided reward shaping
+        memory_wrapper = None
+        if memory_client is not None:
+            try:
+                from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
+
+                memory_wrapper = MemoryVecRewardWrapper(vec_env)
+                vec_env = memory_wrapper  # type: ignore[assignment]
+                log.info("memory_reward_wrapper_attached", env_name=env_name, algo_name=algo_name)
+            except Exception as exc:
+                log.warning("memory_reward_wrapper_failed", error=str(exc))
+                memory_wrapper = None
 
         # Create eval environment (separate instance for EvalCallback).
         # Uses DummyVecEnv(1) — eval runs 5 sequential inference episodes,
@@ -212,10 +237,35 @@ class TrainingOrchestrator:
             verbose=0,
         )
 
+        # Optionally attach MemoryEpochCallback for per-epoch memory ingestion
+        callbacks: list[Any] = [eval_cb]
+        if memory_client is not None and memory_wrapper is not None:
+            try:
+                from swingrl.memory.training.epoch_callback import MemoryEpochCallback
+
+                effective_run_id = run_id or f"{env_name}_{algo_name}"
+                memory_cb = MemoryEpochCallback(
+                    memory_client=memory_client,
+                    wrapper=memory_wrapper,
+                    run_id=effective_run_id,
+                    algo=algo_name.upper(),
+                    env=env_name,
+                    verbose=0,
+                )
+                callbacks.append(memory_cb)
+                log.info(
+                    "memory_epoch_callback_attached",
+                    run_id=effective_run_id,
+                    env_name=env_name,
+                    algo_name=algo_name,
+                )
+            except Exception as exc:
+                log.warning("memory_epoch_callback_failed", error=str(exc))
+
         # Train
         model.learn(
             total_timesteps=total_timesteps,
-            callback=eval_cb,
+            callback=callbacks,
         )
 
         # Save model and VecNormalize
@@ -354,9 +404,17 @@ class TrainingOrchestrator:
 
         model.save(str(model_path))
 
-        # Save VecNormalize stats (pickle required for SB3 VecNormalize objects)
+        # Save VecNormalize stats — unwrap MemoryVecRewardWrapper if present so
+        # the pickle file always contains a plain VecNormalize (eval loading
+        # expects obs_rms / ret_rms attributes directly on the loaded object).
+        # Pickle is required for SB3 VecNormalize (internal SB3 constraint).
+        from stable_baselines3.common.vec_env import VecEnvWrapper
+
+        vec_to_save = vec_env
+        while isinstance(vec_to_save, VecEnvWrapper) and not isinstance(vec_to_save, VecNormalize):
+            vec_to_save = vec_to_save.venv  # type: ignore[assignment]
         with vec_path.open("wb") as f:
-            pickle.dump(vec_env, f)  # noqa: S301
+            pickle.dump(vec_to_save, f)  # noqa: S301  # nosec B301
 
         log.info(
             "model_saved",

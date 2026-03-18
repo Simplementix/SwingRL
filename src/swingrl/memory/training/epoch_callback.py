@@ -97,6 +97,10 @@ class MemoryEpochCallback(BaseCallback):
         self._sharpe_at_trigger: float = 0.0
         self._mdd_at_trigger: float = 0.0
 
+    def _on_step(self) -> bool:
+        """Required by BaseCallback. Always returns True (never stops training)."""
+        return True
+
     def _on_rollout_end(self) -> None:
         """Called at the end of each rollout (epoch). Main callback entry point."""
         self._epoch += 1

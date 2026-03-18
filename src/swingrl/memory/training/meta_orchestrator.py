@@ -157,8 +157,8 @@ class MetaTrainingOrchestrator:
 
         ts = total_timesteps or DEFAULT_TIMESTEPS.get(env_name, 1_000_000)
 
-        # Train using standard trainer path (wrapper and callback injected in future SB3 extension)
-        # For now: call trainer.train() with clamped hyperparams
+        # Train with memory client injected — trainer wires MemoryVecRewardWrapper
+        # and MemoryEpochCallback internally when memory_client is provided.
         result = trainer.train(
             env_name=env_name,
             algo_name=algo_name,
@@ -166,6 +166,8 @@ class MetaTrainingOrchestrator:
             prices=prices,
             total_timesteps=ts,
             hyperparams_override=merged_hp if merged_hp else None,
+            memory_client=self._client,
+            run_id=run_id,
         )
 
         # Ingest run summary
