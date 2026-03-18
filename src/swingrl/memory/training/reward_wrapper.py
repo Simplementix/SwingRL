@@ -52,14 +52,18 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         self,
         venv: Any,
         initial_weights: dict[str, float] | None = None,
+        periods_per_year: int = 252,
     ) -> None:
         """Initialize reward wrapper with optional weight override.
 
         Args:
             venv: VecEnv to wrap.
             initial_weights: Initial reward weights. Missing keys use DEFAULT_WEIGHTS.
+            periods_per_year: Trading periods per year for Sharpe annualization
+                (252 for equity daily, 2191 for crypto 4H).
         """
         super().__init__(venv)
+        self._periods_per_year = periods_per_year
 
         # Merge provided weights with defaults
         weights = dict(DEFAULT_WEIGHTS)
@@ -181,8 +185,8 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         std = float(np.std(arr))
         if std < 1e-10:
             return 0.0
-        # Annualize assuming daily rewards (252 trading days)
-        return float(mean / std * np.sqrt(252))
+        # Annualize using configured periods (252 equity daily, 2191 crypto 4H)
+        return float(mean / std * np.sqrt(self._periods_per_year))
 
     def rolling_mdd(self) -> float:
         """Compute maximum drawdown over the rolling window.

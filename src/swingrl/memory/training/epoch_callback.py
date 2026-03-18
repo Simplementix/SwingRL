@@ -354,6 +354,29 @@ class MemoryEpochCallback(BaseCallback):
 
                 clamped = clamp_reward_weights(new_weights)
                 old_weights = self._wrapper.weights
+
+                # Change detection: skip if max absolute delta < 0.01
+                max_delta = max(
+                    abs(clamped.get(k, 0.0) - old_weights.get(k, 0.0))
+                    for k in set(clamped) | set(old_weights)
+                )
+                if max_delta < 0.01:
+                    log.debug(
+                        "epoch_advice_no_change",
+                        epoch=self._epoch,
+                        max_delta=round(max_delta, 4),
+                    )
+                    return
+
+                # Resolve existing pending adjustment before overwriting
+                if self._pending_adjustment is not None:
+                    log.warning(
+                        "epoch_advice_resolving_pending_early",
+                        epoch=self._epoch,
+                        pending_epoch=self._pending_adjustment.get("epoch_triggered"),
+                    )
+                    self._resolve_pending_adjustment()
+
                 self._wrapper.update_weights(clamped)
                 self._ingest_adjustment_trigger(
                     new_weights=clamped,

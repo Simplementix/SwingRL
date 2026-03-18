@@ -182,7 +182,8 @@ class TrainingOrchestrator:
             try:
                 from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
 
-                memory_wrapper = MemoryVecRewardWrapper(vec_env)
+                periods = 2191 if env_name == "crypto" else 252
+                memory_wrapper = MemoryVecRewardWrapper(vec_env, periods_per_year=periods)
                 vec_env = memory_wrapper  # type: ignore[assignment]
                 log.info("memory_reward_wrapper_attached", env_name=env_name, algo_name=algo_name)
             except Exception as exc:

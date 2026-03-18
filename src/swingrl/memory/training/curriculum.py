@@ -307,11 +307,11 @@ class MemoryCurriculumSampler:
             # Find bar indices for start/end dates
             try:
                 start_bar = next((i for i, d in enumerate(date_strs) if d >= start_str), 0)
-                end_bar = next(
-                    (i for i, d in enumerate(reversed(date_strs)) if d <= end_str),
-                    len(date_strs) - 1,
-                )
-                end_bar = len(date_strs) - 1 - end_bar
+                # Forward iteration: find the last bar where date <= end_str
+                end_bar = 0
+                for i, d in enumerate(date_strs):
+                    if d <= end_str:
+                        end_bar = i
             except Exception:
                 start_bar = 0
                 end_bar = len(date_strs)

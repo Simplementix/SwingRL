@@ -1324,7 +1324,7 @@ def run_environment(
         )
 
         # Round 1: PPO variants
-        best_ppo_result = None
+        best_ppo_folds: list[Any] = []
         best_ppo_sharpe = ensemble_sharpe
         best_ppo_params: dict[str, Any] = {}
 
@@ -1335,7 +1335,7 @@ def run_environment(
         )
 
         for variant_params in TUNING_GRID.get(1, {}).get("ppo", []):
-            result_v = orchestrator_r1.train(
+            orchestrator_r1.train(
                 env_name=env_name,
                 algo_name="ppo",
                 features=features_full,
@@ -1355,7 +1355,7 @@ def run_environment(
             _, ppo_sharpe, _ = check_ensemble_gate({"ppo": folds_v})
             if ppo_sharpe > best_ppo_sharpe:
                 best_ppo_sharpe = ppo_sharpe
-                best_ppo_result = result_v
+                best_ppo_folds = folds_v
                 best_ppo_params = variant_params
 
         if best_ppo_params:
@@ -1371,9 +1371,8 @@ def run_environment(
         )
 
         # Recompute gate after tuning round 1
-        if best_ppo_result:
-            tuned_ppo_results = [best_ppo_result] if best_ppo_result else []
-            tuned_wf_results = {**all_wf_results, "ppo": tuned_ppo_results}
+        if best_ppo_folds:
+            tuned_wf_results = {**all_wf_results, "ppo": best_ppo_folds}
             passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(tuned_wf_results)
             gate_result = {
                 "passed": passed,
@@ -1491,6 +1490,13 @@ def run_environment(
             if last_fold is not None:
                 from swingrl.training.trainer import TrainingResult
 
+                # WalkForwardBacktester.run() returns FoldResult which does not
+                # carry per-fold convergence data, so converged_at_step stays None.
+                # decide_final_timesteps treats None as "not converged" and
+                # escalates to 2x — this is the safe/correct default.
+                last_fold_result = last_fold
+                # Extract converged_at_step if fold carries it (future-proof)
+                converged_step = getattr(last_fold_result, "converged_at_step", None)
                 dummy_result = TrainingResult(
                     model_path=models_dir / "active" / env_name / algo_name / "model.zip",
                     vec_normalize_path=models_dir
@@ -1500,7 +1506,7 @@ def run_environment(
                     / "vec_normalize.pkl",
                     env_name=env_name,
                     algo_name=algo_name,
-                    converged_at_step=None,
+                    converged_at_step=converged_step,
                     total_timesteps=ts,
                 )
                 ts = decide_final_timesteps(env_name, dummy_result)
