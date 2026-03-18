@@ -98,6 +98,8 @@ memory_agent:
     provider: "nvidia"                      # key into providers map
     model: ""                               # empty = use provider's default_model
     timeout_sec: 120
+    min_confidence_for_advice: 0.4          # minimum confidence for patterns used in query advice
+    max_patterns_per_merge: 2               # max patterns per dedup/merge LLM call
     providers:
       nvidia:
         base_url: "https://integrate.api.nvidia.com/v1"

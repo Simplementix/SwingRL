@@ -14,6 +14,7 @@ Raises pydantic.ValidationError on any invalid field value.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -251,6 +252,17 @@ class ConsolidationConfig(BaseModel):
     provider: str = "nvidia"  # Key into providers map
     model: str = ""  # Override per-provider default; empty = use provider's default_model
     timeout_sec: float = 120.0
+    min_confidence_for_advice: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence threshold for patterns to be used in query advice.",
+    )
+    max_patterns_per_merge: int = Field(
+        default=2,
+        ge=1,
+        description="Maximum patterns per dedup/merge LLM call (pairwise limit).",
+    )
     providers: dict[str, ConsolidationProviderConfig] = Field(
         default_factory=lambda: {
             "nvidia": ConsolidationProviderConfig(
@@ -267,6 +279,17 @@ class ConsolidationConfig(BaseModel):
             ),
         }
     )
+
+    @model_validator(mode="after")
+    def resolve_provider_api_keys_from_env(self) -> ConsolidationConfig:
+        """Fall back to {PROVIDER}_API_KEY env vars for empty api_key fields."""
+        for provider_name, provider_cfg in self.providers.items():
+            if not provider_cfg.api_key:
+                env_key = f"{provider_name.upper()}_API_KEY"
+                env_val = os.environ.get(env_key, "")
+                if env_val:
+                    provider_cfg.api_key = env_val
+        return self
 
 
 class MemoryAgentConfig(BaseModel):
@@ -287,7 +310,7 @@ class MemoryAgentConfig(BaseModel):
     openai_model: str = "gpt-4o-mini"
     ollama_fast_model: str = "qwen2.5:3b"
     ollama_smart_model: str = "qwen3:14b"
-    ollama_embed_model: str = "nomic-embed-text"
+
     consolidate_interval_min: int = 30
     inbox_dir: str = "/data/memory_inbox"
     api_key: str = ""  # Populated from SWINGRL_MEMORY_AGENT__API_KEY env var; empty = no auth

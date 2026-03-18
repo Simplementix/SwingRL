@@ -147,6 +147,22 @@ def _load_fills(sqlite_path: Path) -> list[dict[str, Any]]:
     return fills
 
 
+def _derive_regime(p_bull: float, p_bear: float, p_crisis: float) -> tuple[str, float]:
+    """Derive dominant regime and confidence from HMM state probabilities.
+
+    Args:
+        p_bull: Probability of bull regime.
+        p_bear: Probability of bear regime.
+        p_crisis: Probability of crisis regime.
+
+    Returns:
+        Tuple of (dominant_regime, confidence) based on argmax of probabilities.
+    """
+    probs = {"bull": p_bull, "bear": p_bear, "crisis": p_crisis}
+    dominant = max(probs, key=probs.get)  # type: ignore[arg-type]
+    return (dominant, probs[dominant])
+
+
 def _lookup_regime(
     duckdb_conn: Any,
     timestamp: str | None,
@@ -155,7 +171,8 @@ def _lookup_regime(
     """Look up the dominant HMM regime at a given timestamp.
 
     Queries hmm_state_history for the most recent row at or before the
-    fill timestamp. Handles both 2-state and 3-state (with p_crisis) schemas.
+    fill timestamp. Derives dominant regime from argmax of p_bull, p_bear,
+    p_crisis probabilities.
 
     Args:
         duckdb_conn: Active DuckDB connection.
@@ -177,47 +194,26 @@ def _lookup_regime(
         if not exists or exists[0] == 0:
             return ("unknown", 0.0)
 
-        # Determine available columns (3-state vs 2-state schema)
-        cols_result = duckdb_conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'hmm_state_history'"
-        ).fetchall()
-        available_cols = {row[0] for row in cols_result}
-
-        has_env = "env" in available_cols
-
-        # Build query based on available schema
-        if has_env:
-            row = duckdb_conn.execute(
-                """
-                SELECT dominant_regime, confidence
-                FROM hmm_state_history
-                WHERE timestamp <= ? AND env = ?
-                ORDER BY timestamp DESC LIMIT 1
-                """,
-                [timestamp, env],
-            ).fetchone()
-        else:
-            row = duckdb_conn.execute(
-                """
-                SELECT dominant_regime, confidence
-                FROM hmm_state_history
-                WHERE timestamp <= ?
-                ORDER BY timestamp DESC LIMIT 1
-                """,
-                [timestamp],
-            ).fetchone()
+        # Query actual schema columns: environment, date, p_bull, p_bear, p_crisis
+        row = duckdb_conn.execute(
+            """
+            SELECT p_bull, p_bear, p_crisis
+            FROM hmm_state_history
+            WHERE environment = ? AND date <= ?
+            ORDER BY date DESC LIMIT 1
+            """,
+            [env, timestamp],
+        ).fetchone()
 
         if row:
-            return (str(row[0]), float(row[1]))
+            return _derive_regime(float(row[0]), float(row[1]), float(row[2] or 0.0))
 
-        # If no row found for this timestamp, try getting the most recent overall
+        # If no row found for this env/timestamp, try most recent overall
         row = duckdb_conn.execute(
-            "SELECT dominant_regime, confidence FROM hmm_state_history "
-            "ORDER BY timestamp DESC LIMIT 1"
+            "SELECT p_bull, p_bear, p_crisis FROM hmm_state_history ORDER BY date DESC LIMIT 1"
         ).fetchone()
         if row:
-            return (str(row[0]), float(row[1]))
+            return _derive_regime(float(row[0]), float(row[1]), float(row[2] or 0.0))
 
         return ("unknown", 0.0)
 

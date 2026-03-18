@@ -19,35 +19,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_fold_result(
-    sharpe: float = 1.2,
-    mdd: float = -0.08,
-    profit_factor: float = 1.5,
-) -> MagicMock:
-    """Create a mock FoldResult with given OOS metrics.
-
-    Args:
-        sharpe: OOS Sharpe ratio.
-        mdd: OOS max drawdown (negative float).
-        profit_factor: OOS profit factor.
-
-    Returns:
-        MagicMock with .out_of_sample_metrics dict.
-    """
-    fold = MagicMock()
-    fold.out_of_sample_metrics = {
-        "sharpe": sharpe,
-        "mdd": mdd,
-        "profit_factor": profit_factor,
-        "sortino": sharpe * 1.2,
-        "calmar": sharpe * 0.5,
-    }
-    return fold
+from tests.training.conftest import _make_fold_result
 
 
 def _make_training_result(
@@ -244,25 +216,20 @@ class TestTuningTriggersOnLowSharpe:
                 d = tmp_path / "active" / "equity" / algo
                 d.mkdir(parents=True, exist_ok=True)
 
-            # Low Sharpe should either exit(1) or return with gate failed
-            try:
-                result = pipeline.run_environment(
-                    env_name="equity",
-                    config=MagicMock(
-                        memory_agent=MagicMock(meta_training=False, enabled=False),
-                        system=MagicMock(duckdb_path=str(tmp_path / "test.ddb")),
-                        paths=MagicMock(logs_dir=str(tmp_path / "logs")),
-                        training=MagicMock(n_envs=6),
-                    ),
-                    models_dir=tmp_path,
-                    force=False,
-                    report={},
-                )
-                # Gate should fail when Sharpe < 0.5 after tuning exhausted
-                assert result["ensemble_gate"]["passed"] is False
-            except SystemExit as e:
-                # Exit with code 1 is also valid for gate failure
-                assert e.code == 1
+            result = pipeline.run_environment(
+                env_name="equity",
+                config=MagicMock(
+                    memory_agent=MagicMock(meta_training=False, enabled=False),
+                    system=MagicMock(duckdb_path=str(tmp_path / "test.ddb")),
+                    paths=MagicMock(logs_dir=str(tmp_path / "logs")),
+                    training=MagicMock(n_envs=6),
+                ),
+                models_dir=tmp_path,
+                force=False,
+                report={},
+            )
+            # Gate should fail when Sharpe < 0.5 after tuning exhausted
+            assert result["ensemble_gate"]["passed"] is False
 
 
 class TestEnsembleWeightsFromWfSharpe:

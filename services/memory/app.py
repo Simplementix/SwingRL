@@ -3,17 +3,17 @@
 Startup sequence (lifespan):
 1. Initialize SQLite database (create tables if not exist)
 2. Wait for Ollama /api/tags to return 200 (block, timeout 300s)
-3. Create ConsolidateAgent and start 30-min background scheduler
-4. Register routers and serve
+3. Register routers and serve
 
-Shutdown: Stop APScheduler gracefully.
+Consolidation is event-driven only (no background scheduler):
+- From train_pipeline.py at iteration_complete
+- From POST /consolidate for manual trigger
 
 All config via environment variables:
 - MEMORY_API_KEY: Required for all endpoints except /health
 - MEMORY_DB_PATH: Path to SQLite file (default: /app/db/memory.db)
 - OLLAMA_URL: Ollama service URL (default: http://swingrl-ollama:11434)
 - OLLAMA_TIMEOUT: LLM call timeout in seconds (default: 30)
-- CONSOLIDATE_INTERVAL_MIN: Background consolidation interval (default: 30)
 """
 
 from __future__ import annotations
@@ -26,9 +26,7 @@ from contextlib import asynccontextmanager
 import anyio
 import httpx
 import structlog
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
-from memory_agents.consolidate import ConsolidateAgent
 from routers import core, debug, training
 
 from db import init_db
@@ -82,8 +80,6 @@ async def _wait_for_ollama(
 # FastAPI lifespan
 # ---------------------------------------------------------------------------
 
-scheduler = AsyncIOScheduler()
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -95,24 +91,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 2. Wait for Ollama — never start degraded
     await _wait_for_ollama()
 
-    # 3. Start background consolidation scheduler
-    consolidate_agent = ConsolidateAgent()
-    interval_min = int(os.environ.get("CONSOLIDATE_INTERVAL_MIN", "30"))
-    scheduler.add_job(
-        consolidate_agent.run,
-        "interval",
-        minutes=interval_min,
-        id="consolidation_job",
-        replace_existing=True,
-    )
-    scheduler.start()
-    log.info("consolidation_scheduler_started", interval_min=interval_min)
     log.info("memory_service_ready")
 
     yield
 
-    # Shutdown
-    scheduler.shutdown(wait=False)
     log.info("memory_service_stopped")
 
 

@@ -85,6 +85,8 @@ class MemoryEpochCallback(BaseCallback):
         self._run_id = run_id
         self._algo = algo
         self._env = env
+        # Cache base URL at init; avoids repeated private attr access during training
+        self._memory_base_url: str = memory_client._base_url  # noqa: SLF001
 
         self._epoch: int = 0
         self._curriculum_window_active: str = "unknown"
@@ -319,7 +321,7 @@ class MemoryEpochCallback(BaseCallback):
             }
             data = _json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
-                f"{self._client._base_url}/training/epoch_advice",  # noqa: SLF001
+                f"{self._memory_base_url}/training/epoch_advice",
                 data=data,
                 headers={"Content-Type": "application/json"},
                 method="POST",

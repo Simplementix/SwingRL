@@ -1,6 +1,7 @@
-"""Training advisor endpoints: /training/run_config, /training/epoch_advice.
+"""Training advisor endpoints: /training/run_config, /training/epoch_advice,
+/training/record_outcome, /training/pattern_effectiveness.
 
-Both endpoints require X-API-Key header.
+All endpoints require X-API-Key header.
 Called by MetaTrainingOrchestrator in src/swingrl/memory/training/meta_orchestrator.py
 via MemoryClient in src/swingrl/memory/client.py.
 """
@@ -14,6 +15,8 @@ from auth import verify_api_key
 from fastapi import APIRouter, Depends
 from memory_agents.query import QueryAgent
 from pydantic import BaseModel
+
+from db import get_pattern_effectiveness, insert_pattern_outcome
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
@@ -59,6 +62,26 @@ class EpochAdviceResponse(BaseModel):
     reward_weights: dict[str, float] = {}
     stop_training: bool = False
     rationale: str = "cold_start"
+
+
+class RecordOutcomeRequest(BaseModel):
+    """Request body for POST /training/record_outcome."""
+
+    iteration: int
+    env_name: str
+    gate_passed: bool | None = None
+    sharpe: float | None = None
+    mdd: float | None = None
+    sortino: float | None = None
+    pnl: float | None = None
+    patterns_presented: list[int] | None = None
+
+
+class RecordOutcomeResponse(BaseModel):
+    """Response body for POST /training/record_outcome."""
+
+    id: int
+    status: str = "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -107,3 +130,44 @@ async def get_epoch_advice(
         stop_training=bool(result.get("stop_training", False)),
         rationale=result.get("rationale", "cold_start"),
     )
+
+
+@router.post("/record_outcome", response_model=RecordOutcomeResponse)
+async def record_outcome(
+    body: RecordOutcomeRequest,
+    _key: str = Depends(verify_api_key),
+) -> RecordOutcomeResponse:
+    """Record training iteration outcome for pattern effectiveness analysis.
+
+    Called by train_pipeline.py after each iteration completes.
+    Requires X-API-Key header.
+    """
+    row_id = insert_pattern_outcome(
+        iteration=body.iteration,
+        env_name=body.env_name,
+        gate_passed=body.gate_passed,
+        sharpe=body.sharpe,
+        mdd=body.mdd,
+        sortino=body.sortino,
+        pnl=body.pnl,
+        patterns_presented=body.patterns_presented,
+    )
+    log.info(
+        "outcome_recorded",
+        iteration=body.iteration,
+        env_name=body.env_name,
+        row_id=row_id,
+    )
+    return RecordOutcomeResponse(id=row_id)
+
+
+@router.get("/pattern_effectiveness")
+async def pattern_effectiveness(
+    _key: str = Depends(verify_api_key),
+) -> list[dict[str, Any]]:
+    """Return pattern effectiveness data joining presentations with outcomes.
+
+    For human review of which patterns actually improved training.
+    Requires X-API-Key header.
+    """
+    return get_pattern_effectiveness()

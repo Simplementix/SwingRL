@@ -61,6 +61,9 @@ _DEFAULT_COMPARISON_PATH: str = "data/training_comparison.json"
 # Memory service health check endpoint
 _MEMORY_HEALTH_ENDPOINT: str = "/health"
 
+# Pipeline version for model metadata tagging
+_PIPELINE_VERSION: str = "1.1.0"
+
 
 # ---------------------------------------------------------------------------
 # Multi-iteration training state helpers
@@ -276,24 +279,43 @@ def check_memory_service_health(base_url: str, timeout: float = 5.0) -> bool:
         return False
 
 
-def wait_for_memory_service(base_url: str, poll_interval: float = 30.0) -> None:
-    """Poll memory service health endpoint until healthy.
+def wait_for_memory_service(
+    base_url: str,
+    poll_interval: float = 30.0,
+    max_retries: int = 60,
+) -> bool:
+    """Poll memory service health endpoint until healthy or retries exhausted.
 
-    Logs a warning on each failed poll. Runs indefinitely until healthy.
+    Fail-open: returns False after exhausting retries so the caller can
+    skip memory features instead of blocking indefinitely.
 
     Args:
         base_url: Base URL of the memory service.
         poll_interval: Seconds between health polls.
+        max_retries: Maximum number of poll attempts (default 60 ~30 min at 30s intervals).
+
+    Returns:
+        True if the service became healthy, False if retries were exhausted.
     """
     log.warning("memory_service_unhealthy_polling_start", base_url=base_url)
-    while not check_memory_service_health(base_url):
+    for attempt in range(1, max_retries + 1):
+        if check_memory_service_health(base_url):
+            log.info("memory_service_healthy", base_url=base_url)
+            return True
         log.warning(
             "memory_service_unhealthy_retrying",
             base_url=base_url,
             retry_in_s=poll_interval,
+            attempt=attempt,
+            max_retries=max_retries,
         )
         time.sleep(poll_interval)
-    log.info("memory_service_healthy", base_url=base_url)
+    log.warning(
+        "memory_service_unhealthy_retries_exhausted",
+        base_url=base_url,
+        max_retries=max_retries,
+    )
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +374,11 @@ def run_all_iterations(
             log.info("iteration_start_memory", iteration=i, total=total)
             # Wait for memory service before running memory iterations
             if not check_memory_service_health(cfg.memory_agent.base_url):
-                wait_for_memory_service(cfg.memory_agent.base_url)
+                memory_ok = wait_for_memory_service(cfg.memory_agent.base_url)
+                if not memory_ok:
+                    log.warning("memory_service_unavailable_falling_back_to_baseline", iteration=i)
+                    cfg.memory_agent.enabled = False
+                    cfg.memory_agent.meta_training = False
 
         state["current_iteration"] = i
         save_training_state(state, state_path)
@@ -413,18 +439,35 @@ def run_all_iterations(
             elapsed_hours=round(iter_elapsed / 3600, 2),
         )
 
-        # Consolidate memories after each memory-enabled iteration
+        # Consolidate memories + record outcomes after each memory-enabled iteration
         if i > 0:
             try:
+                api_key = getattr(cfg.memory_agent, "api_key", "")
                 memory_client = MemoryClient(
                     base_url=cfg.memory_agent.base_url,
                     default_timeout=cfg.memory_agent.timeout_sec,
-                    api_key=getattr(cfg.memory_agent, "api_key", ""),
+                    api_key=api_key,
                 )
+                # Stage 1 per-env + Stage 2 cross-env consolidation
                 memory_client.consolidate(timeout=120.0)
                 log.info("memory_consolidated", after_iteration=i)
+
+                # Record iteration outcomes for pattern effectiveness tracking
+                if api_key:
+                    for env_name in ["equity", "crypto"]:
+                        env_result = iter_result.get(env_name, {})
+                        if isinstance(env_result, dict) and "error" not in env_result:
+                            gate = env_result.get("ensemble_gate", {})
+                            memory_client.record_outcome(
+                                iteration=i,
+                                env_name=env_name,
+                                gate_passed=gate.get("passed"),
+                                sharpe=gate.get("sharpe"),
+                                mdd=gate.get("mdd"),
+                                timeout=10.0,
+                            )
             except Exception as exc:
-                log.warning("memory_consolidation_failed", iteration=i, error=str(exc))
+                log.warning("memory_post_iteration_failed", iteration=i, error=str(exc))
 
     # Select best per algo x env by Sortino (Calmar tiebreak)
     winners = select_best_per_algo_env(state)
@@ -588,14 +631,14 @@ def _ingest_wf_results_to_memory(
     gate_result: dict[str, Any],
     features: np.ndarray | None = None,
     dates: np.ndarray | None = None,
+    iteration_number: int = 0,
+    total_timesteps: int = 0,
 ) -> None:
-    """Ingest walk-forward performance metrics to memory agent.
+    """Ingest enriched walk-forward performance metrics to memory agent.
 
-    Sends one memory per algo with fold-level detail (including date range
-    and regime context from features), plus one ensemble summary. Per-algo
-    memories enable the consolidation agent to identify algo-specific temporal
-    patterns (e.g. SAC overfits on bear-regime folds, A2C generalizes better
-    across iterations). Fail-open: logs and returns on error.
+    Sends one memory per algo with fold-level detail (including date range,
+    regime context, trade quality, IS/OOS metrics), plus one ensemble summary.
+    Source tags use format walk_forward:{env_name}:{algo} for proper filtering.
 
     Args:
         config: SwingRLConfig with memory_agent section.
@@ -605,6 +648,8 @@ def _ingest_wf_results_to_memory(
         gate_result: Ensemble gate pass/fail result.
         features: Full feature array for extracting regime/macro context per fold.
         dates: Date strings aligned with features array indices.
+        iteration_number: Current training iteration (0=baseline).
+        total_timesteps: Training timesteps per fold.
     """
     mem_cfg = getattr(config, "memory_agent", None)
     if not mem_cfg:
@@ -619,6 +664,7 @@ def _ingest_wf_results_to_memory(
     try:
         import numpy as np
 
+        from swingrl.agents.backtest import ENV_PARAMS
         from swingrl.memory.client import MemoryClient
 
         client = MemoryClient(
@@ -633,12 +679,17 @@ def _ingest_wf_results_to_memory(
         if env_name == "equity":
             n_symbols = len(config.equity.symbols)
             per_asset = 15
+            env_symbols = config.equity.symbols
         else:
             n_symbols = len(config.crypto.symbols)
             per_asset = 13
+            env_symbols = config.crypto.symbols
         macro_start = n_symbols * per_asset
         hmm_start = macro_start + 6  # after 6 macro features
         turb_idx = hmm_start + 2  # after 2 HMM probs
+
+        # WF parameters for ensemble summary (Category 5)
+        wf_params = ENV_PARAMS.get(env_name, {})
 
         # Per-algo ingestion with fold-level detail
         for algo_name, folds in all_wf_results.items():
@@ -651,7 +702,19 @@ def _ingest_wf_results_to_memory(
             pfs = [f.out_of_sample_metrics.get("profit_factor", 0.0) for f in folds]
             win_rates = [f.out_of_sample_metrics.get("win_rate", 0.0) for f in folds]
             total_trades = [int(f.out_of_sample_metrics.get("total_trades", 0)) for f in folds]
+            calmars = [f.out_of_sample_metrics.get("calmar", 0.0) for f in folds]
+            rachevs = [f.out_of_sample_metrics.get("rachev", 0.0) for f in folds]
             gate_pass_count = sum(1 for f in folds if f.gate_result.passed)
+
+            # Category 6: Per-trade max_single_loss and best_single_trade
+            all_trade_pnls: list[float] = []
+            for f in folds:
+                for trade in f.trades:
+                    pnl_val = trade.get("pnl", trade.get("profit", 0.0))
+                    if pnl_val is not None:
+                        all_trade_pnls.append(float(pnl_val))
+            max_single_loss = min(all_trade_pnls) if all_trade_pnls else 0.0
+            best_single_trade = max(all_trade_pnls) if all_trade_pnls else 0.0
 
             # Build fold detail lines with date range and regime context
             fold_lines: list[str] = []
@@ -659,25 +722,50 @@ def _ingest_wf_results_to_memory(
                 oos = f.out_of_sample_metrics
                 ovf = f.overfitting
                 test_start, test_end = f.test_range
+                train_start, train_end = f.train_range
 
-                # Date range context
+                # Category 2: Train range context
+                train_ctx = f"train_bars={train_end - train_start} "
+                if dates is not None and train_start < len(dates) and train_end <= len(dates):
+                    train_ctx += f"train_period={dates[train_start]}..{dates[train_end - 1]} "
+
+                # Date range context (test period)
                 date_ctx = ""
                 if dates is not None and test_start < len(dates) and test_end <= len(dates):
                     date_ctx = f"period={dates[test_start]}..{dates[test_end - 1]} "
 
-                # Regime/macro context from features array
+                # Regime/macro context from features array (with min/max — Category 3)
                 regime_ctx = ""
                 if features is not None and test_end <= len(features):
                     test_features = features[test_start:test_end]
-                    mean_hmm = test_features[:, hmm_start : hmm_start + 2].mean(axis=0)
-                    mean_macro = test_features[:, macro_start : macro_start + 6].mean(axis=0)
-                    mean_turb = float(test_features[:, turb_idx].mean())
+                    hmm_cols = test_features[:, hmm_start : hmm_start + 2]
+                    macro_cols = test_features[:, macro_start : macro_start + 6]
+                    turb_col = test_features[:, turb_idx]
+
+                    mean_hmm = hmm_cols.mean(axis=0)
+                    mean_macro = macro_cols.mean(axis=0)
+                    mean_turb = float(turb_col.mean())
+
+                    # Category 3: HMM min/max
+                    min_hmm = hmm_cols.min(axis=0)
+                    max_hmm = hmm_cols.max(axis=0)
+                    # Category 3: Macro min/max
+                    min_macro = macro_cols.min(axis=0)
+                    max_macro = macro_cols.max(axis=0)
+                    # Category 3: Turbulence max (peak stress)
+                    turb_max = float(turb_col.max())
+
                     regime_ctx = (
                         f"p_bull={mean_hmm[0]:.3f} p_bear={mean_hmm[1]:.3f} "
-                        f"vix={mean_macro[0]:.3f} yield_spread={mean_macro[1]:.3f} "
-                        f"rate_direction={mean_macro[2]:.3f} fed_funds={mean_macro[3]:.3f} "
-                        f"cpi_yoy={mean_macro[4]:.3f} unemployment={mean_macro[5]:.3f} "
-                        f"turbulence={mean_turb:.3f} "
+                        f"p_bull_min={min_hmm[0]:.3f} p_bull_max={max_hmm[0]:.3f} "
+                        f"p_bear_min={min_hmm[1]:.3f} p_bear_max={max_hmm[1]:.3f} "
+                        f"vix={mean_macro[0]:.3f} vix_min={min_macro[0]:.3f} vix_max={max_macro[0]:.3f} "
+                        f"yield_spread={mean_macro[1]:.3f} yield_spread_min={min_macro[1]:.3f} yield_spread_max={max_macro[1]:.3f} "
+                        f"rate_direction={mean_macro[2]:.3f} rate_direction_min={min_macro[2]:.3f} rate_direction_max={max_macro[2]:.3f} "
+                        f"fed_funds={mean_macro[3]:.3f} fed_funds_min={min_macro[3]:.3f} fed_funds_max={max_macro[3]:.3f} "
+                        f"cpi_yoy={mean_macro[4]:.3f} cpi_yoy_min={min_macro[4]:.3f} cpi_yoy_max={max_macro[4]:.3f} "
+                        f"unemployment={mean_macro[5]:.3f} unemployment_min={min_macro[5]:.3f} unemployment_max={max_macro[5]:.3f} "
+                        f"turbulence={mean_turb:.3f} turbulence_max={turb_max:.3f} "
                     )
 
                 # In-sample metrics for overfit analysis
@@ -690,16 +778,31 @@ def _ingest_wf_results_to_memory(
                     f"is_win_rate={ins.get('win_rate', 0.0):.4f} "
                 )
 
+                # Category 2: Gate failures list
+                gate_failures = ""
+                if hasattr(f.gate_result, "failures") and f.gate_result.failures:
+                    gate_failures = f"gate_failures={','.join(f.gate_result.failures)} "
+
                 fold_lines.append(
-                    f"fold={f.fold_number} {date_ctx}{regime_ctx}"
+                    f"fold={f.fold_number} {train_ctx}{date_ctx}{regime_ctx}"
                     f"sharpe={oos.get('sharpe', 0.0):.4f} "
                     f"mdd={oos.get('mdd', 0.0):.4f} "
                     f"sortino={oos.get('sortino', 0.0):.4f} "
                     f"profit_factor={oos.get('profit_factor', 0.0):.4f} "
                     f"win_rate={oos.get('win_rate', 0.0):.4f} "
                     f"trades={int(oos.get('total_trades', 0))} "
+                    # Category 1: Additional OOS metrics
+                    f"calmar={oos.get('calmar', 0.0):.4f} "
+                    f"rachev={oos.get('rachev', 0.0):.4f} "
+                    f"avg_drawdown={oos.get('avg_drawdown', 0.0):.4f} "
+                    f"max_dd_duration={int(oos.get('max_dd_duration', 0))} "
+                    f"total_return={oos.get('total_return', 0.0):.4f} "
+                    f"avg_win={oos.get('avg_win', 0.0):.4f} "
+                    f"avg_loss={oos.get('avg_loss', 0.0):.4f} "
+                    f"trade_freq_per_week={oos.get('trade_frequency_per_week', 0.0):.4f} "
                     f"{ins_ctx}"
                     f"gate={'PASS' if f.gate_result.passed else 'FAIL'} "
+                    f"{gate_failures}"
                     f"overfit_class={ovf.get('classification', 'unknown')} "
                     f"overfit_gap={ovf.get('gap', 0.0):.4f}"
                 )
@@ -713,8 +816,10 @@ def _ingest_wf_results_to_memory(
                 hp_parts.append(f"buffer_size={config.training.sac_buffer_size}")
             hp_str = " ".join(hp_parts)
 
+            # Category 4: iteration_number and total_timesteps in header
             algo_text = (
                 f"WALK-FORWARD ALGO RESULTS: env={env_name} algo={algo_name.upper()} "
+                f"iteration={iteration_number} total_timesteps={total_timesteps} "
                 f"memory_enabled={mem_cfg.enabled} "
                 f"hyperparams: {hp_str}\n"
                 f"folds={len(folds)} passed_gate={gate_pass_count}/{len(folds)} "
@@ -724,11 +829,14 @@ def _ingest_wf_results_to_memory(
                 f"mean_profit_factor={float(np.mean(pfs)):.4f} "
                 f"mean_win_rate={float(np.mean(win_rates)):.4f} "
                 f"mean_trades={float(np.mean(total_trades)):.1f} "
-                f"ensemble_weight={ensemble_weights.get(algo_name, 0.0):.4f}\n"
-                + "\n".join(fold_lines)
+                f"ensemble_weight={ensemble_weights.get(algo_name, 0.0):.4f} "
+                # Category 6: per-trade extremes
+                f"max_single_loss={max_single_loss:.4f} "
+                f"best_single_trade={best_single_trade:.4f}\n" + "\n".join(fold_lines)
             )
 
-            client.ingest_training(algo_text, source=f"walk_forward:{algo_name}")
+            # Updated source tag: walk_forward:{env_name}:{algo}
+            client.ingest_training(algo_text, source=f"walk_forward:{env_name}:{algo_name}")
             log.info(
                 "wf_algo_results_ingested",
                 env_name=env_name,
@@ -747,15 +855,45 @@ def _ingest_wf_results_to_memory(
             sortinos = [f.out_of_sample_metrics.get("sortino", 0.0) for f in folds]
             pfs = [f.out_of_sample_metrics.get("profit_factor", 0.0) for f in folds]
             win_rates = [f.out_of_sample_metrics.get("win_rate", 0.0) for f in folds]
+            calmars = [f.out_of_sample_metrics.get("calmar", 0.0) for f in folds]
+            rachevs = [f.out_of_sample_metrics.get("rachev", 0.0) for f in folds]
             gate_pass_count = sum(1 for f in folds if f.gate_result.passed)
+            # Category 5: Fold Sharpe variance, best/worst fold, conditional Sharpe
+            sharpe_var = float(np.var(sharpes)) if len(sharpes) > 1 else 0.0
+            best_fold_sharpe = float(np.max(sharpes)) if sharpes else 0.0
+            worst_fold_sharpe = float(np.min(sharpes)) if sharpes else 0.0
+            # Bear/Bull conditional Sharpe (filter by mean p_bear > 0.5)
+            bear_sharpes: list[float] = []
+            bull_sharpes: list[float] = []
+            if features is not None:
+                for f in folds:
+                    test_start, test_end = f.test_range
+                    if test_end <= len(features):
+                        mean_p_bear = float(features[test_start:test_end, hmm_start + 1].mean())
+                        s = f.out_of_sample_metrics.get("sharpe", 0.0)
+                        if mean_p_bear > 0.5:
+                            bear_sharpes.append(s)
+                        else:
+                            bull_sharpes.append(s)
+            bear_cond_sharpe = float(np.mean(bear_sharpes)) if bear_sharpes else 0.0
+            bull_cond_sharpe = float(np.mean(bull_sharpes)) if bull_sharpes else 0.0
+
             algo_summaries.append(
                 f"{algo_name.upper()}(sharpe={float(np.mean(sharpes)):.4f} "
                 f"mdd={float(np.mean(mdds)):.4f} "
                 f"sortino={float(np.mean(sortinos)):.4f} "
                 f"profit_factor={float(np.mean(pfs)):.4f} "
                 f"win_rate={float(np.mean(win_rates)):.4f} "
+                # Category 5: per-algo calmar + rachev
+                f"calmar={float(np.mean(calmars)):.4f} "
+                f"rachev={float(np.mean(rachevs)):.4f} "
                 f"gate={gate_pass_count}/{len(folds)} "
-                f"weight={ensemble_weights.get(algo_name, 0.0):.4f})"
+                f"weight={ensemble_weights.get(algo_name, 0.0):.4f} "
+                f"sharpe_var={sharpe_var:.4f} "
+                f"best_fold_sharpe={best_fold_sharpe:.4f} "
+                f"worst_fold_sharpe={worst_fold_sharpe:.4f} "
+                f"bear_sharpe={bear_cond_sharpe:.4f} "
+                f"bull_sharpe={bull_cond_sharpe:.4f})"
             )
 
         # Overall data period and regime context
@@ -771,16 +909,27 @@ def _ingest_wf_results_to_memory(
                 f"overall_vix={overall_macro[0]:.3f} overall_yield_spread={overall_macro[1]:.3f} "
             )
 
+        # Category 5: WF parameters and env config
+        wf_ctx = (
+            f"wf_test_bars={wf_params.get('test_bars', 0)} "
+            f"wf_min_train_bars={wf_params.get('min_train_bars', 0)} "
+            f"wf_embargo_bars={wf_params.get('embargo_bars', 0)} "
+            f"symbols={','.join(env_symbols)} "
+            f"initial_amount={config.environment.initial_amount:.0f} "
+        )
+
         summary_text = (
             f"WALK-FORWARD ENSEMBLE: env={env_name} "
-            f"memory_enabled={mem_cfg.enabled} {period_ctx}{regime_summary}"
+            f"iteration={iteration_number} total_timesteps={total_timesteps} "
+            f"memory_enabled={mem_cfg.enabled} {period_ctx}{regime_summary}{wf_ctx}"
             f"ensemble_sharpe={gate_result.get('sharpe', 0.0):.4f} "
             f"ensemble_mdd={gate_result.get('mdd', 0.0):.4f} "
             f"ensemble_gate_passed={gate_result.get('passed', False)}\n"
             + " | ".join(algo_summaries)
         )
 
-        client.ingest_training(summary_text, source="walk_forward:ensemble")
+        # Updated source tag: walk_forward:{env_name}:ensemble
+        client.ingest_training(summary_text, source=f"walk_forward:{env_name}:ensemble")
         log.info("wf_ensemble_ingested", env_name=env_name)
 
     except Exception as exc:
@@ -822,7 +971,7 @@ def _write_model_metadata(
         ensemble_weight: Ensemble weight for this algo (or None).
     """
     date_str = datetime.now(tz=UTC).strftime("%Y-%m-%d")
-    model_id = f"{env_name}-v1.1.0-{algo_name}-{date_str}"
+    model_id = f"{env_name}-v{_PIPELINE_VERSION}-{algo_name}-{date_str}"
 
     try:
         conn.execute(
@@ -839,7 +988,7 @@ def _write_model_metadata(
                 model_id,
                 env_name,
                 algo_name,
-                "v1.1.0",
+                f"v{_PIPELINE_VERSION}",
                 date_str,
                 date_str,
                 total_timesteps,
@@ -1157,6 +1306,8 @@ def run_environment(
         gate_result,
         features=features_full,
         dates=dates_array,
+        iteration_number=0,  # run_environment is single-run; iterations pass via run_all_iterations
+        total_timesteps=DEFAULT_TIMESTEPS[env_name],
     )
 
     tuning_rounds: list[dict[str, Any]] = []
@@ -1224,8 +1375,9 @@ def run_environment(
 
         # Recompute gate after tuning round 1
         if best_ppo_result:
-            all_wf_results["ppo"] = []  # reset to trigger recompute
-            passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(all_wf_results)
+            tuned_ppo_results = [best_ppo_result] if best_ppo_result else []
+            tuned_wf_results = {**all_wf_results, "ppo": tuned_ppo_results}
+            passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(tuned_wf_results)
             gate_result = {
                 "passed": passed,
                 "sharpe": float(ensemble_sharpe),

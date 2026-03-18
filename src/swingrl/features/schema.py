@@ -169,6 +169,9 @@ def init_feature_schema(conn: Any) -> None:
 
     log.info("feature_schema_initialized", tables=4)
 
+    # Also apply training telemetry tables so callers don't need to know about both functions
+    apply_training_telemetry_ddl(conn)
+
 
 def apply_training_telemetry_ddl(conn: Any) -> None:
     """Create training telemetry tables and migrate training_runs in DuckDB.

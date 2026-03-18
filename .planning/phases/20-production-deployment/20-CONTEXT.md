@@ -221,6 +221,7 @@ Deploy the homelab Docker stack with paper trading firing on schedule (equity 4:
 - Memory dashboard tab in Streamlit — deferred from Phase 19 context, DuckDB table ready for it
 - Progressive ramp-up of live endpoints — decided against (all enabled immediately with seeded memories)
 - Inbox file watcher for memory ingestion — deferred from Phase 19
+- Multi-pass consistency for consolidation patterns — run consolidation 3x at temperature=0.1, keep only patterns that appear in all runs. Most reliable hallucination filter per LLM-PROMPT-RESEARCH.md §3B.3, but costs 3-5x API calls. Review after seeing initial pattern quality from Phase 19.1 single-pass consolidation.
 
 </deferred>
 

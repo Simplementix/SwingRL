@@ -6,6 +6,7 @@ Key is read from MEMORY_API_KEY environment variable at request time.
 
 from __future__ import annotations
 
+import hmac
 import os
 
 import structlog
@@ -30,7 +31,7 @@ def verify_api_key(key: str | None = Security(_api_key_header)) -> str:
         HTTPException: 401 if key is missing or does not match.
     """
     expected = os.environ.get("MEMORY_API_KEY", "")
-    if not expected or key != expected:
+    if not expected or not key or not hmac.compare_digest(key, expected):
         log.warning("auth_rejected", has_key=bool(key))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

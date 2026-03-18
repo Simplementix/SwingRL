@@ -60,25 +60,6 @@ def _import_pipeline() -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _make_fold_result(
-    sharpe: float = 1.2,
-    mdd: float = -0.08,
-    sortino: float = 1.5,
-    calmar: float = 0.6,
-) -> MagicMock:
-    """Create a mock WalkForward FoldResult."""
-    fold = MagicMock()
-    fold.fold_number = 1
-    fold.out_of_sample_metrics = {
-        "sharpe": sharpe,
-        "mdd": mdd,
-        "sortino": sortino,
-        "calmar": calmar,
-        "profit_factor": 1.4,
-    }
-    return fold
-
-
 def _make_env_result(
     env_name: str = "equity",
     sharpe: float = 1.2,
@@ -484,9 +465,7 @@ class TestIterationLoop:
         pipeline = _import_pipeline()
 
         cfg = self._mock_config(tmp_path)
-        captured_configs: list[Any] = []
 
-        # Make model_copy return a new mock that records attribute sets
         def mock_model_copy(deep: bool = False) -> Any:
             new_cfg = MagicMock()
             new_cfg.system = cfg.system
@@ -494,17 +473,13 @@ class TestIterationLoop:
             new_cfg.memory_agent = MagicMock(
                 enabled=True, meta_training=True, base_url="http://localhost:8889"
             )
-            captured_configs.append(new_cfg)
             return new_cfg
 
         cfg.model_copy = mock_model_copy
 
-        def mock_run_environment(
-            env_name: str, config: Any, models_dir: Path, **kwargs: Any
-        ) -> Any:
-            return _make_env_result(env_name)
+        mock_run_env = MagicMock(side_effect=lambda env_name, **kw: _make_env_result(env_name))
 
-        with patch.object(pipeline, "run_environment", side_effect=mock_run_environment):
+        with patch.object(pipeline, "run_environment", mock_run_env):
             pipeline.run_all_iterations(
                 base_config=cfg,
                 iterations=0,
@@ -514,9 +489,15 @@ class TestIterationLoop:
                 comparison_path=tmp_path / "comparison.json",
             )
 
-        # Iteration 0 config must have memory disabled
-        assert len(captured_configs) >= 1
-        iter0_cfg = captured_configs[0]
+        # Verify the config that run_environment was actually called with
+        assert mock_run_env.call_count >= 1
+        # Check the first call's config argument (iteration 0 = baseline)
+        first_call_kwargs = mock_run_env.call_args_list[0]
+        iter0_cfg = first_call_kwargs.kwargs.get("config") or first_call_kwargs[1].get("config")
+        if iter0_cfg is None:
+            # Positional: run_environment(env_name, config, ...)
+            iter0_cfg = first_call_kwargs[0][1] if len(first_call_kwargs[0]) > 1 else None
+        assert iter0_cfg is not None, "run_environment must receive a config argument"
         assert iter0_cfg.memory_agent.enabled is False
         assert iter0_cfg.memory_agent.meta_training is False
 

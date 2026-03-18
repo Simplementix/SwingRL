@@ -90,7 +90,8 @@ services:
       - ./status:/app/status
     depends_on:
       swingrl-memory:
-        condition: service_healthy
+        # Soft dependency: memory agent is optional; app handles unavailability gracefully
+        condition: service_started
     restart: unless-stopped
 
   swingrl-dashboard:

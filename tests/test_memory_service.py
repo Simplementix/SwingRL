@@ -3,6 +3,15 @@
 TRAIN-06, TRAIN-07: Covers:
 - swingrl-memory FastAPI endpoints (ingest, health, training, debug, consolidation)
 - DuckDB telemetry tables (training_epochs, meta_decisions, reward_adjustments, ALTER training_runs)
+- Enriched DB schema (new tables, columns, indexes)
+- Two-stage consolidation pipeline (Stage 1 per-env, Stage 2 cross-env)
+- Pattern lifecycle (active → superseded → retired)
+- Dedup/merge (similar patterns confirmed, old incremented)
+- Presentation tracking (query logs to pattern_presentations)
+- Outcome recording (record_outcome endpoint stores data)
+- Pattern effectiveness (joins presentations + outcomes)
+- APScheduler removed (no scheduler in lifespan)
+- Source tag format walk_forward:{env}:{algo}
 """
 
 from __future__ import annotations
@@ -120,7 +129,7 @@ class TestIngest:
             "/ingest",
             json={
                 "text": "PPO equity Sharpe improved to 1.2 in bull regime",
-                "source": "training_run:historical",
+                "source": "walk_forward:equity:ppo",
             },
             headers=auth_headers,
         )
@@ -134,12 +143,12 @@ class TestIngest:
         """TRAIN-06: Multiple ingests return sequential IDs."""
         r1 = api_client.post(
             "/ingest",
-            json={"text": "First memory", "source": "training_run:historical"},
+            json={"text": "First memory", "source": "walk_forward:equity:ppo"},
             headers=auth_headers,
         )
         r2 = api_client.post(
             "/ingest",
-            json={"text": "Second memory", "source": "training_run:historical"},
+            json={"text": "Second memory", "source": "walk_forward:equity:a2c"},
             headers=auth_headers,
         )
         assert r1.status_code == 200
@@ -150,7 +159,7 @@ class TestIngest:
         """TRAIN-06: POST /ingest without X-API-Key header returns 401."""
         response = api_client.post(
             "/ingest",
-            json={"text": "Some memory", "source": "training_run:historical"},
+            json={"text": "Some memory", "source": "walk_forward:equity:ppo"},
         )
         assert response.status_code == 401
 
@@ -158,7 +167,7 @@ class TestIngest:
         """TRAIN-06: POST /ingest with wrong X-API-Key returns 401."""
         response = api_client.post(
             "/ingest",
-            json={"text": "Some memory", "source": "training_run:historical"},
+            json={"text": "Some memory", "source": "walk_forward:equity:ppo"},
             headers={"X-API-Key": "wrong-key"},
         )
         assert response.status_code == 401
@@ -365,7 +374,7 @@ class TestDebugEndpoints:
         """TRAIN-06: GET /debug/memories returns a list."""
         api_client.post(
             "/ingest",
-            json={"text": "Memory A", "source": "training_run:historical"},
+            json={"text": "Memory A", "source": "walk_forward:equity:ppo"},
             headers=auth_headers,
         )
         response = api_client.get("/debug/memories", headers=auth_headers)
@@ -380,7 +389,7 @@ class TestDebugEndpoints:
         """TRAIN-06: GET /debug/memories?source= filters by source tag."""
         api_client.post(
             "/ingest",
-            json={"text": "Equity memory", "source": "training_run:historical"},
+            json={"text": "Equity memory", "source": "walk_forward:equity:ppo"},
             headers=auth_headers,
         )
         api_client.post(
@@ -390,12 +399,12 @@ class TestDebugEndpoints:
         )
 
         response = api_client.get(
-            "/debug/memories?source=training_run:historical",
+            "/debug/memories?source=walk_forward:equity:ppo",
             headers=auth_headers,
         )
         assert response.status_code == 200
         body = response.json()
-        assert all(row["source"] == "training_run:historical" for row in body)
+        assert all(row["source"] == "walk_forward:equity:ppo" for row in body)
 
     def test_debug_consolidations_returns_list(
         self, api_client: Any, auth_headers: dict[str, str]
@@ -428,16 +437,22 @@ class TestConsolidation:
         for i in range(3):
             api_client.post(
                 "/ingest",
-                json={"text": f"Training observation {i}", "source": "training_run:historical"},
+                json={"text": f"Training observation {i}", "source": "walk_forward:equity:ppo"},
                 headers=auth_headers,
             )
 
         mock_response = {
-            "pattern_text": "PPO performs better in bull regimes with lower entropy_coeff",
-            "affected_algos": ["ppo"],
-            "affected_envs": ["equity"],
-            "actionable_implication": "Reduce entropy_coeff to 0.005 in bull regime",
-            "confidence": 0.8,
+            "patterns": [
+                {
+                    "pattern_text": "PPO performs better in bull regimes with lower entropy_coeff",
+                    "category": "regime_performance",
+                    "affected_algos": ["ppo"],
+                    "affected_envs": ["equity"],
+                    "actionable_implication": "Reduce entropy_coeff to 0.005 in bull regime",
+                    "confidence": 0.65,
+                    "evidence": "fold 1 bull sharpe=1.2; fold 3 bear sharpe=0.4",
+                },
+            ],
         }
 
         with patch("memory_agents.consolidate.httpx.AsyncClient") as mock_client_class:
@@ -451,7 +466,7 @@ class TestConsolidation:
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
-        assert body["consolidated"] == 1
+        assert body["consolidated"] >= 1
 
     def test_consolidate_rejects_malformed_llm_output_and_logs_quality(
         self, api_client: Any, auth_headers: dict[str, str]
@@ -459,7 +474,7 @@ class TestConsolidation:
         """TRAIN-06: ConsolidateAgent rejects malformed LLM output and logs to quality table."""
         api_client.post(
             "/ingest",
-            json={"text": "Some memory", "source": "training_run:historical"},
+            json={"text": "Some memory", "source": "walk_forward:equity:ppo"},
             headers=auth_headers,
         )
 
@@ -487,27 +502,37 @@ class TestConsolidation:
     def test_consolidate_detects_conflicting_consolidations(
         self, api_client: Any, auth_headers: dict[str, str]
     ) -> None:
-        """TRAIN-06: ConsolidateAgent flags contradicting patterns with conflicting_with FK."""
+        """TRAIN-06: ConsolidateAgent flags contradicting patterns."""
         import db as memory_db_module
 
         memory_db_module.insert_consolidation(
             pattern_text="PPO equity improved significantly in bull momentum regime",
             source_count=5,
+            category="regime_performance",
+            affected_algos=["ppo"],
+            affected_envs=["equity"],
+            confidence=0.7,
         )
 
         for i in range(2):
             api_client.post(
                 "/ingest",
-                json={"text": f"Crypto observation {i}", "source": "training_run:historical"},
+                json={"text": f"Crypto observation {i}", "source": "walk_forward:equity:sac"},
                 headers=auth_headers,
             )
 
         mock_response = {
-            "pattern_text": "SAC crypto degraded and decreased returns in bear crash regime",
-            "affected_algos": ["sac"],
-            "affected_envs": ["crypto"],
-            "actionable_implication": "Reduce position sizing in bear regime",
-            "confidence": 0.7,
+            "patterns": [
+                {
+                    "pattern_text": "SAC crypto degraded and decreased returns in bear crash regime",
+                    "category": "regime_performance",
+                    "affected_algos": ["sac"],
+                    "affected_envs": ["crypto"],
+                    "actionable_implication": "Reduce position sizing in bear regime",
+                    "confidence": 0.6,
+                    "evidence": "fold 2 bear sharpe=-0.3; fold 4 bear sharpe=-0.5",
+                },
+            ],
         }
 
         with patch("memory_agents.consolidate.httpx.AsyncClient") as mock_client_class:
@@ -519,14 +544,12 @@ class TestConsolidation:
             response = api_client.post("/consolidate", headers=auth_headers)
 
         assert response.status_code == 200
-        assert response.json()["consolidated"] == 1
+        assert response.json()["consolidated"] >= 1
 
-        # At least one consolidation in the table should have conflicting_with set
-        rows = memory_db_module.get_consolidations(limit=5)
-        conflict_rows = [r for r in rows if r["conflicting_with"] is not None]
-        assert len(conflict_rows) >= 1, (
-            "Expected at least one consolidation with conflicting_with set"
-        )
+        # The conflicting original pattern should be superseded
+        rows = memory_db_module.get_consolidations(limit=10)
+        superseded = [r for r in rows if r.get("status") == "superseded"]
+        assert len(superseded) >= 1, "Expected at least one superseded consolidation"
 
     def test_consolidate_returns_zero_when_no_memories(
         self, api_client: Any, auth_headers: dict[str, str]
@@ -540,6 +563,546 @@ class TestConsolidation:
         """TRAIN-06: POST /consolidate returns 401 without API key."""
         response = api_client.post("/consolidate")
         assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# TestDBSchema — New tables and columns
+# ---------------------------------------------------------------------------
+
+
+class TestDBSchema:
+    """Tests for the enriched database schema."""
+
+    def test_consolidation_sources_table_exists(self, memory_db_env: Path) -> None:
+        """19.1: consolidation_sources join table is created."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        conn = memory_db_module.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='consolidation_sources'"
+            ).fetchall()
+            assert len(rows) == 1
+        finally:
+            conn.close()
+
+    def test_pattern_presentations_table_exists(self, memory_db_env: Path) -> None:
+        """19.1: pattern_presentations table is created."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        conn = memory_db_module.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='pattern_presentations'"
+            ).fetchall()
+            assert len(rows) == 1
+        finally:
+            conn.close()
+
+    def test_pattern_outcomes_table_exists(self, memory_db_env: Path) -> None:
+        """19.1: pattern_outcomes table is created."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        conn = memory_db_module.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='pattern_outcomes'"
+            ).fetchall()
+            assert len(rows) == 1
+        finally:
+            conn.close()
+
+    def test_consolidations_has_new_columns(self, memory_db_env: Path) -> None:
+        """19.1: consolidations table has all new columns."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        conn = memory_db_module.get_connection()
+        try:
+            cols = conn.execute("PRAGMA table_info(consolidations)").fetchall()
+            col_names = {row[1] for row in cols}
+            expected_new = {
+                "category",
+                "affected_algos",
+                "affected_envs",
+                "actionable_implication",
+                "confidence",
+                "evidence",
+                "stage",
+                "env_name",
+                "confirmation_count",
+                "last_confirmed_at",
+                "superseded_by",
+                "status",
+                "conflict_group_id",
+            }
+            missing = expected_new - col_names
+            assert not missing, f"Missing columns: {missing}"
+        finally:
+            conn.close()
+
+    def test_consolidation_indexes_exist(self, memory_db_env: Path) -> None:
+        """19.1: New indexes on consolidations table exist."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        conn = memory_db_module.get_connection()
+        try:
+            indexes = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='consolidations'"
+            ).fetchall()
+            index_names = {row[0] for row in indexes}
+            assert "idx_consolidations_status" in index_names
+            assert "idx_consolidations_env_stage" in index_names
+        finally:
+            conn.close()
+
+    def test_schema_migration_idempotent(self, memory_db_env: Path) -> None:
+        """19.1: init_db() is idempotent — running twice does not error."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        memory_db_module.init_db()  # Second call must not raise
+
+
+# ---------------------------------------------------------------------------
+# TestDBFunctions — New insert/get/update functions
+# ---------------------------------------------------------------------------
+
+
+class TestDBFunctions:
+    """Tests for new DB functions."""
+
+    def test_insert_consolidation_with_new_fields(self, memory_db_env: Path) -> None:
+        """19.1: insert_consolidation() accepts all new fields."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        row_id = memory_db_module.insert_consolidation(
+            pattern_text="Test pattern",
+            source_count=3,
+            category="regime_performance",
+            affected_algos=["ppo", "sac"],
+            affected_envs=["equity"],
+            actionable_implication="Reduce LR in bear regime",
+            confidence=0.65,
+            evidence="fold 1 sharpe=1.2; fold 3 sharpe=0.4",
+            stage=1,
+            env_name="equity",
+        )
+        assert row_id >= 1
+
+        # Verify retrieval with deserialization
+        rows = memory_db_module.get_active_consolidations(env_name="equity")
+        assert len(rows) >= 1
+        row = rows[0]
+        assert row["category"] == "regime_performance"
+        assert row["affected_algos"] == ["ppo", "sac"]
+        assert row["affected_envs"] == ["equity"]
+        assert row["confidence"] == pytest.approx(0.65)
+        assert row["stage"] == 1
+
+    def test_insert_consolidation_source(self, memory_db_env: Path) -> None:
+        """19.1: consolidation_sources join table is populated."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        mid = memory_db_module.insert_memory("test memory", "walk_forward:equity:ppo")
+        cid = memory_db_module.insert_consolidation(
+            pattern_text="Test",
+            source_count=1,
+            category="trade_quality",
+        )
+        memory_db_module.insert_consolidation_source(cid, mid)
+
+        conn = memory_db_module.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM consolidation_sources WHERE consolidation_id = ?", (cid,)
+            ).fetchall()
+            assert len(rows) == 1
+            assert rows[0]["memory_id"] == mid
+        finally:
+            conn.close()
+
+    def test_get_active_consolidations_filters(self, memory_db_env: Path) -> None:
+        """19.1: get_active_consolidations filters by env, stage, confidence."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        memory_db_module.insert_consolidation(
+            pattern_text="High confidence equity",
+            source_count=3,
+            confidence=0.8,
+            stage=1,
+            env_name="equity",
+        )
+        memory_db_module.insert_consolidation(
+            pattern_text="Low confidence crypto",
+            source_count=2,
+            confidence=0.2,
+            stage=1,
+            env_name="crypto",
+        )
+
+        # Filter by env
+        equity_only = memory_db_module.get_active_consolidations(env_name="equity")
+        assert all(r.get("env_name") in ("equity", None) for r in equity_only)
+
+        # Filter by min confidence
+        high_conf = memory_db_module.get_active_consolidations(min_confidence=0.5)
+        assert all(
+            (r.get("confidence") or 0) >= 0.5 or r.get("confidence") is None for r in high_conf
+        )
+
+    def test_update_consolidation_status(self, memory_db_env: Path) -> None:
+        """19.1: Pattern lifecycle active → superseded works."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        old_id = memory_db_module.insert_consolidation(
+            pattern_text="Old pattern",
+            source_count=2,
+        )
+        new_id = memory_db_module.insert_consolidation(
+            pattern_text="New pattern",
+            source_count=3,
+        )
+        memory_db_module.update_consolidation_status(old_id, "superseded", superseded_by=new_id)
+
+        conn = memory_db_module.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT status, superseded_by FROM consolidations WHERE id = ?", (old_id,)
+            ).fetchone()
+            assert row["status"] == "superseded"
+            assert row["superseded_by"] == new_id
+        finally:
+            conn.close()
+
+    def test_increment_confirmation(self, memory_db_env: Path) -> None:
+        """19.1: increment_confirmation updates count and timestamp."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        cid = memory_db_module.insert_consolidation(
+            pattern_text="Test",
+            source_count=1,
+        )
+        memory_db_module.increment_confirmation(cid)
+        memory_db_module.increment_confirmation(cid)
+
+        conn = memory_db_module.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT confirmation_count, last_confirmed_at FROM consolidations WHERE id = ?",
+                (cid,),
+            ).fetchone()
+            assert row["confirmation_count"] == 2
+            assert row["last_confirmed_at"] is not None
+        finally:
+            conn.close()
+
+    def test_insert_pattern_presentation(self, memory_db_env: Path) -> None:
+        """19.1: Presentation tracking records are created."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        cid = memory_db_module.insert_consolidation(
+            pattern_text="Test",
+            source_count=1,
+        )
+        pid = memory_db_module.insert_pattern_presentation(
+            consolidation_id=cid,
+            iteration=1,
+            env_name="equity",
+            request_type="run_config",
+            advice_response="test advice",
+        )
+        assert pid >= 1
+
+    def test_insert_pattern_outcome(self, memory_db_env: Path) -> None:
+        """19.1: Outcome recording stores iteration results."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        oid = memory_db_module.insert_pattern_outcome(
+            iteration=1,
+            env_name="equity",
+            gate_passed=True,
+            sharpe=1.2,
+            mdd=-0.05,
+            sortino=1.8,
+            pnl=5000.0,
+            patterns_presented=[1, 2, 3],
+        )
+        assert oid >= 1
+
+    def test_get_pattern_effectiveness(self, memory_db_env: Path) -> None:
+        """19.1: Pattern effectiveness join returns presentation + outcome data."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        cid = memory_db_module.insert_consolidation(
+            pattern_text="Test pattern",
+            source_count=1,
+        )
+        memory_db_module.insert_pattern_presentation(
+            consolidation_id=cid,
+            iteration=1,
+            env_name="equity",
+            request_type="run_config",
+            advice_response="reduce LR",
+        )
+        memory_db_module.insert_pattern_outcome(
+            iteration=1,
+            env_name="equity",
+            gate_passed=True,
+            sharpe=1.5,
+            mdd=-0.03,
+            sortino=2.0,
+            pnl=3000.0,
+        )
+
+        results = memory_db_module.get_pattern_effectiveness()
+        assert len(results) >= 1
+        row = results[0]
+        assert row["consolidation_id"] == cid
+        assert row["sharpe"] == pytest.approx(1.5)
+        assert row["gate_passed"] == 1  # SQLite stores bool as int
+
+
+# ---------------------------------------------------------------------------
+# TestRecordOutcome — New endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestRecordOutcome:
+    """Tests for POST /training/record_outcome endpoint."""
+
+    def test_record_outcome_stores_data(
+        self, api_client: Any, auth_headers: dict[str, str]
+    ) -> None:
+        """19.1: POST /training/record_outcome stores iteration outcome."""
+        response = api_client.post(
+            "/training/record_outcome",
+            json={
+                "iteration": 1,
+                "env_name": "equity",
+                "gate_passed": True,
+                "sharpe": 1.2,
+                "mdd": -0.05,
+                "sortino": 1.8,
+                "pnl": 5000.0,
+            },
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "ok"
+        assert isinstance(body["id"], int)
+
+    def test_record_outcome_requires_auth(self, api_client: Any) -> None:
+        """19.1: POST /training/record_outcome returns 401 without API key."""
+        response = api_client.post(
+            "/training/record_outcome",
+            json={"iteration": 0, "env_name": "equity"},
+        )
+        assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# TestPatternEffectiveness — New endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestPatternEffectiveness:
+    """Tests for GET /training/pattern_effectiveness endpoint."""
+
+    def test_pattern_effectiveness_returns_list(
+        self, api_client: Any, auth_headers: dict[str, str]
+    ) -> None:
+        """19.1: GET /training/pattern_effectiveness returns a list."""
+        response = api_client.get("/training/pattern_effectiveness", headers=auth_headers)
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+    def test_pattern_effectiveness_requires_auth(self, api_client: Any) -> None:
+        """19.1: GET /training/pattern_effectiveness returns 401 without API key."""
+        response = api_client.get("/training/pattern_effectiveness")
+        assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# TestAPSchedulerRemoved
+# ---------------------------------------------------------------------------
+
+
+class TestAPSchedulerRemoved:
+    """Tests verifying APScheduler has been removed from app.py."""
+
+    def test_no_apscheduler_import(self) -> None:
+        """19.1: app.py does not import apscheduler."""
+        app_path = _MEMORY_SERVICE_DIR / "app.py"
+        content = app_path.read_text()
+        assert "apscheduler" not in content, "APScheduler should be removed from app.py"
+
+    def test_no_scheduler_global(self) -> None:
+        """19.1: app.py does not have a scheduler global variable."""
+        app_path = _MEMORY_SERVICE_DIR / "app.py"
+        content = app_path.read_text()
+        # Check that no scheduler = ... assignment exists outside of docstrings/comments
+        code_lines = [
+            line
+            for line in content.splitlines()
+            if not line.strip().startswith("#") and not line.strip().startswith('"""')
+        ]
+        code_text = "\n".join(code_lines)
+        assert "scheduler = " not in code_text, (
+            "No scheduler global variable should exist in app.py"
+        )
+
+    def test_lifespan_does_not_start_scheduler(self) -> None:
+        """19.1: lifespan does not start a background scheduler."""
+        app_path = _MEMORY_SERVICE_DIR / "app.py"
+        content = app_path.read_text()
+        assert "scheduler.start" not in content
+        assert "add_job" not in content
+
+
+# ---------------------------------------------------------------------------
+# TestConsolidationSchema
+# ---------------------------------------------------------------------------
+
+
+class TestConsolidationSchema:
+    """Tests for the new consolidation JSON schema and validation."""
+
+    def test_multi_pattern_response_accepted(
+        self, api_client: Any, auth_headers: dict[str, str]
+    ) -> None:
+        """19.1: LLM returning multiple patterns in array is accepted."""
+        for i in range(3):
+            api_client.post(
+                "/ingest",
+                json={"text": f"Observation {i}", "source": "walk_forward:equity:ppo"},
+                headers=auth_headers,
+            )
+
+        mock_response = {
+            "patterns": [
+                {
+                    "pattern_text": "PPO bull outperformance pattern",
+                    "category": "regime_performance",
+                    "affected_algos": ["ppo"],
+                    "affected_envs": ["equity"],
+                    "actionable_implication": "Increase PPO weight in bull regime",
+                    "confidence": 0.55,
+                    "evidence": "fold 1 sharpe=1.1; fold 2 sharpe=1.3",
+                },
+                {
+                    "pattern_text": "SAC drawdown recovery pattern",
+                    "category": "drawdown_recovery",
+                    "affected_algos": ["sac"],
+                    "affected_envs": ["equity"],
+                    "actionable_implication": "Increase drawdown weight for SAC",
+                    "confidence": 0.48,
+                    "evidence": "fold 3 avg_dd=0.05; fold 4 avg_dd=0.03",
+                },
+            ],
+        }
+
+        with patch("memory_agents.consolidate.httpx.AsyncClient") as mock_client_class:
+            mock_cm = AsyncMock()
+            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
+            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_cm.post = AsyncMock(return_value=_make_ollama_response(mock_response))
+
+            response = api_client.post("/consolidate", headers=auth_headers)
+
+        assert response.status_code == 200
+        assert response.json()["consolidated"] >= 2
+
+    def test_empty_patterns_array_accepted(
+        self, api_client: Any, auth_headers: dict[str, str]
+    ) -> None:
+        """19.1: LLM returning empty patterns array is accepted gracefully."""
+        api_client.post(
+            "/ingest",
+            json={"text": "Observation", "source": "walk_forward:equity:ppo"},
+            headers=auth_headers,
+        )
+
+        mock_response = {"patterns": []}
+
+        with patch("memory_agents.consolidate.httpx.AsyncClient") as mock_client_class:
+            mock_cm = AsyncMock()
+            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
+            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_cm.post = AsyncMock(return_value=_make_ollama_response(mock_response))
+
+            response = api_client.post("/consolidate", headers=auth_headers)
+
+        assert response.status_code == 200
+        assert response.json()["consolidated"] == 0
+
+
+# ---------------------------------------------------------------------------
+# TestSourceTags
+# ---------------------------------------------------------------------------
+
+
+class TestSourceTags:
+    """Tests for the updated source tag format."""
+
+    def test_source_prefix_query(self, memory_db_env: Path) -> None:
+        """19.1: get_memories_by_source_prefix filters by env prefix."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        memory_db_module.insert_memory("Equity PPO data", "walk_forward:equity:ppo")
+        memory_db_module.insert_memory("Equity A2C data", "walk_forward:equity:a2c")
+        memory_db_module.insert_memory("Crypto PPO data", "walk_forward:crypto:ppo")
+
+        equity_mems = memory_db_module.get_memories_by_source_prefix("walk_forward:equity")
+        assert len(equity_mems) == 2
+        assert all("equity" in m["source"] for m in equity_mems)
+
+        crypto_mems = memory_db_module.get_memories_by_source_prefix("walk_forward:crypto")
+        assert len(crypto_mems) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -557,8 +1120,10 @@ class TestAuth:
             ("post", "/consolidate", {}),
             ("post", "/training/run_config", {"query": "q"}),
             ("post", "/training/epoch_advice", {"query": "q"}),
+            ("post", "/training/record_outcome", {"iteration": 0, "env_name": "equity"}),
             ("get", "/debug/memories", None),
             ("get", "/debug/consolidations", None),
+            ("get", "/training/pattern_effectiveness", None),
         ],
     )
     def test_all_protected_endpoints_return_401_without_key(

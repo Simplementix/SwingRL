@@ -5,10 +5,12 @@ Two public methods:
 - advise_epoch: Returns reward weight adjustments + stop_training signal during a run.
 
 Both methods:
-- Pull recent consolidations + raw memories as context
+- Pull active consolidations (filtered by confidence + status) and raw memories
+- Prefer Stage 2 cross-env patterns over Stage 1 per-env patterns
 - Call Ollama qwen3:14b with structured JSON output schema
 - Return safe clamped defaults on any failure (cold-start guard)
 - XML-wrap all memory text injected into prompts
+- Track which patterns were presented via pattern_presentations table
 
 Clamp bounds are defined inline (matching src/swingrl/memory/training/bounds.py constants)
 to avoid importing from src/swingrl/ (cross-container boundary, Pitfall 4).
@@ -18,12 +20,18 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
 import structlog
+import yaml
 
-from db import get_consolidations, get_memories
+from db import (
+    get_active_consolidations,
+    get_memories,
+    insert_pattern_presentation,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -67,6 +75,21 @@ _SAFE_EPOCH_DEFAULTS: dict[str, Any] = {
 _OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
 _OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "30"))
 _QUERY_MODEL = "qwen3:14b"
+
+
+def _load_min_confidence() -> float:
+    """Load min_confidence_for_advice from config, default 0.4."""
+    config_path = Path("/app/config/swingrl.yaml")
+    if config_path.exists():
+        # yaml.safe_load OK here: memory service can't import swingrl.config.schema
+        cfg = yaml.safe_load(config_path.read_text()) or {}
+        mem = cfg.get("memory_agent", {})
+        cons = mem.get("consolidation", {})
+        return float(cons.get("min_confidence_for_advice", 0.4))
+    return 0.4
+
+
+_MIN_CONFIDENCE = _load_min_confidence()
 
 # System prompt for training config / epoch advice endpoints.
 _SYSTEM_PROMPT = """You are the training advisor agent for SwingRL, an RL-based swing trading system.
@@ -213,8 +236,8 @@ class QueryAgent:
     async def advise_run_config(self, query: str) -> dict[str, Any]:
         """Return LLM-advised run configuration hyperparameters.
 
-        Builds a context prompt from recent consolidations and raw memories,
-        queries Ollama, clamps the response, and returns it.
+        Builds a context prompt from active consolidations (filtered by confidence
+        and status) and raw memories, queries Ollama, clamps the response.
         Returns safe defaults on any failure.
 
         Args:
@@ -224,7 +247,7 @@ class QueryAgent:
             Dict with keys: learning_rate, entropy_coeff, clip_range, n_epochs,
             batch_size, gamma, reward_weights (dict), rationale.
         """
-        context = self._build_context()
+        context, presented_ids = self._build_context()
         user_content = (
             f"Training context: {query}\n\n"
             f"Relevant memory patterns:\n{context}\n\n"
@@ -235,6 +258,9 @@ class QueryAgent:
         if result is None:
             log.warning("run_config_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_DEFAULTS)
+
+        # Track which patterns were presented
+        self._track_presentations(presented_ids, query, "run_config", result)
 
         # Merge with defaults for any missing fields
         merged = dict(_SAFE_DEFAULTS)
@@ -257,7 +283,7 @@ class QueryAgent:
         Returns:
             Dict with keys: reward_weights (dict), stop_training (bool), rationale (str).
         """
-        context = self._build_context()
+        context, presented_ids = self._build_context()
         user_content = (
             f"Current epoch state: {query}\n\n"
             f"Memory patterns:\n{context}\n\n"
@@ -269,6 +295,9 @@ class QueryAgent:
             log.warning("epoch_advice_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_EPOCH_DEFAULTS)
 
+        # Track which patterns were presented
+        self._track_presentations(presented_ids, query, "epoch_advice", result)
+
         clamped_weights = _clamp_reward_weights(
             result.get("reward_weights", _SAFE_EPOCH_DEFAULTS["reward_weights"])
         )
@@ -279,21 +308,42 @@ class QueryAgent:
             "rationale": str(result.get("rationale", "llm_advised")),
         }
 
-    def _build_context(self) -> str:
-        """Build a context string from recent consolidations and raw memories.
+    def _build_context(self) -> tuple[str, list[int]]:
+        """Build a context string from active consolidations and raw memories.
+
+        Filters consolidations by min_confidence and status='active'.
+        Prefers Stage 2 (cross-env) over Stage 1 (per-env) when both available.
 
         Returns:
-            Formatted string with XML-delimited memory content.
+            Tuple of (formatted context string, list of consolidation IDs presented).
         """
-        consolidations = get_consolidations(limit=10)
+        # Get Stage 2 patterns first (cross-env), then Stage 1
+        stage2 = get_active_consolidations(stage=2, min_confidence=_MIN_CONFIDENCE)
+        stage1 = get_active_consolidations(stage=1, min_confidence=_MIN_CONFIDENCE)
+
+        # Combine: Stage 2 first (higher priority)
+        consolidations = stage2 + stage1
         memories = get_memories(archived=False, limit=20)
 
         parts: list[str] = []
+        presented_ids: list[int] = []
 
         if consolidations:
             parts.append("=== Consolidated Patterns ===")
             for c in consolidations:
-                parts.append(f"<pattern>{c['pattern_text']}</pattern>")
+                cat = c.get("category", "unknown")
+                conf = c.get("confidence")
+                conf_str = f" (confidence={conf:.2f})" if conf is not None else ""
+                evidence = c.get("evidence", "")
+                evidence_str = f" evidence: {evidence}" if evidence else ""
+                parts.append(
+                    f'<pattern category="{cat}"{conf_str}>'
+                    f"{c.get('pattern_text', '')}"
+                    f"{evidence_str}"
+                    f"</pattern>"
+                )
+                if c.get("id"):
+                    presented_ids.append(int(c["id"]))
 
         if memories:
             parts.append("=== Recent Raw Memories ===")
@@ -302,9 +352,50 @@ class QueryAgent:
                 parts.append(m["text"])
 
         if not parts:
-            return "<no_memories>No memories available yet (cold start)</no_memories>"
+            return "<no_memories>No memories available yet (cold start)</no_memories>", []
 
-        return "\n".join(parts)
+        return "\n".join(parts), presented_ids
+
+    def _track_presentations(
+        self,
+        consolidation_ids: list[int],
+        query: str,
+        request_type: str,
+        result: dict[str, Any],
+    ) -> None:
+        """Log which patterns were presented to pattern_presentations table.
+
+        Args:
+            consolidation_ids: IDs of consolidations included in context.
+            query: The query string (extract iteration/env from it).
+            request_type: 'run_config' or 'epoch_advice'.
+            result: The LLM response (for advice_response summary).
+        """
+        # Parse iteration and env_name from query if available
+        iteration = None
+        env_name = None
+        for part in query.split():
+            if part.startswith("iteration=") or part.startswith("iter="):
+                try:
+                    iteration = int(part.split("=")[1])
+                except (ValueError, IndexError):
+                    pass
+            if part.startswith("env="):
+                env_name = part.split("=")[1]
+
+        advice_summary = result.get("rationale", "")[:200]
+
+        for cid in consolidation_ids:
+            try:
+                insert_pattern_presentation(
+                    consolidation_id=cid,
+                    iteration=iteration,
+                    env_name=env_name,
+                    request_type=request_type,
+                    advice_response=advice_summary,
+                )
+            except Exception as exc:
+                log.debug("presentation_tracking_failed", consolidation_id=cid, error=str(exc))
 
     async def _call_ollama(
         self, user_content: str, schema: dict[str, Any]

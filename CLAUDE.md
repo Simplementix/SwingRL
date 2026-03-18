@@ -14,9 +14,11 @@ Phases: 1 Foundation → 2 DX → 3 Data → 4 Storage → 5 Features → 6 Envs
 2. **All phase commits** go to the feature branch.
 3. **After verification passes** (Claude): Fix ROADMAP.md checkbox (`- [x]`) and push the feature branch to origin.
 4. **Run homelab CI** (Claude): SSH into homelab and run CI. Must pass before PR creation.
+
    ```bash
    ssh homelab "cd ~/swingrl && git fetch origin && git checkout {branch} && git pull origin {branch} && bash scripts/ci-homelab.sh --no-cache"
    ```
+
 5. **CI passes → Create PR** (Claude): Create PR to `main` with phase summary. Only after CI passes.
 6. **User merges** (branch protection requires approval).
 7. **After merge** (User): `git checkout main && git pull origin main` before starting next phase.
@@ -26,14 +28,18 @@ Phases: 1 Foundation → 2 DX → 3 Data → 4 Storage → 5 Features → 6 Envs
 After the final phase of a milestone is merged to `main`:
 
 1. **Tag the release** on `main`:
+
    ```bash
    git tag -a v{X.Y}.0 -m "v{X.Y} {Milestone Name}"
    git push origin v{X.Y}.0
    ```
+
 2. **Create GitHub release**:
+
    ```bash
    gh release create v{X.Y}.0 --title "v{X.Y} {Milestone Name}" --notes "..."
    ```
+
 3. **Archive milestone** via `/gsd:complete-milestone`.
 
 ## Critical Rules — Never Violate
@@ -49,6 +55,7 @@ After the final phase of a milestone is merged to `main`:
 - **Tests first**: Write the failing test before writing production code (TDD for all logic with
   defined I/O). Commit RED test, then GREEN implementation.
 - **Never skip pre-commit**: Fix the hook failure; do not pass `--no-verify`.
+- **Use Background Agents**: Whenever possible use background agents for any research or large code changes.
 
 ## Python Style
 
@@ -108,12 +115,14 @@ configure_logging(json_logs=config.logging.json_logs, log_level=config.logging.l
 ```
 
 Get a logger per module:
+
 ```python
 import structlog
 log = structlog.get_logger(__name__)
 ```
 
 Always pass context as keyword args — never f-strings:
+
 ```python
 log.info("order_submitted", symbol="SPY", quantity=10, side="buy", env="equity")
 log.error("broker_error", error=str(e), order_id=order_id)
@@ -134,6 +143,7 @@ cap = config.capital.equity_usd     # float
 ```
 
 Environment variable overrides (Docker .env):
+
 - Top-level: `SWINGRL_TRADING_MODE=live`
 - Nested: `SWINGRL_EQUITY__MAX_POSITION_SIZE=0.30` (double-underscore for nested)
 

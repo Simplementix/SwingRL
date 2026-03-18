@@ -68,6 +68,7 @@ class MemoryCurriculumSampler:
         run_id: str,
         algo: str = "unknown",
         bars_per_year: int = 252,
+        seed: int | None = None,
     ) -> None:
         """Initialize the curriculum sampler.
 
@@ -79,6 +80,7 @@ class MemoryCurriculumSampler:
             run_id: Training run identifier.
             algo: Algorithm name.
             bars_per_year: Used to convert window durations to years.
+            seed: Optional RNG seed for reproducible sampling.
         """
         self._windows = windows
         self._total_bars = total_bars
@@ -87,6 +89,7 @@ class MemoryCurriculumSampler:
         self._run_id = run_id
         self._algo = algo
         self._bars_per_year = bars_per_year
+        self._rng = np.random.default_rng(seed)
 
         # Built during build()
         self._bar_ranges: list[tuple[int, int]] = []
@@ -158,15 +161,14 @@ class MemoryCurriculumSampler:
             return self._uniform_date()
 
         # Sample a window by weight
-        rng = np.random.default_rng()
-        idx = int(rng.choice(len(self._probs), p=self._probs))
+        idx = int(self._rng.choice(len(self._probs), p=self._probs))
         start_bar, end_bar = self._bar_ranges[idx]
         self._last_sampled_label = self._labels[idx]
 
         # Uniform random start within that window
         if end_bar <= start_bar:
             return start_bar
-        sampled_bar = int(rng.integers(start_bar, end_bar))
+        sampled_bar = int(self._rng.integers(start_bar, end_bar))
 
         log.debug(
             "curriculum_sample",
@@ -209,8 +211,12 @@ class MemoryCurriculumSampler:
     def _validate(self) -> None:
         """Validate windows against bounds constraints.
 
+        Short windows (below MIN_WINDOW_YEARS) emit a warning but are not
+        rejected, consistent with the fail-open design — the window still
+        participates in sampling with its assigned weight.
+
         Raises:
-            ValueError: If any window is too short or crisis period is out of bounds.
+            ValueError: If crisis period percentage exceeds CRISIS_PERIOD_PCT upper bound.
         """
         if not self._windows:
             return  # Empty curriculum is valid (build() will use uniform)
@@ -265,7 +271,7 @@ class MemoryCurriculumSampler:
         """
         if self._total_bars <= 0:
             return 0
-        return int(np.random.default_rng().integers(0, self._total_bars))
+        return int(self._rng.integers(0, self._total_bars))
 
     @staticmethod
     def from_date_ranges(

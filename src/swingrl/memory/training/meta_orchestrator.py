@@ -362,6 +362,7 @@ class MetaTrainingOrchestrator:
             Dict with sharpe, mdd, sortino, mean_reward placeholders.
             Actual values should come from walk-forward evaluation.
         """
+        # TODO(phase-19.2): Compute real metrics from TrainingResult — currently placeholder zeros
         # TrainingResult doesn't carry eval metrics directly.
         # Return placeholders — actual values come from walk-forward validation.
         return {

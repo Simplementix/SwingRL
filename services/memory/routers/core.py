@@ -41,6 +41,12 @@ class IngestResponse(BaseModel):
     status: str = "ok"
 
 
+class ConsolidateRequest(BaseModel):
+    """Request body for POST /consolidate."""
+
+    env_name: str | None = None  # None = consolidate both envs + cross-env
+
+
 class ConsolidateResponse(BaseModel):
     """Response body for POST /consolidate."""
 
@@ -77,15 +83,18 @@ async def ingest(
 
 @router.post("/consolidate", response_model=ConsolidateResponse)
 async def consolidate(
+    body: ConsolidateRequest | None = None,
     _key: str = Depends(verify_api_key),
 ) -> ConsolidateResponse:
     """Trigger an immediate LLM consolidation of unarchived memories.
 
     Requires X-API-Key header.
     Returns consolidated=0 if no memories available.
+    Optionally accepts env_name to consolidate only one environment.
     """
     agent = ConsolidateAgent()
-    count = await agent.run()
+    env_name = body.env_name if body else None
+    count = await agent.run(env_name=env_name)
     return ConsolidateResponse(consolidated=count)
 
 
@@ -101,9 +110,11 @@ async def health() -> HealthResponse:
     db_ok = False
     try:
         conn = get_connection()
-        conn.execute("SELECT 1")
-        conn.close()
-        db_ok = True
+        try:
+            conn.execute("SELECT 1")
+            db_ok = True
+        finally:
+            conn.close()
     except Exception as exc:
         log.warning("health_db_check_failed", error=str(exc))
 
