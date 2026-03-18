@@ -273,8 +273,8 @@ def check_memory_service_health(base_url: str, timeout: float = 5.0) -> bool:
     url = base_url.rstrip("/") + _MEMORY_HEALTH_ENDPOINT
     try:
         req = urllib.request.Request(url)  # noqa: S310  # nosec B310
-        resp = urllib.request.urlopen(req, timeout=timeout)  # noqa: S310  # nosec B310
-        return resp.status == 200  # type: ignore[no-any-return]
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310
+            return resp.status == 200  # type: ignore[no-any-return]
     except Exception:
         return False
 

@@ -32,8 +32,10 @@ from routers import core, debug, training
 from db import init_db
 
 # Configure structlog for JSON output (matches Docker log collection)
+_LOG_LEVEL_MAP = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
+_LOG_LEVEL = _LOG_LEVEL_MAP.get(os.environ.get("LOG_LEVEL", "INFO").upper(), 20)
 structlog.configure(
-    wrapper_class=structlog.make_filtering_bound_logger(20),  # INFO level
+    wrapper_class=structlog.make_filtering_bound_logger(_LOG_LEVEL),
     logger_factory=structlog.PrintLoggerFactory(),
 )
 

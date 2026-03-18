@@ -609,6 +609,12 @@ class TestMemoryServiceHealth:
             def read(self) -> bytes:
                 return b'{"status": "ok"}'
 
+            def __enter__(self) -> _MockResponse:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                pass
+
         with patch("urllib.request.urlopen", return_value=_MockResponse()):
             result = pipeline.check_memory_service_health("http://localhost:8889")
         assert result is True

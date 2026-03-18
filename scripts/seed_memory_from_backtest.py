@@ -60,68 +60,64 @@ def _load_fills(sqlite_path: Path) -> list[dict[str, Any]]:
         return []
 
     try:
-        conn = sqlite3.connect(str(sqlite_path))
-        cursor = conn.cursor()
+        with sqlite3.connect(str(sqlite_path)) as conn:
+            cursor = conn.cursor()
 
-        # Verify fills table exists
-        cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='fills'")
-        if cursor.fetchone()[0] == 0:
-            log.info("fills_table_missing", note="No fills to seed (table not yet created)")
-            conn.close()
-            return []
+            # Verify fills table exists
+            cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='fills'")
+            if cursor.fetchone()[0] == 0:
+                log.info("fills_table_missing", note="No fills to seed (table not yet created)")
+                return []
 
-        # Verify training_runs table exists
-        cursor.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='training_runs'"
-        )
-        if cursor.fetchone()[0] == 0:
-            log.info(
-                "training_runs_table_missing",
-                note="No fills to seed (training_runs table not yet created)",
+            # Verify training_runs table exists
+            cursor.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='training_runs'"
             )
-            conn.close()
-            return []
+            if cursor.fetchone()[0] == 0:
+                log.info(
+                    "training_runs_table_missing",
+                    note="No fills to seed (training_runs table not yet created)",
+                )
+                return []
 
-        # Verify run_type column exists in training_runs
-        cursor.execute("PRAGMA table_info(training_runs)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "run_type" not in columns:
-            log.warning(
-                "training_runs_run_type_missing",
-                note=(
-                    "run_type column not found in training_runs; "
-                    "seeding all fills (no evaluation filter applied)"
-                ),
-            )
-            # Fall back to no run_type filter if migration not applied
-            rows = conn.execute(
-                """
-                SELECT f.symbol, f.env, f.side, f.algo, f.run_id,
-                       f.signal_confidence, f.pnl, f.hold_steps,
-                       f.curriculum_window, f.timestamp,
-                       r.reward_weight_profit, r.reward_weight_sharpe,
-                       r.reward_weight_drawdown
-                FROM fills f
-                JOIN training_runs r ON f.run_id = r.run_id
-                ORDER BY f.timestamp ASC
-                """
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT f.symbol, f.env, f.side, f.algo, f.run_id,
-                       f.signal_confidence, f.pnl, f.hold_steps,
-                       f.curriculum_window, f.timestamp,
-                       r.reward_weight_profit, r.reward_weight_sharpe,
-                       r.reward_weight_drawdown
-                FROM fills f
-                JOIN training_runs r ON f.run_id = r.run_id
-                WHERE r.run_type = 'evaluation'
-                ORDER BY f.timestamp ASC
-                """
-            ).fetchall()
-
-        conn.close()
+            # Verify run_type column exists in training_runs
+            cursor.execute("PRAGMA table_info(training_runs)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if "run_type" not in columns:
+                log.warning(
+                    "training_runs_run_type_missing",
+                    note=(
+                        "run_type column not found in training_runs; "
+                        "seeding all fills (no evaluation filter applied)"
+                    ),
+                )
+                # Fall back to no run_type filter if migration not applied
+                rows = conn.execute(
+                    """
+                    SELECT f.symbol, f.env, f.side, f.algo, f.run_id,
+                           f.signal_confidence, f.pnl, f.hold_steps,
+                           f.curriculum_window, f.timestamp,
+                           r.reward_weight_profit, r.reward_weight_sharpe,
+                           r.reward_weight_drawdown
+                    FROM fills f
+                    JOIN training_runs r ON f.run_id = r.run_id
+                    ORDER BY f.timestamp ASC
+                    """
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT f.symbol, f.env, f.side, f.algo, f.run_id,
+                           f.signal_confidence, f.pnl, f.hold_steps,
+                           f.curriculum_window, f.timestamp,
+                           r.reward_weight_profit, r.reward_weight_sharpe,
+                           r.reward_weight_drawdown
+                    FROM fills f
+                    JOIN training_runs r ON f.run_id = r.run_id
+                    WHERE r.run_type = 'evaluation'
+                    ORDER BY f.timestamp ASC
+                    """
+                ).fetchall()
 
     except sqlite3.Error as exc:
         log.warning("fills_query_failed", error=str(exc), note="No fills to seed")

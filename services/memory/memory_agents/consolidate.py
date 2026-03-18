@@ -729,7 +729,9 @@ class ConsolidateAgent:
             Parsed and validated dict, or None if invalid.
         """
         try:
-            async with httpx.AsyncClient(timeout=_CLOUD_TIMEOUT) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=_CLOUD_TIMEOUT, write=30.0, pool=10.0)
+            ) as client:
                 resp = await client.post(
                     f"{_CLOUD_BASE_URL.rstrip('/')}/chat/completions",
                     headers={
@@ -777,14 +779,16 @@ class ConsolidateAgent:
             Parsed and validated dict, or None if invalid.
         """
         try:
-            async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=_OLLAMA_TIMEOUT, write=30.0, pool=10.0)
+            ) as client:
                 resp = await client.post(
                     f"{_OLLAMA_URL}/api/chat",
                     json={
                         "model": _OLLAMA_MODEL,
                         "messages": [
                             {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": f"/no_think\n{user_prompt}"},
+                            {"role": "user", "content": user_prompt},
                         ],
                         "format": schema,
                         "stream": False,

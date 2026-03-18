@@ -77,7 +77,6 @@ dev = [
     "pytest>=8.0",
     "pre-commit>=3.6",
     "ruff>=0.4",
-    "black>=24.0",
     "mypy>=1.8",
     "bandit[toml]>=1.7.7",
     "detect-secrets>=1.5.0",
@@ -106,10 +105,6 @@ python_functions = ["test_*"]
 markers = [
     "integration: requires real API keys and network access (skipped in CI)",
 ]
-
-[tool.black]
-line-length = 100
-target-version = ["py311"]
 
 [tool.ruff]
 line-length = 100

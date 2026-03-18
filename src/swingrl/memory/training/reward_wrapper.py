@@ -222,9 +222,10 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         Returns:
             Normalized weight dict. Returns uniform DEFAULT_WEIGHTS if total is 0.
         """
-        total = sum(weights.values())
+        clamped = {k: max(0.0, v) for k, v in weights.items()}
+        total = sum(clamped.values())
         if total <= 0:
             log.warning("reward_weights_zero_using_defaults")
             total_default = sum(DEFAULT_WEIGHTS.values())
             return {k: v / total_default for k, v in DEFAULT_WEIGHTS.items()}
-        return {k: v / total for k, v in weights.items()}
+        return {k: v / total for k, v in clamped.items()}

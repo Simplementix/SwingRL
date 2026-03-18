@@ -495,7 +495,7 @@ class QueryAgent:
                     advice_response=advice_summary,
                 )
             except Exception as exc:
-                log.debug("presentation_tracking_failed", consolidation_id=cid, error=str(exc))
+                log.warning("presentation_tracking_failed", consolidation_id=cid, error=str(exc))
 
     async def _call_ollama(
         self, user_content: str, schema: dict[str, Any]
@@ -510,7 +510,9 @@ class QueryAgent:
             Parsed dict from LLM response, or None on failure.
         """
         try:
-            async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=_OLLAMA_TIMEOUT, write=30.0, pool=10.0)
+            ) as client:
                 resp = await client.post(
                     f"{_OLLAMA_URL}/api/chat",
                     json={
