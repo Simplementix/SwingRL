@@ -60,9 +60,9 @@ CREATE TABLE IF NOT EXISTS consolidations (
     status              TEXT DEFAULT 'active',
     conflict_group_id   TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_consolidations_status ON consolidations(status);
-CREATE INDEX IF NOT EXISTS idx_consolidations_env_stage ON consolidations(env_name, stage);
 """
+# NOTE: Consolidation indexes are created AFTER _migrate_consolidations() in init_db()
+# to handle existing DBs where columns like 'status' and 'category' were added by migration.
 
 _CREATE_CONSOLIDATION_QUALITY = """
 CREATE TABLE IF NOT EXISTS consolidation_quality (
