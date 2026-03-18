@@ -281,6 +281,7 @@ class MemoryCurriculumSampler:
         run_id: str,
         env_name: str = "equity",
         algo: str = "unknown",
+        seed: int | None = None,
     ) -> MemoryCurriculumSampler:
         """Construct sampler from date-range windows (converts dates to bar indices).
 
@@ -291,6 +292,7 @@ class MemoryCurriculumSampler:
             run_id: Training run identifier.
             env_name: Environment name.
             algo: Algorithm name.
+            seed: Optional RNG seed for reproducible sampling.
 
         Returns:
             MemoryCurriculumSampler ready to call build().
@@ -332,4 +334,5 @@ class MemoryCurriculumSampler:
             run_id=run_id,
             algo=algo,
             bars_per_year=bars_per_year,
+            seed=seed,
         )

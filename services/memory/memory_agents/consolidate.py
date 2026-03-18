@@ -774,9 +774,10 @@ class ConsolidateAgent:
                         "temperature": 0,
                         "max_tokens": 4096,
                         "frequency_penalty": 0.0,
+                        "response_format": {"type": "json_object"},
+                        # NVIDIA NIM guided_json for token-level schema enforcement
+                        **({"nvext": {"guided_json": schema}} if _PROVIDER == "nvidia" else {}),
                     },
-                    # NVIDIA NIM guided_json for token-level schema enforcement
-                    # Falls back to response_format for non-NIM providers
                 )
                 resp.raise_for_status()
                 body = resp.json()

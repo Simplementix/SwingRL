@@ -276,7 +276,7 @@ def seed(config_path: str, memory_url: str) -> int:
     config = load_config(config_path)
     configure_logging(json_logs=config.logging.json_logs, log_level=config.logging.level)
 
-    sqlite_path = Path("db/trading_ops.db")
+    sqlite_path = Path(config.system.sqlite_path)
     duckdb_path = Path(config.system.duckdb_path)
 
     log.info(

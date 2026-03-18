@@ -49,7 +49,7 @@ docker compose run --rm --entrypoint "" swingrl uv run sh -c \
 echo "=== [4a/6] Memory service lint ==="
 # Lint services/memory/ inside the swingrl-memory container (no Ollama needed for linting)
 docker compose -f docker-compose.prod.yml run --rm --no-deps --entrypoint "" swingrl-memory sh -c \
-    'pip install ruff mypy -q && ruff check /app && ruff format --check /app && mypy /app --ignore-missing-imports'
+    'pip install ruff==0.15.5 mypy==1.19.1 -q && ruff check /app && ruff format --check /app && mypy /app --ignore-missing-imports'
 
 echo "=== [5/6] Cleanup ==="
 docker compose down
