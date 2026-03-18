@@ -92,6 +92,9 @@ class MemoryEpochCallback(BaseCallback):
         self._curriculum_window_active: str = "unknown"
         self._curriculum_window_year_range: str = "unknown"
 
+        # Tracks whether epoch_advice has failed at least once (for log-level escalation)
+        self._advice_failed_once: bool = False
+
         # Two-pass adjustment tracking
         self._pending_adjustment: dict[str, Any] | None = None
         self._sharpe_at_trigger: float = 0.0
@@ -102,7 +105,13 @@ class MemoryEpochCallback(BaseCallback):
         return True
 
     def _on_rollout_end(self) -> None:
-        """Called at the end of each rollout (epoch). Main callback entry point."""
+        """Called at the end of each rollout (epoch). Main callback entry point.
+
+        Note: SAC uses a continuous replay buffer rather than explicit rollouts,
+        so SB3 calls _on_rollout_end less frequently for SAC than for PPO/A2C.
+        Epoch snapshots will therefore be sparser during SAC training — this is
+        expected and does not affect correctness.
+        """
         self._epoch += 1
 
         approx_kl = float(self.logger.name_to_value.get("train/approx_kl", 0.0))
@@ -350,4 +359,10 @@ class MemoryEpochCallback(BaseCallback):
                     trigger_reason=reason,
                 )
         except Exception as exc:
-            log.debug("epoch_advice_failed", epoch=self._epoch, error=str(exc))
+            # Log first failure at info so it's visible in production; subsequent
+            # failures at debug to avoid log spam during prolonged unavailability.
+            if not self._advice_failed_once:
+                log.info("epoch_advice_failed_first", epoch=self._epoch, error=str(exc))
+                self._advice_failed_once = True
+            else:
+                log.debug("epoch_advice_failed", epoch=self._epoch, error=str(exc))
