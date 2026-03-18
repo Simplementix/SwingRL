@@ -84,9 +84,23 @@ def _load_consolidation_config() -> tuple[str, str, str, float, str]:
     )
 
 
-_CLOUD_BASE_URL, _CLOUD_API_KEY, _CLOUD_MODEL, _CLOUD_TIMEOUT, _PROVIDER = (
-    _load_consolidation_config()
-)
+try:
+    _CLOUD_BASE_URL, _CLOUD_API_KEY, _CLOUD_MODEL, _CLOUD_TIMEOUT, _PROVIDER = (
+        _load_consolidation_config()
+    )
+except Exception as _cfg_exc:
+    log.warning(
+        "consolidation_config_load_failed",
+        error=str(_cfg_exc),
+        fallback="env_vars",
+    )
+    _CLOUD_BASE_URL = os.environ.get(
+        "CONSOLIDATION_BASE_URL", "https://integrate.api.nvidia.com/v1"
+    )
+    _CLOUD_API_KEY = os.environ.get("CONSOLIDATION_API_KEY", "")
+    _CLOUD_MODEL = os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5")
+    _CLOUD_TIMEOUT = float(os.environ.get("CONSOLIDATION_TIMEOUT", "120"))
+    _PROVIDER = "env"
 
 # Local Ollama settings (fallback when no cloud API key is available)
 _OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")

@@ -1334,32 +1334,28 @@ def run_environment(
         )
 
         for variant_params in TUNING_GRID.get(1, {}).get("ppo", []):
-            conn = duckdb.connect(str(db_path))
-            try:
-                result_v = orchestrator_r1.train(
-                    env_name=env_name,
-                    algo_name="ppo",
-                    features=features_full,
-                    prices=prices_full,
-                    total_timesteps=DEFAULT_TIMESTEPS[env_name],
-                    hyperparams_override=variant_params,
-                )
-                backtester_v = WalkForwardBacktester(config=config, db=None)
-                folds_v = backtester_v.run(
-                    env_name=env_name,
-                    algo_name="ppo",
-                    features=features_full,
-                    prices=prices_full,
-                    models_dir=models_dir,
-                    total_timesteps=DEFAULT_TIMESTEPS[env_name],
-                )
-                _, ppo_sharpe, _ = check_ensemble_gate({"ppo": folds_v})
-                if ppo_sharpe > best_ppo_sharpe:
-                    best_ppo_sharpe = ppo_sharpe
-                    best_ppo_result = result_v
-                    best_ppo_params = variant_params
-            finally:
-                conn.close()
+            result_v = orchestrator_r1.train(
+                env_name=env_name,
+                algo_name="ppo",
+                features=features_full,
+                prices=prices_full,
+                total_timesteps=DEFAULT_TIMESTEPS[env_name],
+                hyperparams_override=variant_params,
+            )
+            backtester_v = WalkForwardBacktester(config=config, db=None)
+            folds_v = backtester_v.run(
+                env_name=env_name,
+                algo_name="ppo",
+                features=features_full,
+                prices=prices_full,
+                models_dir=models_dir,
+                total_timesteps=DEFAULT_TIMESTEPS[env_name],
+            )
+            _, ppo_sharpe, _ = check_ensemble_gate({"ppo": folds_v})
+            if ppo_sharpe > best_ppo_sharpe:
+                best_ppo_sharpe = ppo_sharpe
+                best_ppo_result = result_v
+                best_ppo_params = variant_params
 
         if best_ppo_params:
             tuning_best_params["ppo"] = best_ppo_params
@@ -1393,35 +1389,31 @@ def run_environment(
                 best_params_r2: dict[str, Any] = {}
 
                 for variant_params in variants:
-                    conn = duckdb.connect(str(db_path))
-                    try:
-                        orchestrator_r2 = TrainingOrchestrator(
-                            config=config,
-                            models_dir=models_dir,
-                            logs_dir=Path(config.paths.logs_dir),
-                        )
-                        orchestrator_r2.train(
-                            env_name=env_name,
-                            algo_name=algo_r2,
-                            features=features_full,
-                            prices=prices_full,
-                            total_timesteps=DEFAULT_TIMESTEPS[env_name],
-                            hyperparams_override=variant_params,
-                        )
-                        backtester_r2 = WalkForwardBacktester(config=config, db=None)
-                        folds_r2 = backtester_r2.run(
-                            env_name=env_name,
-                            algo_name=algo_r2,
-                            features=features_full,
-                            prices=prices_full,
-                            models_dir=models_dir,
-                        )
-                        _, sharpe_r2, _ = check_ensemble_gate({algo_r2: folds_r2})
-                        if sharpe_r2 > best_sharpe_r2:
-                            best_sharpe_r2 = sharpe_r2
-                            best_params_r2 = variant_params
-                    finally:
-                        conn.close()
+                    orchestrator_r2 = TrainingOrchestrator(
+                        config=config,
+                        models_dir=models_dir,
+                        logs_dir=Path(config.paths.logs_dir),
+                    )
+                    orchestrator_r2.train(
+                        env_name=env_name,
+                        algo_name=algo_r2,
+                        features=features_full,
+                        prices=prices_full,
+                        total_timesteps=DEFAULT_TIMESTEPS[env_name],
+                        hyperparams_override=variant_params,
+                    )
+                    backtester_r2 = WalkForwardBacktester(config=config, db=None)
+                    folds_r2 = backtester_r2.run(
+                        env_name=env_name,
+                        algo_name=algo_r2,
+                        features=features_full,
+                        prices=prices_full,
+                        models_dir=models_dir,
+                    )
+                    _, sharpe_r2, _ = check_ensemble_gate({algo_r2: folds_r2})
+                    if sharpe_r2 > best_sharpe_r2:
+                        best_sharpe_r2 = sharpe_r2
+                        best_params_r2 = variant_params
 
                 if best_params_r2:
                     tuning_best_params[algo_r2] = best_params_r2

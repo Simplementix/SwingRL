@@ -262,39 +262,45 @@ class TrainingOrchestrator:
             except Exception as exc:
                 log.warning("memory_epoch_callback_failed", error=str(exc))
 
-        # Train
-        model.learn(
-            total_timesteps=total_timesteps,
-            callback=callbacks,
-        )
+        # Train, save, and smoke-test -- wrapped in try/finally to ensure
+        # SubprocVecEnv child processes are always cleaned up (C1 fix).
+        try:
+            model.learn(
+                total_timesteps=total_timesteps,
+                callback=callbacks,
+            )
 
-        # Save model and VecNormalize
-        model_path, vec_path = self._save_model(model, vec_env, env_name, algo_name)
+            # Save model and VecNormalize
+            model_path, vec_path = self._save_model(model, vec_env, env_name, algo_name)
 
-        # Run smoke tests
-        self._run_smoke_tests(model, vec_env, env_name, algo_name)
+            # Run smoke tests
+            self._run_smoke_tests(model, vec_env, env_name, algo_name)
 
-        # Check if training converged early
-        converged_at = None
-        if convergence_cb._stagnation_count >= convergence_cb._patience:
-            converged_at = model.num_timesteps
+            # Check if training converged early
+            converged_at = None
+            if convergence_cb._stagnation_count >= convergence_cb._patience:
+                converged_at = model.num_timesteps
 
-        log.info(
-            "training_complete",
-            env_name=env_name,
-            algo_name=algo_name,
-            model_path=str(model_path),
-            converged_at=converged_at,
-        )
+            log.info(
+                "training_complete",
+                env_name=env_name,
+                algo_name=algo_name,
+                model_path=str(model_path),
+                converged_at=converged_at,
+            )
 
-        return TrainingResult(
-            model_path=model_path,
-            vec_normalize_path=vec_path,
-            env_name=env_name,
-            algo_name=algo_name,
-            converged_at_step=converged_at,
-            total_timesteps=total_timesteps,
-        )
+            return TrainingResult(
+                model_path=model_path,
+                vec_normalize_path=vec_path,
+                env_name=env_name,
+                algo_name=algo_name,
+                converged_at_step=converged_at,
+                total_timesteps=total_timesteps,
+            )
+        finally:
+            vec_env.close()
+            eval_vec_env.close()
+            log.debug("vec_envs_closed", env_name=env_name, algo_name=algo_name)
 
     def _create_env(
         self,

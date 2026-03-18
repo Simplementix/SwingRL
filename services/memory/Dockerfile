@@ -6,15 +6,16 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy service source
-COPY . .
-
 # Non-root user for security
-RUN adduser --disabled-password --gecos "" appuser && chown -R appuser /app
-USER appuser
+RUN adduser --disabled-password --gecos "" appuser
 
-# Create db directory with correct ownership (bind-mounted at runtime)
-RUN mkdir -p /app/db
+# Create db directory before chown so permissions are correct
+RUN mkdir -p /app/db && chown -R appuser:appuser /app
+
+# Copy service source with correct ownership
+COPY --chown=appuser:appuser . .
+
+USER appuser
 
 EXPOSE 8889
 
