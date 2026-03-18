@@ -14,7 +14,7 @@ from auth import verify_api_key
 from fastapi import APIRouter, Depends
 from memory_agents.consolidate import ConsolidateAgent
 from memory_agents.ingest import IngestAgent
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from db import get_connection
 
@@ -30,7 +30,7 @@ router = APIRouter()
 class IngestRequest(BaseModel):
     """Request body for POST /ingest."""
 
-    text: str
+    text: str = Field(max_length=50_000)
     source: str
 
 

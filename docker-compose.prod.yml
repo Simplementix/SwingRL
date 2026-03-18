@@ -44,7 +44,7 @@ services:
       dockerfile: Dockerfile
     # Port exposed to host for validation scripts and operator curl commands.
     ports:
-      - "8889:8889"
+      - "127.0.0.1:8889:8889"
     # 1 GB RAM / 1 CPU for consolidation workload headroom. Soft limit, shared CPUs.
     mem_limit: 1g
     cpus: 1.0

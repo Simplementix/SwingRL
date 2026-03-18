@@ -85,8 +85,9 @@ class MemoryEpochCallback(BaseCallback):
         self._run_id = run_id
         self._algo = algo
         self._env = env
-        # Cache base URL at init; avoids repeated private attr access during training
+        # Cache base URL and API key at init; avoids repeated private attr access during training
         self._memory_base_url: str = memory_client._base_url  # noqa: SLF001
+        self._memory_api_key: str = memory_client._api_key  # noqa: SLF001
 
         self._epoch: int = 0
         self._curriculum_window_active: str = "unknown"
@@ -333,10 +334,13 @@ class MemoryEpochCallback(BaseCallback):
                 )
             }
             data = _json.dumps(payload).encode("utf-8")
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if self._memory_api_key:
+                headers["X-API-Key"] = self._memory_api_key
             req = urllib.request.Request(
                 f"{self._memory_base_url}/training/epoch_advice",
                 data=data,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=5.0) as resp:  # noqa: S310  # nosec B310

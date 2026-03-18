@@ -1108,6 +1108,7 @@ def _train_final_algo(
         client = MemoryClient(
             base_url=config.memory_agent.base_url,
             default_timeout=config.memory_agent.timeout_sec,
+            api_key=config.memory_agent.api_key,
         )
         meta = MetaTrainingOrchestrator(config=config, memory_client=client)
         train_result = meta.run(

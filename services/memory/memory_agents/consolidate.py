@@ -45,7 +45,7 @@ from db import (
     get_memories_by_source_prefix,
     increment_confirmation,
     insert_consolidation,
-    insert_consolidation_source,
+    insert_consolidation_sources,
     log_consolidation_quality,
     update_consolidation_status,
 )
@@ -398,49 +398,6 @@ _FEW_SHOT_EXAMPLES = json.dumps(
 
 
 # ---------------------------------------------------------------------------
-# Merge / Conflict prompts
-# ---------------------------------------------------------------------------
-
-_MERGE_SYSTEM_PROMPT = """You are merging two similar trading patterns into one stronger pattern.
-
-Combine the evidence from both patterns. Keep the most specific and actionable version. \
-Update the confidence based on the combined evidence — more confirming evidence should \
-increase confidence. Return a single pattern in the same JSON format."""
-
-_CONFLICT_SYSTEM_PROMPT = """You are resolving a contradiction between two trading patterns.
-
-These patterns contradict each other. Analyze the evidence from both and determine:
-1. If one is simply wrong (explain why in evidence)
-2. If both are correct but apply to different conditions (explain the conditions)
-3. If the contradiction reveals a regime-dependent behavior
-
-Return a single resolution pattern that explains the apparent contradiction."""
-
-# Single-pattern schema for merge/conflict resolution
-_SINGLE_PATTERN_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "pattern_text": {"type": "string"},
-        "category": {"type": "string", "enum": _VALID_CATEGORIES},
-        "affected_algos": {"type": "array", "items": {"type": "string"}},
-        "affected_envs": {"type": "array", "items": {"type": "string"}},
-        "actionable_implication": {"type": "string"},
-        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "evidence": {"type": "string"},
-    },
-    "required": [
-        "pattern_text",
-        "category",
-        "affected_algos",
-        "affected_envs",
-        "actionable_implication",
-        "confidence",
-        "evidence",
-    ],
-}
-
-
-# ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
 
@@ -534,9 +491,10 @@ class ConsolidateAgent:
             if row_id is not None:
                 created += 1
 
-        # Archive source memories after all patterns processed
-        if created > 0:
-            archive_memories(memory_ids)
+        # Archive source memories after all patterns processed — always archive
+        # regardless of whether new patterns were created (memories were consumed
+        # by the LLM either way; skipping archive causes infinite re-consolidation)
+        archive_memories(memory_ids)
 
         log.info(
             "consolidation_stage1_complete",
@@ -684,9 +642,8 @@ class ConsolidateAgent:
             conflict_group_id=str(uuid.uuid4()) if conflict_id else None,
         )
 
-        # Link source memories
-        for mid in memory_ids:
-            insert_consolidation_source(row_id, mid)
+        # Link source memories (batch insert in single connection)
+        insert_consolidation_sources(row_id, memory_ids)
 
         if conflict_id is not None:
             # Mark the conflicting pattern with the same group ID

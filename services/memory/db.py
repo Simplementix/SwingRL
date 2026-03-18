@@ -411,6 +411,26 @@ def insert_consolidation_source(consolidation_id: int, memory_id: int) -> None:
         conn.close()
 
 
+def insert_consolidation_sources(consolidation_id: int, memory_ids: list[int]) -> None:
+    """Link a consolidation to multiple source memories in a single connection.
+
+    Args:
+        consolidation_id: Consolidation row ID.
+        memory_ids: List of memory row IDs to link.
+    """
+    if not memory_ids:
+        return
+    conn = get_connection()
+    try:
+        conn.executemany(
+            "INSERT OR IGNORE INTO consolidation_sources (consolidation_id, memory_id) VALUES (?, ?)",
+            [(consolidation_id, mid) for mid in memory_ids],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_consolidations(limit: int = 50) -> list[dict[str, Any]]:
     """Retrieve recent consolidation patterns.
 
