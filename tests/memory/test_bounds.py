@@ -169,20 +169,20 @@ class TestMemoryClientIngest:
         result = client.ingest({"text": "test", "source": "test:historical"})
         assert result is False
 
-    def test_ingest_training_asserts_historical_source(self) -> None:
-        """TRAIN-01: ingest_training() raises AssertionError when source does not end with :historical."""
+    def test_ingest_training_accepts_any_source(self) -> None:
+        """TRAIN-01: ingest_training() accepts any source tag (fail-open on connection error)."""
         from swingrl.memory.client import MemoryClient
 
         client = MemoryClient(base_url="http://localhost:99999")
-        with pytest.raises(AssertionError):
-            client.ingest_training(text="some text", source="training:live")
+        # Walk-forward source tags should not raise (assertion removed)
+        result = client.ingest_training(text="some text", source="walk_forward:equity:ppo")
+        assert result is False
 
-    def test_ingest_training_accepts_historical_source(self) -> None:
-        """TRAIN-01: ingest_training() accepts source ending with :historical (fail-open on connection error)."""
+    def test_ingest_training_accepts_legacy_historical_source(self) -> None:
+        """TRAIN-01: ingest_training() still accepts legacy :historical source tags."""
         from swingrl.memory.client import MemoryClient
 
         client = MemoryClient(base_url="http://localhost:99999")
-        # Should not raise, returns False (fail-open)
         result = client.ingest_training(text="some text", source="equity:historical")
         assert result is False
 

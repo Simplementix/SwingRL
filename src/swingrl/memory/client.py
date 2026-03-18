@@ -8,7 +8,7 @@ unavailability.
 Usage:
     from swingrl.memory.client import MemoryClient
     client = MemoryClient(base_url="http://swingrl-memory:8889")
-    client.ingest({"text": "...", "source": "equity:historical"})
+    client.ingest({"text": "...", "source": "walk_forward:equity:ppo"})
 """
 
 from __future__ import annotations
@@ -94,25 +94,20 @@ class MemoryClient:
         source: str,
         timeout: float | None = None,
     ) -> bool:
-        """Ingest a historical training narrative to the memory agent.
+        """Ingest a training narrative to the memory agent.
 
-        Asserts that source ends with ':historical' to prevent accidental
-        ingestion of live/real-time data through this path.
+        Accepts any source tag (e.g. ``walk_forward:equity:ppo``,
+        ``walk_forward:crypto:ensemble``).  The old ``:historical`` assertion
+        was removed because walk-forward results use different tag formats.
 
         Args:
             text: Text content to ingest.
-            source: Source identifier — must end with ':historical'.
+            source: Source identifier (e.g. ``walk_forward:equity:ppo``).
             timeout: Request timeout in seconds.
 
         Returns:
             True on success, False on any error.
-
-        Raises:
-            AssertionError: If source does not end with ':historical'.
         """
-        assert source.endswith(":historical"), (  # noqa: S101  # nosec B101
-            f"ingest_training source must end with ':historical', got: {source!r}"
-        )
         payload: dict[str, Any] = {"text": text, "source": source}
         return self.ingest(payload, timeout=timeout)
 
