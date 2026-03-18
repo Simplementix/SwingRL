@@ -1496,3 +1496,357 @@ class TestTrainingTelemetryDDL:
             assert count == 1
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# TestRetrievalEfficiency
+# ---------------------------------------------------------------------------
+
+
+class TestRetrievalEfficiency:
+    """Tests for context-aware category & env/algo filtering (R1-R3)."""
+
+    def test_parse_query_context(self, memory_db_env: Path) -> None:
+        """Correct extraction of env/algo/iteration from query string."""
+        from memory_agents.query import _parse_query_context
+
+        result = _parse_query_context("env=equity algo=PPO iteration=5 sharpe=0.8")
+        assert result["env_name"] == "equity"
+        assert result["algo_name"] == "ppo"
+        assert result["iteration"] == 5
+
+    def test_parse_query_context_partial(self, memory_db_env: Path) -> None:
+        """Parsing with missing fields returns None for those fields."""
+        from memory_agents.query import _parse_query_context
+
+        result = _parse_query_context("just a plain query")
+        assert result["env_name"] is None
+        assert result["algo_name"] is None
+        assert result["iteration"] is None
+
+    def test_parse_query_context_iter_alias(self, memory_db_env: Path) -> None:
+        """iter= alias works same as iteration=."""
+        from memory_agents.query import _parse_query_context
+
+        result = _parse_query_context("env=crypto algo=sac iter=3")
+        assert result["env_name"] == "crypto"
+        assert result["algo_name"] == "sac"
+        assert result["iteration"] == 3
+
+    def test_build_context_filters_by_env(self, memory_db_env: Path) -> None:
+        """Only equity + NULL env patterns returned for equity query."""
+        from memory_agents.query import QueryAgent
+
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # Insert equity pattern
+        memory_db_module.insert_consolidation(
+            pattern_text="equity pattern",
+            source_count=3,
+            category="regime_performance",
+            confidence=0.8,
+            stage=1,
+            env_name="equity",
+        )
+        # Insert crypto pattern
+        memory_db_module.insert_consolidation(
+            pattern_text="crypto pattern",
+            source_count=3,
+            category="regime_performance",
+            confidence=0.8,
+            stage=1,
+            env_name="crypto",
+        )
+        # Insert universal pattern (no env)
+        memory_db_module.insert_consolidation(
+            pattern_text="universal pattern",
+            source_count=3,
+            category="regime_performance",
+            confidence=0.8,
+            stage=1,
+            env_name=None,
+        )
+
+        agent = QueryAgent()
+        context, ids = agent._build_context(env_name="equity", request_type="run_config")
+
+        assert "equity pattern" in context
+        assert "universal pattern" in context
+        assert "crypto pattern" not in context
+
+    def test_build_context_filters_by_algo(self, memory_db_env: Path) -> None:
+        """SAC-only patterns excluded from PPO query; universal patterns kept."""
+        from memory_agents.query import QueryAgent
+
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # SAC-only pattern
+        memory_db_module.insert_consolidation(
+            pattern_text="sac only pattern",
+            source_count=3,
+            category="overfit_diagnosis",
+            affected_algos=["sac"],
+            confidence=0.8,
+            stage=1,
+        )
+        # Universal pattern (no algos)
+        memory_db_module.insert_consolidation(
+            pattern_text="universal algo pattern",
+            source_count=3,
+            category="overfit_diagnosis",
+            confidence=0.8,
+            stage=1,
+        )
+        # PPO pattern
+        memory_db_module.insert_consolidation(
+            pattern_text="ppo specific pattern",
+            source_count=3,
+            category="overfit_diagnosis",
+            affected_algos=["ppo"],
+            confidence=0.8,
+            stage=1,
+        )
+
+        agent = QueryAgent()
+        context, ids = agent._build_context(algo_name="ppo", request_type="run_config")
+
+        assert "universal algo pattern" in context
+        assert "ppo specific pattern" in context
+        assert "sac only pattern" not in context
+
+    def test_build_context_category_filtering_run_config(self, memory_db_env: Path) -> None:
+        """Training categories included, live categories excluded for run_config."""
+        from memory_agents.query import QueryAgent
+
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # run_config relevant category
+        memory_db_module.insert_consolidation(
+            pattern_text="regime perf pattern",
+            source_count=3,
+            category="regime_performance",
+            confidence=0.8,
+            stage=1,
+        )
+        # live_trading category (should be excluded for run_config)
+        memory_db_module.insert_consolidation(
+            pattern_text="live gate pattern",
+            source_count=3,
+            category="live_cycle_gate",
+            confidence=0.8,
+            stage=1,
+        )
+
+        agent = QueryAgent()
+        context, ids = agent._build_context(request_type="run_config")
+
+        assert "regime perf pattern" in context
+        assert "live gate pattern" not in context
+
+    def test_build_context_category_filtering_epoch_advice(self, memory_db_env: Path) -> None:
+        """Epoch-relevant categories included, others excluded."""
+        from memory_agents.query import QueryAgent
+
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # epoch_advice relevant
+        memory_db_module.insert_consolidation(
+            pattern_text="drawdown recovery tip",
+            source_count=3,
+            category="drawdown_recovery",
+            confidence=0.8,
+            stage=1,
+        )
+        # Not in epoch_advice categories
+        memory_db_module.insert_consolidation(
+            pattern_text="data size impact note",
+            source_count=3,
+            category="data_size_impact",
+            confidence=0.8,
+            stage=1,
+        )
+
+        agent = QueryAgent()
+        context, ids = agent._build_context(request_type="epoch_advice")
+
+        assert "drawdown recovery tip" in context
+        assert "data size impact note" not in context
+
+    def test_build_context_skips_raw_memories(self, memory_db_env: Path) -> None:
+        """No raw memories when >= 3 consolidations exist."""
+        from memory_agents.query import QueryAgent
+
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # Insert 3 consolidations in a run_config-relevant category
+        for i in range(3):
+            memory_db_module.insert_consolidation(
+                pattern_text=f"pattern {i}",
+                source_count=2,
+                category="regime_performance",
+                confidence=0.7,
+                stage=1,
+            )
+
+        # Insert a raw memory
+        memory_db_module.insert_memory(
+            text="raw memory text xyz",
+            source="walk_forward:equity:ppo",
+        )
+
+        agent = QueryAgent()
+        context, ids = agent._build_context(request_type="run_config")
+
+        assert "raw memory text xyz" not in context
+        assert "pattern 0" in context
+
+    def test_build_context_includes_raw_on_cold_start(self, memory_db_env: Path) -> None:
+        """Raw memories included when < 3 consolidations."""
+        from memory_agents.query import QueryAgent
+
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # Only 1 consolidation
+        memory_db_module.insert_consolidation(
+            pattern_text="single pattern",
+            source_count=2,
+            category="regime_performance",
+            confidence=0.7,
+            stage=1,
+        )
+
+        # Insert a raw memory
+        memory_db_module.insert_memory(
+            text="cold start raw memory",
+            source="walk_forward:equity:ppo",
+        )
+
+        agent = QueryAgent()
+        context, ids = agent._build_context(request_type="run_config")
+
+        assert "single pattern" in context
+        assert "cold start raw memory" in context
+
+    def test_get_active_consolidations_limit_per_category(self, memory_db_env: Path) -> None:
+        """Top-3 per category respected with limit_per_category."""
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # Insert 5 patterns in same category with varying confidence
+        for i in range(5):
+            memory_db_module.insert_consolidation(
+                pattern_text=f"pattern conf {i}",
+                source_count=2,
+                category="regime_performance",
+                confidence=0.5 + i * 0.1,
+                stage=1,
+            )
+
+        results = memory_db_module.get_active_consolidations(
+            categories=["regime_performance"],
+            limit_per_category=3,
+        )
+
+        assert len(results) == 3
+        # Should be the top 3 by composite score (confidence dominates)
+        texts = [r["pattern_text"] for r in results]
+        assert "pattern conf 4" in texts  # conf=0.9
+        assert "pattern conf 3" in texts  # conf=0.8
+        assert "pattern conf 2" in texts  # conf=0.7
+
+    def test_get_active_consolidations_composite_score(self, memory_db_env: Path) -> None:
+        """High-confidence old vs low-confidence recent — confidence dominates."""
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # High confidence pattern
+        memory_db_module.insert_consolidation(
+            pattern_text="high conf old",
+            source_count=5,
+            category="overfit_diagnosis",
+            confidence=0.95,
+            stage=1,
+        )
+        # Low confidence pattern
+        memory_db_module.insert_consolidation(
+            pattern_text="low conf new",
+            source_count=1,
+            category="overfit_diagnosis",
+            confidence=0.45,
+            stage=1,
+        )
+
+        results = memory_db_module.get_active_consolidations(
+            categories=["overfit_diagnosis"],
+            limit_per_category=1,
+        )
+
+        assert len(results) == 1
+        assert results[0]["pattern_text"] == "high conf old"
+
+    def test_get_active_consolidations_multi_category_spread(self, memory_db_env: Path) -> None:
+        """limit_per_category=2 across 2 categories returns up to 2 from each."""
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # 3 patterns in regime_performance
+        for i in range(3):
+            memory_db_module.insert_consolidation(
+                pattern_text=f"regime {i}",
+                source_count=2,
+                category="regime_performance",
+                confidence=0.6 + i * 0.1,
+                stage=1,
+            )
+        # 3 patterns in overfit_diagnosis
+        for i in range(3):
+            memory_db_module.insert_consolidation(
+                pattern_text=f"overfit {i}",
+                source_count=2,
+                category="overfit_diagnosis",
+                confidence=0.6 + i * 0.1,
+                stage=1,
+            )
+
+        results = memory_db_module.get_active_consolidations(
+            categories=["regime_performance", "overfit_diagnosis"],
+            limit_per_category=2,
+        )
+
+        assert len(results) == 4  # 2 per category
+        cats = [r["category"] for r in results]
+        assert cats.count("regime_performance") == 2
+        assert cats.count("overfit_diagnosis") == 2
+
+    def test_get_active_consolidations_empty_categories(self, memory_db_env: Path) -> None:
+        """Empty categories list returns no results (not a SQL error)."""
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        memory_db_module.insert_consolidation(
+            pattern_text="some pattern",
+            source_count=2,
+            category="regime_performance",
+            confidence=0.8,
+            stage=1,
+        )
+
+        # Empty list should be treated as "no category filter" (falsy)
+        results = memory_db_module.get_active_consolidations(categories=[])
+        assert len(results) == 1  # No filter applied, returns all

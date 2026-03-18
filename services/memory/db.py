@@ -181,6 +181,10 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_consolidations_env_stage ON consolidations(env_name, stage)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_consolidations_category_status "
+            "ON consolidations(category, status)"
+        )
         conn.commit()
         log.info("memory_db_initialized", path=str(_get_db_path()))
     finally:
@@ -431,6 +435,8 @@ def get_active_consolidations(
     env_name: str | None = None,
     stage: int | None = None,
     min_confidence: float | None = None,
+    categories: list[str] | None = None,
+    limit_per_category: int | None = None,
 ) -> list[dict[str, Any]]:
     """Retrieve active consolidation patterns with optional filters.
 
@@ -438,6 +444,8 @@ def get_active_consolidations(
         env_name: Filter by environment name.
         stage: Filter by consolidation stage (1=per-env, 2=cross-env).
         min_confidence: Minimum confidence threshold.
+        categories: Filter to only these category values.
+        limit_per_category: Keep top-N per category ranked by composite score.
 
     Returns:
         List of row dicts with deserialized JSON fields.
@@ -456,9 +464,47 @@ def get_active_consolidations(
         if min_confidence is not None:
             clauses.append("(confidence >= ? OR confidence IS NULL)")
             params.append(min_confidence)
+        if categories:
+            placeholders = ",".join("?" * len(categories))
+            clauses.append(f"category IN ({placeholders})")
+            params.extend(categories)
 
         where = "WHERE " + " AND ".join(clauses)
-        sql = f"SELECT * FROM consolidations {where} ORDER BY confidence DESC, created_at DESC"  # nosec B608
+
+        if limit_per_category is not None:
+            # Composite score ranking with ROW_NUMBER window function (SQLite 3.25+)
+            # score = confidence*0.5 + (confirmation_count/max_active)*0.3 + recency*0.2
+            sql = f"""
+                WITH scored AS (
+                    SELECT *,
+                        COALESCE(confidence, 0) * 0.5
+                        + CASE WHEN NULLIF(
+                            (SELECT MAX(confirmation_count) FROM consolidations WHERE status = 'active'), 0
+                          ) IS NULL THEN 0
+                          ELSE (COALESCE(confirmation_count, 0) * 1.0
+                            / (SELECT MAX(confirmation_count) FROM consolidations WHERE status = 'active')) * 0.3
+                        END
+                        + MAX(0.0, MIN(1.0,
+                            1.0 - (julianday('now') - julianday(created_at)) / 90.0
+                          )) * 0.2
+                        AS composite_score
+                    FROM consolidations
+                    {where}
+                ),
+                ranked AS (
+                    SELECT *,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY category ORDER BY composite_score DESC
+                        ) AS _rn
+                    FROM scored
+                )
+                SELECT * FROM ranked WHERE _rn <= ?
+                ORDER BY composite_score DESC
+            """  # nosec B608 — where clause built from fixed strings + parameterized values
+            params.append(limit_per_category)
+        else:
+            sql = f"SELECT * FROM consolidations {where} ORDER BY confidence DESC, created_at DESC"  # nosec B608
+
         rows = conn.execute(sql, params).fetchall()
         return [_deserialize_consolidation(r) for r in rows]
     finally:

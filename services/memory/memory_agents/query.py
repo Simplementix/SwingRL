@@ -76,6 +76,54 @@ _OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
 _OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "30"))
 _QUERY_MODEL = "qwen2.5:3b"
 
+# ---------------------------------------------------------------------------
+# Relevant categories per request type (R2)
+# ---------------------------------------------------------------------------
+
+_RELEVANT_CATEGORIES: dict[str, list[str]] = {
+    "run_config": [
+        "regime_performance",
+        "overfit_diagnosis",
+        "iteration_progression",
+        "data_size_impact",
+        "macro_transition",
+        "cross_env",
+        "cross_env_correlation",
+    ],
+    "epoch_advice": [
+        "drawdown_recovery",
+        "trade_quality",
+        "overfit_diagnosis",
+        "iteration_progression",
+    ],
+    "live_trading": [
+        "live_cycle_gate",
+        "live_blend_weights",
+        "live_risk_thresholds",
+        "live_position",
+        "live_trade_veto",
+        "cross_env_correlation",
+    ],
+}
+
+
+def _parse_query_context(query: str) -> dict[str, str | int | None]:
+    """Parse env_name, algo_name, and iteration from query string."""
+    env_name: str | None = None
+    algo_name: str | None = None
+    iteration: int | None = None
+    for part in query.split():
+        if part.startswith("env="):
+            env_name = part.split("=", 1)[1].lower()
+        elif part.startswith("algo="):
+            algo_name = part.split("=", 1)[1].lower()
+        elif part.startswith("iteration=") or part.startswith("iter="):
+            try:
+                iteration = int(part.split("=", 1)[1])
+            except (ValueError, IndexError):
+                pass
+    return {"env_name": env_name, "algo_name": algo_name, "iteration": iteration}
+
 
 def _load_min_confidence() -> float:
     """Load min_confidence_for_advice from config, default 0.4."""
@@ -236,8 +284,8 @@ class QueryAgent:
     async def advise_run_config(self, query: str) -> dict[str, Any]:
         """Return LLM-advised run configuration hyperparameters.
 
-        Builds a context prompt from active consolidations (filtered by confidence
-        and status) and raw memories, queries Ollama, clamps the response.
+        Builds a context prompt from active consolidations (filtered by confidence,
+        env, algo, and category relevance), queries Ollama, clamps the response.
         Returns safe defaults on any failure.
 
         Args:
@@ -247,7 +295,12 @@ class QueryAgent:
             Dict with keys: learning_rate, entropy_coeff, clip_range, n_epochs,
             batch_size, gamma, reward_weights (dict), rationale.
         """
-        context, presented_ids = self._build_context()
+        parsed = _parse_query_context(query)
+        context, presented_ids = self._build_context(
+            env_name=parsed["env_name"],
+            algo_name=parsed["algo_name"],
+            request_type="run_config",
+        )
         user_content = (
             f"Training context: {query}\n\n"
             f"Relevant memory patterns:\n{context}\n\n"
@@ -283,7 +336,12 @@ class QueryAgent:
         Returns:
             Dict with keys: reward_weights (dict), stop_training (bool), rationale (str).
         """
-        context, presented_ids = self._build_context()
+        parsed = _parse_query_context(query)
+        context, presented_ids = self._build_context(
+            env_name=parsed["env_name"],
+            algo_name=parsed["algo_name"],
+            request_type="epoch_advice",
+        )
         user_content = (
             f"Current epoch state: {query}\n\n"
             f"Memory patterns:\n{context}\n\n"
@@ -308,22 +366,61 @@ class QueryAgent:
             "rationale": str(result.get("rationale", "llm_advised")),
         }
 
-    def _build_context(self) -> tuple[str, list[int]]:
+    def _build_context(
+        self,
+        env_name: str | None = None,
+        algo_name: str | None = None,
+        request_type: str = "run_config",
+    ) -> tuple[str, list[int]]:
         """Build a context string from active consolidations and raw memories.
 
-        Filters consolidations by min_confidence and status='active'.
+        Filters consolidations by env, algo, category relevance, and confidence.
         Prefers Stage 2 (cross-env) over Stage 1 (per-env) when both available.
+        Skips raw memories when sufficient consolidations exist (R3).
+
+        Args:
+            env_name: Filter patterns to this environment (None = all).
+            algo_name: Post-filter by affected_algos field (None = all).
+            request_type: Category relevance key ('run_config', 'epoch_advice', etc.).
 
         Returns:
             Tuple of (formatted context string, list of consolidation IDs presented).
         """
+        categories = _RELEVANT_CATEGORIES.get(request_type)
+
         # Get Stage 2 patterns first (cross-env), then Stage 1
-        stage2 = get_active_consolidations(stage=2, min_confidence=_MIN_CONFIDENCE)
-        stage1 = get_active_consolidations(stage=1, min_confidence=_MIN_CONFIDENCE)
+        stage2 = get_active_consolidations(
+            env_name=env_name,
+            stage=2,
+            min_confidence=_MIN_CONFIDENCE,
+            categories=categories,
+            limit_per_category=3,
+        )
+        stage1 = get_active_consolidations(
+            env_name=env_name,
+            stage=1,
+            min_confidence=_MIN_CONFIDENCE,
+            categories=categories,
+            limit_per_category=3,
+        )
 
         # Combine: Stage 2 first (higher priority)
-        consolidations = stage2 + stage1
-        memories = get_memories(archived=False, limit=20)
+        all_consolidations = stage2 + stage1
+
+        # Post-filter by algo_name: keep universal patterns + those matching current algo
+        if algo_name:
+            algo_lower = algo_name.lower()
+            consolidations = []
+            for c in all_consolidations:
+                algos = c.get("affected_algos")
+                if not algos:
+                    # Universal pattern (None or empty list) — always keep
+                    consolidations.append(c)
+                elif isinstance(algos, list) and algo_lower in [a.lower() for a in algos]:
+                    consolidations.append(c)
+            # else: pattern is algo-specific but doesn't match — skip
+        else:
+            consolidations = all_consolidations
 
         parts: list[str] = []
         presented_ids: list[int] = []
@@ -345,15 +442,26 @@ class QueryAgent:
                 if c.get("id"):
                     presented_ids.append(int(c["id"]))
 
-        if memories:
-            parts.append("=== Recent Raw Memories ===")
-            for m in memories:
-                # Text is already XML-wrapped by IngestAgent
-                parts.append(m["text"])
+        # R3: Only fetch raw memories if insufficient consolidations (cold start)
+        if len(consolidations) < 3:
+            memories = get_memories(archived=False, limit=20)
+            if memories:
+                parts.append("=== Recent Raw Memories ===")
+                for m in memories:
+                    # Text is already XML-wrapped by IngestAgent
+                    parts.append(m["text"])
 
         if not parts:
             return "<no_memories>No memories available yet (cold start)</no_memories>", []
 
+        log.info(
+            "context_built",
+            env=env_name,
+            algo=algo_name,
+            request_type=request_type,
+            pattern_count=len(consolidations),
+            raw_included=len(consolidations) < 3,
+        )
         return "\n".join(parts), presented_ids
 
     def _track_presentations(
@@ -371,17 +479,9 @@ class QueryAgent:
             request_type: 'run_config' or 'epoch_advice'.
             result: The LLM response (for advice_response summary).
         """
-        # Parse iteration and env_name from query if available
-        iteration = None
-        env_name = None
-        for part in query.split():
-            if part.startswith("iteration=") or part.startswith("iter="):
-                try:
-                    iteration = int(part.split("=")[1])
-                except (ValueError, IndexError):
-                    pass
-            if part.startswith("env="):
-                env_name = part.split("=")[1]
+        parsed = _parse_query_context(query)
+        iteration = parsed["iteration"]
+        env_name = parsed["env_name"]
 
         advice_summary = result.get("rationale", "")[:200]
 
