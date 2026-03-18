@@ -7,7 +7,7 @@ Two public methods:
 Both methods:
 - Pull active consolidations (filtered by confidence + status) and raw memories
 - Prefer Stage 2 cross-env patterns over Stage 1 per-env patterns
-- Call Ollama qwen3:14b with structured JSON output schema
+- Call Ollama qwen2.5:3b with structured JSON output schema
 - Return safe clamped defaults on any failure (cold-start guard)
 - XML-wrap all memory text injected into prompts
 - Track which patterns were presented via pattern_presentations table
@@ -74,7 +74,7 @@ _SAFE_EPOCH_DEFAULTS: dict[str, Any] = {
 
 _OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
 _OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "30"))
-_QUERY_MODEL = "qwen3:14b"
+_QUERY_MODEL = "qwen2.5:3b"
 
 
 def _load_min_confidence() -> float:

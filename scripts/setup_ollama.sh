@@ -8,12 +8,8 @@
 # the named volume (ollama_models:/root/.ollama), the pull is a no-op.
 #
 # Models pulled:
-#   qwen2.5:3b   — fast inference, used for lightweight tasks
-#   qwen3:14b    — primary LLM for consolidation and training advice
-#
-# Expected sizes (approximate):
-#   qwen2.5:3b  ~2.0 GB
-#   qwen3:14b   ~9.0 GB
+#   qwen2.5:3b   — sole local model for query agent and Ollama fallback (~2.0 GB)
+#                  Consolidation primary uses NVIDIA kimi-k2.5 cloud API
 #
 # Requires: docker compose -f docker-compose.prod.yml up -d swingrl-ollama
 # before running this script.
@@ -27,9 +23,6 @@ echo "[setup_ollama] Pulling models into ${SERVICE} container..."
 
 echo "[setup_ollama] Pulling qwen2.5:3b ..."
 docker compose -f "${COMPOSE_FILE}" exec "${SERVICE}" ollama pull qwen2.5:3b
-
-echo "[setup_ollama] Pulling qwen3:14b ..."
-docker compose -f "${COMPOSE_FILE}" exec "${SERVICE}" ollama pull qwen3:14b
 
 echo "[setup_ollama] Done. Models available:"
 docker compose -f "${COMPOSE_FILE}" exec "${SERVICE}" ollama list

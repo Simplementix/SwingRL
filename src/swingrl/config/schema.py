@@ -275,7 +275,7 @@ class ConsolidationConfig(BaseModel):
             ),
             "ollama": ConsolidationProviderConfig(
                 base_url="http://swingrl-ollama:11434/v1",
-                default_model="qwen3:14b",
+                default_model="qwen2.5:3b",
             ),
         }
     )
@@ -309,7 +309,7 @@ class MemoryAgentConfig(BaseModel):
     llm_backend: str = "ollama"
     openai_model: str = "gpt-4o-mini"
     ollama_fast_model: str = "qwen2.5:3b"
-    ollama_smart_model: str = "qwen3:14b"
+    ollama_smart_model: str = "qwen2.5:3b"
 
     consolidate_interval_min: int = 30
     inbox_dir: str = "/data/memory_inbox"

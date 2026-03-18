@@ -4,7 +4,7 @@ All LLM-suggested hyperparameters and reward weights must pass through this
 module before reaching the trainer. This is a non-negotiable safety layer.
 
 Constants match the spec in memory_meta_trainer.md Section 1.
-The ollama_smart_model is overridden to qwen3:14b per CONTEXT.md.
+The ollama_smart_model is qwen2.5:3b (sole local model; consolidation uses NVIDIA kimi-k2.5 cloud).
 
 Usage:
     from swingrl.memory.training.bounds import clamp_run_config, clamp_reward_weights

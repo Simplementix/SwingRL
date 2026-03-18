@@ -8,7 +8,7 @@ Two-stage consolidation pipeline:
 Supports two LLM backends:
 1. **Cloud API** (default): OpenAI-compatible endpoint (NVIDIA NIM, OpenRouter, etc.)
    Uses guided_json via nvext for token-level schema enforcement.
-2. **Local Ollama** (fallback): Qwen3:14b with format parameter for schema enforcement.
+2. **Local Ollama** (fallback): Qwen2.5:3b with format parameter for schema enforcement.
 
 Pattern lifecycle:
 - New patterns are deduplicated against existing active patterns.
@@ -91,7 +91,7 @@ _CLOUD_BASE_URL, _CLOUD_API_KEY, _CLOUD_MODEL, _CLOUD_TIMEOUT, _PROVIDER = (
 # Local Ollama settings (fallback when no cloud API key is available)
 _OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
 _OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "300"))
-_OLLAMA_MODEL = os.environ.get("OLLAMA_CONSOLIDATION_MODEL", "qwen3:14b")
+_OLLAMA_MODEL = os.environ.get("OLLAMA_CONSOLIDATION_MODEL", "qwen2.5:3b")
 
 _MEMORY_BATCH_SIZE = 50
 

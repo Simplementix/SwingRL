@@ -108,7 +108,7 @@ def _make_tags_response() -> MagicMock:
     """Build a mock httpx response for Ollama /api/tags (health check)."""
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {"models": [{"name": "qwen3:14b"}]}
+    mock_resp.json.return_value = {"models": [{"name": "qwen2.5:3b"}]}
     mock_resp.raise_for_status = MagicMock()
     return mock_resp
 

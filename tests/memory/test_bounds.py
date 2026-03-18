@@ -219,8 +219,8 @@ class TestMemoryAgentConfigDefaults:
         assert cfg.memory_agent.enabled is False
 
     def test_memory_agent_ollama_smart_model(self) -> None:
-        """TRAIN-01: MemoryAgentConfig default ollama_smart_model is qwen3:14b."""
+        """TRAIN-01: MemoryAgentConfig default ollama_smart_model is qwen2.5:3b."""
         from swingrl.config.schema import MemoryAgentConfig
 
         cfg = MemoryAgentConfig()
-        assert cfg.ollama_smart_model == "qwen3:14b"
+        assert cfg.ollama_smart_model == "qwen2.5:3b"
