@@ -248,7 +248,7 @@ class TestRollingMetrics:
 
         sharpe = wrapper.rolling_sharpe()
         arr = np.array(rewards)
-        expected = float(arr.mean() / arr.std() * np.sqrt(252))
+        expected = float(arr.mean() / arr.std(ddof=1) * np.sqrt(252))
         assert sharpe == pytest.approx(expected, rel=1e-4)
 
     def test_rolling_mdd_with_drawdown(self) -> None:

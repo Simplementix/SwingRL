@@ -231,24 +231,24 @@ class TestObservationIntegration:
     def test_get_equity_observation(
         self, pipeline_config: SwingRLConfig, seeded_duckdb: Any
     ) -> None:
-        """FEAT-11: Pipeline produces (156,) equity observation."""
+        """FEAT-11: Pipeline produces (164,) equity observation."""
         pipeline = FeaturePipeline(pipeline_config, seeded_duckdb)
         pipeline.compute_equity()
         # Get last date from features_equity
         last_date = seeded_duckdb.execute("SELECT MAX(date) FROM features_equity").fetchone()[0]
         obs = pipeline.get_observation("equity", str(last_date))
-        assert obs.shape == (156,)
+        assert obs.shape == (164,)
         assert not np.any(np.isnan(obs))
 
     def test_get_crypto_observation(
         self, pipeline_config: SwingRLConfig, seeded_duckdb: Any
     ) -> None:
-        """FEAT-11: Pipeline produces (45,) crypto observation."""
+        """FEAT-11: Pipeline produces (47,) crypto observation."""
         pipeline = FeaturePipeline(pipeline_config, seeded_duckdb)
         pipeline.compute_crypto()
         last_dt = seeded_duckdb.execute("SELECT MAX(datetime) FROM features_crypto").fetchone()[0]
         obs = pipeline.get_observation("crypto", str(last_dt))
-        assert obs.shape == (45,)
+        assert obs.shape == (47,)
         assert not np.any(np.isnan(obs))
 
 

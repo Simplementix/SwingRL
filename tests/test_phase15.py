@@ -16,6 +16,8 @@ import duckdb
 import numpy as np
 import pytest
 
+from swingrl.utils.exceptions import DataError
+
 # Add scripts/ to path so we can import train.py as a module
 _SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -234,7 +236,7 @@ class TestLoadFeaturesEquity:
     """TRAIN-01: _load_features_prices returns correctly shaped equity arrays."""
 
     def test_equity_features_shape(self, equity_env_config: SwingRLConfig) -> None:
-        """TRAIN-01: equity features shape is (N, 156) with N timesteps."""
+        """TRAIN-01: equity features shape is (N, equity_obs_dim) with N timesteps."""
         from train import _load_features_prices  # type: ignore[import]
 
         conn = _make_equity_db()
@@ -288,7 +290,7 @@ class TestLoadFeaturesCrypto:
     """TRAIN-02: _load_features_prices returns correctly shaped crypto arrays."""
 
     def test_crypto_features_shape(self, equity_env_config: SwingRLConfig) -> None:
-        """TRAIN-02: crypto features shape is (N, 45) with N timesteps."""
+        """TRAIN-02: crypto features shape is (N, CRYPTO_OBS_DIM) with N timesteps."""
         from train import _load_features_prices  # type: ignore[import]
 
         conn = _make_crypto_db()
@@ -507,12 +509,12 @@ class TestEmptyTables:
             )
         """)
 
-        with pytest.raises(RuntimeError, match="No data found"):
+        with pytest.raises((RuntimeError, DataError), match="No data found"):
             _load_features_prices(conn, "equity", equity_env_config)
         conn.close()
 
     def test_empty_crypto_table_raises(self, equity_env_config: SwingRLConfig) -> None:
-        """TRAIN-02: _load_features_prices raises RuntimeError for empty crypto table."""
+        """TRAIN-02: _load_features_prices raises DataError for empty crypto table."""
         from train import _load_features_prices  # type: ignore[import]
 
         conn = duckdb.connect(":memory:")
@@ -529,6 +531,6 @@ class TestEmptyTables:
             )
         """)
 
-        with pytest.raises(RuntimeError, match="No data found"):
+        with pytest.raises((RuntimeError, DataError), match="No data found"):
             _load_features_prices(conn, "crypto", equity_env_config)
         conn.close()

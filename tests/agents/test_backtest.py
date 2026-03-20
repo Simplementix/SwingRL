@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from swingrl.agents.backtest import FoldResult, generate_folds
+from swingrl.utils.exceptions import DataError
 
 
 class TestGenerateFolds:
@@ -67,8 +68,8 @@ class TestGenerateFolds:
             )
 
     def test_insufficient_data_raises(self) -> None:
-        """ValueError when not enough data for min_folds."""
-        with pytest.raises(ValueError, match="fewer than 3"):
+        """DataError when not enough data for min_folds."""
+        with pytest.raises(DataError, match="fewer than 3"):
             generate_folds(
                 total_bars=300,
                 test_bars=63,
@@ -104,7 +105,7 @@ class TestGenerateFolds:
 
     def test_custom_min_folds(self) -> None:
         """Raising min_folds increases the minimum fold requirement."""
-        with pytest.raises(ValueError, match="fewer than 5"):
+        with pytest.raises(DataError, match="fewer than 5"):
             generate_folds(
                 total_bars=600,
                 test_bars=63,

@@ -140,6 +140,55 @@ class BinanceSimAdapter:
             for row in rows
         ]
 
+    def emergency_sell(self, symbol: str, quantity: float) -> FillResult:
+        """Emergency market-sell a crypto position (simulated).
+
+        Args:
+            symbol: Binance symbol (e.g., "BTCUSDT").
+            quantity: Number of units to sell.
+
+        Returns:
+            FillResult with simulated fill details.
+
+        Raises:
+            BrokerError: If mid-price fetch fails.
+        """
+        mid_price, _bid, _ask = self._get_mid_price(symbol)
+        fill_price = mid_price * (1 - self._slippage)
+        commission = quantity * fill_price * _COMMISSION_RATE
+        slippage_amount = abs(fill_price - mid_price) * quantity
+        trade_id = str(uuid.uuid4())
+
+        # Update position in DB
+        try:
+            with self._db.sqlite() as conn:
+                conn.execute(
+                    "UPDATE positions SET quantity = 0 WHERE symbol = ? AND environment = ?",
+                    (symbol, "crypto"),
+                )
+        except Exception:
+            log.warning("emergency_sell_db_update_failed", symbol=symbol, exc_info=True)
+
+        log.info(
+            "emergency_sell_simulated",
+            symbol=symbol,
+            quantity=quantity,
+            fill_price=fill_price,
+            trade_id=trade_id,
+        )
+
+        return FillResult(
+            trade_id=trade_id,
+            symbol=symbol,
+            side="sell",
+            quantity=quantity,
+            fill_price=fill_price,
+            commission=commission,
+            slippage=slippage_amount,
+            environment="crypto",
+            broker="binance_us",
+        )
+
     def cancel_order(self, order_id: str) -> bool:
         """No-op for simulated fills.
 

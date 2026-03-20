@@ -153,8 +153,10 @@ class TestEpochCallbackInit:
         )
         assert cb._advice_failed_once is False  # noqa: SLF001
 
-    def test_on_step_always_returns_true(self) -> None:
-        """TRAIN-07: _on_step() always returns True (never stops training)."""
+    def test_on_step_returns_true_when_not_stopped(self) -> None:
+        """TRAIN-07: _on_step() returns True when stop_training is not set."""
+        from unittest.mock import MagicMock
+
         wrapper = MemoryVecRewardWrapper(_make_mock_venv())
         cb = MemoryEpochCallback(
             memory_client=_make_mock_memory_client(),
@@ -163,7 +165,26 @@ class TestEpochCallbackInit:
             algo="PPO",
             env="equity",
         )
+        # Simulate model being attached (as SB3 does during learn())
+        cb.model = MagicMock()
+        cb.model.stop_training = False
         assert cb._on_step() is True  # noqa: SLF001
+
+    def test_on_step_returns_false_when_stop_training(self) -> None:
+        """TRAIN-07: _on_step() returns False when stop_training is set."""
+        from unittest.mock import MagicMock
+
+        wrapper = MemoryVecRewardWrapper(_make_mock_venv())
+        cb = MemoryEpochCallback(
+            memory_client=_make_mock_memory_client(),
+            wrapper=wrapper,
+            run_id="test_run",
+            algo="PPO",
+            env="equity",
+        )
+        cb.model = MagicMock()
+        cb.model.stop_training = True
+        assert cb._on_step() is False  # noqa: SLF001
 
 
 class TestEpochAdviceFirstFailureLogging:

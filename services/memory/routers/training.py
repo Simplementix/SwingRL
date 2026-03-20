@@ -16,7 +16,10 @@ from fastapi import APIRouter, Depends
 from memory_agents.query import QueryAgent
 from pydantic import BaseModel
 
-from db import get_pattern_effectiveness, insert_pattern_outcome
+from db import (
+    get_pattern_effectiveness_async,
+    insert_pattern_outcome_async,
+)
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
@@ -142,7 +145,7 @@ async def record_outcome(
     Called by train_pipeline.py after each iteration completes.
     Requires X-API-Key header.
     """
-    row_id = insert_pattern_outcome(
+    row_id = await insert_pattern_outcome_async(
         iteration=body.iteration,
         env_name=body.env_name,
         gate_passed=body.gate_passed,
@@ -170,4 +173,4 @@ async def pattern_effectiveness(
     For human review of which patterns actually improved training.
     Requires X-API-Key header.
     """
-    return get_pattern_effectiveness()
+    return await get_pattern_effectiveness_async()

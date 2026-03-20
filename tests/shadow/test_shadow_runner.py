@@ -291,10 +291,10 @@ class _FakeFeaturePipeline:
 class _FakePipelineCtx:
     """Minimal execution pipeline context."""
 
-    _feature_pipeline: _FakeFeaturePipeline = field(
+    feature_pipeline: _FakeFeaturePipeline = field(
         default_factory=_FakeFeaturePipeline,
     )
-    _config: Any = field(default_factory=_FakeFullConfig)
+    config: Any = field(default_factory=_FakeFullConfig)
 
 
 class TestGenerateHypotheticalTrades:
@@ -319,8 +319,8 @@ class TestGenerateHypotheticalTrades:
         feature_pipeline = _FakeFeaturePipeline(obs=obs)
         config = _FakeFullConfig()
         pipeline_ctx = _FakePipelineCtx(
-            _feature_pipeline=feature_pipeline,
-            _config=config,
+            feature_pipeline=feature_pipeline,
+            config=config,
         )
 
         ctx = _FakeJobContext(

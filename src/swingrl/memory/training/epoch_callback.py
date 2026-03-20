@@ -85,10 +85,6 @@ class MemoryEpochCallback(BaseCallback):
         self._run_id = run_id
         self._algo = algo
         self._env = env
-        # Cache base URL and API key at init; avoids repeated private attr access during training
-        self._memory_base_url: str = memory_client._base_url  # noqa: SLF001
-        self._memory_api_key: str = memory_client._api_key  # noqa: SLF001
-
         self._epoch: int = 0
         self._curriculum_window_active: str = "unknown"
         self._curriculum_window_year_range: str = "unknown"
@@ -102,8 +98,12 @@ class MemoryEpochCallback(BaseCallback):
         self._mdd_at_trigger: float = 0.0
 
     def _on_step(self) -> bool:
-        """Required by BaseCallback. Always returns True (never stops training)."""
-        return True
+        """Check if training should continue.
+
+        Returns:
+            False if stop_training was set (e.g. by LLM advice), True otherwise.
+        """
+        return not getattr(self.model, "stop_training", False)
 
     def _on_rollout_end(self) -> None:
         """Called at the end of each rollout (epoch). Main callback entry point.
@@ -322,7 +322,6 @@ class MemoryEpochCallback(BaseCallback):
 
         try:
             import json as _json
-            import urllib.request
 
             payload = {
                 "query": (
@@ -333,21 +332,19 @@ class MemoryEpochCallback(BaseCallback):
                     f"current_weights={_json.dumps(self._wrapper.weights)}"
                 )
             }
-            data = _json.dumps(payload).encode("utf-8")
-            headers: dict[str, str] = {"Content-Type": "application/json"}
-            if self._memory_api_key:
-                headers["X-API-Key"] = self._memory_api_key
-            req = urllib.request.Request(
-                f"{self._memory_base_url}/training/epoch_advice",
-                data=data,
-                headers=headers,
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=5.0) as resp:  # noqa: S310  # nosec B310
-                body = _json.loads(resp.read().decode("utf-8"))
+            body = self._client.epoch_advice(payload)
+            if not body:
+                return
+
+            reason = body.get("rationale", "")
+
+            stop_training = body.get("stop_training", False)
+            if stop_training:
+                log.warning("llm_advises_stop_training", epoch=self._epoch, reason=reason)
+                self.model.stop_training = True  # type: ignore[attr-defined]
+                return
 
             new_weights = body.get("reward_weights")
-            reason = body.get("rationale", "")
 
             if isinstance(new_weights, dict) and new_weights:
                 from swingrl.memory.training.bounds import clamp_reward_weights

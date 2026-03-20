@@ -6,7 +6,6 @@ Validates exponential backoff, retry count, and non-retryable exception pass-thr
 from __future__ import annotations
 
 import pytest
-from tenacity import RetryError
 
 from swingrl.utils.retry import swingrl_retry
 
@@ -37,7 +36,7 @@ class TestSwingrlRetry:
         def always_fails() -> None:
             raise ConnectionError("permanent failure")
 
-        with pytest.raises(RetryError):
+        with pytest.raises(ConnectionError):
             always_fails()
 
     def test_does_not_retry_non_retryable(self) -> None:

@@ -61,7 +61,12 @@ class TestPortfolioSimulatorRebalance:
         assert sim.shares[1] == pytest.approx(150.0)
 
     def test_rebalance_deducts_transaction_cost(self) -> None:
-        """TRAIN-07: Transaction cost is deducted from portfolio value."""
+        """TRAIN-07: Transaction cost estimated before allocation to avoid over-investing.
+
+        est_deltas = [50000, 30000], est_cost = 800
+        adjusted_total = 99200, target_values = [49600, 29760]
+        actual cost = (49600 + 29760) * 0.01 = 793.6
+        """
         cost_pct = 0.01  # 1% for easy math
         sim = PortfolioSimulator(initial_cash=100_000.0, n_assets=2, transaction_cost_pct=cost_pct)
         prices = np.array([100.0, 200.0])
@@ -69,11 +74,10 @@ class TestPortfolioSimulatorRebalance:
 
         cost = sim.rebalance(target_weights, prices)
 
-        # Total traded = |50_000| + |30_000| = 80_000
-        # Cost = 80_000 * 0.01 = 800
-        assert cost == pytest.approx(800.0)
+        # Pre-allocation cost estimate adjusts target values down
+        assert cost == pytest.approx(793.6)
         total = sim.portfolio_value(prices)
-        assert total == pytest.approx(100_000.0 - 800.0)
+        assert total == pytest.approx(100_000.0 - 793.6)
 
     def test_rebalance_logs_trades(self) -> None:
         """TRAIN-07: Trade log records symbol indices, side, shares, cost."""
@@ -150,21 +154,24 @@ class TestProcessActions:
 
     def test_softmax_produces_positive_weights(self) -> None:
         """TRAIN-09: Softmax output is all positive."""
-        raw = np.array([-1.0, 0.0, 1.0, 0.5])
+        # 4 assets + 1 cash = 5 raw actions
+        raw = np.array([-1.0, 0.0, 1.0, 0.5, 0.0])
         current = np.zeros(4)
         result = process_actions(raw, current, deadzone=0.0)
         assert np.all(result >= 0.0)
 
     def test_softmax_weights_sum_le_one(self) -> None:
-        """TRAIN-09: Softmax weights sum to <= 1.0."""
-        raw = np.array([0.3, -0.5, 0.8, 0.1, -0.2, 0.6, -0.1, 0.4])
+        """TRAIN-09: Softmax weights sum to <= 1.0 (cash absorbs remainder)."""
+        # 8 assets + 1 cash = 9 raw actions
+        raw = np.array([0.3, -0.5, 0.8, 0.1, -0.2, 0.6, -0.1, 0.4, 0.0])
         current = np.zeros(8)
         result = process_actions(raw, current, deadzone=0.0)
         assert np.sum(result) <= 1.0 + 1e-9
 
     def test_softmax_numerical_stability(self) -> None:
         """TRAIN-09: Large values handled without overflow (subtract-max trick)."""
-        raw = np.array([1000.0, 1001.0, 999.0])
+        # 3 assets + 1 cash = 4 raw actions
+        raw = np.array([1000.0, 1001.0, 999.0, 1000.0])
         current = np.zeros(3)
         result = process_actions(raw, current, deadzone=0.0)
         assert np.all(np.isfinite(result))
@@ -172,26 +179,34 @@ class TestProcessActions:
 
     def test_deadzone_suppresses_small_changes(self) -> None:
         """TRAIN-09: Changes below deadzone threshold keep current weight."""
-        current = np.array([0.3, 0.3, 0.4])
-        # Construct raw that produces softmax close to current
-        # Softmax of [0, 0, 0] = [1/3, 1/3, 1/3] ~ [0.333, 0.333, 0.333]
-        raw = np.zeros(3)
-        process_actions(raw, current, deadzone=0.02)  # exercise path; tested below
-        # The difference between 1/3 and 0.3 is ~0.033, above deadzone
-        # The difference between 1/3 and 0.4 is ~0.067, above deadzone
-        # So not all will be suppressed; test a clear suppression case:
-        current2 = np.array([0.34, 0.33, 0.33])  # very close to 1/3
-        result2 = process_actions(raw, current2, deadzone=0.02)
-        # diff is ~0.006 for all => all suppressed => returns current
-        np.testing.assert_array_almost_equal(result2, current2)
+        current = np.array([0.24, 0.24, 0.24])
+        # 3 assets + 1 cash = 4 raw actions; softmax of [0,0,0,0] = [0.25]*4
+        # Asset weights after removing cash = [0.25, 0.25, 0.25]
+        raw = np.zeros(4)
+        # diff ~ |0.25 - 0.24| = 0.01 < 0.02 deadzone => all suppressed
+        result = process_actions(raw, current, deadzone=0.02)
+        np.testing.assert_array_almost_equal(result, current)
 
     def test_deadzone_allows_large_changes(self) -> None:
         """TRAIN-09: Changes above deadzone threshold are applied."""
         current = np.array([0.0, 0.0])
-        raw = np.array([1.0, -1.0])  # softmax ~ [0.88, 0.12]
+        # 2 assets + 1 cash = 3 raw actions
+        raw = np.array([1.0, -1.0, 0.0])
         result = process_actions(raw, current, deadzone=0.02)
         # Both changes > 0.02, so new weights should differ from current
         assert not np.allclose(result, current)
+
+    def test_cash_dimension_reduces_asset_weights(self) -> None:
+        """TRAIN-09: High cash preference reduces total asset allocation."""
+        current = np.zeros(2)
+        # Strong cash preference (last element = 10.0)
+        raw_high_cash = np.array([0.0, 0.0, 10.0])
+        result_high_cash = process_actions(raw_high_cash, current, deadzone=0.0)
+        # Low cash preference
+        raw_low_cash = np.array([5.0, 5.0, -5.0])
+        result_low_cash = process_actions(raw_low_cash, current, deadzone=0.0)
+        # Higher cash preference -> lower total asset weight
+        assert np.sum(result_high_cash) < np.sum(result_low_cash)
 
 
 # ---------------------------------------------------------------------------
@@ -307,13 +322,13 @@ class TestStockTradingEnvInit:
         equity_prices_array: np.ndarray,
         equity_env_config,  # type: ignore[no-untyped-def]
     ) -> None:
-        """TRAIN-01: observation_space is Box(156,) float32."""
+        """TRAIN-01: observation_space is Box(164,) float32."""
         env = StockTradingEnv(
             features=equity_features_array,
             prices=equity_prices_array,
             config=equity_env_config,
         )
-        assert env.observation_space.shape == (156,)
+        assert env.observation_space.shape == (164,)
         assert env.observation_space.dtype == np.float32
 
     def test_action_space_shape(
@@ -322,13 +337,13 @@ class TestStockTradingEnvInit:
         equity_prices_array: np.ndarray,
         equity_env_config,  # type: ignore[no-untyped-def]
     ) -> None:
-        """TRAIN-01: action_space is Box(8,) float32 for 8 ETFs."""
+        """TRAIN-01: action_space is Box(9,) float32 for 8 ETFs + cash."""
         env = StockTradingEnv(
             features=equity_features_array,
             prices=equity_prices_array,
             config=equity_env_config,
         )
-        assert env.action_space.shape == (8,)
+        assert env.action_space.shape == (9,)
         assert env.action_space.dtype == np.float32
 
 
@@ -348,7 +363,7 @@ class TestStockTradingEnvReset:
             config=equity_env_config,
         )
         obs, info = env.reset(seed=42)
-        assert obs.shape == (156,)
+        assert obs.shape == (164,)
         assert obs.dtype == np.float32
 
     def test_reset_obs_all_finite(
@@ -414,7 +429,7 @@ class TestStockTradingEnvStep:
         equity_prices_array: np.ndarray,
         equity_env_config,  # type: ignore[no-untyped-def]
     ) -> None:
-        """TRAIN-01: step() observation shape is (156,) and dtype is float32."""
+        """TRAIN-01: step() observation shape is (164,) and dtype is float32."""
         env = StockTradingEnv(
             features=equity_features_array,
             prices=equity_prices_array,
@@ -422,7 +437,7 @@ class TestStockTradingEnvStep:
         )
         env.reset(seed=42)
         obs, _, _, _, _ = env.step(env.action_space.sample())
-        assert obs.shape == (156,)
+        assert obs.shape == (164,)
         assert obs.dtype == np.float32
 
     def test_terminated_after_252_steps(
@@ -522,14 +537,14 @@ class TestStockTradingEnvRiskPenalties:
             config=equity_env_config,
         )
         env.reset(seed=42)
-        # Create action that concentrates heavily in one asset
-        action = np.array([-5.0, -5.0, -5.0, -5.0, -5.0, -5.0, -5.0, 10.0], dtype=np.float32)
+        # Create action that concentrates heavily in one asset (8 assets + 1 cash)
+        action = np.array([-5.0, -5.0, -5.0, -5.0, -5.0, -5.0, -5.0, 10.0, -5.0], dtype=np.float32)
         # Step and get reward with concentrated position
         _, reward_concentrated, _, _, _ = env.step(action)
 
         # Reset and use balanced action
         env.reset(seed=42)
-        action_balanced = np.zeros(8, dtype=np.float32)  # softmax -> equal weights
+        action_balanced = np.zeros(9, dtype=np.float32)  # softmax -> equal weights
         _, reward_balanced, _, _, _ = env.step(action_balanced)
 
         # Concentrated position should have lower reward due to penalty
@@ -593,7 +608,7 @@ class TestStockTradingEnvFactory:
             config=equity_env_config,
         )
         obs, info = env.reset(seed=42)
-        assert obs.shape == (156,)
+        assert obs.shape == (164,)
         assert obs.dtype == np.float32
 
 
@@ -613,13 +628,13 @@ class TestStockTradingEnvFullEpisode:
             config=equity_env_config,
         )
         obs, info = env.reset(seed=42)
-        assert obs.shape == (156,)
+        assert obs.shape == (164,)
         total_reward = 0.0
         for step_num in range(252):
             action = env.action_space.sample()
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += reward
-            assert obs.shape == (156,)
+            assert obs.shape == (164,)
             assert obs.dtype == np.float32
             assert np.all(np.isfinite(obs))
             if step_num < 251:
@@ -645,13 +660,13 @@ class TestCryptoTradingEnvInit:
         crypto_prices_array: np.ndarray,
         equity_env_config,  # type: ignore[no-untyped-def]
     ) -> None:
-        """TRAIN-02: observation_space is Box(45,) float32."""
+        """TRAIN-02: observation_space is Box(47,) float32."""
         env = CryptoTradingEnv(
             features=crypto_features_array,
             prices=crypto_prices_array,
             config=equity_env_config,
         )
-        assert env.observation_space.shape == (45,)
+        assert env.observation_space.shape == (47,)
         assert env.observation_space.dtype == np.float32
 
     def test_action_space_shape(
@@ -660,13 +675,13 @@ class TestCryptoTradingEnvInit:
         crypto_prices_array: np.ndarray,
         equity_env_config,  # type: ignore[no-untyped-def]
     ) -> None:
-        """TRAIN-02: action_space is Box(2,) float32 for BTC/ETH."""
+        """TRAIN-02: action_space is Box(3,) float32 for BTC/ETH + cash."""
         env = CryptoTradingEnv(
             features=crypto_features_array,
             prices=crypto_prices_array,
             config=equity_env_config,
         )
-        assert env.action_space.shape == (2,)
+        assert env.action_space.shape == (3,)
         assert env.action_space.dtype == np.float32
 
 
@@ -686,7 +701,7 @@ class TestCryptoTradingEnvReset:
             config=equity_env_config,
         )
         obs, info = env.reset(seed=42)
-        assert obs.shape == (45,)
+        assert obs.shape == (47,)
         assert obs.dtype == np.float32
 
     def test_reset_obs_all_finite(
@@ -879,7 +894,7 @@ class TestCryptoTradingEnvFactory:
             config=equity_env_config,
         )
         obs, info = env.reset(seed=42)
-        assert obs.shape == (45,)
+        assert obs.shape == (47,)
         assert obs.dtype == np.float32
 
 
@@ -1057,7 +1072,7 @@ class TestIntegration:
         env.reset(seed=42)
         # Send near-zero actions for 10 steps -- softmax of zeros => ~equal weights
         # Then same action => diff < deadzone => hold
-        zero_action = np.zeros(8, dtype=np.float32)
+        zero_action = np.zeros(9, dtype=np.float32)  # 8 assets + 1 cash
         # First step establishes initial position
         env.step(zero_action)
         # Clear the trade log to start counting from step 2

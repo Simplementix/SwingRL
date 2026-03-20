@@ -71,10 +71,10 @@ alerting:
 
 @pytest.fixture
 def tiny_equity_features() -> np.ndarray:
-    """Tiny equity features array: (60, 66) for fast training.
+    """Tiny equity features array: (60, obs_dim) for fast training.
 
     Dimensions match equity_obs_dim(sentiment_enabled=False, n_equity_symbols=2):
-    (15 * 2) + 6 + 2 + 1 + 27 = 66
+    (15 * 2) + 6 + 2 + 1 + 35 = 74
     """
     from swingrl.features.assembler import equity_obs_dim
 
@@ -94,9 +94,9 @@ def tiny_equity_prices() -> np.ndarray:
 
 @pytest.fixture
 def tiny_crypto_features() -> np.ndarray:
-    """Tiny crypto features array: (60, 45) for fast training."""
+    """Tiny crypto features array: (60, 47) for fast training."""
     rng = np.random.default_rng(102)
-    return rng.standard_normal((60, 45)).astype(np.float32)
+    return rng.standard_normal((60, 47)).astype(np.float32)
 
 
 @pytest.fixture

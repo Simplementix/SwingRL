@@ -190,7 +190,6 @@ def _fetch_binance_global_klines(
     Raises:
         DataError: After MAX_RETRIES failed attempts.
     """
-    session = requests.Session()
     params: dict[str, str | int] = {
         "symbol": symbol,
         "interval": "4h",
@@ -200,28 +199,29 @@ def _fetch_binance_global_klines(
     }
 
     last_error: Exception | None = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            resp = session.get(
-                BINANCE_GLOBAL_BASE_URL + KLINES_ENDPOINT,
-                params=params,
-                timeout=10,
-            )
-            resp.raise_for_status()
-            time.sleep(RATE_LIMIT_SLEEP)
-            return resp.json()  # type: ignore[no-any-return]
-        except requests.RequestException as e:
-            last_error = e
-            backoff = 2 ** (attempt + 1)
-            log.warning(
-                "binance_global_request_failed",
-                symbol=symbol,
-                attempt=attempt + 1,
-                backoff_s=backoff,
-                error=str(e),
-            )
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(backoff)
+    with requests.Session() as session:
+        for attempt in range(MAX_RETRIES):
+            try:
+                resp = session.get(
+                    BINANCE_GLOBAL_BASE_URL + KLINES_ENDPOINT,
+                    params=params,
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                time.sleep(RATE_LIMIT_SLEEP)
+                return resp.json()  # type: ignore[no-any-return]
+            except requests.RequestException as e:
+                last_error = e
+                backoff = 2 ** (attempt + 1)
+                log.warning(
+                    "binance_global_request_failed",
+                    symbol=symbol,
+                    attempt=attempt + 1,
+                    backoff_s=backoff,
+                    error=str(e),
+                )
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(backoff)
 
     msg = f"Binance Global API failed after {MAX_RETRIES} attempts for {symbol}"
     log.error("binance_global_exhausted", symbol=symbol, error=str(last_error))

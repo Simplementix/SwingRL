@@ -185,10 +185,7 @@ def _load_features_prices(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Load features and prices from DuckDB for the given environment.
 
-    Assembles observation matrices using ObservationAssembler so the output
-    shapes match the SB3 environment observation_space dimensions:
-    - equity: (N, 156) features, (N, 8) prices
-    - crypto: (N, 45) features, (N, 2) prices
+    Delegates to the canonical implementation in swingrl.training.data_loader.
 
     Args:
         conn: Active DuckDB connection.
@@ -199,13 +196,11 @@ def _load_features_prices(
         Tuple of (features_array, prices_array) both float32.
 
     Raises:
-        RuntimeError: If no data found in the feature table.
+        DataError: If no data found in the feature table.
     """
-    assembler = ObservationAssembler(config)
+    from swingrl.training.data_loader import load_features_prices  # noqa: PLC0415
 
-    if env_name == "equity":
-        return _load_equity(conn, config, assembler)
-    return _load_crypto(conn, config, assembler)
+    return load_features_prices(conn, env_name, config)
 
 
 def _load_equity(
@@ -225,7 +220,7 @@ def _load_equity(
         assembler: ObservationAssembler initialized from config.
 
     Returns:
-        Tuple of ((N, 156) features, (N, n_symbols) prices) float32.
+        Tuple of ((N, 164) features, (N, n_symbols) prices) float32.
     """
     equity_symbols = sorted(config.equity.symbols)
     per_asset_size = 15  # EQUITY_PER_ASSET_BASE
@@ -346,7 +341,7 @@ def _load_crypto(
         assembler: ObservationAssembler initialized from config.
 
     Returns:
-        Tuple of ((N, 45) features, (N, n_symbols) prices) float32.
+        Tuple of ((N, 47) features, (N, n_symbols) prices) float32.
     """
     crypto_symbols = sorted(config.crypto.symbols)
     per_asset_size = 13  # CRYPTO_PER_ASSET

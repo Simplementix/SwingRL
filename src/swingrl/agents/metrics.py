@@ -65,18 +65,18 @@ def sortino_ratio(
         return float("nan")
 
     excess = returns - risk_free_rate
-    negative_returns = excess[excess < 0]
+    downside = np.minimum(excess, 0.0)
+    downside_var = float(np.mean(downside**2))
+    mean_excess = float(np.mean(excess))
 
-    if len(negative_returns) == 0:
-        return float("nan")
+    if downside_var == 0.0:
+        if mean_excess > 0.0:
+            return 999.0
+        return 0.0
 
-    downside_dev = float(np.sqrt(np.mean(negative_returns**2)))
-
-    if downside_dev < 1e-10:
-        return float("nan")
-
-    mean_r = float(np.mean(excess))
-    return float((mean_r / downside_dev) * np.sqrt(periods_per_year))
+    downside_dev = float(np.sqrt(downside_var))
+    raw = float((mean_excess / downside_dev) * np.sqrt(periods_per_year))
+    return min(raw, 999.0)
 
 
 def calmar_ratio(
@@ -96,8 +96,10 @@ def calmar_ratio(
         return float("nan")
 
     cum = np.cumprod(1 + returns)
-    total_return = float(cum[-1] / cum[0] - 1)
+    total_return = float(cum[-1] - 1.0)
     n_periods = len(returns)
+    if n_periods == 0:
+        return float("nan")
     ann_return = (1 + total_return) ** (periods_per_year / n_periods) - 1
 
     mdd = max_drawdown(returns)
@@ -156,7 +158,8 @@ def max_drawdown(returns: np.ndarray) -> float:
     if len(returns) == 0:
         return 0.0
 
-    cum = np.cumprod(1 + returns)
+    # Prepend 1.0 so drawdown from initial investment is captured
+    cum = np.concatenate([[1.0], np.cumprod(1 + returns)])
     running_max = np.maximum.accumulate(cum)
     drawdowns = (running_max - cum) / running_max
 
@@ -175,7 +178,8 @@ def avg_drawdown(returns: np.ndarray) -> float:
     if len(returns) == 0:
         return 0.0
 
-    cum = np.cumprod(1 + returns)
+    # Prepend 1.0 so drawdown from initial investment is captured
+    cum = np.concatenate([[1.0], np.cumprod(1 + returns)])
     running_max = np.maximum.accumulate(cum)
     drawdowns = (running_max - cum) / running_max
 
@@ -194,7 +198,8 @@ def max_drawdown_duration(returns: np.ndarray) -> int:
     if len(returns) == 0:
         return 0
 
-    cum = np.cumprod(1 + returns)
+    # Prepend 1.0 so drawdown from initial investment is captured
+    cum = np.concatenate([[1.0], np.cumprod(1 + returns)])
     running_max = np.maximum.accumulate(cum)
 
     longest = 0

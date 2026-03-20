@@ -26,11 +26,13 @@ from swingrl.features.assembler import (
     ObservationAssembler,
     equity_per_asset_dim,
 )
+from swingrl.features.health import FeatureHealthTracker
 from swingrl.features.hmm_regime import HMMRegimeDetector
 from swingrl.features.macro import MacroFeatureAligner
 from swingrl.features.normalization import RollingZScoreNormalizer
 from swingrl.features.technical import TechnicalIndicatorCalculator
 from swingrl.features.turbulence import TurbulenceCalculator
+from swingrl.utils.exceptions import DataError
 
 log = structlog.get_logger(__name__)
 
@@ -88,15 +90,23 @@ class FeaturePipeline:
     both equity and crypto environments.
     """
 
-    def __init__(self, config: SwingRLConfig, conn: Any) -> None:
+    def __init__(
+        self,
+        config: SwingRLConfig,
+        conn: Any,
+        health_tracker: FeatureHealthTracker | None = None,
+    ) -> None:
         """Initialize pipeline with config and DuckDB connection.
 
         Args:
             config: Validated SwingRLConfig.
             conn: DuckDB connection for reading OHLCV and writing features.
+            health_tracker: Optional health tracker for live inference monitoring.
+                When None (training path), health tracking is skipped.
         """
         self._config = config
         self._conn = conn
+        self._health = health_tracker
 
         # Feature modules
         self._technical = TechnicalIndicatorCalculator()
@@ -114,6 +124,10 @@ class FeaturePipeline:
 
         self._equity_symbols = sorted(config.equity.symbols)
         self._crypto_symbols = sorted(config.crypto.symbols)
+
+        # Cached turbulence values from compute path (avoids duplicate OHLCV reads)
+        self._cached_equity_turbulence: float | None = None
+        self._cached_crypto_turbulence: float | None = None
 
     def compute_equity(
         self,
@@ -155,10 +169,30 @@ class FeaturePipeline:
             features["symbol"] = symbol
             all_features.append(features)
 
+            # Fit HMM on proxy symbol (inside symbol loop to reuse already-fetched OHLCV)
+            if symbol == self._config.equity.hmm_proxy_symbol and len(ohlcv) >= 100:
+                try:
+                    self._hmm_equity.initial_fit(ohlcv["close"])
+                    probs = self._hmm_equity.predict_proba(ohlcv["close"])
+                    last_probs = probs[-1:]
+                    score = float(
+                        self._hmm_equity._model.score(  # type: ignore[union-attr]
+                            self._hmm_equity.compute_hmm_inputs(ohlcv["close"])
+                        )
+                    )
+                    self._hmm_equity.store_hmm_state(
+                        self._conn, ohlcv.index[-1].date(), last_probs, score
+                    )
+                except (ValueError, RuntimeError):
+                    log.warning("hmm_equity_fit_failed")
+
         if not all_features:
             return pd.DataFrame()
 
         combined = pd.concat(all_features)
+
+        # Compute turbulence using already-loaded OHLCV (avoids duplicate DB read)
+        self._cache_equity_turbulence(combined)
 
         # Normalize numeric features per symbol
         normalized_parts: list[pd.DataFrame] = []
@@ -177,24 +211,6 @@ class FeaturePipeline:
 
         # Store to features_equity
         self._store_equity_features(normalized_df)
-
-        # Fit HMM on SPY
-        spy_ohlcv = self._read_equity_ohlcv("SPY", start, end)
-        if not spy_ohlcv.empty and len(spy_ohlcv) >= 100:
-            try:
-                self._hmm_equity.initial_fit(spy_ohlcv["close"])
-                probs = self._hmm_equity.predict_proba(spy_ohlcv["close"])
-                last_probs = probs[-1:]
-                score = float(
-                    self._hmm_equity._model.score(  # type: ignore[union-attr]
-                        self._hmm_equity.compute_hmm_inputs(spy_ohlcv["close"])
-                    )
-                )
-                self._hmm_equity.store_hmm_state(
-                    self._conn, spy_ohlcv.index[-1].date(), last_probs, score
-                )
-            except (ValueError, RuntimeError):
-                log.warning("hmm_equity_fit_failed")
 
         log.info(
             "equity_pipeline_complete",
@@ -238,10 +254,30 @@ class FeaturePipeline:
             features["symbol"] = symbol
             all_features.append(features)
 
+            # Fit HMM on proxy symbol (inside symbol loop to reuse already-fetched OHLCV)
+            if symbol == self._config.crypto.hmm_proxy_symbol and len(ohlcv) >= 100:
+                try:
+                    self._hmm_crypto.initial_fit(ohlcv["close"])
+                    probs = self._hmm_crypto.predict_proba(ohlcv["close"])
+                    last_probs = probs[-1:]
+                    score = float(
+                        self._hmm_crypto._model.score(  # type: ignore[union-attr]
+                            self._hmm_crypto.compute_hmm_inputs(ohlcv["close"])
+                        )
+                    )
+                    last_date = ohlcv.index[-1]
+                    dt = last_date.date() if hasattr(last_date, "date") else last_date
+                    self._hmm_crypto.store_hmm_state(self._conn, dt, last_probs, score)
+                except (ValueError, RuntimeError):
+                    log.warning("hmm_crypto_fit_failed")
+
         if not all_features:
             return pd.DataFrame()
 
         combined = pd.concat(all_features)
+
+        # Compute turbulence using already-loaded OHLCV (avoids duplicate DB read)
+        self._cache_crypto_turbulence(combined)
 
         # Normalize numeric features per symbol
         normalized_parts: list[pd.DataFrame] = []
@@ -260,24 +296,6 @@ class FeaturePipeline:
 
         # Store to features_crypto
         self._store_crypto_features(normalized_df)
-
-        # Fit HMM on BTC
-        btc_ohlcv = self._read_crypto_ohlcv("BTCUSDT", start, end)
-        if not btc_ohlcv.empty and len(btc_ohlcv) >= 100:
-            try:
-                self._hmm_crypto.initial_fit(btc_ohlcv["close"])
-                probs = self._hmm_crypto.predict_proba(btc_ohlcv["close"])
-                last_probs = probs[-1:]
-                score = float(
-                    self._hmm_crypto._model.score(  # type: ignore[union-attr]
-                        self._hmm_crypto.compute_hmm_inputs(btc_ohlcv["close"])
-                    )
-                )
-                last_date = btc_ohlcv.index[-1]
-                dt = last_date.date() if hasattr(last_date, "date") else last_date
-                self._hmm_crypto.store_hmm_state(self._conn, dt, last_probs, score)
-            except (ValueError, RuntimeError):
-                log.warning("hmm_crypto_fit_failed")
 
         log.info(
             "crypto_pipeline_complete",
@@ -298,7 +316,7 @@ class FeaturePipeline:
             date_or_datetime: Date/datetime string for feature lookup.
 
         Returns:
-            (156,) for equity or (45,) for crypto observation vector.
+            (164,) for equity or (47,) for crypto observation vector.
         """
         if environment == "equity":
             return self._get_equity_observation(date_or_datetime)
@@ -383,29 +401,31 @@ class FeaturePipeline:
         """Get macro features as (6,) array from stored macro data."""
         # Read latest macro values before the given date
         try:
-            if environment == "equity":
-                query = """
-                    SELECT series_id, value FROM macro_features
-                    WHERE date <= CAST(? AS DATE)
-                    ORDER BY date DESC
+            rows = self._conn.execute(
                 """
-            else:
-                query = """
-                    SELECT series_id, value FROM macro_features
+                SELECT series_id, value
+                FROM (
+                    SELECT series_id, value,
+                           ROW_NUMBER() OVER (PARTITION BY series_id ORDER BY date DESC) AS rn
+                    FROM macro_features
                     WHERE date <= CAST(? AS DATE)
-                    ORDER BY date DESC
-                """
-            rows = self._conn.execute(query, [date_str]).fetchdf()
+                ) sub
+                WHERE rn = 1
+                """,
+                [date_str],
+            ).fetchdf()
 
             if rows.empty:
                 return np.zeros(6)
 
-            # Get latest value for each series
-            latest: dict[str, float] = {}
-            for _, row in rows.iterrows():
-                sid = str(row["series_id"])
-                if sid not in latest:
-                    latest[sid] = float(row["value"])
+            # Build latest values dict from de-duplicated rows
+            latest: dict[str, float] = dict(
+                zip(
+                    rows["series_id"].astype(str).tolist(),
+                    rows["value"].astype(float).tolist(),
+                    strict=True,
+                )
+            )
 
             # Map to macro array positions (simplified — actual macro alignment is richer)
             vix = latest.get("VIXCLS", 0.0)
@@ -415,9 +435,13 @@ class FeaturePipeline:
             cpi = latest.get("CPIAUCSL", 0.0)
             unemp = latest.get("UNRATE", 0.0)
 
+            if self._health is not None:
+                self._health.record_success("macro")
             return np.array([vix, spread, direction, fed, cpi, unemp])
         except Exception:
             log.warning("macro_fetch_failed", environment=environment, date=date_str)
+            if self._health is not None:
+                self._health.record_failure("macro")
             return np.zeros(6)
 
     def _get_hmm_probs(self, environment: str, date_str: str) -> np.ndarray:
@@ -433,12 +457,89 @@ class FeaturePipeline:
             if row.empty:
                 return np.array([0.5, 0.5])
 
+            if self._health is not None:
+                self._health.record_success("hmm")
             return np.array([float(row["p_bull"].iloc[0]), float(row["p_bear"].iloc[0])])
         except Exception:
+            log.warning("hmm_fetch_failed", environment=environment, date=date_str)
+            if self._health is not None:
+                self._health.record_failure("hmm")
             return np.array([0.5, 0.5])
 
+    def _cache_equity_turbulence(self, combined: pd.DataFrame) -> None:
+        """Compute and cache equity turbulence from already-loaded OHLCV data.
+
+        Args:
+            combined: Combined feature DataFrame with 'symbol' and 'close' columns.
+        """
+        try:
+            if "close" not in combined.columns:
+                return
+            pivot = combined.pivot_table(
+                index=combined.index,  # type: ignore[arg-type]
+                columns="symbol",
+                values="close",
+            )
+            log_returns = np.log(pivot / pivot.shift(1)).dropna()  # type: ignore[attr-defined]
+            if len(log_returns) < self._turb_equity.min_warmup + 1:
+                return
+            self._cached_equity_turbulence = self._turb_equity.compute(
+                log_returns.values, len(log_returns) - 1
+            )
+        except Exception:
+            log.warning("equity_turbulence_cache_failed")
+
+    def _cache_crypto_turbulence(self, combined: pd.DataFrame) -> None:
+        """Compute and cache crypto turbulence from already-loaded OHLCV data.
+
+        Args:
+            combined: Combined feature DataFrame with 'symbol' and 'close' columns.
+        """
+        try:
+            if "close" not in combined.columns:
+                return
+            pivot = combined.pivot_table(
+                index=combined.index,  # type: ignore[arg-type]
+                columns="symbol",
+                values="close",
+            )
+            log_returns = np.log(pivot / pivot.shift(1)).dropna()  # type: ignore[attr-defined]
+            if len(log_returns) < self._turb_crypto.min_warmup + 1:
+                return
+            self._cached_crypto_turbulence = self._turb_crypto.compute(
+                log_returns.values, len(log_returns) - 1
+            )
+        except Exception:
+            log.warning("crypto_turbulence_cache_failed")
+
+    def compute_turbulence(self, env_name: str, date_or_datetime: str) -> float:
+        """Compute turbulence for the given environment.
+
+        Public facade that delegates to the environment-specific private methods.
+
+        Args:
+            env_name: Environment name ("equity" or "crypto").
+            date_or_datetime: Date string (equity) or datetime string (crypto).
+
+        Returns:
+            Turbulence score as float, 0.0 on failure.
+        """
+        if env_name == "equity":
+            return self._compute_turbulence_equity(date_or_datetime)
+        return self._compute_turbulence_crypto(date_or_datetime)
+
     def _compute_turbulence_equity(self, date_str: str) -> float:
-        """Compute equity turbulence from recent returns."""
+        """Compute equity turbulence from recent returns.
+
+        Uses cached value from compute path when available to avoid
+        duplicate OHLCV reads. Falls back to DB query otherwise.
+        """
+        if self._cached_equity_turbulence is not None:
+            cached = self._cached_equity_turbulence
+            self._cached_equity_turbulence = None  # consume once
+            if self._health is not None:
+                self._health.record_success("turbulence")
+            return cached
         try:
             returns_df = self._conn.execute(
                 """SELECT symbol, date, close FROM ohlcv_daily
@@ -451,18 +552,33 @@ class FeaturePipeline:
                 return 0.0
 
             pivot = returns_df.pivot_table(index="date", columns="symbol", values="close")
-            log_returns = np.log(pivot / pivot.shift(1)).dropna()
+            log_returns = np.log(pivot / pivot.shift(1)).dropna()  # type: ignore[union-attr]
 
             if len(log_returns) < self._turb_equity.min_warmup + 1:
                 return 0.0
 
-            return self._turb_equity.compute(log_returns.values, len(log_returns) - 1)
+            result = self._turb_equity.compute(log_returns.values, len(log_returns) - 1)
+            if self._health is not None:
+                self._health.record_success("turbulence")
+            return result
         except Exception:
             log.warning("turbulence_equity_failed")
+            if self._health is not None:
+                self._health.record_failure("turbulence")
             return 0.0
 
     def _compute_turbulence_crypto(self, datetime_str: str) -> float:
-        """Compute crypto turbulence from recent returns."""
+        """Compute crypto turbulence from recent returns.
+
+        Uses cached value from compute path when available to avoid
+        duplicate OHLCV reads. Falls back to DB query otherwise.
+        """
+        if self._cached_crypto_turbulence is not None:
+            cached = self._cached_crypto_turbulence
+            self._cached_crypto_turbulence = None  # consume once
+            if self._health is not None:
+                self._health.record_success("turbulence")
+            return cached
         try:
             returns_df = self._conn.execute(
                 """SELECT symbol, datetime, close FROM ohlcv_4h
@@ -475,14 +591,19 @@ class FeaturePipeline:
                 return 0.0
 
             pivot = returns_df.pivot_table(index="datetime", columns="symbol", values="close")
-            log_returns = np.log(pivot / pivot.shift(1)).dropna()
+            log_returns = np.log(pivot / pivot.shift(1)).dropna()  # type: ignore[union-attr]
 
             if len(log_returns) < self._turb_crypto.min_warmup + 1:
                 return 0.0
 
-            return self._turb_crypto.compute(log_returns.values, len(log_returns) - 1)
+            result = self._turb_crypto.compute(log_returns.values, len(log_returns) - 1)
+            if self._health is not None:
+                self._health.record_success("turbulence")
+            return result
         except Exception:
             log.warning("turbulence_crypto_failed")
+            if self._health is not None:
+                self._health.record_failure("turbulence")
             return 0.0
 
     def _read_equity_ohlcv(self, symbol: str, start: str | None, end: str | None) -> pd.DataFrame:
@@ -554,8 +675,9 @@ class FeaturePipeline:
                     FROM sync_df"""  # nosec B608
             )
             log.info("equity_features_stored", rows=len(store_df))
-        except Exception:
-            log.error("equity_features_store_failed")
+        except Exception as exc:
+            log.error("equity_features_store_failed", error=str(exc))
+            raise DataError("Failed to store equity features") from exc
 
     def _store_crypto_features(self, features: pd.DataFrame) -> None:
         """Store normalized crypto features to DuckDB via replacement scan."""
@@ -578,8 +700,9 @@ class FeaturePipeline:
                     FROM sync_df"""  # nosec B608
             )
             log.info("crypto_features_stored", rows=len(store_df))
-        except Exception:
-            log.error("crypto_features_store_failed")
+        except Exception as exc:
+            log.error("crypto_features_store_failed", error=str(exc))
+            raise DataError("Failed to store crypto features") from exc
 
 
 def get_sentiment_features(

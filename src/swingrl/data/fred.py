@@ -24,7 +24,7 @@ from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.data.base import BaseIngestor
 from swingrl.data.parquet_store import ParquetStore
 from swingrl.data.validation import DataValidator
-from swingrl.utils.exceptions import DataError
+from swingrl.utils.exceptions import ConfigError, DataError
 
 log = structlog.get_logger(__name__)
 
@@ -60,6 +60,10 @@ class FREDIngestor(BaseIngestor):
     def __init__(self, config: SwingRLConfig) -> None:
         super().__init__(config)
         api_key = os.environ.get("FRED_API_KEY", "")
+        if not api_key:
+            msg = "FRED_API_KEY environment variable is empty or not set"
+            log.error("fred_missing_api_key")
+            raise ConfigError(msg)
         self._fred = Fred(api_key=api_key)
         self._store = ParquetStore()
         self._validator = DataValidator(source="fred")

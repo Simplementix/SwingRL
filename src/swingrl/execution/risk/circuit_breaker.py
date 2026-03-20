@@ -93,9 +93,9 @@ class CircuitBreaker:
                 )
                 return CBState.HALTED
 
-        # Check daily loss
+        # Check daily loss against high-water mark
         if daily_pnl < 0:
-            daily_loss_pct = abs(daily_pnl) / self._initial_capital
+            daily_loss_pct = abs(daily_pnl) / high_water_mark if high_water_mark > 0 else 0.0
             if daily_loss_pct >= self._daily_limit:
                 self._trigger(
                     trigger_value=daily_loss_pct,
@@ -293,6 +293,7 @@ class GlobalCircuitBreaker:
         self._circuit_breakers = circuit_breakers
         self._config = config
         self._total_initial = config.capital.equity_usd + config.capital.crypto_usd
+        self._total_hwm: float = self._total_initial
 
     def check_combined(
         self,
@@ -311,8 +312,11 @@ class GlobalCircuitBreaker:
         total_value = sum(portfolio_values.values())
         total_daily_pnl = sum(daily_pnls.values())
 
-        # Check combined drawdown
-        combined_dd = 1.0 - total_value / self._total_initial if self._total_initial > 0 else 0.0
+        # Update high-water mark
+        self._total_hwm = max(self._total_hwm, total_value)
+
+        # Check combined drawdown against high-water mark
+        combined_dd = 1.0 - total_value / self._total_hwm if self._total_hwm > 0 else 0.0
         if combined_dd >= self.GLOBAL_MAX_DD:
             log.critical(
                 "global_circuit_breaker_triggered",
@@ -323,9 +327,11 @@ class GlobalCircuitBreaker:
             self._trigger_all("combined_drawdown")
             return True
 
-        # Check combined daily loss
+        # Check combined daily loss against high-water mark
         if total_daily_pnl < 0:
-            combined_loss_pct = abs(total_daily_pnl) / self._total_initial
+            combined_loss_pct = (
+                abs(total_daily_pnl) / self._total_hwm if self._total_hwm > 0 else 0.0
+            )
             if combined_loss_pct >= self.GLOBAL_DAILY_LIMIT:
                 log.critical(
                     "global_circuit_breaker_triggered",

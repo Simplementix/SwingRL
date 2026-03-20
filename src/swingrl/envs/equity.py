@@ -13,6 +13,7 @@ import structlog
 
 from swingrl.config.schema import SwingRLConfig
 from swingrl.envs.base import BaseTradingEnv
+from swingrl.utils.exceptions import DataError
 
 log = structlog.get_logger(__name__)
 
@@ -26,7 +27,7 @@ class StockTradingEnv(BaseTradingEnv):
     - 8 ETF assets (SPY, QQQ, VTI, XLV, XLI, XLE, XLF, XLK)
 
     Args:
-        features: Pre-loaded feature array, shape (n_steps, 156), float32.
+        features: Pre-loaded feature array, shape (n_steps, 164), float32.
         prices: Pre-loaded close price array, shape (n_steps, 8), float32.
         config: Validated SwingRLConfig instance.
         render_mode: Gymnasium render mode (optional).
@@ -48,8 +49,11 @@ class StockTradingEnv(BaseTradingEnv):
         )
 
     def _select_start_step(self) -> int:
-        """Return 0 for sequential equity episodes."""
-        return 0
+        """Return a random start step for equity episodes."""
+        max_start = len(self._features) - self._episode_bars
+        if max_start <= 0:
+            return 0
+        return int(self.np_random.integers(0, max_start))
 
     @classmethod
     def from_arrays(
@@ -64,7 +68,7 @@ class StockTradingEnv(BaseTradingEnv):
         Validates array shapes before construction.
 
         Args:
-            features: Feature array, shape (n_steps, 156), float32.
+            features: Feature array, shape (n_steps, 164), float32.
             prices: Price array, shape (n_steps, n_assets), float32.
             config: Validated SwingRLConfig instance.
             render_mode: Gymnasium render mode (optional).
@@ -77,16 +81,16 @@ class StockTradingEnv(BaseTradingEnv):
         """
         n_assets = len(config.equity.symbols)
         if features.ndim != 2:
-            raise ValueError(f"features must be 2D, got {features.ndim}D")
+            raise DataError(f"features must be 2D, got {features.ndim}D")
         if prices.ndim != 2:
-            raise ValueError(f"prices must be 2D, got {prices.ndim}D")
+            raise DataError(f"prices must be 2D, got {prices.ndim}D")
         if features.shape[0] != prices.shape[0]:
-            raise ValueError(
+            raise DataError(
                 f"features and prices must have same number of steps: "
                 f"{features.shape[0]} != {prices.shape[0]}"
             )
         if prices.shape[1] != n_assets:
-            raise ValueError(
+            raise DataError(
                 f"prices must have {n_assets} columns (equity symbols), got {prices.shape[1]}"
             )
 

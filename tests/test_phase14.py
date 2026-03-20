@@ -3,7 +3,7 @@
 Tests:
   - TestCompareFeaturesScript: CLI entrypoint for A/B feature comparison
   - TestEquityDimHelpers: Config-aware dimension helpers
-  - TestAssembleSentiment: Sentiment-aware assembly producing (172,) vectors
+  - TestAssembleSentiment: Sentiment-aware assembly producing (180,) vectors
   - TestFeatureNames: Feature name lists with and without sentiment
   - TestEnvObsSpace: BaseTradingEnv observation space shape with sentiment toggle
 """
@@ -131,13 +131,13 @@ class TestCompareFeaturesScript:
 class TestEquityDimHelpers:
     """FEAT-10: Config-aware dimension helpers."""
 
-    def test_disabled_returns_156(self) -> None:
-        """FEAT-10: equity_obs_dim(False, 8) == 156."""
-        assert equity_obs_dim(False, 8) == 156
+    def test_disabled_returns_164(self) -> None:
+        """FEAT-10: equity_obs_dim(False, 8) == 164."""
+        assert equity_obs_dim(False, 8) == 164
 
-    def test_enabled_returns_172(self) -> None:
-        """FEAT-10: equity_obs_dim(True, 8) == 172."""
-        assert equity_obs_dim(True, 8) == 172
+    def test_enabled_returns_180(self) -> None:
+        """FEAT-10: equity_obs_dim(True, 8) == 180."""
+        assert equity_obs_dim(True, 8) == 180
 
     def test_per_asset_disabled(self) -> None:
         """FEAT-10: equity_per_asset_dim(False) == 15."""
@@ -181,8 +181,8 @@ class TestAssembleSentiment:
     def _make_hmm(self) -> np.ndarray:
         return np.array([0.6, 0.4])
 
-    def test_shape_172(self, equity_env_config: SwingRLConfig) -> None:
-        """FEAT-10: assemble_equity() with sentiment_features produces (172,) vector."""
+    def test_shape_180(self, equity_env_config: SwingRLConfig) -> None:
+        """FEAT-10: assemble_equity() with sentiment_features produces (180,) vector."""
         assembler = ObservationAssembler(equity_env_config)
         symbols = sorted(equity_env_config.equity.symbols)
         per_asset = self._make_per_asset(symbols)
@@ -194,10 +194,10 @@ class TestAssembleSentiment:
             0.0,
             sentiment_features=sentiment,
         )
-        assert obs.shape == (172,)
+        assert obs.shape == (180,)
 
-    def test_shape_156_when_disabled(self, equity_env_config: SwingRLConfig) -> None:
-        """FEAT-10: assemble_equity() without sentiment_features produces (156,) vector."""
+    def test_shape_164_when_disabled(self, equity_env_config: SwingRLConfig) -> None:
+        """FEAT-10: assemble_equity() without sentiment_features produces (164,) vector."""
         assembler = ObservationAssembler(equity_env_config)
         symbols = sorted(equity_env_config.equity.symbols)
         per_asset = self._make_per_asset(symbols)
@@ -207,7 +207,7 @@ class TestAssembleSentiment:
             self._make_hmm(),
             0.0,
         )
-        assert obs.shape == (156,)
+        assert obs.shape == (164,)
 
     def test_sentiment_values_in_correct_positions(self, equity_env_config: SwingRLConfig) -> None:
         """FEAT-10: Sentiment values appear at index 15 and 16 within first asset's slice."""
@@ -243,21 +243,21 @@ class TestAssembleSentiment:
 class TestFeatureNames:
     """FEAT-10: Feature name list correctness."""
 
-    def test_feature_names_172_when_enabled(self, equity_env_config: SwingRLConfig) -> None:
-        """FEAT-10: get_feature_names_equity(sentiment_enabled=True) returns 172-element list."""
+    def test_feature_names_180_when_enabled(self, equity_env_config: SwingRLConfig) -> None:
+        """FEAT-10: get_feature_names_equity(sentiment_enabled=True) returns 180-element list."""
         assembler = ObservationAssembler(equity_env_config)
         names = assembler.get_feature_names_equity(sentiment_enabled=True)
-        assert len(names) == 172
+        assert len(names) == 180
         # Check sentiment names exist for first alpha-sorted symbol
         first_sym = sorted(equity_env_config.equity.symbols)[0]
         assert f"{first_sym}_sentiment_score" in names
         assert f"{first_sym}_sentiment_confidence" in names
 
-    def test_feature_names_156_default(self, equity_env_config: SwingRLConfig) -> None:
-        """FEAT-10: get_feature_names_equity() returns 156-element list (backward compat)."""
+    def test_feature_names_164_default(self, equity_env_config: SwingRLConfig) -> None:
+        """FEAT-10: get_feature_names_equity() returns 164-element list (backward compat)."""
         assembler = ObservationAssembler(equity_env_config)
         names = assembler.get_feature_names_equity()
-        assert len(names) == 156
+        assert len(names) == 164
 
 
 # ---------------------------------------------------------------------------
@@ -318,24 +318,24 @@ class TestEnvObsSpace:
         cfg_file.write_text(yaml_text)
         return cfg_file
 
-    def test_equity_env_obs_172_when_sentiment_enabled(self, tmp_path: Path) -> None:
-        """FEAT-10: BaseTradingEnv with sentiment=True sets observation_space.shape == (172,)."""
+    def test_equity_env_obs_180_when_sentiment_enabled(self, tmp_path: Path) -> None:
+        """FEAT-10: BaseTradingEnv with sentiment=True sets observation_space.shape == (180,)."""
         from swingrl.envs.base import BaseTradingEnv
 
         cfg = load_config(self._make_sentiment_config_yaml(tmp_path, True))
         rng = np.random.default_rng(50)
-        features = rng.standard_normal((300, 172)).astype(np.float32)
+        features = rng.standard_normal((300, 180)).astype(np.float32)
         prices = rng.uniform(50, 500, (300, 8)).astype(np.float32)
         env = BaseTradingEnv(features, prices, cfg, "equity")
-        assert env.observation_space.shape == (172,)
+        assert env.observation_space.shape == (180,)
 
-    def test_equity_env_obs_156_default(self, tmp_path: Path) -> None:
-        """FEAT-10: BaseTradingEnv with sentiment=False sets observation_space.shape == (156,)."""
+    def test_equity_env_obs_164_default(self, tmp_path: Path) -> None:
+        """FEAT-10: BaseTradingEnv with sentiment=False sets observation_space.shape == (164,)."""
         from swingrl.envs.base import BaseTradingEnv
 
         cfg = load_config(self._make_sentiment_config_yaml(tmp_path, False))
         rng = np.random.default_rng(51)
-        features = rng.standard_normal((300, 156)).astype(np.float32)
+        features = rng.standard_normal((300, 164)).astype(np.float32)
         prices = rng.uniform(50, 500, (300, 8)).astype(np.float32)
         env = BaseTradingEnv(features, prices, cfg, "equity")
-        assert env.observation_space.shape == (156,)
+        assert env.observation_space.shape == (164,)

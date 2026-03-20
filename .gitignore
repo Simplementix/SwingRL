@@ -27,8 +27,10 @@ env/
 # Test caches
 .pytest_cache/
 .coverage
+coverage.json
 htmlcov/
 .tox/
+MagicMock/
 
 # Environment and secrets
 .env

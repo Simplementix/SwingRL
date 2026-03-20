@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from swingrl.memory.training.curriculum import MemoryCurriculumSampler
+from swingrl.utils.exceptions import DataError
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -148,14 +149,14 @@ class TestCurriculumValidation:
     """TRAIN-08: _validate() enforces crisis and window size constraints."""
 
     def test_validate_raises_if_crisis_pct_exceeds_50pct(self) -> None:
-        """TRAIN-08: ValueError raised when crisis_bars/total exceeds 0.50."""
+        """TRAIN-08: DataError raised when crisis_bars/total exceeds 0.50."""
         # crisis window spans 600/1000 = 60% -> exceeds 50% limit
         windows = [
             {"label": "2020_crisis", "start_bar": 0, "end_bar": 600, "weight": 1.0},
             {"label": "2022_bull", "start_bar": 600, "end_bar": 1000, "weight": 1.0},
         ]
         sampler = _make_sampler(windows=windows, total_bars=1000)
-        with pytest.raises(ValueError, match="Crisis"):
+        with pytest.raises(DataError, match="Crisis"):
             sampler.build()
 
     def test_validate_warns_if_window_too_short(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -206,7 +207,7 @@ class TestCurriculumValidation:
             {"label": "2022_bull", "start_bar": 600, "end_bar": 1000, "weight": 1.0},
         ]
         sampler = _make_sampler(windows=windows, total_bars=1000)
-        with pytest.raises(ValueError, match="Crisis"):
+        with pytest.raises(DataError, match="Crisis"):
             sampler.build()
 
 

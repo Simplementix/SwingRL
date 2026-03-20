@@ -143,6 +143,8 @@ class TestRunCrypto:
         mock_db = _make_duckdb_ctx_mock(row_count=0)
         mock_ingestor = MagicMock()
         mock_ingestor.backfill.return_value = pd.DataFrame()
+        mock_ingestor.__enter__ = MagicMock(return_value=mock_ingestor)
+        mock_ingestor.__exit__ = MagicMock(return_value=False)
 
         with (
             patch("swingrl.data.ingest_all.DatabaseManager", return_value=mock_db),
@@ -162,6 +164,8 @@ class TestRunCrypto:
         mock_db = _make_duckdb_ctx_mock(row_count=0)
         mock_ingestor = MagicMock()
         mock_ingestor.run_all.return_value = []
+        mock_ingestor.__enter__ = MagicMock(return_value=mock_ingestor)
+        mock_ingestor.__exit__ = MagicMock(return_value=False)
 
         with (
             patch("swingrl.data.ingest_all.DatabaseManager", return_value=mock_db),
@@ -193,6 +197,8 @@ class TestRunCrypto:
 
         mock_ingestor = MagicMock()
         mock_ingestor.backfill.return_value = pd.DataFrame()
+        mock_ingestor.__enter__ = MagicMock(return_value=mock_ingestor)
+        mock_ingestor.__exit__ = MagicMock(return_value=False)
 
         with (
             patch("swingrl.data.ingest_all.DatabaseManager", return_value=mock_db),
@@ -332,6 +338,8 @@ class TestRunPipeline:
         mock_alpaca.run_all.return_value = []
         mock_binance = MagicMock()
         mock_binance.backfill.return_value = pd.DataFrame()
+        mock_binance.__enter__ = MagicMock(return_value=mock_binance)
+        mock_binance.__exit__ = MagicMock(return_value=False)
         mock_fred = MagicMock()
         mock_fred.run_all.return_value = []
         mock_pipeline = MagicMock()
@@ -362,6 +370,8 @@ class TestRunPipeline:
         mock_alpaca.run_all.return_value = []
         mock_binance = MagicMock()
         mock_binance.backfill.return_value = pd.DataFrame()
+        mock_binance.__enter__ = MagicMock(return_value=mock_binance)
+        mock_binance.__exit__ = MagicMock(return_value=False)
         mock_fred = MagicMock()
         mock_fred.run_all.return_value = []
         mock_pipeline = MagicMock()
@@ -415,6 +425,8 @@ class TestRunPipeline:
         mock_alpaca.run_all.return_value = []
         mock_binance = MagicMock()
         mock_binance.backfill.return_value = pd.DataFrame()
+        mock_binance.__enter__ = MagicMock(return_value=mock_binance)
+        mock_binance.__exit__ = MagicMock(return_value=False)
         mock_fred = MagicMock()
         mock_fred.run_all.return_value = []
         mock_pipeline = MagicMock()
@@ -448,6 +460,8 @@ class TestRunPipeline:
         mock_alpaca.run_all.return_value = []
         mock_binance = MagicMock()
         mock_binance.backfill.return_value = pd.DataFrame()
+        mock_binance.__enter__ = MagicMock(return_value=mock_binance)
+        mock_binance.__exit__ = MagicMock(return_value=False)
         mock_fred = MagicMock()
         mock_fred.run_all.return_value = []
         mock_pipeline = MagicMock()
@@ -480,6 +494,8 @@ class TestRunPipeline:
         mock_alpaca.run_all.return_value = []
         mock_binance = MagicMock()
         mock_binance.backfill.return_value = pd.DataFrame()
+        mock_binance.__enter__ = MagicMock(return_value=mock_binance)
+        mock_binance.__exit__ = MagicMock(return_value=False)
         mock_fred = MagicMock()
         mock_fred.run_all.return_value = []
         mock_pipeline = MagicMock()
@@ -590,6 +606,8 @@ class TestFullPipelineMock:
         mock_alpaca.run_all.return_value = []
         mock_binance = MagicMock()
         mock_binance.backfill.return_value = pd.DataFrame()
+        mock_binance.__enter__ = MagicMock(return_value=mock_binance)
+        mock_binance.__exit__ = MagicMock(return_value=False)
         mock_fred = MagicMock()
         mock_fred.run_all.return_value = []
         mock_pipeline = MagicMock()

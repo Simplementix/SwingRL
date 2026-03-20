@@ -29,17 +29,20 @@ import yaml
 
 from db import (
     get_active_consolidations,
+    get_active_consolidations_async,
     get_memories,
+    get_memories_async,
     insert_pattern_presentation,
+    insert_pattern_presentation_async,
 )
 
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constants (mirror of bounds.py — kept in sync manually)
+# Constants (loaded from mounted config YAML, fallback to hardcoded defaults)
 # ---------------------------------------------------------------------------
 
-_HYPERPARAM_BOUNDS: dict[str, tuple[Any, Any]] = {
+_FALLBACK_HYPERPARAM_BOUNDS: dict[str, tuple[Any, Any]] = {
     "learning_rate": (1e-5, 1e-3),
     "entropy_coeff": (0.0, 0.05),
     "clip_range": (0.1, 0.4),
@@ -48,12 +51,42 @@ _HYPERPARAM_BOUNDS: dict[str, tuple[Any, Any]] = {
     "gamma": (0.90, 0.9999),
 }
 
-_REWARD_BOUNDS: dict[str, tuple[float, float]] = {
+_FALLBACK_REWARD_BOUNDS: dict[str, tuple[float, float]] = {
     "profit": (0.10, 0.70),
     "sharpe": (0.10, 0.60),
     "drawdown": (0.05, 0.50),
     "turnover": (0.00, 0.20),
 }
+
+
+def _load_bounds_from_config() -> tuple[dict[str, tuple[Any, Any]], dict[str, tuple[float, float]]]:
+    """Load bounds from mounted swingrl.yaml, fallback to hardcoded defaults."""
+    config_path = Path("/app/config/swingrl.yaml")
+    if config_path.exists():
+        # yaml.safe_load OK here: memory service can't import swingrl.config.schema
+        cfg = yaml.safe_load(config_path.read_text()) or {}
+        training = cfg.get("training", {})
+        bounds = training.get("bounds", {})
+        hp_raw = bounds.get("hyperparam_bounds", {})
+        rw_raw = bounds.get("reward_bounds", {})
+
+        hyperparam_bounds: dict[str, tuple[Any, Any]] = dict(_FALLBACK_HYPERPARAM_BOUNDS)
+        for key in hyperparam_bounds:
+            if key in hp_raw and isinstance(hp_raw[key], (list, tuple)) and len(hp_raw[key]) == 2:
+                hyperparam_bounds[key] = tuple(hp_raw[key])
+
+        reward_bounds: dict[str, tuple[float, float]] = dict(_FALLBACK_REWARD_BOUNDS)
+        for key in reward_bounds:
+            if key in rw_raw and isinstance(rw_raw[key], (list, tuple)) and len(rw_raw[key]) == 2:
+                reward_bounds[key] = (float(rw_raw[key][0]), float(rw_raw[key][1]))
+
+        return hyperparam_bounds, reward_bounds
+    return dict(_FALLBACK_HYPERPARAM_BOUNDS), dict(_FALLBACK_REWARD_BOUNDS)
+
+
+_HYPERPARAM_BOUNDS: dict[str, tuple[Any, Any]]
+_REWARD_BOUNDS: dict[str, tuple[float, float]]
+_HYPERPARAM_BOUNDS, _REWARD_BOUNDS = _load_bounds_from_config()
 
 _SAFE_DEFAULTS: dict[str, Any] = {
     "learning_rate": 3e-4,
@@ -75,6 +108,44 @@ _SAFE_EPOCH_DEFAULTS: dict[str, Any] = {
 _OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
 _OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "30"))
 _QUERY_MODEL = "qwen2.5:3b"
+
+
+def _build_system_prompt(
+    hp_bounds: dict[str, tuple[Any, Any]],
+    rw_bounds: dict[str, tuple[float, float]],
+) -> str:
+    """Build the system prompt dynamically from config-loaded bounds.
+
+    Args:
+        hp_bounds: Hyperparameter bounds dict.
+        rw_bounds: Reward weight bounds dict.
+
+    Returns:
+        System prompt string with bounds inlined.
+    """
+    hp_lines = "\n".join(f"- {k}: [{lo}, {hi}]" for k, (lo, hi) in hp_bounds.items())
+    rw_lines = "\n".join(f"- {k}: [{lo}, {hi}]" for k, (lo, hi) in rw_bounds.items())
+    return (
+        "You are the training advisor agent for SwingRL, an RL-based "
+        "swing trading system.\n\n"
+        "SwingRL context:\n"
+        "- Two environments: equity daily (8 ETFs) and crypto 4H (BTC/ETH)\n"
+        "- Algorithms: PPO (on-policy), A2C (on-policy), SAC (off-policy, "
+        "entropy-maximizing)\n"
+        "- Capital preservation is the PRIMARY constraint — Sortino ratio and "
+        "MDD are the main metrics\n"
+        "- Market regimes: bull (0), bear (1), crisis (2) — detected by HMM "
+        "from FRED indicators\n\n"
+        f"Hyperparameter bounds (you MUST stay within these):\n{hp_lines}\n\n"
+        "Reward weight bounds (you MUST stay within these, weights should "
+        f"sum to ~1.0):\n{rw_lines}\n\n"
+        "You will receive recent memory patterns from past training runs and "
+        "queries about current training state.\n"
+        "Provide specific, numerical advice grounded in the memory patterns.\n"
+        "If memory patterns are insufficient, stay close to safe defaults "
+        "and explain why."
+    )
+
 
 # ---------------------------------------------------------------------------
 # Relevant categories per request type (R2)
@@ -140,32 +211,8 @@ def _load_min_confidence() -> float:
 _MIN_CONFIDENCE = _load_min_confidence()
 
 # System prompt for training config / epoch advice endpoints.
-_SYSTEM_PROMPT = """You are the training advisor agent for SwingRL, an RL-based swing trading system.
-
-SwingRL context:
-- Two environments: equity daily (8 ETFs) and crypto 4H (BTC/ETH)
-- Algorithms: PPO (on-policy), A2C (on-policy), SAC (off-policy, entropy-maximizing)
-- Capital preservation is the PRIMARY constraint — Sortino ratio and MDD are the main metrics
-- Market regimes: bull (0), bear (1), crisis (2) — detected by HMM from FRED indicators
-
-Hyperparameter bounds (you MUST stay within these):
-- learning_rate: [1e-5, 1e-3]
-- entropy_coeff: [0.0, 0.05]
-- clip_range: [0.1, 0.4]
-- n_epochs: [3, 20]
-- batch_size: [32, 512] (must be power of 2)
-- gamma: [0.90, 0.9999]
-
-Reward weight bounds (you MUST stay within these, weights should sum to ~1.0):
-- profit: [0.10, 0.70]
-- sharpe: [0.10, 0.60]
-- drawdown: [0.05, 0.50]
-- turnover: [0.00, 0.20]
-
-You will receive recent memory patterns from past training runs and queries about current training state.
-Provide specific, numerical advice grounded in the memory patterns.
-If memory patterns are insufficient, stay close to safe defaults and explain why.
-"""
+# Built dynamically from config-loaded bounds (Item 8).
+_SYSTEM_PROMPT = _build_system_prompt(_HYPERPARAM_BOUNDS, _REWARD_BOUNDS)
 
 # JSON schema for run_config response
 _RUN_CONFIG_SCHEMA = {
@@ -296,7 +343,7 @@ class QueryAgent:
             batch_size, gamma, reward_weights (dict), rationale.
         """
         parsed = _parse_query_context(query)
-        context, presented_ids = self._build_context(
+        context, presented_ids = await self._build_context_async(
             env_name=parsed["env_name"],
             algo_name=parsed["algo_name"],
             request_type="run_config",
@@ -313,7 +360,7 @@ class QueryAgent:
             return dict(_SAFE_DEFAULTS)
 
         # Track which patterns were presented
-        self._track_presentations(presented_ids, query, "run_config", result)
+        await self._track_presentations_async(presented_ids, query, "run_config", result)
 
         # Merge with defaults for any missing fields
         merged = dict(_SAFE_DEFAULTS)
@@ -337,7 +384,7 @@ class QueryAgent:
             Dict with keys: reward_weights (dict), stop_training (bool), rationale (str).
         """
         parsed = _parse_query_context(query)
-        context, presented_ids = self._build_context(
+        context, presented_ids = await self._build_context_async(
             env_name=parsed["env_name"],
             algo_name=parsed["algo_name"],
             request_type="epoch_advice",
@@ -354,7 +401,7 @@ class QueryAgent:
             return dict(_SAFE_EPOCH_DEFAULTS)
 
         # Track which patterns were presented
-        self._track_presentations(presented_ids, query, "epoch_advice", result)
+        await self._track_presentations_async(presented_ids, query, "epoch_advice", result)
 
         clamped_weights = _clamp_reward_weights(
             result.get("reward_weights", _SAFE_EPOCH_DEFAULTS["reward_weights"])
@@ -366,59 +413,38 @@ class QueryAgent:
             "rationale": str(result.get("rationale", "llm_advised")),
         }
 
-    def _build_context(
-        self,
-        env_name: str | None = None,
-        algo_name: str | None = None,
-        request_type: str = "run_config",
+    @staticmethod
+    def _filter_and_format_context(
+        all_consolidations: list[dict[str, Any]],
+        raw_memories: list[dict[str, Any]],
+        algo_name: str | None,
+        env_name: str | None,
+        request_type: str,
     ) -> tuple[str, list[int]]:
-        """Build a context string from active consolidations and raw memories.
+        """Filter consolidations by algo and format into a context string.
 
-        Filters consolidations by env, algo, category relevance, and confidence.
-        Prefers Stage 2 (cross-env) over Stage 1 (per-env) when both available.
-        Skips raw memories when sufficient consolidations exist (R3).
+        Shared logic extracted from sync/async _build_context variants.
 
         Args:
-            env_name: Filter patterns to this environment (None = all).
+            all_consolidations: Combined Stage 2 + Stage 1 consolidation rows.
+            raw_memories: Raw memory rows (only used if consolidations < 3).
             algo_name: Post-filter by affected_algos field (None = all).
-            request_type: Category relevance key ('run_config', 'epoch_advice', etc.).
+            env_name: Environment name (for logging only).
+            request_type: Category relevance key (for logging only).
 
         Returns:
             Tuple of (formatted context string, list of consolidation IDs presented).
         """
-        categories = _RELEVANT_CATEGORIES.get(request_type)
-
-        # Get Stage 2 patterns first (cross-env), then Stage 1
-        stage2 = get_active_consolidations(
-            env_name=env_name,
-            stage=2,
-            min_confidence=_MIN_CONFIDENCE,
-            categories=categories,
-            limit_per_category=3,
-        )
-        stage1 = get_active_consolidations(
-            env_name=env_name,
-            stage=1,
-            min_confidence=_MIN_CONFIDENCE,
-            categories=categories,
-            limit_per_category=3,
-        )
-
-        # Combine: Stage 2 first (higher priority)
-        all_consolidations = stage2 + stage1
-
-        # Post-filter by algo_name: keep universal patterns + those matching current algo
+        # Post-filter by algo_name: keep universal patterns + those matching
         if algo_name:
             algo_lower = algo_name.lower()
             consolidations = []
             for c in all_consolidations:
                 algos = c.get("affected_algos")
                 if not algos:
-                    # Universal pattern (None or empty list) — always keep
                     consolidations.append(c)
                 elif isinstance(algos, list) and algo_lower in [a.lower() for a in algos]:
                     consolidations.append(c)
-            # else: pattern is algo-specific but doesn't match — skip
         else:
             consolidations = all_consolidations
 
@@ -442,14 +468,11 @@ class QueryAgent:
                 if c.get("id"):
                     presented_ids.append(int(c["id"]))
 
-        # R3: Only fetch raw memories if insufficient consolidations (cold start)
-        if len(consolidations) < 3:
-            memories = get_memories(archived=False, limit=20)
-            if memories:
-                parts.append("=== Recent Raw Memories ===")
-                for m in memories:
-                    # Text is already XML-wrapped by IngestAgent
-                    parts.append(m["text"])
+        # R3: Only include raw memories if insufficient consolidations (cold start)
+        if len(consolidations) < 3 and raw_memories:
+            parts.append("=== Recent Raw Memories ===")
+            for m in raw_memories:
+                parts.append(m["text"])
 
         if not parts:
             return "<no_memories>No memories available yet (cold start)</no_memories>", []
@@ -463,6 +486,105 @@ class QueryAgent:
             raw_included=len(consolidations) < 3,
         )
         return "\n".join(parts), presented_ids
+
+    def _build_context(
+        self,
+        env_name: str | None = None,
+        algo_name: str | None = None,
+        request_type: str = "run_config",
+    ) -> tuple[str, list[int]]:
+        """Build a context string from active consolidations and raw memories.
+
+        Filters consolidations by env, algo, category relevance, and confidence.
+        Prefers Stage 2 (cross-env) over Stage 1 (per-env) when both available.
+        Skips raw memories when sufficient consolidations exist (R3).
+
+        Args:
+            env_name: Filter patterns to this environment (None = all).
+            algo_name: Post-filter by affected_algos field (None = all).
+            request_type: Category relevance key ('run_config', 'epoch_advice', etc.).
+
+        Returns:
+            Tuple of (formatted context string, list of consolidation IDs presented).
+        """
+        categories = _RELEVANT_CATEGORIES.get(request_type)
+
+        stage2 = get_active_consolidations(
+            env_name=env_name,
+            stage=2,
+            min_confidence=_MIN_CONFIDENCE,
+            categories=categories,
+            limit_per_category=3,
+        )
+        stage1 = get_active_consolidations(
+            env_name=env_name,
+            stage=1,
+            min_confidence=_MIN_CONFIDENCE,
+            categories=categories,
+            limit_per_category=3,
+        )
+        all_consolidations = stage2 + stage1
+
+        raw_memories: list[dict[str, Any]] = []
+        # Prefetch raw memories; _filter_and_format_context decides whether to use them
+        memories_candidate = get_memories(archived=False, limit=20)
+        if memories_candidate:
+            raw_memories = memories_candidate
+
+        return self._filter_and_format_context(
+            all_consolidations,
+            raw_memories,
+            algo_name,
+            env_name,
+            request_type,
+        )
+
+    async def _build_context_async(
+        self,
+        env_name: str | None = None,
+        algo_name: str | None = None,
+        request_type: str = "run_config",
+    ) -> tuple[str, list[int]]:
+        """Async version of _build_context — uses async DB wrappers.
+
+        Args:
+            env_name: Filter patterns to this environment (None = all).
+            algo_name: Post-filter by affected_algos field (None = all).
+            request_type: Category relevance key ('run_config', 'epoch_advice', etc.).
+
+        Returns:
+            Tuple of (formatted context string, list of consolidation IDs presented).
+        """
+        categories = _RELEVANT_CATEGORIES.get(request_type)
+
+        stage2 = await get_active_consolidations_async(
+            env_name=env_name,
+            stage=2,
+            min_confidence=_MIN_CONFIDENCE,
+            categories=categories,
+            limit_per_category=3,
+        )
+        stage1 = await get_active_consolidations_async(
+            env_name=env_name,
+            stage=1,
+            min_confidence=_MIN_CONFIDENCE,
+            categories=categories,
+            limit_per_category=3,
+        )
+        all_consolidations = stage2 + stage1
+
+        raw_memories: list[dict[str, Any]] = []
+        memories_candidate = await get_memories_async(archived=False, limit=20)
+        if memories_candidate:
+            raw_memories = memories_candidate
+
+        return self._filter_and_format_context(
+            all_consolidations,
+            raw_memories,
+            algo_name,
+            env_name,
+            request_type,
+        )
 
     def _track_presentations(
         self,
@@ -488,6 +610,39 @@ class QueryAgent:
         for cid in consolidation_ids:
             try:
                 insert_pattern_presentation(
+                    consolidation_id=cid,
+                    iteration=iteration,
+                    env_name=env_name,
+                    request_type=request_type,
+                    advice_response=advice_summary,
+                )
+            except Exception as exc:
+                log.warning("presentation_tracking_failed", consolidation_id=cid, error=str(exc))
+
+    async def _track_presentations_async(
+        self,
+        consolidation_ids: list[int],
+        query: str,
+        request_type: str,
+        result: dict[str, Any],
+    ) -> None:
+        """Async version of _track_presentations — uses async DB wrappers.
+
+        Args:
+            consolidation_ids: IDs of consolidations included in context.
+            query: The query string (extract iteration/env from it).
+            request_type: 'run_config' or 'epoch_advice'.
+            result: The LLM response (for advice_response summary).
+        """
+        parsed = _parse_query_context(query)
+        iteration = parsed["iteration"]
+        env_name = parsed["env_name"]
+
+        advice_summary = result.get("rationale", "")[:200]
+
+        for cid in consolidation_ids:
+            try:
+                await insert_pattern_presentation_async(
                     consolidation_id=cid,
                     iteration=iteration,
                     env_name=env_name,

@@ -1,6 +1,6 @@
 """Tests for observation vector assembler.
 
-Verifies ObservationAssembler produces correct shapes (156 equity, 45 crypto),
+Verifies ObservationAssembler produces correct shapes (164 equity, 47 crypto),
 deterministic assembly order, NaN-free output post-warmup, and default portfolio state.
 """
 
@@ -66,8 +66,8 @@ def assembler(assembler_config: SwingRLConfig) -> ObservationAssembler:
 class TestEquityAssembly:
     """Tests for equity observation vector assembly."""
 
-    def test_equity_shape_156(self, assembler: ObservationAssembler) -> None:
-        """FEAT-07: assemble_equity returns (156,) ndarray."""
+    def test_equity_shape_164(self, assembler: ObservationAssembler) -> None:
+        """FEAT-07: assemble_equity returns (164,) ndarray."""
         per_asset = {
             s: np.ones(15) for s in sorted(["DIA", "IWM", "QQQ", "SPY", "VTI", "XLE", "XLF", "XLK"])
         }
@@ -75,7 +75,7 @@ class TestEquityAssembly:
         hmm = np.array([0.7, 0.3])
         turb = 1.5
         obs = assembler.assemble_equity(per_asset, macro, hmm, turb)
-        assert obs.shape == (156,)
+        assert obs.shape == (164,)
 
     def test_equity_per_asset_120_dims(self, assembler: ObservationAssembler) -> None:
         """FEAT-07: 15 features x 8 symbols = 120 per-asset dims."""
@@ -99,7 +99,7 @@ class TestEquityAssembly:
         macro = np.full(6, 2.0)
         hmm = np.full(2, 3.0)
         turb = 4.0
-        portfolio = np.full(27, 5.0)
+        portfolio = np.full(35, 5.0)
         obs = assembler.assemble_equity(per_asset, macro, hmm, turb, portfolio)
         # Per-asset: 0:120
         assert np.all(obs[0:120] == 0.0)
@@ -109,8 +109,8 @@ class TestEquityAssembly:
         assert np.all(obs[126:128] == 3.0)
         # Turbulence: 128
         assert obs[128] == 4.0
-        # Portfolio: 129:156
-        assert np.all(obs[129:156] == 5.0)
+        # Portfolio: 129:164
+        assert np.all(obs[129:164] == 5.0)
 
     def test_equity_default_portfolio_state(self, assembler: ObservationAssembler) -> None:
         """FEAT-07: Default portfolio = 100% cash, zero positions."""
@@ -121,7 +121,7 @@ class TestEquityAssembly:
         hmm = np.array([0.5, 0.5])
         turb = 1.0
         obs = assembler.assemble_equity(per_asset, macro, hmm, turb)
-        portfolio_slice = obs[129:156]
+        portfolio_slice = obs[129:164]
         assert portfolio_slice[0] == 1.0  # cash_ratio
         assert portfolio_slice[1] == 0.0  # exposure
         assert portfolio_slice[2] == 0.0  # daily_return
@@ -157,15 +157,15 @@ class TestEquityAssembly:
 class TestCryptoAssembly:
     """Tests for crypto observation vector assembly."""
 
-    def test_crypto_shape_45(self, assembler: ObservationAssembler) -> None:
-        """FEAT-07: assemble_crypto returns (45,) ndarray."""
+    def test_crypto_shape_47(self, assembler: ObservationAssembler) -> None:
+        """FEAT-07: assemble_crypto returns (47,) ndarray."""
         per_asset = {s: np.ones(13) for s in ["BTCUSDT", "ETHUSDT"]}
         macro = np.ones(6)
         hmm = np.array([0.7, 0.3])
         turb = 1.5
         overnight = 4.0
         obs = assembler.assemble_crypto(per_asset, macro, hmm, turb, overnight)
-        assert obs.shape == (45,)
+        assert obs.shape == (47,)
 
     def test_crypto_per_asset_26_dims(self, assembler: ObservationAssembler) -> None:
         """FEAT-07: 13 features x 2 symbols = 26 per-asset dims."""
@@ -187,7 +187,7 @@ class TestCryptoAssembly:
         turb = 0.0
         overnight = 7.5
         obs = assembler.assemble_crypto(per_asset, macro, hmm, turb, overnight)
-        # Layout: per_asset(26) + macro(6) + hmm(2) + turb(1) + overnight(1) + portfolio(9)
+        # Layout: per_asset(26) + macro(6) + hmm(2) + turb(1) + overnight(1) + portfolio(11)
         overnight_idx = 26 + 6 + 2 + 1  # = 35
         assert obs[overnight_idx] == 7.5
 
@@ -199,7 +199,7 @@ class TestCryptoAssembly:
         turb = 1.0
         overnight = 2.0
         obs = assembler.assemble_crypto(per_asset, macro, hmm, turb, overnight)
-        portfolio_slice = obs[36:45]
+        portfolio_slice = obs[36:47]
         assert portfolio_slice[0] == 1.0  # cash_ratio
         assert portfolio_slice[1] == 0.0  # exposure
         assert portfolio_slice[2] == 0.0  # daily_return
@@ -220,14 +220,14 @@ class TestFeatureNames:
     """Tests for feature name generation."""
 
     def test_equity_feature_names_count(self, assembler: ObservationAssembler) -> None:
-        """FEAT-07: get_feature_names_equity returns 156 names."""
+        """FEAT-07: get_feature_names_equity returns 164 names."""
         names = assembler.get_feature_names_equity()
-        assert len(names) == 156
+        assert len(names) == 164
 
     def test_crypto_feature_names_count(self, assembler: ObservationAssembler) -> None:
-        """FEAT-07: get_feature_names_crypto returns 45 names."""
+        """FEAT-07: get_feature_names_crypto returns 47 names."""
         names = assembler.get_feature_names_crypto()
-        assert len(names) == 45
+        assert len(names) == 47
 
     def test_equity_feature_names_alpha_sorted(self, assembler: ObservationAssembler) -> None:
         """FEAT-07: Per-asset names start with alpha-sorted symbols."""

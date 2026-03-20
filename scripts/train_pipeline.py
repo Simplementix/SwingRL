@@ -415,13 +415,19 @@ def run_all_iterations(
                     )
                     iter_result[env_name] = env_result
                 except Exception as exc2:
+                    # Chain original exception for full traceback context
+                    exc2.__cause__ = exc
                     log.error(
                         "iteration_env_failed_skip",
                         iteration=i,
                         env=env_name,
                         error=str(exc2),
+                        original_error=str(exc),
                     )
-                    iter_result[env_name] = {"error": str(exc2)}
+                    iter_result[env_name] = {
+                        "error": str(exc2),
+                        "original_error": str(exc),
+                    }
 
         # Save iteration results
         state[f"iteration_{i}_result"] = iter_result
@@ -492,11 +498,11 @@ def run_all_iterations(
 
 
 # ---------------------------------------------------------------------------
-# Feature loading (imported from scripts/train.py for reuse)
+# Feature loading (delegated to proper module)
 # ---------------------------------------------------------------------------
 
 
-# Re-export the loader from train.py so tests can patch train_pipeline._load_features_prices
+# Re-export from the proper module so tests can patch train_pipeline._load_features_prices
 def _load_features_prices(
     conn: Any,
     env_name: str,
@@ -504,7 +510,7 @@ def _load_features_prices(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Load features and prices from DuckDB.
 
-    Delegates to the implementation in scripts/train.py.
+    Delegates to the canonical implementation in swingrl.training.data_loader.
 
     Args:
         conn: Active DuckDB connection.
@@ -514,24 +520,9 @@ def _load_features_prices(
     Returns:
         Tuple of (features_array, prices_array) both float32.
     """
-    import importlib
-    import sys
+    from swingrl.training.data_loader import load_features_prices  # noqa: PLC0415
 
-    # Import train.py by path (it's in scripts/, not a package)
-    train_mod_name = "train"
-    if train_mod_name not in sys.modules:
-        scripts_dir = Path(__file__).parent
-        spec_path = scripts_dir / "train.py"
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location(train_mod_name, spec_path)
-        if spec and spec.loader:
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[train_mod_name] = module
-            spec.loader.exec_module(module)  # type: ignore[union-attr]
-
-    train_mod = sys.modules[train_mod_name]
-    return train_mod._load_features_prices(conn, env_name, config)  # type: ignore[no-any-return]
+    return load_features_prices(conn, env_name, config)
 
 
 # ---------------------------------------------------------------------------
@@ -1265,8 +1256,13 @@ def run_environment(
                 for algo in algos_to_run
             }
             for future in as_completed(futures):
-                algo_name_result, folds = future.result()
-                all_wf_results[algo_name_result] = folds
+                algo_name = futures[future]
+                try:
+                    algo_name_result, folds = future.result()
+                    all_wf_results[algo_name_result] = folds
+                except Exception:  # noqa: BLE001
+                    log.error("walk_forward_failed", algo=algo_name, exc_info=True)
+                    continue
 
     # If all algos were checkpointed, skip ensemble computation
     has_wf_data = any(len(v) > 0 for v in all_wf_results.values())
@@ -1540,8 +1536,12 @@ def run_environment(
         }
         for future in as_completed(futures):
             algo_name = futures[future]
-            _, result_dict = future.result()
-            final_training[algo_name] = result_dict
+            try:
+                _, result_dict = future.result()
+                final_training[algo_name] = result_dict
+            except Exception:  # noqa: BLE001
+                log.error("final_training_failed", algo=algo_name, exc_info=True)
+                continue
 
     # Deferred DuckDB writes — sequential after all parallel training completes
     conn = duckdb.connect(str(db_path))

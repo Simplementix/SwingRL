@@ -44,6 +44,16 @@ class MemoryClient:
         self._default_timeout = default_timeout
         self._api_key = api_key
 
+    @property
+    def base_url(self) -> str:
+        """Base URL of the memory agent service."""
+        return self._base_url
+
+    @property
+    def api_key(self) -> str:
+        """API key for memory agent authentication."""
+        return self._api_key
+
     def ingest(
         self,
         payload: dict[str, Any],
@@ -146,6 +156,42 @@ class MemoryClient:
         except Exception as exc:
             log.debug("memory_consolidate_failed", url=url, error=str(exc))
             return False
+
+    def epoch_advice(self, payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+        """POST to /training/epoch_advice and return the JSON response.
+
+        Fail-open: returns empty dict on any network or HTTP error.
+
+        Args:
+            payload: Dict to POST as JSON (must contain 'query' key).
+            timeout: Request timeout in seconds.
+
+        Returns:
+            Parsed JSON response dict on success, empty dict on any error.
+        """
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        url = f"{self._base_url}/training/epoch_advice"
+
+        try:
+            data = _json.dumps(payload).encode("utf-8")
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if self._api_key:
+                headers["X-API-Key"] = self._api_key
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310
+                body: dict[str, Any] = _json.loads(resp.read().decode("utf-8"))
+                return body
+        except Exception as exc:
+            log.debug("memory_epoch_advice_failed", url=url, error=str(exc))
+            return {}
 
     def record_outcome(
         self,

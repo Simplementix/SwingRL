@@ -117,16 +117,15 @@ def run_crypto(config: SwingRLConfig, backfill: bool) -> int:
     db = DatabaseManager(config)
     rows_before = _count_rows(db, "ohlcv_4h")
 
-    ingestor = BinanceIngestor(config)
-
-    if backfill:
-        for symbol in config.crypto.symbols:
-            ingestor.backfill(symbol)
-    else:
-        failed = ingestor.run_all(config.crypto.symbols, since=None)
-        if failed:
-            log.error("crypto_ingestion_failed", failed_symbols=failed)
-            raise DataError(f"Crypto ingestion failed for symbols: {failed}")
+    with BinanceIngestor(config) as ingestor:
+        if backfill:
+            for symbol in config.crypto.symbols:
+                ingestor.backfill(symbol)
+        else:
+            failed = ingestor.run_all(config.crypto.symbols, since=None)
+            if failed:
+                log.error("crypto_ingestion_failed", failed_symbols=failed)
+                raise DataError(f"Crypto ingestion failed for symbols: {failed}")
 
     rows_after = _count_rows(db, "ohlcv_4h")
     delta = max(0, rows_after - rows_before)
@@ -205,8 +204,7 @@ def run_features(config: SwingRLConfig) -> None:
         config: Validated SwingRLConfig.
     """
     db = DatabaseManager(config)
-    with db.duckdb() as _cursor:
-        conn = db._get_duckdb_conn()  # noqa: SLF001
+    with db.duckdb() as conn:
         pipeline = FeaturePipeline(config, conn)
         pipeline.compute_equity()
         pipeline.compute_crypto()

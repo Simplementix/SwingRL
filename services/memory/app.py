@@ -27,9 +27,10 @@ import anyio
 import httpx
 import structlog
 from fastapi import FastAPI
+from memory_agents.consolidate import validate_consolidation_config
 from routers import core, debug, training
 
-from db import init_db
+from db import init_capacity_limiters, init_db
 
 # Configure structlog for JSON output (matches Docker log collection)
 _LOG_LEVEL_MAP = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
@@ -90,7 +91,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_db()
     log.info("db_initialized")
 
-    # 2. Wait for Ollama — never start degraded
+    # 2. Eagerly init capacity limiters (avoids TOCTOU race on first request)
+    init_capacity_limiters()
+
+    # 3. Validate consolidation config (warn on missing keys/URLs)
+    validate_consolidation_config()
+
+    # 4. Wait for Ollama — never start degraded
     await _wait_for_ollama()
 
     log.info("memory_service_ready")

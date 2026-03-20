@@ -186,10 +186,12 @@ class PositionTracker:
     def get_portfolio_state_array(self, env: str) -> np.ndarray:
         """Build numpy array for ObservationAssembler.
 
-        Equity (27,): [cash_ratio, exposure, daily_return,
-                       8x weight, 8x unrealized_pnl_pct, 8x days_since_trade]
-        Crypto (9,):  [cash_ratio, exposure, daily_return,
-                       2x weight, 2x unrealized_pnl_pct, 2x days_since_trade]
+        Equity (35,): [cash_ratio, exposure, daily_return,
+                       per-asset interleaved: weight, weight_dev, unrealized_pnl_pct,
+                       days_since_trade] x 8
+        Crypto (11,): [cash_ratio, exposure, daily_return,
+                       per-asset interleaved: weight, weight_dev, unrealized_pnl_pct,
+                       days_since_trade] x 2
 
         Args:
             env: "equity" or "crypto".
@@ -199,8 +201,8 @@ class PositionTracker:
         """
         symbols = self._symbols(env)
         n_assets = len(symbols)
-        # 3 global + 3 per asset (weight, unrealized_pnl_pct, days_since_trade)
-        state = np.zeros(3 + 3 * n_assets, dtype=np.float32)
+        # 3 global + 4 per asset (weight, weight_deviation, unrealized_pnl_pct, days_since_trade)
+        state = np.zeros(3 + 4 * n_assets, dtype=np.float32)
 
         portfolio_value = self.get_portfolio_value(env)
         exposure = self.get_exposure(env)
@@ -217,6 +219,7 @@ class PositionTracker:
         now = datetime.now(tz=UTC)
 
         for i, symbol in enumerate(symbols):
+            base_idx = 3 + i * 4
             pos = pos_by_symbol.get(symbol)
             if pos is None:
                 continue
@@ -227,17 +230,21 @@ class PositionTracker:
             position_value = abs(qty * last_price)
 
             # Weight
-            state[3 + i] = position_value / portfolio_value if portfolio_value > 0 else 0.0
+            weight = position_value / portfolio_value if portfolio_value > 0 else 0.0
+            state[base_idx] = weight
+
+            # Weight deviation from equal-weight target (0.0 when no exposure)
+            state[base_idx + 1] = weight - (1.0 / n_assets) if exposure > 0 else 0.0
 
             # Unrealized PnL %
             if cost_basis > 0:
-                state[3 + n_assets + i] = (last_price - cost_basis) / cost_basis
+                state[base_idx + 2] = (last_price - cost_basis) / cost_basis
             else:
-                state[3 + n_assets + i] = 0.0
+                state[base_idx + 2] = 0.0
 
             # Days since last trade for this symbol
             days = self._days_since_trade(env, symbol, now)
-            state[3 + 2 * n_assets + i] = float(days)
+            state[base_idx + 3] = float(days)
 
         return state
 

@@ -420,6 +420,17 @@ class TrainingOrchestrator:
         vec_to_save = vec_env
         while isinstance(vec_to_save, VecEnvWrapper) and not isinstance(vec_to_save, VecNormalize):
             vec_to_save = vec_to_save.venv  # type: ignore[assignment]
+        if not isinstance(vec_to_save, VecNormalize):
+            log.error(
+                "vec_normalize_unwrap_failed",
+                got=type(vec_to_save).__name__,
+                env=env_name,
+                algo=algo_name,
+            )
+            raise ModelError(
+                f"VecNormalize unwrap failed: got {type(vec_to_save).__name__} "
+                f"for {env_name}/{algo_name}"
+            )
         with vec_path.open("wb") as f:
             pickle.dump(vec_to_save, f)  # noqa: S301  # nosec B301
 

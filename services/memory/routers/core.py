@@ -16,7 +16,7 @@ from memory_agents.consolidate import ConsolidateAgent
 from memory_agents.ingest import IngestAgent
 from pydantic import BaseModel, Field
 
-from db import get_connection
+from db import _run_live, get_connection
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
@@ -77,7 +77,7 @@ async def ingest(
     Requires X-API-Key header.
     """
     agent = IngestAgent()
-    row_id = agent.store(text=body.text, source=body.source)
+    row_id = await agent.store_async(text=body.text, source=body.source)
     return IngestResponse(id=row_id)
 
 
@@ -106,15 +106,18 @@ async def health() -> HealthResponse:
     """
     ollama_url = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
 
-    # Check SQLite
-    db_ok = False
-    try:
+    # Check SQLite (via live thread pool to avoid blocking event loop)
+    def _check_db() -> bool:
         conn = get_connection()
         try:
             conn.execute("SELECT 1")
-            db_ok = True
+            return True
         finally:
             conn.close()
+
+    db_ok = False
+    try:
+        db_ok = await _run_live(_check_db)
     except Exception as exc:
         log.warning("health_db_check_failed", error=str(exc))
 

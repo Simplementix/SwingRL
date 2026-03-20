@@ -12,8 +12,8 @@ Usage:
     db = DatabaseManager(config)
     db.init_schema()
 
-    with db.duckdb() as cursor:
-        cursor.execute("SELECT * FROM ohlcv_daily WHERE symbol = ?", ["SPY"])
+    with db.duckdb() as conn:
+        conn.execute("SELECT * FROM ohlcv_daily WHERE symbol = ?", ["SPY"])
 
     with db.sqlite() as conn:
         conn.execute("INSERT INTO trades ...")
@@ -28,7 +28,7 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import duckdb
+import duckdb as duckdb_module
 import structlog
 
 if TYPE_CHECKING:
@@ -41,7 +41,7 @@ class DatabaseManager:
     """Singleton manager for DuckDB and SQLite database connections.
 
     Thread-safe via threading.Lock for singleton creation and DDL writes.
-    DuckDB uses a persistent connection with per-call cursors.
+    DuckDB opens a fresh connection per context manager call (short-lived).
     SQLite creates a new connection per context manager call (WAL mode).
     """
 
@@ -70,7 +70,6 @@ class DatabaseManager:
 
         self._duckdb_path = Path(config.system.duckdb_path)
         self._sqlite_path = Path(config.system.sqlite_path)
-        self._duckdb_conn: Any = None
         self._write_lock = threading.Lock()
         self._initialized = True
 
@@ -88,26 +87,21 @@ class DatabaseManager:
                 cls._instance.close()
                 cls._instance = None
 
-    def _get_duckdb_conn(self) -> Any:
-        """Lazy-initialize persistent DuckDB connection."""
-        if self._duckdb_conn is None:
-            self._duckdb_path.parent.mkdir(parents=True, exist_ok=True)
-            self._duckdb_conn = duckdb.connect(str(self._duckdb_path))
-            log.info("duckdb_connected", path=str(self._duckdb_path))
-        return self._duckdb_conn
-
     @contextlib.contextmanager
-    def duckdb(self) -> Generator[Any, None, None]:
-        """Yield a DuckDB cursor for thread-safe query execution.
+    def duckdb(self, read_only: bool = False) -> Generator[Any, None, None]:
+        """Yield a short-lived DuckDB connection.
 
-        The cursor is closed on exit. The underlying connection persists.
+        Opens a fresh connection per call, closes on exit.
+
+        Args:
+            read_only: Open connection in read-only mode (for concurrent readers).
         """
-        conn = self._get_duckdb_conn()
-        cursor = conn.cursor()
+        self._duckdb_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = duckdb_module.connect(str(self._duckdb_path), read_only=read_only)
         try:
-            yield cursor
+            yield conn
         finally:
-            cursor.close()
+            conn.close()
 
     @contextlib.contextmanager
     def sqlite(self) -> Generator[sqlite3.Connection, None, None]:
@@ -462,8 +456,11 @@ class DatabaseManager:
             ]:
                 try:
                     conn.execute(col_sql)
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" in str(exc).lower():
+                        pass  # Column already exists
+                    else:
+                        raise
 
             # Phase 12: inference_outcomes for NaN tracking
             conn.execute("""
@@ -504,11 +501,9 @@ class DatabaseManager:
             """)
 
     def close(self) -> None:
-        """Gracefully close all database connections."""
-        if self._duckdb_conn is not None:
-            try:
-                self._duckdb_conn.close()
-            except Exception:  # noqa: BLE001
-                log.warning("duckdb_close_error", error="failed to close connection gracefully")
-            self._duckdb_conn = None
-            log.info("duckdb_closed")
+        """Reset singleton state for test isolation.
+
+        No persistent connections to close — DuckDB connections are short-lived.
+        """
+        self._initialized = False
+        log.info("database_manager_closed")

@@ -19,9 +19,65 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import anyio
 import structlog
 
 log = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Two-tier async thread pool (Fix #8)
+# ---------------------------------------------------------------------------
+# CapacityLimiter must be created inside an async context, so we lazily init.
+# Live pool (2 threads): insert_memory, get_memories_for_query, record_outcome, health
+# Background pool (3 threads): consolidation, pattern queries, debug queries
+
+_live_limiter: anyio.CapacityLimiter | None = None
+_background_limiter: anyio.CapacityLimiter | None = None
+
+
+def init_capacity_limiters() -> None:
+    """Eagerly initialize capacity limiters. Must be called inside an async context.
+
+    Call this from the FastAPI startup event (after the event loop is running)
+    to avoid TOCTOU races from lazy init in concurrent handlers.
+    """
+    global _live_limiter, _background_limiter
+    _live_limiter = anyio.CapacityLimiter(2)
+    _background_limiter = anyio.CapacityLimiter(3)
+    log.info("capacity_limiters_initialized", live=2, background=3)
+
+
+def _get_live_limiter() -> anyio.CapacityLimiter:
+    """Return the live-request capacity limiter (2 threads).
+
+    Falls back to lazy creation if init_capacity_limiters() was not called.
+    """
+    global _live_limiter
+    if _live_limiter is None:
+        _live_limiter = anyio.CapacityLimiter(2)
+    return _live_limiter
+
+
+def _get_background_limiter() -> anyio.CapacityLimiter:
+    """Return the background-task capacity limiter (3 threads).
+
+    Falls back to lazy creation if init_capacity_limiters() was not called.
+    """
+    global _background_limiter
+    if _background_limiter is None:
+        _background_limiter = anyio.CapacityLimiter(3)
+    return _background_limiter
+
+
+async def _run_live(func: Any, *args: Any) -> Any:
+    """Run a sync function in the live thread pool (2 threads, <5ms)."""
+    return await anyio.to_thread.run_sync(lambda: func(*args), limiter=_get_live_limiter())
+
+
+async def _run_background(func: Any, *args: Any) -> Any:
+    """Run a sync function in the background thread pool (3 threads)."""
+    return await anyio.to_thread.run_sync(lambda: func(*args), limiter=_get_background_limiter())
+
 
 # ---------------------------------------------------------------------------
 # DDL
@@ -727,3 +783,182 @@ def _deserialize_consolidation(row: sqlite3.Row) -> dict[str, Any]:
             except (json.JSONDecodeError, TypeError):
                 d[field] = []
     return d
+
+
+# ---------------------------------------------------------------------------
+# Async wrappers (Fix #8 — non-blocking FastAPI handlers)
+# ---------------------------------------------------------------------------
+# Sync functions are preserved for backward compatibility.
+# Live pool: latency-sensitive request handlers
+# Background pool: consolidation, bulk queries, debug
+
+
+async def insert_memory_async(text: str, source: str) -> int:
+    """Async wrapper for insert_memory (live pool)."""
+    return await _run_live(insert_memory, text, source)
+
+
+async def get_memories_async(
+    source: str | None = None,
+    limit: int = 100,
+    since: str | None = None,
+    archived: bool = False,
+) -> list[dict[str, Any]]:
+    """Async wrapper for get_memories (live pool)."""
+    return await _run_live(get_memories, source, limit, since, archived)
+
+
+async def get_memories_by_source_prefix_async(
+    prefix: str,
+    limit: int = 100,
+    archived: bool = False,
+) -> list[dict[str, Any]]:
+    """Async wrapper for get_memories_by_source_prefix (background pool)."""
+    return await _run_background(get_memories_by_source_prefix, prefix, limit, archived)
+
+
+async def archive_memories_async(row_ids: list[int]) -> None:
+    """Async wrapper for archive_memories (background pool)."""
+    return await _run_background(archive_memories, row_ids)
+
+
+async def insert_consolidation_async(
+    pattern_text: str,
+    source_count: int,
+    conflicting_with: int | None = None,
+    category: str | None = None,
+    affected_algos: list[str] | None = None,
+    affected_envs: list[str] | None = None,
+    actionable_implication: str | None = None,
+    confidence: float | None = None,
+    evidence: str | None = None,
+    stage: int = 1,
+    env_name: str | None = None,
+    status: str = "active",
+    conflict_group_id: str | None = None,
+) -> int:
+    """Async wrapper for insert_consolidation (background pool)."""
+    return await _run_background(
+        insert_consolidation,
+        pattern_text,
+        source_count,
+        conflicting_with,
+        category,
+        affected_algos,
+        affected_envs,
+        actionable_implication,
+        confidence,
+        evidence,
+        stage,
+        env_name,
+        status,
+        conflict_group_id,
+    )
+
+
+async def insert_consolidation_source_async(consolidation_id: int, memory_id: int) -> None:
+    """Async wrapper for insert_consolidation_source (background pool)."""
+    return await _run_background(insert_consolidation_source, consolidation_id, memory_id)
+
+
+async def insert_consolidation_sources_async(consolidation_id: int, memory_ids: list[int]) -> None:
+    """Async wrapper for insert_consolidation_sources (background pool)."""
+    return await _run_background(insert_consolidation_sources, consolidation_id, memory_ids)
+
+
+async def get_consolidations_async(limit: int = 50) -> list[dict[str, Any]]:
+    """Async wrapper for get_consolidations (background pool)."""
+    return await _run_background(get_consolidations, limit)
+
+
+async def get_active_consolidations_async(
+    env_name: str | None = None,
+    stage: int | None = None,
+    min_confidence: float | None = None,
+    categories: list[str] | None = None,
+    limit_per_category: int | None = None,
+) -> list[dict[str, Any]]:
+    """Async wrapper for get_active_consolidations (background pool)."""
+    return await _run_background(
+        get_active_consolidations,
+        env_name,
+        stage,
+        min_confidence,
+        categories,
+        limit_per_category,
+    )
+
+
+async def update_consolidation_status_async(
+    row_id: int,
+    status: str,
+    superseded_by: int | None = None,
+) -> None:
+    """Async wrapper for update_consolidation_status (background pool)."""
+    return await _run_background(update_consolidation_status, row_id, status, superseded_by)
+
+
+async def increment_confirmation_async(row_id: int) -> None:
+    """Async wrapper for increment_confirmation (background pool)."""
+    return await _run_background(increment_confirmation, row_id)
+
+
+async def insert_pattern_presentation_async(
+    consolidation_id: int,
+    iteration: int | None,
+    env_name: str | None,
+    request_type: str | None,
+    advice_response: str | None,
+) -> int:
+    """Async wrapper for insert_pattern_presentation (live pool)."""
+    return await _run_live(
+        insert_pattern_presentation,
+        consolidation_id,
+        iteration,
+        env_name,
+        request_type,
+        advice_response,
+    )
+
+
+async def insert_pattern_outcome_async(
+    iteration: int,
+    env_name: str,
+    gate_passed: bool | None,
+    sharpe: float | None,
+    mdd: float | None,
+    sortino: float | None,
+    pnl: float | None,
+    patterns_presented: list[int] | None = None,
+) -> int:
+    """Async wrapper for insert_pattern_outcome (live pool)."""
+    return await _run_live(
+        insert_pattern_outcome,
+        iteration,
+        env_name,
+        gate_passed,
+        sharpe,
+        mdd,
+        sortino,
+        pnl,
+        patterns_presented,
+    )
+
+
+async def get_pattern_effectiveness_async() -> list[dict[str, Any]]:
+    """Async wrapper for get_pattern_effectiveness (background pool)."""
+    return await _run_background(get_pattern_effectiveness)
+
+
+async def log_consolidation_quality_async(
+    attempt_count: int,
+    accepted: bool,
+    rejected_reason: str | None = None,
+) -> None:
+    """Async wrapper for log_consolidation_quality (background pool)."""
+    return await _run_background(
+        log_consolidation_quality,
+        attempt_count,
+        accepted,
+        rejected_reason,
+    )

@@ -7,12 +7,15 @@ trading_mode: paper  # "paper" | "live"
 
 equity:
   symbols: [SPY, QQQ, VTI, XLV, XLI, XLE, XLF, XLK]
+  hmm_proxy_symbol: SPY         # market proxy for HMM regime detection (must be in symbols)
   max_position_size: 0.25       # max fraction of equity capital in one ETF position
   max_drawdown_pct: 0.10        # circuit breaker: halt equity env at 10% DD
   daily_loss_limit_pct: 0.02    # circuit breaker: halt equity env at 2% daily loss
+  min_order_usd: 1.0            # Alpaca minimum order floor ($1.00 fractional shares)
 
 crypto:
   symbols: [BTCUSDT, ETHUSDT]
+  hmm_proxy_symbol: BTCUSDT     # market proxy for HMM regime detection (must be in symbols)
   max_position_size: 0.50       # BTC can be up to 50% of crypto capital
   max_drawdown_pct: 0.12        # circuit breaker: halt crypto env at 12% DD
   daily_loss_limit_pct: 0.03    # circuit breaker: halt crypto env at 3% daily loss
@@ -115,6 +118,19 @@ memory_agent:
         default_model: "qwen2.5:3b"
 
 training:
+  bounds:
+    hyperparam_bounds:
+      learning_rate: [0.00001, 0.001]
+      entropy_coeff: [0.0, 0.05]
+      clip_range: [0.1, 0.4]
+      n_epochs: [3, 20]
+      batch_size: [32, 512]
+      gamma: [0.90, 0.9999]
+    reward_bounds:
+      profit: [0.10, 0.70]
+      sharpe: [0.10, 0.60]
+      drawdown: [0.05, 0.50]
+      turnover: [0.00, 0.20]
   sac_buffer_size: 500000           # SAC replay buffer size. Default 500K; SWINGRL_TRAINING__SAC_BUFFER_SIZE
   n_envs: 6                         # Parallel envs per training (SubprocVecEnv). 6 × 3 algo workers = 18 processes.
   vecenv_backend: subproc            # "subproc" for parallel SubprocVecEnv, "dummy" for sequential DummyVecEnv

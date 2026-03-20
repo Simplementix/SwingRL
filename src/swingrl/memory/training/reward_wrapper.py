@@ -182,7 +182,7 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
             return 0.0
         arr = np.array(self._reward_history)
         mean = float(np.mean(arr))
-        std = float(np.std(arr))
+        std = float(np.std(arr, ddof=1))
         if std < 1e-10:
             return 0.0
         # Annualize using configured periods (252 equity daily, 2191 crypto 4H)

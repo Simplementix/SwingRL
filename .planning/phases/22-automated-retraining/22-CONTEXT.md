@@ -247,11 +247,15 @@ These fixes are prerequisites for Phase 22 retraining and are already merged:
 ## Deferred Ideas
 
 - Phase 25 (Dashboard updates): retrain history visualization, model generation timeline, Sharpe trend charts
-- Obs space expansion (156→164 equity, 45→53 crypto) — requires retraining with new dims, separate phase
+- Obs space expansion for memory dims — PARTIALLY DONE: Phase 19.1 expanded equity 156→164, crypto 45→47 (4 per-asset fields + cash action dim). Any further memory-specific obs dims would need additional retraining
 - Per-algo retraining (only retrain the weakest algo) — considered but rejected for ensemble consistency
 - Rolling/one-algo-at-a-time retraining — too complex for initial implementation
 - Separate retrain container — rejected per REQUIREMENTS.md, subprocess isolation sufficient
 - Dynamic Docker resource limits during retrain — fragile, unnecessary with uncapped swingrl on 64GB homelab
+
+### Carryover from Phase 19.1 Consolidated Code Review
+- **MemoryClient connection pooling** (I17) — MemoryClient currently uses per-request urllib connections. Intentional fail-open design. Consider adding connection pooling if latency becomes an issue under retrain load.
+- **step_wait 4-tuple SB3 API dependency** (I18) — MemoryVecRewardWrapper.step_wait() returns 4-tuple (obs, rewards, dones, infos). SB3 may move to 5-tuple (adding truncated) in future versions. Add comment noting this dependency.
 
 </deferred>
 

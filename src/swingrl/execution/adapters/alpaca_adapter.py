@@ -96,25 +96,48 @@ class AlpacaAdapter:
         sized = order.order
         side = OrderSide.BUY if sized.side == "buy" else OrderSide.SELL
 
-        if sized.stop_loss_price is None or sized.take_profit_price is None:
-            log.error("bracket_order_missing_prices", symbol=sized.symbol)
-            raise BrokerError(
-                f"Bracket order requires stop_loss and take_profit prices for {sized.symbol}"
+        if sized.stop_loss_price is not None and sized.take_profit_price is not None:
+            # Bracket order with SL/TP legs
+            order_req = MarketOrderRequest(
+                symbol=sized.symbol,
+                notional=sized.dollar_amount,
+                side=side,
+                time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.BRACKET,
+                stop_loss=StopLossRequest(stop_price=sized.stop_loss_price),
+                take_profit=TakeProfitRequest(limit_price=sized.take_profit_price),
             )
-
-        order_req = MarketOrderRequest(
-            symbol=sized.symbol,
-            notional=sized.dollar_amount,
-            side=side,
-            time_in_force=TimeInForce.DAY,
-            order_class=OrderClass.BRACKET,
-            stop_loss=StopLossRequest(stop_price=sized.stop_loss_price),
-            take_profit=TakeProfitRequest(limit_price=sized.take_profit_price),
-        )
+        else:
+            # Simple market order (no SL/TP — agents manage risk via weights)
+            order_req = MarketOrderRequest(
+                symbol=sized.symbol,
+                notional=sized.dollar_amount,
+                side=side,
+                time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.SIMPLE,
+            )
 
         response = self._retry(
             lambda: self._client.submit_order(order_data=order_req),
         )
+
+        if response.filled_avg_price is None:
+            log.warning(
+                "order_not_immediately_filled",
+                order_id=str(response.id),
+                status=str(response.status),
+            )
+            return FillResult(
+                trade_id=str(response.id),
+                symbol=sized.symbol,
+                side=sized.side,
+                quantity=0.0,
+                fill_price=0.0,
+                commission=0.0,
+                slippage=0.0,
+                environment=sized.environment,
+                broker="alpaca",
+            )
 
         fill_price = float(response.filled_avg_price)
         quantity = float(response.filled_qty)

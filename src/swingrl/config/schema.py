@@ -22,6 +22,8 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from swingrl.utils.exceptions import ConfigError
+
 
 class YamlConfigSettingsSource(PydanticBaseSettingsSource):
     """Load settings from a YAML file. Returns empty dict if file does not exist."""
@@ -48,16 +50,18 @@ class EquityConfig(BaseModel):
     symbols: list[str] = Field(
         default_factory=lambda: ["SPY", "QQQ", "VTI", "XLV", "XLI", "XLE", "XLF", "XLK"]
     )
+    hmm_proxy_symbol: str = Field(default="SPY")
     max_position_size: float = Field(default=0.25, gt=0.0, le=1.0)
     max_drawdown_pct: float = Field(default=0.10, gt=0.0, lt=1.0)
     daily_loss_limit_pct: float = Field(default=0.02, gt=0.0, lt=1.0)
+    min_order_usd: float = Field(default=1.0, ge=1.0)  # Alpaca $1 floor for fractional shares
 
     @field_validator("symbols")
     @classmethod
     def symbols_not_empty(cls, v: list[str]) -> list[str]:
         """Validate equity symbols list is non-empty."""
         if not v:
-            raise ValueError("equity.symbols must not be empty")
+            raise ConfigError("equity.symbols must not be empty")
         return v
 
     @model_validator(mode="after")
@@ -69,9 +73,19 @@ class EquityConfig(BaseModel):
         single bad day could blow through the full drawdown gate — defeat in purpose.
         """
         if self.daily_loss_limit_pct >= self.max_drawdown_pct:
-            raise ValueError(
+            raise ConfigError(
                 f"equity.daily_loss_limit_pct ({self.daily_loss_limit_pct}) must be "
                 f"less than equity.max_drawdown_pct ({self.max_drawdown_pct})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def hmm_proxy_in_symbols(self) -> EquityConfig:
+        """hmm_proxy_symbol must be present in symbols list."""
+        if self.hmm_proxy_symbol not in self.symbols:
+            raise ConfigError(
+                f"equity.hmm_proxy_symbol '{self.hmm_proxy_symbol}' "
+                f"must be in equity.symbols {self.symbols}"
             )
         return self
 
@@ -80,6 +94,7 @@ class CryptoConfig(BaseModel):
     """Crypto environment configuration."""
 
     symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
+    hmm_proxy_symbol: str = Field(default="BTCUSDT")
     max_position_size: float = Field(default=0.50, gt=0.0, le=1.0)
     max_drawdown_pct: float = Field(default=0.12, gt=0.0, lt=1.0)
     daily_loss_limit_pct: float = Field(default=0.03, gt=0.0, lt=1.0)
@@ -90,16 +105,26 @@ class CryptoConfig(BaseModel):
     def symbols_not_empty(cls, v: list[str]) -> list[str]:
         """Validate crypto symbols list is non-empty."""
         if not v:
-            raise ValueError("crypto.symbols must not be empty")
+            raise ConfigError("crypto.symbols must not be empty")
         return v
 
     @model_validator(mode="after")
     def daily_loss_below_drawdown(self) -> CryptoConfig:
         """daily_loss_limit_pct must be less than max_drawdown_pct (same logic as equity)."""
         if self.daily_loss_limit_pct >= self.max_drawdown_pct:
-            raise ValueError(
+            raise ConfigError(
                 f"crypto.daily_loss_limit_pct ({self.daily_loss_limit_pct}) must be "
                 f"less than crypto.max_drawdown_pct ({self.max_drawdown_pct})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def hmm_proxy_in_symbols(self) -> CryptoConfig:
+        """hmm_proxy_symbol must be present in symbols list."""
+        if self.hmm_proxy_symbol not in self.symbols:
+            raise ConfigError(
+                f"crypto.hmm_proxy_symbol '{self.hmm_proxy_symbol}' "
+                f"must be in crypto.symbols {self.symbols}"
             )
         return self
 
@@ -318,9 +343,37 @@ class MemoryAgentConfig(BaseModel):
     consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
 
 
+class HyperparamBoundsConfig(BaseModel):
+    """Hyperparameter bounds for LLM-suggested training config clamping."""
+
+    learning_rate: tuple[float, float] = (1e-5, 1e-3)
+    entropy_coeff: tuple[float, float] = (0.0, 0.05)
+    clip_range: tuple[float, float] = (0.1, 0.4)
+    n_epochs: tuple[int, int] = (3, 20)
+    batch_size: tuple[int, int] = (32, 512)
+    gamma: tuple[float, float] = (0.90, 0.9999)
+
+
+class RewardBoundsConfig(BaseModel):
+    """Reward weight bounds for LLM-suggested reward weight clamping."""
+
+    profit: tuple[float, float] = (0.10, 0.70)
+    sharpe: tuple[float, float] = (0.10, 0.60)
+    drawdown: tuple[float, float] = (0.05, 0.50)
+    turnover: tuple[float, float] = (0.00, 0.20)
+
+
+class TrainingBoundsConfig(BaseModel):
+    """Combined bounds config for hyperparameters and reward weights."""
+
+    hyperparam_bounds: HyperparamBoundsConfig = Field(default_factory=HyperparamBoundsConfig)
+    reward_bounds: RewardBoundsConfig = Field(default_factory=RewardBoundsConfig)
+
+
 class TrainingConfig(BaseModel):
     """Training pipeline configuration."""
 
+    bounds: TrainingBoundsConfig = Field(default_factory=TrainingBoundsConfig)
     sac_buffer_size: int = Field(
         default=500_000,
         gt=0,

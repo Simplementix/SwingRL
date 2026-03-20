@@ -31,6 +31,7 @@ from swingrl.agents.metrics import (
     sortino_ratio,
 )
 from swingrl.agents.validation import GateResult, check_validation_gates, diagnose_overfitting
+from swingrl.utils.exceptions import DataError
 
 if TYPE_CHECKING:
     from swingrl.config.schema import SwingRLConfig
@@ -216,7 +217,7 @@ def generate_folds(
             f"min_train_bars={min_train_bars}, test_bars={test_bars}, "
             f"embargo_bars={embargo_bars}"
         )
-        raise ValueError(msg)
+        raise DataError(msg)
 
     log.info(
         "folds_generated",

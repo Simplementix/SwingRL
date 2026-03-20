@@ -61,5 +61,5 @@ def swingrl_retry(
         wait=wait_exponential(multiplier=1, min=min_wait, max=max_wait),
         retry=retry_if_exception_type(retryable_exceptions),
         before_sleep=_log_before_sleep,
-        reraise=False,
+        reraise=True,
     )

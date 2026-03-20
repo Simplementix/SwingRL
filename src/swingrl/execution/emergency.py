@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
+from zoneinfo import ZoneInfo
 
 import exchange_calendars as xcals
 import structlog
@@ -37,6 +38,7 @@ _CB_DRAWDOWN_TRIGGER = 0.13
 _VIX_TRIGGER = 40.0
 _NAN_INFERENCE_THRESHOLD = 2
 _IP_BAN_STATUS_CODE = 418
+_ET = ZoneInfo("America/New_York")
 
 
 def _create_alpaca_adapter(config: SwingRLConfig, alerter: Alerter | None = None) -> Any:
@@ -88,11 +90,10 @@ def _is_extended_hours() -> bool:
     Returns:
         True if within extended hours, False otherwise.
     """
-    now = datetime.now(UTC)
-    # Convert to ET hour (approximate: UTC-5 for EST, UTC-4 for EDT)
-    # Use exchange_calendars for precision, but for extended hours we do a quick check
-    et_hour = (now.hour - 5) % 24  # Approximate EST
-    return (4 <= et_hour < 9) or (16 <= et_hour < 20)
+    et_now = datetime.now(_ET)
+    pre_market = (4 <= et_now.hour < 9) or (et_now.hour == 9 and et_now.minute < 30)
+    after_hours = 16 <= et_now.hour < 20
+    return pre_market or after_hours
 
 
 def _get_equity_liquidation_strategy() -> EquityStrategy:
@@ -185,11 +186,21 @@ def _tier2_liquidate_crypto(
         positions = binance.get_positions()
         for pos in positions:
             try:
-                symbol = pos.get("symbol", pos.get("symbol", "UNKNOWN"))
+                symbol = pos.get("symbol", "UNKNOWN")
                 qty = float(pos.get("quantity", 0))
                 if qty > 0:
                     log.info("tier2_liquidating_crypto", symbol=symbol, quantity=qty)
-                    positions_closed += 1
+                    try:
+                        binance.emergency_sell(symbol, qty)
+                        positions_closed += 1
+                        log.info("tier2_crypto_sold", symbol=symbol, quantity=qty)
+                    except Exception:
+                        log.error(
+                            "tier2_crypto_sell_failed",
+                            symbol=symbol,
+                            quantity=qty,
+                            exc_info=True,
+                        )
             except Exception:
                 log.warning("tier2_crypto_position_error", exc_info=True)
 
@@ -226,17 +237,8 @@ def _tier3_liquidate_equity(
         return {"tier": 3, "success": True, "strategy": strategy}
 
     try:
-        if strategy == "limit_at_bid":
-            alpaca._client.close_all_positions(cancel_orders=True)
-            log.info("tier3_close_all_positions_submitted")
-        elif strategy == "limit_extended":
-            # Submit limit sells during extended hours
-            alpaca._client.close_all_positions(cancel_orders=True)
-            log.info("tier3_extended_hours_liquidation")
-        elif strategy == "queue_for_open":
-            # Queue orders with time_in_force='opg' (on-open)
-            alpaca._client.close_all_positions(cancel_orders=True)
-            log.info("tier3_queued_for_open")
+        alpaca._client.close_all_positions(cancel_orders=True)
+        log.info("tier3_equity_liquidation_submitted", strategy=strategy)
     except Exception:
         log.warning("tier3_equity_liquidation_failed", exc_info=True)
 

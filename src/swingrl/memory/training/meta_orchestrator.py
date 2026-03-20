@@ -237,10 +237,14 @@ class MetaTrainingOrchestrator:
             data = json.dumps(payload).encode("utf-8")
             timeout = self._meta_cfg.meta_training_timeout_sec
 
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if self._client.api_key:
+                headers["X-API-Key"] = self._client.api_key
+
             req = urllib.request.Request(
                 f"{self._meta_cfg.base_url}/training/run_config",
                 data=data,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310

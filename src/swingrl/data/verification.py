@@ -20,7 +20,7 @@ import dataclasses
 import json
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import structlog
@@ -28,16 +28,14 @@ import structlog
 from swingrl.config.schema import SwingRLConfig
 from swingrl.data.db import DatabaseManager
 from swingrl.data.fred import ALL_SERIES
+from swingrl.features.assembler import CRYPTO_OBS_DIM, EQUITY_OBS_DIM
 from swingrl.features.pipeline import FeaturePipeline
-
-if TYPE_CHECKING:
-    pass
 
 log = structlog.get_logger(__name__)
 
-# Observation vector expected dimensions
-_EQUITY_OBS_DIM: int = 156
-_CRYPTO_OBS_DIM: int = 45
+# Observation vector expected dimensions (from assembler — single source of truth)
+_EQUITY_OBS_DIM: int = EQUITY_OBS_DIM
+_CRYPTO_OBS_DIM: int = CRYPTO_OBS_DIM
 
 # Gap thresholds — gaps exceeding these are logged as remaining gaps.
 # Crypto: 24/7 market, 4H candles — 24h = 6 missing candles
@@ -345,9 +343,8 @@ def run_verification(config: SwingRLConfig) -> VerificationResult:
         equity_date_str = _latest_date(cursor, "equity")
         crypto_date_str = _latest_date(cursor, "crypto")
 
-        # Build pipeline using DuckDB connection
-        conn = db._get_duckdb_conn()  # noqa: SLF001
-        pipeline = FeaturePipeline(config, conn)
+        # Build pipeline using current DuckDB connection
+        pipeline = FeaturePipeline(config, cursor)
 
         checks.append(_check_obs_vector(pipeline, "equity", equity_date_str))
         checks.append(_check_obs_vector(pipeline, "crypto", crypto_date_str))

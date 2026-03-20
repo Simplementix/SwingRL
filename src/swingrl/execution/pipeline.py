@@ -1,8 +1,8 @@
-"""ExecutionPipeline: orchestrates the 5-stage trading middleware.
+"""ExecutionPipeline: orchestrates weight-based rebalancing trading middleware.
 
-Wires together model inference, ensemble blending, signal interpretation,
-position sizing, order validation, broker submission, and fill processing
-into a single execute_cycle() call.
+Wires together model inference, ensemble blending, process_actions (softmax +
+deadzone — same function used during training), order validation, broker
+submission, and fill processing into a single execute_cycle() call.
 
 Usage:
     from swingrl.execution.pipeline import ExecutionPipeline
@@ -19,14 +19,14 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import structlog
 
+from swingrl.envs.portfolio import process_actions
 from swingrl.execution.fill_processor import FillProcessor
 from swingrl.execution.order_validator import OrderValidator
-from swingrl.execution.position_sizer import PositionSizer
 from swingrl.execution.risk.circuit_breaker import CBState, CircuitBreaker, GlobalCircuitBreaker
 from swingrl.execution.risk.position_tracker import PositionTracker
 from swingrl.execution.risk.risk_manager import RiskManager
-from swingrl.execution.signal_interpreter import SignalInterpreter
-from swingrl.execution.types import FillResult
+from swingrl.execution.types import FillResult, SizedOrder
+from swingrl.features.health import FeatureHealthTracker
 from swingrl.utils.exceptions import CircuitBreakerError, RiskVetoError
 
 if TYPE_CHECKING:
@@ -42,14 +42,16 @@ _ALGO_NAMES: list[str] = ["ppo", "a2c", "sac"]
 
 
 class ExecutionPipeline:
-    """Orchestrates the full 5-stage execution middleware.
+    """Orchestrates weight-based rebalancing execution middleware.
 
-    Stages:
-        1. SignalInterpreter: blended actions -> TradeSignals
-        2. PositionSizer: TradeSignal -> SizedOrder (Kelly + ATR stops)
-        3. OrderValidator: SizedOrder -> ValidatedOrder (cost gate + risk)
-        4. ExchangeAdapter: ValidatedOrder -> FillResult (broker submission)
-        5. FillProcessor: FillResult -> DB recording + position update
+    Flow matches training environment:
+        1. Model inference: per-algo predictions with per-algo VecNormalize
+        2. Ensemble blending: weighted sum of per-algo actions
+        3. process_actions: softmax + deadzone (same function used in training)
+        4. Weight-based rebalancing: target_weight * portfolio_value -> delta orders
+        5. OrderValidator: SizedOrder -> ValidatedOrder (cost gate + risk)
+        6. ExchangeAdapter: ValidatedOrder -> FillResult (broker submission)
+        7. FillProcessor: FillResult -> DB recording + position update
     """
 
     def __init__(
@@ -75,15 +77,17 @@ class ExecutionPipeline:
         self._alerter = alerter
         self._models_dir = models_dir
 
+        # Feature health tracking for live inference
+        self._health_tracker = FeatureHealthTracker()
+
         # Lazy-initialized components
         self._models: dict[str, dict[str, tuple[Any, Any]]] = {}
+        self._adapters: dict[str, Any] = {}
         self._initialized = False
 
         # Eagerly create components that don't need lazy loading
         self._position_tracker = PositionTracker(db=db, config=config)
         self._fill_processor = FillProcessor(db=db)
-        self._signal_interpreter = SignalInterpreter(config=config)
-        self._position_sizer = PositionSizer(config=config)
 
         # Circuit breakers
         self._circuit_breakers: dict[str, CircuitBreaker] = {
@@ -105,6 +109,21 @@ class ExecutionPipeline:
 
         log.info("execution_pipeline_initialized", models_dir=str(models_dir))
 
+    @property
+    def config(self) -> SwingRLConfig:
+        """Public accessor for the pipeline config."""
+        return self._config
+
+    @property
+    def feature_pipeline(self) -> FeaturePipeline:
+        """Public accessor for the feature pipeline."""
+        return self._feature_pipeline
+
+    @property
+    def db(self) -> DatabaseManager:
+        """Public accessor for the database manager."""
+        return self._db
+
     def execute_cycle(
         self,
         env_name: str,
@@ -112,9 +131,13 @@ class ExecutionPipeline:
     ) -> list[FillResult]:
         """Run a full trading cycle for the given environment.
 
+        Uses weight-based rebalancing that mirrors the training environment:
+        model output -> process_actions (softmax + deadzone) -> target weights ->
+        delta orders via broker.
+
         Args:
             env_name: Environment name ("equity" or "crypto").
-            dry_run: If True, skip broker submission (stages 4-5).
+            dry_run: If True, skip broker submission.
 
         Returns:
             List of FillResult for successful fills. Empty on CB halt or turbulence.
@@ -139,7 +162,23 @@ class ExecutionPipeline:
         env_literal: Literal["equity", "crypto"] = "equity" if env_name == "equity" else "crypto"
         observation = self._feature_pipeline.get_observation(env_literal, current_date_str)
 
-        # Step 3b: Track NaN observations in inference_outcomes table
+        # Step 3b: Check feature health — block trading on degraded features
+        obs_health = self._health_tracker.assess(env_name)
+        if obs_health.should_block:
+            log.error(
+                "trading_blocked_degraded_features",
+                env=env_name,
+                reason=obs_health.reason,
+            )
+            if self._alerter:
+                self._alerter.send_alert(
+                    level="warning",
+                    title="Trading Blocked",
+                    message=f"Trading blocked for {env_name}: {obs_health.reason}",
+                )
+            return []
+
+        # Step 3c: Track NaN observations in inference_outcomes table
         had_nan = bool(np.isnan(observation).any())
         try:
             with self._db.sqlite() as conn:
@@ -158,14 +197,15 @@ class ExecutionPipeline:
         # Step 4: Get portfolio state (used by ObservationAssembler in future)
         _portfolio_state = self._position_tracker.get_portfolio_state_array(env_name)
 
-        # Step 5: Normalize observation via VecNormalize
-        obs = self._normalize_observation(env_name, observation)
-
-        # Step 6: Load models and run predict
+        # Step 5: Load models first (needed for VecNormalize lookup)
         models = self._load_models(env_name)
+
+        # Step 6: Per-algo VecNormalize observations
+        normalized_obs = self._normalize_observation(env_name, observation)
         actions: dict[str, np.ndarray] = {}
         for algo_name, (model, _vec_norm) in models.items():
-            action, _ = model.predict(obs, deterministic=True)
+            algo_obs = normalized_obs.get(algo_name, observation)
+            action, _ = model.predict(algo_obs, deterministic=True)
             actions[algo_name] = action
             log.debug("model_predicted", env=env_name, algo=algo_name)
 
@@ -177,62 +217,79 @@ class ExecutionPipeline:
         blender = EnsembleBlender(self._config)
         blended_actions = blender.blend_actions(actions, weights)
 
-        # Step 8: Get current asset weights
+        # Step 8: Weight-based rebalancing (mirrors training env)
         current_weights = self._get_current_weights(env_name)
-
-        # Step 9: Stage 1 - Signal interpretation
-        signals = self._signal_interpreter.interpret(env_name, blended_actions, current_weights)
+        deadzone = self._config.environment.signal_deadzone
+        target_weights = process_actions(blended_actions, current_weights, deadzone=deadzone)
 
         log.info(
-            "signals_generated",
+            "target_weights_computed",
             env=env_name,
-            signal_count=len(signals),
+            target_weights=target_weights.tolist(),
+            current_weights=current_weights.tolist(),
         )
 
-        # Step 10: Process each signal through stages 2-5
+        # Step 9: Generate rebalancing orders from weight deltas
+        symbols = (
+            self._config.equity.symbols if env_name == "equity" else self._config.crypto.symbols
+        )
         fills: list[FillResult] = []
         adapter = self._get_adapter(env_name)
         portfolio_value = self._position_tracker.get_portfolio_value(env_name)
 
-        for signal in signals:
-            if signal.action == "hold":
+        if portfolio_value <= 0:
+            log.error("zero_portfolio_value", env=env_name, value=portfolio_value)
+            return []
+
+        # Minimum order value: use crypto min_order_usd or $5 for equity
+        min_order_value = self._config.crypto.min_order_usd if env_name == "crypto" else 5.0
+
+        for i, symbol in enumerate(symbols):
+            target_value = float(target_weights[i]) * portfolio_value
+            current_value = float(current_weights[i]) * portfolio_value
+            delta_value = target_value - current_value
+
+            if abs(delta_value) < min_order_value:
                 continue
 
+            side: Literal["buy", "sell"] = "buy" if delta_value > 0 else "sell"
+
             try:
-                # Get current price
-                current_price = adapter.get_current_price(signal.symbol)
-
-                # Get ATR value
-                atr_value = self._get_latest_atr(env_name, signal.symbol)
-
-                # Stage 2: Position sizing
-                sized_order = self._position_sizer.size(
-                    signal, current_price, atr_value, portfolio_value
-                )
-                if sized_order is None:
-                    log.info("signal_skipped_kelly", symbol=signal.symbol)
+                current_price = adapter.get_current_price(symbol)
+                if current_price <= 0:
+                    log.warning("zero_price_skip", symbol=symbol)
                     continue
 
-                # Stage 3: Order validation
+                quantity = abs(delta_value) / current_price
+
+                sized_order = SizedOrder(
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    dollar_amount=abs(delta_value),
+                    stop_loss_price=None,
+                    take_profit_price=None,
+                    environment=env_literal,
+                )
+
+                # Risk validation (guardrail)
                 validated_order = self._order_validator.validate(sized_order)
 
-                # Dry-run: log but skip stages 4-5
+                # Dry-run: log but skip broker submission
                 if dry_run:
                     log.info(
                         "dry_run_would_submit",
-                        symbol=sized_order.symbol,
-                        side=sized_order.side,
-                        dollar_amount=sized_order.dollar_amount,
-                        quantity=sized_order.quantity,
-                        stop_loss=sized_order.stop_loss_price,
-                        take_profit=sized_order.take_profit_price,
+                        symbol=symbol,
+                        side=side,
+                        dollar_amount=abs(delta_value),
+                        quantity=quantity,
                     )
                     continue
 
-                # Stage 4: Broker submission
+                # Broker submission
                 fill = adapter.submit_order(validated_order)
 
-                # Stage 5: Fill processing
+                # Fill processing
                 self._fill_processor.process(fill, sized_order=sized_order)
 
                 fills.append(fill)
@@ -247,8 +304,8 @@ class ExecutionPipeline:
 
             except RiskVetoError as exc:
                 log.warning(
-                    "signal_vetoed",
-                    symbol=signal.symbol,
+                    "order_vetoed",
+                    symbol=symbol,
                     reason=str(exc),
                 )
                 continue
@@ -256,19 +313,19 @@ class ExecutionPipeline:
             except CircuitBreakerError as exc:
                 log.error(
                     "circuit_breaker_during_cycle",
-                    symbol=signal.symbol,
+                    symbol=symbol,
                     reason=str(exc),
                 )
                 break
 
             except Exception:
                 log.exception(
-                    "signal_processing_failed",
-                    symbol=signal.symbol,
+                    "order_processing_failed",
+                    symbol=symbol,
                 )
                 continue
 
-        # Step 11: Record portfolio snapshot
+        # Step 10: Record portfolio snapshot
         if fills:
             new_portfolio_value = self._position_tracker.get_portfolio_value(env_name)
             daily_pnl = self._position_tracker.get_daily_pnl(env_name)
@@ -319,8 +376,20 @@ class ExecutionPipeline:
 
             vec_norm = None
             if vec_path.exists():
-                # Create a dummy env for VecNormalize loading
-                dummy_env = DummyVecEnv([lambda: None])  # type: ignore[arg-type,return-value,list-item]
+                # Build a minimal stub env with correct spaces from the loaded model
+                obs_space = model.observation_space
+                act_space = model.action_space
+
+                def _make_stub_env(_obs: Any = obs_space, _act: Any = act_space) -> Any:
+                    """Return a minimal gymnasium env stub for VecNormalize loading."""
+                    import gymnasium  # noqa: PLC0415
+
+                    env: Any = gymnasium.Env()  # type: ignore[abstract]
+                    env.observation_space = _obs
+                    env.action_space = _act
+                    return env
+
+                dummy_env = DummyVecEnv([_make_stub_env])
                 vec_norm = VecNormalize.load(str(vec_path), venv=dummy_env)
                 vec_norm.training = False
                 vec_norm.norm_reward = False
@@ -370,7 +439,7 @@ class ExecutionPipeline:
         return dict.fromkeys(_ALGO_NAMES, 1.0 / 3)
 
     def _get_adapter(self, env_name: str) -> Any:
-        """Get the exchange adapter for the environment.
+        """Get the exchange adapter for the environment (cached).
 
         Args:
             env_name: Environment name.
@@ -378,36 +447,49 @@ class ExecutionPipeline:
         Returns:
             ExchangeAdapter instance.
         """
-        if env_name == "equity":
-            from swingrl.execution.adapters.alpaca_adapter import AlpacaAdapter
+        if env_name not in self._adapters:
+            if env_name == "equity":
+                from swingrl.execution.adapters.alpaca_adapter import AlpacaAdapter
 
-            return AlpacaAdapter(config=self._config, alerter=self._alerter)
+                self._adapters[env_name] = AlpacaAdapter(config=self._config, alerter=self._alerter)
+            else:
+                from swingrl.execution.adapters.binance_sim import BinanceSimAdapter
 
-        from swingrl.execution.adapters.binance_sim import BinanceSimAdapter
+                self._adapters[env_name] = BinanceSimAdapter(
+                    config=self._config, db=self._db, alerter=self._alerter
+                )
+        return self._adapters[env_name]
 
-        return BinanceSimAdapter(config=self._config, db=self._db, alerter=self._alerter)
+    def _normalize_observation(
+        self, env_name: str, observation: np.ndarray
+    ) -> dict[str, np.ndarray]:
+        """Return per-algo normalized observations via each algo's VecNormalize.
 
-    def _normalize_observation(self, env_name: str, observation: np.ndarray) -> np.ndarray:
-        """Normalize observation via VecNormalize if available.
+        Each algorithm trains with its own VecNormalize statistics. Using PPO's
+        normalization for A2C/SAC produces out-of-distribution inputs. This method
+        returns a dict so each algo receives correctly normalized observations.
 
         Args:
             env_name: Environment name.
             observation: Raw observation array.
 
         Returns:
-            Normalized observation array.
+            Dict mapping algo name to its normalized observation array.
         """
-        # If models are loaded and have vec_normalize, use first available
+        result: dict[str, np.ndarray] = {}
+
         if env_name in self._models:
-            for _algo, (_, vec_norm) in self._models[env_name].items():
+            for algo_name, (_, vec_norm) in self._models[env_name].items():
                 if vec_norm is not None:
                     try:
-                        return vec_norm.normalize_obs(observation)  # type: ignore[no-any-return]
+                        result[algo_name] = vec_norm.normalize_obs(observation)
                     except Exception:
-                        log.warning("vec_normalize_failed", env=env_name)
-                        break
+                        log.warning("vec_normalize_failed", env=env_name, algo=algo_name)
+                        result[algo_name] = observation
+                else:
+                    result[algo_name] = observation
 
-        return observation
+        return result
 
     def _check_turbulence(self, env_name: str) -> bool:
         """Check turbulence for crash protection (PAPER-20).
@@ -421,10 +503,7 @@ class ExecutionPipeline:
         try:
             # Get current turbulence from feature pipeline
             current_date_str = self._get_current_date_str(env_name)
-            if env_name == "equity":
-                turbulence = self._feature_pipeline._compute_turbulence_equity(current_date_str)
-            else:
-                turbulence = self._feature_pipeline._compute_turbulence_crypto(current_date_str)
+            turbulence = self._feature_pipeline.compute_turbulence(env_name, current_date_str)
 
             # Get historical 90th percentile from DuckDB
             historical_90th = self._get_turbulence_90th_pct(env_name)
@@ -449,7 +528,7 @@ class ExecutionPipeline:
         try:
             with self._db.duckdb() as conn:
                 row = conn.execute(
-                    f"SELECT QUANTILE(atr_14_pct, 0.9) as p90 FROM {table}",  # nosec B608
+                    f"SELECT QUANTILE(turbulence, 0.9) as p90 FROM {table}",  # nosec B608
                 ).fetchone()
                 if row and row[0] is not None:
                     return float(row[0])
@@ -481,33 +560,6 @@ class ExecutionPipeline:
                 weights[i] = abs(pos["quantity"] * (pos["last_price"] or 0.0)) / portfolio_value
 
         return weights
-
-    def _get_latest_atr(self, env_name: str, symbol: str) -> float:
-        """Get latest ATR value for a symbol from DuckDB features.
-
-        Args:
-            env_name: Environment name.
-            symbol: Ticker symbol.
-
-        Returns:
-            ATR value, or a default fallback.
-        """
-        table = "features_equity" if env_name == "equity" else "features_crypto"
-        date_col = "date" if env_name == "equity" else "datetime"
-        try:
-            with self._db.duckdb() as conn:
-                row = conn.execute(
-                    f"SELECT atr_14_pct FROM {table} "  # nosec B608
-                    f"WHERE symbol = ? ORDER BY {date_col} DESC LIMIT 1",  # nosec B608
-                    [symbol],
-                ).fetchone()
-                if row and row[0] is not None:
-                    return float(row[0])
-        except Exception:
-            log.warning("atr_query_failed", env=env_name, symbol=symbol)
-
-        # Default fallback: 2% of price as ATR estimate
-        return 0.02
 
     def _get_current_date_str(self, env_name: str) -> str:
         """Get current date string for the environment.

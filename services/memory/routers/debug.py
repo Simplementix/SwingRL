@@ -13,7 +13,7 @@ import structlog
 from auth import verify_api_key
 from fastapi import APIRouter, Depends, Query
 
-from db import get_consolidations, get_memories
+from db import get_consolidations_async, get_memories_async
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
@@ -33,7 +33,7 @@ async def list_memories(
 
     Requires X-API-Key header.
     """
-    rows = get_memories(source=source, limit=limit, since=since, archived=False)
+    rows = await get_memories_async(source=source, limit=limit, since=since, archived=False)
     log.info("debug_memories_listed", count=len(rows), source=source)
     return rows
 
@@ -47,6 +47,6 @@ async def list_consolidations(
 
     Requires X-API-Key header.
     """
-    rows = get_consolidations(limit=limit)
+    rows = await get_consolidations_async(limit=limit)
     log.info("debug_consolidations_listed", count=len(rows))
     return rows

@@ -11,7 +11,7 @@ class SwingRLError(Exception):
     """Base class for all SwingRL application errors."""
 
 
-class ConfigError(SwingRLError):
+class ConfigError(SwingRLError, ValueError):
     """Config file missing, unreadable, or fails Pydantic validation."""
 
 

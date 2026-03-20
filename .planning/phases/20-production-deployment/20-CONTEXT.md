@@ -40,7 +40,7 @@ Deploy the homelab Docker stack with paper trading firing on schedule (equity 4:
 ### Memory Live Enrichment
 - **Included in Phase 20** (not deferred) — memories are seeded from training, so no cold start concern
 - **All endpoints enabled immediately** — seeded memories provide warm start context
-- **No obs space expansion** — RL agents stay at 156 equity / 45 crypto dims, unaware of memory
+- **No obs space expansion** — RL agents stay at 164 equity / 47 crypto dims (updated in Phase 19.1), unaware of memory
 - Memory agent controls the **execution pipeline from the outside**: cycle gate, blend weights, risk thresholds, position advice, trade veto, post-trade ingest
 - **Integration point:** hooks inside `ExecutionPipeline.execute_cycle()` — both scheduler and manual `run_cycle.py` get memory automatically
 - **Per-endpoint config toggles:** `memory_agent.live_endpoints.{cycle_gate, blend_weights, risk_thresholds, position_advice, trade_veto}` — all default to `true` when `memory_agent.enabled=true`
@@ -53,6 +53,13 @@ Deploy the homelab Docker stack with paper trading firing on schedule (equity 4:
 - **Dedicated system prompts per endpoint** — each prompt tailored to that decision's domain. Apply same research-backed techniques as consolidation (LLM-PROMPT-RESEARCH.md): role definition, grounding rule, paired constraints, no CoT.
 - **Schema enforcement via Ollama `format` param** — live endpoints define response schemas passed to Ollama. Client-side JSON validation always, fallback to safe defaults on parse failure.
 - **HTTP client: stdlib urllib** (consistent with existing MemoryClient in `src/swingrl/memory/client.py`, no new dependency)
+
+### MemoryClient Consolidation (REQUIREMENT from 19.1 review)
+- Epoch callback (`epoch_callback.py`) and meta-orchestrator (`meta_orchestrator.py`) currently bypass `MemoryClient` — they access private `_base_url` / `_api_key` attrs and build raw `urllib` requests with `# noqa: SLF001` suppressions
+- **Add `epoch_advice()` and `query_run_config()` methods to MemoryClient** alongside the 5 new `/live/*` endpoint methods
+- Callback calls `self._client.epoch_advice(payload)`, meta-orchestrator calls `self._client.query_run_config(payload)` — no more private attr access or duplicated HTTP logic
+- Remove `_memory_base_url` / `_memory_api_key` cached copies from epoch callback init
+- Remove `# noqa: SLF001` suppressions from both files
 
 ### Post-Trade Memory Ingestion (UPDATED)
 - **6 memories per cycle** (5 per-endpoint + 1 cycle summary)
@@ -156,6 +163,31 @@ Deploy the homelab Docker stack with paper trading firing on schedule (equity 4:
 - After **3 consecutive failures**: fire Discord warning (if configured) + structlog error
 - No auto-retry within same cycle — wait for next scheduled fire
 
+### Price Deviation Gate (HARD REQUIREMENT from 19.1 review)
+- Before submitting any order, compare real-time price (`adapter.get_current_price()`) to observation price (last bar close from features)
+- If `abs(current - observation) / observation` exceeds threshold, **skip the trade** or halve position size
+- Thresholds: **5% for equity** (covers overnight gaps from earnings/macro), **10% for crypto** (covers flash crashes during 4H bar)
+- Config-driven: `environment.equity_price_deviation_gate` and `environment.crypto_price_deviation_gate`
+- Log warning with both prices and deviation when gate triggers
+
+### Shadow Fill Realism (REQUIREMENT from 19.1 review)
+- Shadow runner currently uses zero slippage, zero commission, and hardcoded $100/$50K fallback prices — produces unrealistically optimistic shadow evaluation
+- Add slippage estimates: **5 bps for equity**, **10 bps slippage + 10 bps commission for crypto** (matching Binance.US 0.10% maker/taker)
+- Remove hardcoded fallback prices — if DuckDB price lookup fails, **skip the shadow trade** for that symbol and log a warning (a trade sized at $100 when actual price is $542 corrupts shadow metrics)
+- Log warning whenever a fallback or skip occurs
+
+### Training Execution Timing (REQUIREMENT from 19.1 review)
+- Training env currently executes at same-bar close price (industry-wide shortcut used by FinRL and most RL frameworks) — introduces mild look-ahead bias since you cannot know the close price until the bar is complete
+- Correct pattern: decide at bar `t` close, execute at bar `t+1` open, evaluate at `t+1` close
+- The bias is partially offset because the reward already reflects next-bar price movement, but the execution price itself is optimistic
+- **Action:** Shift training env to use next-bar open price for execution. This changes `PortfolioSimulator.rebalance()` to take `execution_prices` (bar t+1 open) separately from `evaluation_prices` (bar t+1 close). Retraining required afterward (already needed for bars_since_trade normalization change).
+
+### Emergency Stop — Crypto Liquidation (HARD REQUIREMENT from 19.1 review)
+- `execution/emergency.py` `_tier2_liquidate_crypto()` is a **stub** — logs positions but never submits sell orders
+- **Must implement real crypto liquidation** before live trading: iterate crypto positions, submit market-sell via Binance adapter
+- Equity tier2 already works via Alpaca `close_all_positions()` API
+- Depends on Binance adapter being wired for real order submission (BinanceSimAdapter currently simulates fills)
+
 ### Status File
 - Write `status/status.json` after each cycle: last_cycle_time, positions, memory_health, scheduler_state, next_fire_times
 - Mounted via `./status:/app/status` bind mount (already in docker-compose.prod.yml)
@@ -219,9 +251,9 @@ Deploy the homelab Docker stack with paper trading firing on schedule (equity 4:
 - Schema enforcement: Ollama `format` param for JSON schema, client-side validation always
 
 ### Integration Points
-- `ExecutionPipeline.execute_cycle()` — where memory hooks integrate (5 live endpoint calls + post-cycle ingestion)
-- `CircuitBreaker.__init__()` → `_max_dd`, `_daily_limit` — save/restore targets for memory overrides
-- `EnsembleBlender.sharpe_softmax_weights()` — blend weight adjustment target
+- `ExecutionPipeline.execute_cycle()` — where memory hooks integrate (5 live endpoint calls + post-cycle ingestion). NOTE: Phase 19.1 replaced Kelly/signal pipeline with weight-based rebalancing via `process_actions()`. Pipeline now uses `FeatureHealthTracker` to block trading on degraded features.
+- `CircuitBreaker.__init__()` → `_max_dd`, `_daily_limit` — save/restore targets for memory overrides. NOTE: `GlobalCircuitBreaker` now uses high-water mark (not initial capital) for drawdown.
+- `EnsembleBlender.sharpe_softmax_weights()` — blend weight adjustment target. NOTE: Dead turbulence/window code removed in 19.1; only `sharpe_softmax_weights()` and `blend_actions()` remain.
 - `scripts/main.py` `build_app()` → add startup_checks, memory thread startup
 - `docker-compose.prod.yml` → verify bind mounts, add any new env vars
 - `pyproject.toml` → add missing deps (SQLAlchemy, verify requests)
@@ -248,7 +280,7 @@ Deploy the homelab Docker stack with paper trading firing on schedule (equity 4:
 <deferred>
 ## Deferred Ideas
 
-- Obs space expansion (memory dims 156→164, 45→53) — requires retraining, defer to Phase 22 or later
+- Obs space expansion for memory dims — PARTIALLY DONE: Phase 19.1 expanded equity 156→164, crypto 45→47 (4 per-asset fields + cash action). Further expansion for memory-specific features deferred to Phase 22+
 - Memory dashboard tab in Streamlit — deferred from Phase 19 context, DuckDB table ready for it
 - Progressive ramp-up of live endpoints — decided against (all enabled immediately with seeded memories)
 - Inbox file watcher for memory ingestion — deferred from Phase 19
@@ -257,6 +289,18 @@ Deploy the homelab Docker stack with paper trading firing on schedule (equity 4:
 - `live_confirmed` flag on consolidation patterns — add if needed after observing real pattern quality
 - Cloud API fallback for live endpoints — Ollama-only with fail-open is sufficient for paper trading
 - R5 embedding-based retrieval — reassess at 500+ patterns (months away per growth projection)
+
+### Carryover from Phase 19.1 Consolidated Code Review
+- **PositionSizer removal** — dead code after weight-based rebalancing (prev fix #35). Remove entirely during Phase 20 cleanup.
+- **Data pipeline overhaul** — Tiingo, raw prices, gap-fill unification (prev fix #25). Dependencies may affect production deployment; scope as Phase 23+ work.
+- **BinanceAdapter for live crypto orders** — BinanceSimAdapter currently simulates fills. Must build real `BinanceAdapter` with order submission for live trading. `emergency_sell()` method added to sim adapter but live equivalent needed.
+- **Test coverage gaps** — integration tests, edge cases, untested modules identified in code review. Address as pre-Phase 20 work.
+
+### Carryover from Phase 19.1 Code Review (POST-FIX-REVIEW.md)
+- **`bars_since_trade` vs `days_since_trade` semantic mismatch** — Training env counts bars (steps), live PositionTracker counts calendar days. For 4H crypto, 1 bar ≠ 1 day. Functionally fine for equity (1 bar = 1 day) but imprecise for crypto. Document or align during live pipeline prep.
+- **Emergency `_tier2_liquidate_crypto` is a stub** — `execution/emergency.py:186-194` logs crypto positions but never submits sell orders. Must implement real liquidation before live trading.
+- **`verification.py` and `deploy_model.sh` hardcode obs dims** — `data/verification.py:39-40` and `scripts/deploy_model.sh:23-24` hardcode 164/47 instead of importing from `assembler.py`. Update to use assembler constants or runtime query.
+- **Shadow promoter compares different return types** — Active model uses period returns (portfolio snapshots), shadow uses trade-pair returns. Annualized Sharpe comparison is approximate. Acceptable for promotion decisions but document the limitation.
 
 </deferred>
 

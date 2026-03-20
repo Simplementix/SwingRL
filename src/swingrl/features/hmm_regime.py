@@ -21,6 +21,7 @@ import structlog
 from hmmlearn.hmm import GaussianHMM
 
 from swingrl.config.schema import SwingRLConfig
+from swingrl.utils.exceptions import ModelError
 
 log = structlog.get_logger(__name__)
 
@@ -119,7 +120,7 @@ class HMMRegimeDetector:
         if best_model is None:
             msg = f"All {self.n_inits} HMM initializations failed"
             log.error("hmm_all_inits_failed", environment=self.environment)
-            raise ValueError(msg)
+            raise ModelError(msg)
 
         best_model = self._ensure_label_order(best_model)
         self._model = best_model
@@ -224,7 +225,7 @@ class HMMRegimeDetector:
         """
         if self._model is None:
             msg = "Cannot warm-start without a previously fitted model"
-            raise ValueError(msg)
+            raise ModelError(msg)
 
         data = self.compute_hmm_inputs(close)
         prev = self._model
@@ -283,7 +284,7 @@ class HMMRegimeDetector:
         """
         if self._model is None:
             msg = "No fitted model — call initial_fit() or cold_start_fit() first"
-            raise ValueError(msg)
+            raise ModelError(msg)
 
         data = self.compute_hmm_inputs(close)
         result: np.ndarray = self._model.predict_proba(data)

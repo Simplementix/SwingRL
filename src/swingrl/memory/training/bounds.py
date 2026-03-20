@@ -3,7 +3,8 @@
 All LLM-suggested hyperparameters and reward weights must pass through this
 module before reaching the trainer. This is a non-negotiable safety layer.
 
-Constants match the spec in memory_meta_trainer.md Section 1.
+Bounds are read from SwingRLConfig.training.bounds (config/swingrl.yaml).
+Hardcoded fallbacks match the spec in memory_meta_trainer.md Section 1.
 The ollama_smart_model is qwen2.5:3b (sole local model; consolidation uses NVIDIA kimi-k2.5 cloud).
 
 Usage:
@@ -19,27 +20,64 @@ from typing import Any
 
 import structlog
 
+from swingrl.config.schema import load_config
+
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Bound definitions
+# Bound definitions (loaded from config, with hardcoded fallbacks)
 # ---------------------------------------------------------------------------
 
-HYPERPARAM_BOUNDS: dict[str, tuple[Any, Any]] = {
+_FALLBACK_HYPERPARAM_BOUNDS: dict[str, tuple[Any, Any]] = {
     "learning_rate": (1e-5, 1e-3),
     "entropy_coeff": (0.0, 0.05),
     "clip_range": (0.1, 0.4),
     "n_epochs": (3, 20),
-    "batch_size": (32, 512),  # also forced to power of 2
+    "batch_size": (32, 512),
     "gamma": (0.90, 0.9999),
 }
 
-REWARD_BOUNDS: dict[str, tuple[float, float]] = {
+_FALLBACK_REWARD_BOUNDS: dict[str, tuple[float, float]] = {
     "profit": (0.10, 0.70),
     "sharpe": (0.10, 0.60),
     "drawdown": (0.05, 0.50),
     "turnover": (0.00, 0.20),
 }
+
+
+def _load_bounds() -> tuple[dict[str, tuple[Any, Any]], dict[str, tuple[float, float]]]:
+    """Load bounds from config YAML, falling back to hardcoded defaults.
+
+    Returns:
+        Tuple of (hyperparam_bounds, reward_bounds) dicts.
+    """
+    try:
+        cfg = load_config()
+        hb = cfg.training.bounds.hyperparam_bounds
+        rb = cfg.training.bounds.reward_bounds
+        hyperparam_bounds: dict[str, tuple[Any, Any]] = {
+            "learning_rate": (hb.learning_rate[0], hb.learning_rate[1]),
+            "entropy_coeff": (hb.entropy_coeff[0], hb.entropy_coeff[1]),
+            "clip_range": (hb.clip_range[0], hb.clip_range[1]),
+            "n_epochs": (hb.n_epochs[0], hb.n_epochs[1]),
+            "batch_size": (hb.batch_size[0], hb.batch_size[1]),
+            "gamma": (hb.gamma[0], hb.gamma[1]),
+        }
+        reward_bounds: dict[str, tuple[float, float]] = {
+            "profit": (rb.profit[0], rb.profit[1]),
+            "sharpe": (rb.sharpe[0], rb.sharpe[1]),
+            "drawdown": (rb.drawdown[0], rb.drawdown[1]),
+            "turnover": (rb.turnover[0], rb.turnover[1]),
+        }
+        return hyperparam_bounds, reward_bounds
+    except Exception as exc:
+        log.warning("bounds_config_load_failed", error=str(exc), fallback="hardcoded")
+        return dict(_FALLBACK_HYPERPARAM_BOUNDS), dict(_FALLBACK_REWARD_BOUNDS)
+
+
+HYPERPARAM_BOUNDS: dict[str, tuple[Any, Any]]
+REWARD_BOUNDS: dict[str, tuple[float, float]]
+HYPERPARAM_BOUNDS, REWARD_BOUNDS = _load_bounds()
 
 MIN_EPOCHS_BEFORE_STOP: int = 10  # hard floor — never lower
 MAX_EPOCHS: int = 200
@@ -79,7 +117,7 @@ def clamp_run_config(config: dict[str, Any]) -> dict[str, Any]:
     - Unknown keys are passed through unchanged
 
     Args:
-        config: Dict of hyperparameter name → value from LLM suggestion.
+        config: Dict of hyperparameter name -> value from LLM suggestion.
 
     Returns:
         New dict with all known hyperparameters clamped.
@@ -124,7 +162,7 @@ def clamp_reward_weights(weights: dict[str, Any]) -> dict[str, float]:
     are returned (uniform midpoints normalized to 1.0).
 
     Args:
-        weights: Dict of reward component name → weight from LLM suggestion.
+        weights: Dict of reward component name -> weight from LLM suggestion.
 
     Returns:
         New dict with clamped and renormalized reward weights (sum == 1.0).

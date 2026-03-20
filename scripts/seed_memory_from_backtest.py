@@ -259,12 +259,13 @@ def _format_fill_text(fill: dict[str, Any], dominant_regime: str, regime_conf: f
 # ---------------------------------------------------------------------------
 
 
-def seed(config_path: str, memory_url: str) -> int:
+def seed(config_path: str, memory_url: str, api_key: str = "") -> int:
     """Seed memory agent with backtest fill records.
 
     Args:
         config_path: Path to config YAML file.
         memory_url: Memory agent base URL.
+        api_key: API key for memory agent authentication.
 
     Returns:
         Exit code (0 = success or no fills, 1 = error).
@@ -310,7 +311,7 @@ def seed(config_path: str, memory_url: str) -> int:
         )
 
     # ── Ingest fills via MemoryClient ─────────────────────────────────────────
-    client = MemoryClient(base_url=memory_url)
+    client = MemoryClient(base_url=memory_url, api_key=api_key)
     ingested = 0
     failed = 0
 
@@ -402,6 +403,12 @@ Examples:
         default="http://localhost:8889",
         help="Memory agent base URL (default: http://localhost:8889).",
     )
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default="",
+        help="API key for memory agent authentication (default: empty, no auth).",
+    )
     return parser
 
 
@@ -416,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = build_parser()
     args = parser.parse_args(argv)
-    return seed(args.config, args.memory_url)
+    return seed(args.config, args.memory_url, api_key=args.api_key)
 
 
 if __name__ == "__main__":

@@ -40,14 +40,14 @@ import structlog
 import yaml
 
 from db import (
-    archive_memories,
-    get_active_consolidations,
-    get_memories_by_source_prefix,
-    increment_confirmation,
-    insert_consolidation,
-    insert_consolidation_sources,
-    log_consolidation_quality,
-    update_consolidation_status,
+    archive_memories_async,
+    get_active_consolidations_async,
+    get_memories_by_source_prefix_async,
+    increment_confirmation_async,
+    insert_consolidation_async,
+    insert_consolidation_sources_async,
+    log_consolidation_quality_async,
+    update_consolidation_status_async,
 )
 
 log = structlog.get_logger(__name__)
@@ -101,6 +101,32 @@ except Exception as _cfg_exc:
     _CLOUD_MODEL = os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5")
     _CLOUD_TIMEOUT = float(os.environ.get("CONSOLIDATION_TIMEOUT", "120"))
     _PROVIDER = "env"
+
+
+def validate_consolidation_config() -> None:
+    """Validate that consolidation config is usable at startup.
+
+    Logs warnings for missing API keys or invalid base URLs rather than
+    silently falling back to defaults. Call from app lifespan.
+    """
+    if not _CLOUD_API_KEY and _PROVIDER != "env":
+        log.warning(
+            "consolidation_no_api_key",
+            provider=_PROVIDER,
+            hint="Set {provider}_API_KEY env var or configure in swingrl.yaml",
+        )
+    if not _CLOUD_BASE_URL:
+        log.warning("consolidation_no_base_url", provider=_PROVIDER)
+    if not _CLOUD_MODEL:
+        log.warning("consolidation_no_model", provider=_PROVIDER)
+    log.info(
+        "consolidation_config_validated",
+        provider=_PROVIDER,
+        model=_CLOUD_MODEL,
+        has_api_key=bool(_CLOUD_API_KEY),
+        base_url=_CLOUD_BASE_URL[:60],
+    )
+
 
 # Local Ollama settings (fallback when no cloud API key is available)
 _OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
@@ -431,8 +457,8 @@ class ConsolidateAgent:
             total += equity_count + crypto_count
 
             # Stage 2: cross-env (only if both envs have Stage 1 patterns)
-            equity_patterns = get_active_consolidations(env_name="equity", stage=1)
-            crypto_patterns = get_active_consolidations(env_name="crypto", stage=1)
+            equity_patterns = await get_active_consolidations_async(env_name="equity", stage=1)
+            crypto_patterns = await get_active_consolidations_async(env_name="crypto", stage=1)
             if equity_patterns and crypto_patterns:
                 total += await self.run_stage2(equity_patterns, crypto_patterns)
 
@@ -451,14 +477,14 @@ class ConsolidateAgent:
             Number of new patterns created.
         """
         # Fetch memories with env-specific source tags
-        memories = get_memories_by_source_prefix(
+        memories = await get_memories_by_source_prefix_async(
             prefix=f"walk_forward:{env_name}",
             limit=_MEMORY_BATCH_SIZE,
             archived=False,
         )
         if not memories:
             # Fallback: try old-style tags for backward compat, but only for this env
-            memories = get_memories_by_source_prefix(
+            memories = await get_memories_by_source_prefix_async(
                 prefix=env_name,
                 limit=_MEMORY_BATCH_SIZE,
                 archived=False,
@@ -494,7 +520,7 @@ class ConsolidateAgent:
         # Archive source memories after all patterns processed — always archive
         # regardless of whether new patterns were created (memories were consumed
         # by the LLM either way; skipping archive causes infinite re-consolidation)
-        archive_memories(memory_ids)
+        await archive_memories_async(memory_ids)
 
         log.info(
             "consolidation_stage1_complete",
@@ -604,7 +630,7 @@ class ConsolidateAgent:
         affected_envs = pattern.get("affected_envs", [])
 
         # Check for existing active patterns with same category + env
-        existing = get_active_consolidations(env_name=env_name, stage=stage)
+        existing = await get_active_consolidations_async(env_name=env_name, stage=stage)
         similar = [
             e
             for e in existing
@@ -615,7 +641,7 @@ class ConsolidateAgent:
         if similar:
             # Increment confirmation on the most recent similar pattern
             best = similar[0]
-            increment_confirmation(best["id"])
+            await increment_confirmation_async(best["id"])
             log.info(
                 "consolidation_dedup_confirmed",
                 existing_id=best["id"],
@@ -624,9 +650,12 @@ class ConsolidateAgent:
             return None
 
         # Check for conflicts with opposite-sentiment patterns
-        conflict_id = self._detect_conflict(pattern.get("pattern_text", ""), new_category=category)
+        conflict_id = await self._detect_conflict_async(
+            pattern.get("pattern_text", ""),
+            new_category=category,
+        )
 
-        row_id = insert_consolidation(
+        row_id = await insert_consolidation_async(
             pattern_text=pattern["pattern_text"],
             source_count=source_count,
             conflicting_with=conflict_id,
@@ -643,11 +672,15 @@ class ConsolidateAgent:
         )
 
         # Link source memories (batch insert in single connection)
-        insert_consolidation_sources(row_id, memory_ids)
+        await insert_consolidation_sources_async(row_id, memory_ids)
 
         if conflict_id is not None:
             # Mark the conflicting pattern with the same group ID
-            update_consolidation_status(conflict_id, "superseded", superseded_by=row_id)
+            await update_consolidation_status_async(
+                conflict_id,
+                "superseded",
+                superseded_by=row_id,
+            )
             log.warning(
                 "consolidation_conflict_detected",
                 new_id=row_id,
@@ -681,11 +714,11 @@ class ConsolidateAgent:
                 schema=_CONSOLIDATION_SCHEMA,
             )
             if result is not None:
-                log_consolidation_quality(attempt_count=attempt, accepted=True)
+                await log_consolidation_quality_async(attempt_count=attempt, accepted=True)
                 return result
             log.warning("consolidation_attempt_failed", attempt=attempt)
 
-        log_consolidation_quality(
+        await log_consolidation_quality_async(
             attempt_count=2,
             accepted=False,
             rejected_reason="Missing required fields after 2 attempts",
@@ -882,12 +915,8 @@ class ConsolidateAgent:
 
         return True
 
-    def _detect_conflict(self, new_pattern: str, new_category: str = "") -> int | None:
-        """Check whether the new pattern contradicts existing consolidations.
-
-        Uses simple keyword overlap heuristic. Only flags a conflict when the
-        patterns share at least one algorithm name (ppo/a2c/sac) or the same
-        category to avoid false positives across unrelated patterns.
+    async def _detect_conflict_async(self, new_pattern: str, new_category: str = "") -> int | None:
+        """Check whether the new pattern contradicts existing consolidations (async).
 
         Args:
             new_pattern: The new pattern text to check.
@@ -896,7 +925,25 @@ class ConsolidateAgent:
         Returns:
             Row ID of conflicting consolidation, or None if no conflict.
         """
-        existing = get_active_consolidations()
+        existing = await get_active_consolidations_async()
+        return self._check_conflicts(existing, new_pattern, new_category)
+
+    def _check_conflicts(
+        self,
+        existing: list[dict[str, Any]],
+        new_pattern: str,
+        new_category: str = "",
+    ) -> int | None:
+        """Pure logic for conflict detection against a list of existing patterns.
+
+        Args:
+            existing: List of active consolidation dicts.
+            new_pattern: The new pattern text to check.
+            new_category: Category of the new pattern.
+
+        Returns:
+            Row ID of conflicting consolidation, or None if no conflict.
+        """
         new_tokens = set(new_pattern.lower().split())
 
         contradiction_pairs = [

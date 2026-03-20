@@ -89,28 +89,10 @@ class TestEnsembleBlender:
         assert abs(sum(weights.values()) - 1.0) < 1e-10
         assert weights["a2c"] > weights["ppo"] > weights["sac"]
 
-    def test_adaptive_window_shrink_high_turbulence(self, blender: EnsembleBlender) -> None:
-        """During high turbulence, validation window shrinks by 50%."""
-        # With turbulence above threshold, window should shrink
-        # This should still produce valid weights
+    def test_compute_weights_unknown_env(self, blender: EnsembleBlender) -> None:
+        """compute_weights for unknown env still produces valid softmax weights."""
         weights = blender.compute_weights(
-            env_name="equity",
+            env_name="unknown",
             agent_sharpes={"ppo": 1.0, "a2c": 0.5, "sac": 0.8},
-            turbulence=999.0,  # Very high turbulence
         )
         assert abs(sum(weights.values()) - 1.0) < 1e-10
-
-    def test_adaptive_window_normal_turbulence(self, blender: EnsembleBlender) -> None:
-        """During normal turbulence, validation window stays full."""
-        weights_normal = blender.compute_weights(
-            env_name="equity",
-            agent_sharpes={"ppo": 1.0, "a2c": 0.5, "sac": 0.8},
-            turbulence=0.1,  # Very low turbulence
-        )
-        weights_none = blender.compute_weights(
-            env_name="equity",
-            agent_sharpes={"ppo": 1.0, "a2c": 0.5, "sac": 0.8},
-        )
-        # Should produce identical results when turbulence is low
-        for algo in ["ppo", "a2c", "sac"]:
-            assert abs(weights_normal[algo] - weights_none[algo]) < 1e-10

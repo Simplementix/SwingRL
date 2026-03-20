@@ -14,6 +14,7 @@ import structlog
 
 from swingrl.config.schema import SwingRLConfig
 from swingrl.envs.base import BaseTradingEnv
+from swingrl.utils.exceptions import DataError
 
 log = structlog.get_logger(__name__)
 
@@ -27,7 +28,7 @@ class CryptoTradingEnv(BaseTradingEnv):
     - 2 crypto assets (BTC, ETH)
 
     Args:
-        features: Pre-loaded feature array, shape (n_steps, 45), float32.
+        features: Pre-loaded feature array, shape (n_steps, 47), float32.
         prices: Pre-loaded close price array, shape (n_steps, 2), float32.
         config: Validated SwingRLConfig instance.
         render_mode: Gymnasium render mode (optional).
@@ -75,7 +76,7 @@ class CryptoTradingEnv(BaseTradingEnv):
         Validates array shapes before construction.
 
         Args:
-            features: Feature array, shape (n_steps, 45), float32.
+            features: Feature array, shape (n_steps, 47), float32.
             prices: Price array, shape (n_steps, n_assets), float32.
             config: Validated SwingRLConfig instance.
             render_mode: Gymnasium render mode (optional).
@@ -88,16 +89,16 @@ class CryptoTradingEnv(BaseTradingEnv):
         """
         n_assets = len(config.crypto.symbols)
         if features.ndim != 2:
-            raise ValueError(f"features must be 2D, got {features.ndim}D")
+            raise DataError(f"features must be 2D, got {features.ndim}D")
         if prices.ndim != 2:
-            raise ValueError(f"prices must be 2D, got {prices.ndim}D")
+            raise DataError(f"prices must be 2D, got {prices.ndim}D")
         if features.shape[0] != prices.shape[0]:
-            raise ValueError(
+            raise DataError(
                 f"features and prices must have same number of steps: "
                 f"{features.shape[0]} != {prices.shape[0]}"
             )
         if prices.shape[1] != n_assets:
-            raise ValueError(
+            raise DataError(
                 f"prices must have {n_assets} columns (crypto symbols), got {prices.shape[1]}"
             )
 

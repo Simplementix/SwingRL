@@ -193,20 +193,20 @@ def equity_env_config(tmp_path: Path, equity_env_config_yaml: str) -> SwingRLCon
 def equity_features_array() -> np.ndarray:
     """Synthetic equity feature array for environment tests.
 
-    Shape (300, 156) float32 — enough for 252-step episodes with buffer.
+    Shape (300, 164) float32 — enough for 252-step episodes with buffer.
     """
     rng = np.random.default_rng(44)
-    return rng.standard_normal((300, 156)).astype(np.float32)
+    return rng.standard_normal((300, 164)).astype(np.float32)
 
 
 @pytest.fixture
 def crypto_features_array() -> np.ndarray:
     """Synthetic crypto feature array for environment tests.
 
-    Shape (600, 45) float32 — enough for 540-step episodes with buffer.
+    Shape (600, 47) float32 — enough for 540-step episodes with buffer.
     """
     rng = np.random.default_rng(45)
-    return rng.standard_normal((600, 45)).astype(np.float32)
+    return rng.standard_normal((600, 47)).astype(np.float32)
 
 
 @pytest.fixture

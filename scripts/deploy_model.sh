@@ -19,9 +19,10 @@
 set -euo pipefail
 
 # --- Configuration ---
-REMOTE_PROJECT_DIR="$HOME/swingrl"
-EQUITY_OBS_DIM=156
-CRYPTO_OBS_DIM=45
+# Use ~ so scp and ssh expand on the remote host, not locally.
+REMOTE_PROJECT_DIR="~/swingrl"
+EQUITY_OBS_DIM=$(uv run python -c "from swingrl.features.assembler import EQUITY_OBS_DIM; print(EQUITY_OBS_DIM)" 2>/dev/null || echo 164)
+CRYPTO_OBS_DIM=$(uv run python -c "from swingrl.features.assembler import CRYPTO_OBS_DIM; print(CRYPTO_OBS_DIM)" 2>/dev/null || echo 47)
 
 # --- Argument validation ---
 if [[ $# -lt 2 || $# -gt 3 ]]; then

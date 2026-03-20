@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import bisect
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,7 @@ from swingrl.memory.training.bounds import (
     CRISIS_PERIOD_PCT,
     MIN_WINDOW_YEARS,
 )
+from swingrl.utils.exceptions import DataError
 
 if TYPE_CHECKING:
     from swingrl.memory.client import MemoryClient
@@ -254,7 +256,7 @@ class MemoryCurriculumSampler:
                     f"({hi:.1%}) per CRISIS_PERIOD_PCT bounds"
                 )
                 log.error("curriculum_crisis_pct_exceeded", crisis_pct=crisis_pct)
-                raise ValueError(msg)
+                raise DataError(msg)
             # Warn if below minimum but don't block (may have no crisis windows)
             if crisis_pct > 0 and crisis_pct < lo:
                 log.warning(
@@ -304,14 +306,15 @@ class MemoryCurriculumSampler:
             start_str = str(w.get("start", ""))[:10]
             end_str = str(w.get("end", ""))[:10]
 
-            # Find bar indices for start/end dates
+            # Find bar indices for start/end dates using O(log n) bisect
             try:
-                start_bar = next((i for i, d in enumerate(date_strs) if d >= start_str), 0)
-                # Forward iteration: find the last bar where date <= end_str
-                end_bar = 0
-                for i, d in enumerate(date_strs):
-                    if d <= end_str:
-                        end_bar = i
+                start_bar = bisect.bisect_left(date_strs, start_str)
+                if start_bar >= len(date_strs):
+                    start_bar = 0
+                # bisect_right gives index after last element <= end_str
+                end_bar = bisect.bisect_right(date_strs, end_str) - 1
+                if end_bar < 0:
+                    end_bar = len(date_strs)
             except Exception:
                 start_bar = 0
                 end_bar = len(date_strs)
