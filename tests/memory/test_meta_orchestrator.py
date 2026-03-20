@@ -66,21 +66,19 @@ def _make_orchestrator(
 
 
 class TestMetaOrchestratorColdStart:
-    """TRAIN-09: Cold-start guard returns empty config below minimum runs."""
+    """TRAIN-09: Cold-start guard blocks LLM until consolidated patterns exist."""
 
-    def test_query_run_config_returns_empty_below_min_runs(self, tmp_path: Path) -> None:
-        """TRAIN-09: Fewer than 3 completed runs returns empty dict."""
+    def test_query_run_config_returns_empty_when_no_patterns(self, tmp_path: Path) -> None:
+        """TRAIN-09: Zero consolidated patterns returns empty dict."""
         orch = _make_orchestrator(tmp_path)
-        # Mock _get_run_history to return only 2 runs (below minimum of 3)
-        orch._get_run_history = MagicMock(return_value=[{"run_id": "r1"}, {"run_id": "r2"}])
+        orch._get_pattern_count = MagicMock(return_value=0)
         result = orch._query_run_config("equity", "ppo")
         assert result == {}
 
-    def test_query_run_config_calls_api_after_cold_start(self, tmp_path: Path) -> None:
-        """TRAIN-09: With 3+ completed runs, an HTTP POST is attempted."""
+    def test_query_run_config_calls_api_with_patterns(self, tmp_path: Path) -> None:
+        """TRAIN-09: With 1+ patterns, an HTTP POST is attempted."""
         orch = _make_orchestrator(tmp_path)
-        runs = [{"run_id": f"r{i}"} for i in range(3)]
-        orch._get_run_history = MagicMock(return_value=runs)
+        orch._get_pattern_count = MagicMock(return_value=2)
         orch._current_regime_vector = MagicMock(
             return_value={"bull": 0.5, "bear": 0.3, "crisis": 0.1, "sideways": 0.1}
         )
@@ -100,8 +98,7 @@ class TestMetaOrchestratorColdStart:
     def test_query_run_config_returns_empty_on_api_failure(self, tmp_path: Path) -> None:
         """TRAIN-09: Connection error on API call returns empty dict."""
         orch = _make_orchestrator(tmp_path)
-        runs = [{"run_id": f"r{i}"} for i in range(3)]
-        orch._get_run_history = MagicMock(return_value=runs)
+        orch._get_pattern_count = MagicMock(return_value=3)
         orch._current_regime_vector = MagicMock(
             return_value={"bull": 0.33, "bear": 0.33, "crisis": 0.17, "sideways": 0.17}
         )
@@ -115,8 +112,7 @@ class TestMetaOrchestratorColdStart:
         """TRAIN-09: Timeout on API call returns empty dict."""
 
         orch = _make_orchestrator(tmp_path)
-        runs = [{"run_id": f"r{i}"} for i in range(3)]
-        orch._get_run_history = MagicMock(return_value=runs)
+        orch._get_pattern_count = MagicMock(return_value=3)
         orch._current_regime_vector = MagicMock(
             return_value={"bull": 0.33, "bear": 0.33, "crisis": 0.17, "sideways": 0.17}
         )
@@ -128,83 +124,38 @@ class TestMetaOrchestratorColdStart:
 
 
 # ---------------------------------------------------------------------------
-# TestMetaOrchestratorRunHistory
+# TestMetaOrchestratorPatternCount
 # ---------------------------------------------------------------------------
 
 
-class TestMetaOrchestratorRunHistory:
-    """TRAIN-09: _get_run_history() queries DuckDB training_runs table."""
+class TestMetaOrchestratorPatternCount:
+    """TRAIN-09: _get_pattern_count() checks consolidated patterns via memory service."""
 
-    def _create_training_runs_db(self, tmp_path: Path) -> Path:
-        """Create a real DuckDB with training_runs table and test data."""
-        db_path = tmp_path / "training.ddb"
-        conn = duckdb.connect(str(db_path))
-        conn.execute(
-            """
-            CREATE TABLE training_runs (
-                run_id VARCHAR,
-                algo VARCHAR,
-                env VARCHAR,
-                final_sharpe DOUBLE,
-                final_mdd DOUBLE,
-                total_timesteps BIGINT,
-                epochs_to_convergence BIGINT,
-                timestamp_end TIMESTAMP,
-                run_type VARCHAR
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO training_runs VALUES
-            ('r1', 'PPO', 'equity', 1.2, -0.05, 100000, 50, '2026-01-01 00:00:00', 'completed'),
-            ('r2', 'PPO', 'equity', 0.8, -0.08, 200000, 80, '2026-01-02 00:00:00', 'completed'),
-            ('r3', 'A2C', 'equity', 0.5, -0.10, 150000, 60, '2026-01-03 00:00:00', 'completed'),
-            ('r4', 'PPO', 'crypto', 1.0, -0.06, 100000, 40, '2026-01-04 00:00:00', 'completed')
-            """
-        )
-        conn.close()
-        return db_path
+    def test_pattern_count_returns_zero_on_connection_error(self, tmp_path: Path) -> None:
+        """TRAIN-09: Connection error returns 0 (fail-open)."""
+        orch = _make_orchestrator(tmp_path)
+        # No mock for urlopen → will fail to connect → returns 0
+        with patch("urllib.request.urlopen", side_effect=ConnectionError("refused")):
+            count = orch._get_pattern_count("equity")
+        assert count == 0
 
-    def test_get_run_history_returns_completed_runs(self, tmp_path: Path) -> None:
-        """TRAIN-09: Returns list of dicts for completed runs matching env+algo."""
-        db_path = self._create_training_runs_db(tmp_path)
-        orch = _make_orchestrator(tmp_path, db_path=db_path)
-        history = orch._get_run_history("equity", "ppo")
-        assert isinstance(history, list)
-        assert len(history) == 2
-        assert all(r["algo"] == "PPO" for r in history)
-        assert all(r["env"] == "equity" for r in history)
+    def test_pattern_count_filters_by_env(self, tmp_path: Path) -> None:
+        """TRAIN-09: Counts only patterns matching the requested env."""
+        orch = _make_orchestrator(tmp_path)
+        mock_patterns = [
+            {"env_name": "equity", "affected_envs": ["equity"]},
+            {"env_name": "equity", "affected_envs": ["equity"]},
+            {"env_name": "crypto", "affected_envs": ["crypto"]},
+        ]
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(mock_patterns).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
 
-    def test_get_run_history_returns_empty_on_missing_table(self, tmp_path: Path) -> None:
-        """TRAIN-09: Missing training_runs table returns empty list."""
-        db_path = tmp_path / "empty.ddb"
-        # Create empty DB with no tables
-        conn = duckdb.connect(str(db_path))
-        conn.close()
-        orch = _make_orchestrator(tmp_path, db_path=db_path)
-        result = orch._get_run_history("equity", "ppo")
-        assert result == []
-
-    def test_get_run_history_returns_empty_on_connection_error(self, tmp_path: Path) -> None:
-        """TRAIN-09: Non-existent db path returns empty list gracefully."""
-        db_path = tmp_path / "nonexistent" / "db.ddb"
-        orch = _make_orchestrator(tmp_path, db_path=db_path)
-        result = orch._get_run_history("equity", "ppo")
-        assert result == []
-
-    def test_get_run_history_filters_by_env_and_algo(self, tmp_path: Path) -> None:
-        """TRAIN-09: Only returns rows matching both env and algo."""
-        db_path = self._create_training_runs_db(tmp_path)
-        orch = _make_orchestrator(tmp_path, db_path=db_path)
-        # A2C equity
-        history_a2c = orch._get_run_history("equity", "a2c")
-        assert len(history_a2c) == 1
-        assert history_a2c[0]["algo"] == "A2C"
-        # PPO crypto
-        history_crypto = orch._get_run_history("crypto", "ppo")
-        assert len(history_crypto) == 1
-        assert history_crypto[0]["env"] == "crypto"
+            equity_count = orch._get_pattern_count("equity")
+            assert equity_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -308,27 +259,35 @@ class TestMetaOrchestratorRegimeVector:
 
 
 class TestMetaOrchestratorFinalMetrics:
-    """TRAIN-09: _compute_final_metrics() returns placeholder zero metrics."""
+    """TRAIN-09: _compute_final_metrics() returns convergence data."""
 
-    def test_compute_final_metrics_returns_zero_placeholders(self, tmp_path: Path) -> None:
-        """TRAIN-09: All four metric values are 0.0 (placeholder)."""
+    def test_compute_final_metrics_returns_convergence_info(self, tmp_path: Path) -> None:
+        """TRAIN-09: Returns convergence status from TrainingResult."""
         orch = _make_orchestrator(tmp_path)
-        result = _make_mock_training_result()
+        result = _make_mock_training_result(total_timesteps=100_000, converged_at_step=50_000)
         metrics = orch._compute_final_metrics(result)
-        assert metrics["final_sharpe"] == 0.0
-        assert metrics["final_mdd"] == 0.0
-        assert metrics["final_sortino"] == 0.0
-        assert metrics["final_mean_reward"] == 0.0
+        assert metrics["converged"] is True
+        assert metrics["converged_at_step"] == 50_000
+        assert metrics["total_timesteps"] == 100_000
+        assert abs(metrics["convergence_ratio"] - 0.5) < 1e-6
+
+    def test_compute_final_metrics_no_convergence(self, tmp_path: Path) -> None:
+        """TRAIN-09: Non-converged run reports ratio 1.0."""
+        orch = _make_orchestrator(tmp_path)
+        result = _make_mock_training_result(total_timesteps=100_000, converged_at_step=None)
+        metrics = orch._compute_final_metrics(result)
+        assert metrics["converged"] is False
+        assert metrics["convergence_ratio"] == 1.0
 
     def test_compute_final_metrics_returns_all_required_keys(self, tmp_path: Path) -> None:
-        """TRAIN-09: Dict has final_sharpe, final_mdd, final_sortino, final_mean_reward."""
+        """TRAIN-09: Dict has converged, converged_at_step, total_timesteps, convergence_ratio."""
         orch = _make_orchestrator(tmp_path)
         result = _make_mock_training_result()
         metrics = orch._compute_final_metrics(result)
-        assert "final_sharpe" in metrics
-        assert "final_mdd" in metrics
-        assert "final_sortino" in metrics
-        assert "final_mean_reward" in metrics
+        assert "converged" in metrics
+        assert "converged_at_step" in metrics
+        assert "total_timesteps" in metrics
+        assert "convergence_ratio" in metrics
 
 
 # ---------------------------------------------------------------------------

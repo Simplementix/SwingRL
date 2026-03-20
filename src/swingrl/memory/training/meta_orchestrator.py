@@ -44,8 +44,11 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-# Minimum completed runs required before meta-trainer provides advice
-_COLD_START_MIN_RUNS: int = 3
+# Minimum consolidated patterns required before meta-trainer queries LLM for advice.
+# Below this threshold, there isn't enough synthesized data for the LLM to produce
+# meaningful hyperparameter/reward weight suggestions. The baseline iteration's
+# walk-forward results must be consolidated first.
+_COLD_START_MIN_PATTERNS: int = 1
 
 
 class MetaTrainingOrchestrator:
@@ -217,23 +220,23 @@ class MetaTrainingOrchestrator:
             n_epochs, batch_size, gamma, reward_weights, rationale.
             Empty dict on cold-start or any failure.
         """
-        run_history = self._get_run_history(env_name, algo_name)
-        if len(run_history) < _COLD_START_MIN_RUNS:
+        pattern_count = self._get_pattern_count(env_name)
+        if pattern_count < _COLD_START_MIN_PATTERNS:
             log.info(
                 "meta_cold_start_guard",
-                completed_runs=len(run_history),
-                min_runs=_COLD_START_MIN_RUNS,
+                pattern_count=pattern_count,
+                min_patterns=_COLD_START_MIN_PATTERNS,
+                env=env_name,
+                algo=algo_name,
             )
             return {}
 
         try:
             regime = self._current_regime_vector(env_name)
-            recent_runs_text = json.dumps(run_history[-3:], default=str)
 
             payload = {
                 "query": (
                     f"TRAINING RUN CONFIG ADVICE: env={env_name} algo={algo_name} "
-                    f"recent_runs={recent_runs_text} "
                     f"current_regime={json.dumps(regime)}"
                 )
             }
@@ -281,42 +284,38 @@ class MetaTrainingOrchestrator:
         # This method is a hook for future direct attribute injection.
         log.debug("meta_apply_run_config", keys=list(safe_config.keys()))
 
-    def _get_run_history(
-        self,
-        env_name: str,
-        algo_name: str,
-    ) -> list[dict[str, Any]]:
-        """Query DuckDB training_runs table for completed runs.
+    def _get_pattern_count(self, env_name: str) -> int:
+        """Check how many consolidated patterns exist for this environment.
+
+        Queries the memory service debug/consolidations endpoint and filters
+        by env_name client-side. Used by the cold-start guard to determine
+        if enough data has been synthesized for meaningful LLM advice.
 
         Args:
-            env_name: Environment name.
-            algo_name: Algorithm name.
+            env_name: Environment name ("equity" or "crypto").
 
         Returns:
-            List of run dicts (most recent first). Empty list if table missing or error.
+            Number of active consolidated patterns for this env. 0 on any error.
         """
         try:
-            with duckdb.connect(str(self._db_path), read_only=True) as conn:
-                rows = conn.execute(
-                    """
-                    SELECT run_id, algo, env, final_sharpe, final_mdd,
-                           total_timesteps, epochs_to_convergence
-                    FROM training_runs
-                    WHERE env = ? AND algo = ? AND run_type = 'completed'
-                    ORDER BY timestamp_end DESC
-                    LIMIT 20
-                    """,
-                    [env_name, algo_name.upper()],
-                ).fetchdf()
-
-            if rows.empty:
-                return []
-            records: list[dict[str, Any]] = rows.to_dict(orient="records")  # type: ignore[assignment]
-            return records
-
+            url = f"{self._meta_cfg.base_url}/debug/consolidations?limit=100"
+            headers: dict[str, str] = {}
+            if self._client.api_key:
+                headers["X-API-Key"] = self._client.api_key
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=5.0) as resp:  # noqa: S310  # nosec B310
+                patterns = json.loads(resp.read().decode("utf-8"))
+            # Filter to this env's patterns (env_name field or affected_envs)
+            count = sum(
+                1
+                for p in patterns
+                if p.get("env_name") == env_name or env_name in (p.get("affected_envs") or [])
+            )
+            log.debug("meta_pattern_count", env=env_name, count=count)
+            return count
         except Exception as exc:
-            log.debug("meta_run_history_failed", error=str(exc))
-            return []
+            log.debug("meta_pattern_count_failed", env=env_name, error=str(exc))
+            return 0
 
     def _current_regime_vector(self, env_name: str) -> dict[str, float]:
         """Query latest HMM regime probabilities from DuckDB.
@@ -371,14 +370,18 @@ class MetaTrainingOrchestrator:
             Dict with sharpe, mdd, sortino, mean_reward placeholders.
             Actual values should come from walk-forward evaluation.
         """
-        # TODO(phase-19.2): Compute real metrics from TrainingResult — currently placeholder zeros
-        # TrainingResult doesn't carry eval metrics directly.
-        # Return placeholders — actual values come from walk-forward validation.
+        # TrainingResult doesn't carry walk-forward eval metrics — those are
+        # computed later in train_pipeline.py and ingested separately via
+        # walk_forward:{env}:{algo} source tags. Report convergence info here.
         return {
-            "final_sharpe": 0.0,
-            "final_mdd": 0.0,
-            "final_sortino": 0.0,
-            "final_mean_reward": 0.0,
+            "converged": result.converged_at_step is not None,
+            "converged_at_step": result.converged_at_step or result.total_timesteps,
+            "total_timesteps": result.total_timesteps,
+            "convergence_ratio": (
+                round(result.converged_at_step / result.total_timesteps, 3)
+                if result.converged_at_step
+                else 1.0
+            ),
         }
 
     def _build_run_summary_text(

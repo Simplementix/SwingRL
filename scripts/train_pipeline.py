@@ -445,35 +445,36 @@ def run_all_iterations(
             elapsed_hours=round(iter_elapsed / 3600, 2),
         )
 
-        # Consolidate memories + record outcomes after each memory-enabled iteration
-        if i > 0:
-            try:
-                api_key = getattr(cfg.memory_agent, "api_key", "")
-                memory_client = MemoryClient(
-                    base_url=cfg.memory_agent.base_url,
-                    default_timeout=cfg.memory_agent.timeout_sec,
-                    api_key=api_key,
-                )
-                # Stage 1 per-env + Stage 2 cross-env consolidation
-                memory_client.consolidate(timeout=120.0)
-                log.info("memory_consolidated", after_iteration=i)
+        # Consolidate memories + record outcomes after EVERY iteration (including
+        # baseline iteration 0). Baseline WF data must be consolidated into patterns
+        # before iteration 1 starts so the meta-trainer has context to work with.
+        try:
+            api_key = getattr(cfg.memory_agent, "api_key", "")
+            memory_client = MemoryClient(
+                base_url=cfg.memory_agent.base_url,
+                default_timeout=cfg.memory_agent.timeout_sec,
+                api_key=api_key,
+            )
+            # Stage 1 per-env + Stage 2 cross-env consolidation
+            memory_client.consolidate(timeout=120.0)
+            log.info("memory_consolidated", after_iteration=i)
 
-                # Record iteration outcomes for pattern effectiveness tracking
-                if api_key:
-                    for env_name in ["equity", "crypto"]:
-                        env_result = iter_result.get(env_name, {})
-                        if isinstance(env_result, dict) and "error" not in env_result:
-                            gate = env_result.get("ensemble_gate", {})
-                            memory_client.record_outcome(
-                                iteration=i,
-                                env_name=env_name,
-                                gate_passed=gate.get("passed"),
-                                sharpe=gate.get("sharpe"),
-                                mdd=gate.get("mdd"),
-                                timeout=10.0,
-                            )
-            except Exception as exc:
-                log.warning("memory_post_iteration_failed", iteration=i, error=str(exc))
+            # Record iteration outcomes for pattern effectiveness tracking
+            if api_key:
+                for env_name in ["equity", "crypto"]:
+                    env_result = iter_result.get(env_name, {})
+                    if isinstance(env_result, dict) and "error" not in env_result:
+                        gate = env_result.get("ensemble_gate", {})
+                        memory_client.record_outcome(
+                            iteration=i,
+                            env_name=env_name,
+                            gate_passed=gate.get("passed"),
+                            sharpe=gate.get("sharpe"),
+                            mdd=gate.get("mdd"),
+                            timeout=10.0,
+                        )
+        except Exception as exc:
+            log.warning("memory_post_iteration_failed", iteration=i, error=str(exc))
 
     # Select best per algo x env by Sortino (Calmar tiebreak)
     winners = select_best_per_algo_env(state)
