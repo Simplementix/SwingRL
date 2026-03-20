@@ -52,6 +52,7 @@ dependencies = [
     "matplotlib>=3.10.8",
     # Scheduler (production entrypoint)
     "apscheduler>=3.10,<4",
+    "sqlalchemy>=2.0,<3",
 ]
 
 [project.optional-dependencies]
