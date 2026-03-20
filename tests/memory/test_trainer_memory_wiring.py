@@ -99,7 +99,8 @@ def tiny_equity_prices() -> np.ndarray:
 def _make_mock_memory_client() -> MagicMock:
     """Return a mock MemoryClient with ingest_training returning True."""
     client = MagicMock()
-    client._base_url = "http://localhost:8889"  # noqa: SLF001
+    client.base_url = "http://localhost:8889"
+    client.api_key = "test-key"  # pragma: allowlist secret
     client.ingest_training.return_value = True
     return client
 
@@ -192,16 +193,17 @@ class TestEpochAdviceFirstFailureLogging:
 
     def test_first_failure_sets_flag(self) -> None:
         """TRAIN-07: First connection failure transitions _advice_failed_once to True."""
+        client = _make_mock_memory_client()
+        client.epoch_advice.side_effect = ConnectionError("unreachable")
         wrapper = MemoryVecRewardWrapper(_make_mock_venv())
         cb = MemoryEpochCallback(
-            memory_client=_make_mock_memory_client(),
+            memory_client=client,
             wrapper=wrapper,
             run_id="test_run",
             algo="PPO",
             env="equity",
         )
         cb._epoch = 5  # noqa: SLF001 — set to a storage cadence epoch
-        cb._memory_base_url = "http://127.0.0.1:1"  # noqa: SLF001 — unreachable port
 
         cb._query_epoch_advice()  # noqa: SLF001
 

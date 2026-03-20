@@ -143,7 +143,9 @@ class MetaTrainingOrchestrator:
         }
         for k, v in safe_config.items():
             if k in hp_keys and k not in merged_hp:
-                merged_hp[k] = v
+                # Map entropy_coeff → ent_coef (SB3 parameter name)
+                key = "ent_coef" if k == "entropy_coeff" else k
+                merged_hp[key] = v
 
         # Reward weights from LLM advice
         reward_weights_raw = advised_config.get("reward_weights", {})
@@ -168,6 +170,7 @@ class MetaTrainingOrchestrator:
             hyperparams_override=merged_hp if merged_hp else None,
             memory_client=self._client,
             run_id=run_id,
+            initial_reward_weights=reward_weights,
         )
 
         # Ingest run summary

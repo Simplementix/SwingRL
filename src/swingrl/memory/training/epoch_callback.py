@@ -340,8 +340,22 @@ class MemoryEpochCallback(BaseCallback):
 
             stop_training = body.get("stop_training", False)
             if stop_training:
-                log.warning("llm_advises_stop_training", epoch=self._epoch, reason=reason)
-                self.model.stop_training = True  # type: ignore[attr-defined]
+                from swingrl.memory.training.bounds import MIN_EPOCHS_BEFORE_STOP
+
+                if self._epoch < MIN_EPOCHS_BEFORE_STOP:
+                    log.info(
+                        "stop_training_ignored_too_early",
+                        epoch=self._epoch,
+                        min_epochs=MIN_EPOCHS_BEFORE_STOP,
+                        reason=reason,
+                    )
+                else:
+                    log.warning(
+                        "llm_advises_stop_training",
+                        epoch=self._epoch,
+                        reason=reason,
+                    )
+                    self.model.stop_training = True  # type: ignore[attr-defined]
                 return
 
             new_weights = body.get("reward_weights")

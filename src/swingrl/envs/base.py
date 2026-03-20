@@ -222,6 +222,19 @@ class BaseTradingEnv(gymnasium.Env):
         risk_penalty = self._compute_risk_penalty(weights_after, new_value)
         reward = sharpe_reward - risk_penalty
 
+        # 7b. Compute reward components for memory-guided shaping
+        drawdown_frac = 0.0
+        if self._peak_value > 0:
+            drawdown_frac = (self._peak_value - new_value) / self._peak_value
+        turnover_ratio = cost / self._prev_value if self._prev_value > 0 else 0.0
+
+        reward_components = {
+            "profit": daily_return,
+            "sharpe": sharpe_reward,
+            "drawdown": -drawdown_frac,
+            "turnover": -turnover_ratio,
+        }
+
         # 8. Build observation with current portfolio state
         portfolio_state = self._get_portfolio_state(new_prices)
         obs = self._build_observation(portfolio_state)
@@ -235,6 +248,7 @@ class BaseTradingEnv(gymnasium.Env):
             portfolio_value=new_value,
             daily_return=daily_return,
             transaction_cost=cost,
+            reward_components=reward_components,
         )
 
         # Update previous value for next step
@@ -360,6 +374,7 @@ class BaseTradingEnv(gymnasium.Env):
         portfolio_value: float,
         daily_return: float,
         transaction_cost: float,
+        reward_components: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         """Build info dict for step/reset return.
 
@@ -367,14 +382,19 @@ class BaseTradingEnv(gymnasium.Env):
             portfolio_value: Current portfolio value.
             daily_return: Return since last step.
             transaction_cost: Cost incurred this step.
+            reward_components: Optional decomposed reward components for
+                memory-guided shaping (profit, sharpe, drawdown, turnover).
 
         Returns:
             Info dictionary with required keys.
         """
-        return {
+        info: dict[str, Any] = {
             "portfolio_value": portfolio_value,
             "daily_return": daily_return,
             "transaction_cost": transaction_cost,
             "turbulence": self._get_turbulence(),
             "step": self._step_count,
         }
+        if reward_components is not None:
+            info["reward_components"] = reward_components
+        return info

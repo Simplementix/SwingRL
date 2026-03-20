@@ -135,6 +135,7 @@ class TrainingOrchestrator:
         hyperparams_override: dict[str, Any] | None = None,
         memory_client: MemoryClient | None = None,
         run_id: str | None = None,
+        initial_reward_weights: dict[str, float] | None = None,
     ) -> TrainingResult:
         """Train an SB3 algorithm on the specified environment.
 
@@ -173,22 +174,39 @@ class TrainingOrchestrator:
             total_timesteps=total_timesteps,
         )
 
-        # Create wrapped environment
-        vec_env = self._create_env(env_name, features, prices)
-
-        # Optionally wrap with MemoryVecRewardWrapper for LLM-guided reward shaping
+        # Create wrapped environment.
+        # When memory_client is provided, insert MemoryVecRewardWrapper BETWEEN
+        # the base VecEnv and VecNormalize so shaped rewards get normalized:
+        #   Base → MemoryVecRewardWrapper → VecNormalize
         memory_wrapper = None
         if memory_client is not None:
             try:
                 from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
 
+                vec_env = self._create_env(
+                    env_name,
+                    features,
+                    prices,
+                    skip_vec_normalize=True,
+                )
                 periods = 2191 if env_name == "crypto" else 252
-                memory_wrapper = MemoryVecRewardWrapper(vec_env, periods_per_year=periods)
-                vec_env = memory_wrapper  # type: ignore[assignment]
+                memory_wrapper = MemoryVecRewardWrapper(
+                    vec_env,
+                    initial_weights=initial_reward_weights,
+                    periods_per_year=periods,
+                )
+                vec_env = VecNormalize(
+                    memory_wrapper,
+                    norm_obs=True,
+                    norm_reward=True,
+                )
                 log.info("memory_reward_wrapper_attached", env_name=env_name, algo_name=algo_name)
             except Exception as exc:
                 log.warning("memory_reward_wrapper_failed", error=str(exc))
                 memory_wrapper = None
+                vec_env = self._create_env(env_name, features, prices)
+        else:
+            vec_env = self._create_env(env_name, features, prices)
 
         # Create eval environment (separate instance for EvalCallback).
         # Uses DummyVecEnv(1) — eval runs 5 sequential inference episodes,
@@ -271,11 +289,13 @@ class TrainingOrchestrator:
                 callback=callbacks,
             )
 
-            # Save model and VecNormalize
-            model_path, vec_path = self._save_model(model, vec_env, env_name, algo_name)
+            # Save model and VecNormalize — vec_env is always VecNormalize here
+            # (either from _create_env or from explicit VecNormalize() wrapping above)
+            vec_env_norm: VecNormalize = vec_env  # type: ignore[assignment]
+            model_path, vec_path = self._save_model(model, vec_env_norm, env_name, algo_name)
 
             # Run smoke tests
-            self._run_smoke_tests(model, vec_env, env_name, algo_name)
+            self._run_smoke_tests(model, vec_env_norm, env_name, algo_name)
 
             # Check if training converged early
             converged_at = None
@@ -308,8 +328,9 @@ class TrainingOrchestrator:
         env_name: str,
         features: np.ndarray,
         prices: np.ndarray,
-    ) -> VecNormalize:
-        """Create vectorized env wrapped in VecNormalize.
+        skip_vec_normalize: bool = False,
+    ) -> VecNormalize | DummyVecEnv | SubprocVecEnv:
+        """Create vectorized env, optionally wrapped in VecNormalize.
 
         Uses SubprocVecEnv when n_envs > 1 and vecenv_backend is 'subproc',
         otherwise falls back to DummyVecEnv.
@@ -318,9 +339,12 @@ class TrainingOrchestrator:
             env_name: Environment type ("equity" or "crypto").
             features: Feature array for the environment.
             prices: Price array for the environment.
+            skip_vec_normalize: If True, return the base VecEnv without
+                VecNormalize wrapping (used when MemoryVecRewardWrapper
+                needs to be inserted before VecNormalize).
 
         Returns:
-            VecNormalize-wrapped vectorized environment.
+            VecNormalize-wrapped or bare vectorized environment.
         """
         env_cls = ENV_CLASS_MAP[env_name]
         n_envs = self._config.training.n_envs
@@ -344,6 +368,9 @@ class TrainingOrchestrator:
             base_env: DummyVecEnv | SubprocVecEnv = SubprocVecEnv(env_fns, start_method="fork")
         else:
             base_env = DummyVecEnv(env_fns)
+
+        if skip_vec_normalize:
+            return base_env
 
         vec_env: VecNormalize = VecNormalize(
             base_env,
