@@ -13,6 +13,8 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Generator
 from typing import Any
 
 import numpy as np
@@ -94,13 +96,39 @@ class MacroFeatureAligner:
     6. unemployment_3m_direction: binary (1 if improving = lower, else 0)
     """
 
-    def __init__(self, conn: Any) -> None:
-        """Initialize with DuckDB connection.
+    def __init__(
+        self,
+        conn: Any = None,
+        duckdb_path: str | None = None,
+    ) -> None:
+        """Initialize with DuckDB connection or path.
 
         Args:
-            conn: DuckDB connection (not cursor) for executing queries.
+            conn: Legacy DuckDB connection (deprecated -- use duckdb_path).
+            duckdb_path: Path to DuckDB file for short-lived connections.
         """
-        self._conn = conn
+        import duckdb as _duckdb  # noqa: PLC0415
+
+        self._duckdb_module = _duckdb
+        self._duckdb_path = duckdb_path
+        if duckdb_path:
+            self._conn = None
+            self._use_short_lived = True
+        else:
+            self._conn = conn
+            self._use_short_lived = False
+
+    @contextlib.contextmanager
+    def _db(self) -> Generator[Any, None, None]:
+        """Yield a DuckDB connection, closing it if short-lived."""
+        if self._use_short_lived:
+            conn = self._duckdb_module.connect(str(self._duckdb_path))
+            try:
+                yield conn
+            finally:
+                conn.close()
+        else:
+            yield self._conn
 
     def _fetch_macro_aligned_equity(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         """Fetch raw macro values aligned to equity daily bars via ASOF JOIN.
@@ -113,9 +141,8 @@ class MacroFeatureAligner:
         Returns:
             DataFrame with date index and raw macro columns.
         """
-        result: pd.DataFrame = self._conn.execute(
-            _EQUITY_ASOF_QUERY, [symbol, start, end]
-        ).fetchdf()
+        with self._db() as conn:
+            result: pd.DataFrame = conn.execute(_EQUITY_ASOF_QUERY, [symbol, start, end]).fetchdf()
 
         if "date" in result.columns:
             result = result.set_index("date")
@@ -140,9 +167,8 @@ class MacroFeatureAligner:
         Returns:
             DataFrame with datetime index and raw macro columns.
         """
-        result: pd.DataFrame = self._conn.execute(
-            _CRYPTO_ASOF_QUERY, [symbol, start, end]
-        ).fetchdf()
+        with self._db() as conn:
+            result: pd.DataFrame = conn.execute(_CRYPTO_ASOF_QUERY, [symbol, start, end]).fetchdf()
 
         if "datetime" in result.columns:
             result = result.set_index("datetime")

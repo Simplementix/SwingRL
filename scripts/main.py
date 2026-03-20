@@ -17,7 +17,6 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import duckdb as duckdb_module
 import structlog
 
 from swingrl.config.schema import load_config
@@ -203,14 +202,12 @@ def create_scheduler_and_register_jobs(
 def make_signal_handler(
     scheduler: Any,
     stop_event: threading.Event,
-    duckdb_conn: Any = None,
 ) -> Any:
     """Create a signal handler that shuts down the scheduler and sets the stop event.
 
     Args:
         scheduler: APScheduler BackgroundScheduler instance.
         stop_event: Threading event to unblock main thread.
-        duckdb_conn: Optional DuckDB connection to close on shutdown.
 
     Returns:
         Signal handler callable.
@@ -220,12 +217,6 @@ def make_signal_handler(
         sig_name = signal.Signals(signum).name
         log.info("shutdown_signal_received", signal=sig_name)
         scheduler.shutdown(wait=False)
-        if duckdb_conn is not None:
-            try:
-                duckdb_conn.close()
-                log.info("duckdb_connection_closed")
-            except Exception:  # noqa: BLE001
-                log.warning("duckdb_close_failed")
         stop_event.set()
 
     return handler
@@ -263,8 +254,7 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
 
     duckdb_path = Path(config.system.duckdb_path)
     duckdb_path.parent.mkdir(parents=True, exist_ok=True)
-    duckdb_conn = duckdb_module.connect(str(duckdb_path))
-    feature_pipeline = FeaturePipeline(config, duckdb_conn)
+    feature_pipeline = FeaturePipeline(config, duckdb_path=str(duckdb_path))
 
     pipeline = ExecutionPipeline(
         config=config,
@@ -310,7 +300,6 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
         "scheduler": scheduler,
         "stop_event": stop_event,
         "config": config,
-        "duckdb_conn": duckdb_conn,
     }
 
 
@@ -327,9 +316,8 @@ def main() -> None:
     app = build_app(config_path=args.config)
     scheduler = app["scheduler"]
     stop_event = app["stop_event"]
-    duckdb_conn = app["duckdb_conn"]
 
-    handler = make_signal_handler(scheduler, stop_event, duckdb_conn=duckdb_conn)
+    handler = make_signal_handler(scheduler, stop_event)
     signal.signal(signal.SIGTERM, handler)
     signal.signal(signal.SIGINT, handler)
 
