@@ -1,6 +1,6 @@
 # Phase 22: Automated Retraining - Context
 
-**Gathered:** 2026-03-16 (updated 2026-03-17 — DuckDB contention + SubprocVecEnv + fold log enrichment + pre-phase fixes)
+**Gathered:** 2026-03-16 (updated 2026-03-17 — DuckDB contention + SubprocVecEnv + fold log enrichment + pre-phase fixes, 2026-03-20 — Phase 20 deferrals added)
 **Status:** Ready for planning
 
 <domain>
@@ -62,14 +62,13 @@ Automated retraining for equity (monthly) and crypto (biweekly) via APScheduler 
 - **Ollama resource reduction (ALREADY APPLIED in Phase 19.1)**: Ollama reduced to 4GB/4CPU with cpuset=0-3 (2 P-cores). Only serves qwen2.5:3b (~2.4GB). No Phase 22 work needed
 - **No checkpoint resume**: if retrain dies (crash/power outage), counts as crash failure. Restarts from scratch on next scheduled window. 3-failure auto-disable prevents infinite retries
 
-### DuckDB Concurrent Access (UPDATED from Phase 19.1 findings)
-- **Problem discovered**: DuckDB enforces single-writer lock on `market_data.ddb`. If main.py holds a persistent connection (current `DatabaseManager` pattern), retrain subprocess CANNOT open any write connection. See `22-DUCKDB-CONTENTION.md` for full analysis.
-- **Resolution: short-lived connections everywhere**: change `DatabaseManager.duckdb()` context manager to open a fresh connection and close on exit. One file change (`src/swingrl/data/db.py`), all callers benefit. Persistent singleton removed.
-- **Why this works**: both live trading and retrain only need DuckDB for brief operations. Training loads features once (~2 seconds, in-memory numpy after that). Trading reads prices/writes fills per cycle (~100ms). Lock held milliseconds, collision probability negligible on 4H trading cycles.
-- **No other database conflicts**: SQLite (trading_ops.db) only accessed by main.py. SQLite (memory.db) accessed via HTTP through memory service container (serialized internally). DuckDB is the only concurrent write concern.
-- **DuckDB WAL crash recovery**: if retrain dies mid-write, DuckDB auto-recovers from WAL file on next connect. No data corruption risk.
+### DuckDB Concurrent Access (RESOLVED in Phase 19.1)
+- **ALREADY DONE**: `FeaturePipeline` uses short-lived DuckDB connections via `duckdb_path` + `_db()` context manager (Phase 19.1 fix §7.1). No persistent connection. No Phase 22 work needed for feature pipeline.
+- **Verify `DatabaseManager.duckdb()` in `data/db.py`**: confirm it also uses short-lived connections (may still have persistent singleton pattern). If so, apply same fix.
+- **No other database conflicts**: SQLite (trading_ops.db) only accessed by main.py. SQLite (memory.db) accessed via HTTP through memory service container. DuckDB is the only concern.
+- **DuckDB WAL crash recovery**: auto-recovers from WAL on next connect. No data corruption risk.
 - **Config serialization for ProcessPoolExecutor**: `load_config()` creates unpicklable local class `_ConfigWithYaml`. Fix: pass `config.model_dump()` dict to workers, reconstruct via `SwingRLConfig(**config_dict)`. Already implemented in `train_pipeline.py`.
-- **SubprocVecEnv start method**: `fork` (not `forkserver` or `spawn`). Fork works on Linux CPU-only Docker. Forkserver causes broken pipes, spawn fails on cv2/libGL in slim image. Tested and proven during Phase 19.1.
+- **SubprocVecEnv start method**: `fork` (not `forkserver` or `spawn`). Fork works on Linux CPU-only Docker. Tested and proven during Phase 19.1.
 
 ### Memory Agent Alignment
 - **Consolidate after every retrain**: success or failure. POST /consolidate call synthesizes patterns across all training runs. Helps future retrains benefit from accumulated knowledge
@@ -179,7 +178,7 @@ These fixes are prerequisites for Phase 22 retraining and are already merged:
 
 ### DuckDB Concurrent Access
 - `.planning/phases/22-automated-retraining/22-DUCKDB-CONTENTION.md` — Full analysis of DuckDB lock contention, resolution options, SubprocVecEnv findings
-- `src/swingrl/data/db.py` — DatabaseManager with persistent DuckDB singleton. MUST change to short-lived connections for Phase 22
+- `src/swingrl/data/db.py` — DatabaseManager. FeaturePipeline already uses short-lived connections (Phase 19.1). Verify DatabaseManager.duckdb() also uses short-lived pattern.
 
 ### Config & Schema
 - `src/swingrl/config/schema.py` — SwingRLConfig, ShadowConfig, MemoryAgentConfig, TrainingConfig (n_envs, vecenv_backend added)
@@ -218,7 +217,7 @@ These fixes are prerequisites for Phase 22 retraining and are already merged:
 - TDD: mock side-effects create real SB3 model files (Phase 19 pattern)
 
 ### Integration Points
-- `src/swingrl/data/db.py` — **CRITICAL**: change DatabaseManager.duckdb() from persistent singleton to short-lived open/close. Prerequisite for concurrent retrain + live trading
+- `src/swingrl/data/db.py` — Verify DatabaseManager.duckdb() uses short-lived connections (FeaturePipeline already fixed in Phase 19.1)
 - `src/swingrl/scheduler/jobs.py` — add automated_retraining_job() using subprocess.Popen, wire in main.py
 - `src/swingrl/shadow/promoter.py` — add bootstrap guard to evaluate_shadow_promotion()
 - `src/swingrl/config/schema.py` — add RetrainingConfig class to SwingRLConfig
@@ -252,6 +251,10 @@ These fixes are prerequisites for Phase 22 retraining and are already merged:
 - Rolling/one-algo-at-a-time retraining — too complex for initial implementation
 - Separate retrain container — rejected per REQUIREMENTS.md, subprocess isolation sufficient
 - Dynamic Docker resource limits during retrain — fragile, unnecessary with uncapped swingrl on 64GB homelab
+
+### Deferred from Phase 20 (2026-03-20)
+- **Training execution timing shift**: Move training env to use next-bar open price for execution (bar t+1 open instead of bar t close). Changes `PortfolioSimulator.rebalance()` to take `execution_prices` separately from `evaluation_prices`. Mild look-ahead bias acceptable for swing trading but should be fixed when retraining. Retraining required afterward.
+- **Shadow agent verification**: Full verification of shadow gates (pass + fail cases), promotion process, rejection process, and alignment between shadow trading and paper trading pipeline. Include in Phase 22 smoke test.
 
 ### Carryover from Phase 19.1 Consolidated Code Review
 - **MemoryClient connection pooling** (I17) — MemoryClient currently uses per-request urllib connections. Intentional fail-open design. Consider adding connection pooling if latency becomes an issue under retrain load.
