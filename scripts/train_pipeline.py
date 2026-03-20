@@ -395,6 +395,7 @@ def run_all_iterations(
                     models_dir=iter_models_dir,
                     force=True,  # Always force within iterations — each has own directory
                     report={},
+                    iteration_number=i,
                 )
                 iter_result[env_name] = env_result
             except Exception as exc:
@@ -412,6 +413,7 @@ def run_all_iterations(
                         models_dir=iter_models_dir,
                         force=True,
                         report={},
+                        iteration_number=i,
                     )
                     iter_result[env_name] = env_result
                 except Exception as exc2:
@@ -1156,6 +1158,7 @@ def run_environment(
     force: bool,
     report: dict[str, Any],
     report_path: Path | None = None,
+    iteration_number: int = 0,
 ) -> dict[str, Any]:
     """Run the full training pipeline for one environment.
 
@@ -1304,7 +1307,7 @@ def run_environment(
         gate_result,
         features=features_full,
         dates=dates_array,
-        iteration_number=0,  # run_environment is single-run; iterations pass via run_all_iterations
+        iteration_number=iteration_number,
         total_timesteps=DEFAULT_TIMESTEPS[env_name],
     )
 
