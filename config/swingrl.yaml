@@ -100,7 +100,7 @@ memory_agent:
   consolidation:
     provider: "nvidia"                      # key into providers map
     model: ""                               # empty = use provider's default_model
-    timeout_sec: 120
+    timeout_sec: 300
     min_confidence_for_advice: 0.4          # minimum confidence for patterns used in query advice
     max_patterns_per_merge: 2               # max patterns per dedup/merge LLM call
     providers:
