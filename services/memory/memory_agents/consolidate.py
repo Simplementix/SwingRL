@@ -494,17 +494,19 @@ class ConsolidateAgent:
             memories = (memories or []) + trading_memories
 
         # Fetch training dynamics memories (epoch snapshots, reward adjustments,
-        # run summaries). These use flat :historical tags so we can't filter by
-        # env — the LLM text contains algo= and env= fields for context.
-        # Archiving after consolidation prevents unbounded growth.
+        # run summaries). These use flat :historical tags, so filter by checking
+        # for env={env_name} in the text to avoid cross-env contamination and
+        # prevent the first env's stage1 from archiving the other env's data.
         for prefix in ("training_epoch", "reward_adjustment", "training_run"):
-            extra = await get_memories_by_source_prefix_async(
+            candidates = await get_memories_by_source_prefix_async(
                 prefix=prefix,
                 limit=_MEMORY_BATCH_SIZE,
                 archived=False,
             )
-            if extra:
-                memories = (memories or []) + extra
+            if candidates:
+                filtered = [m for m in candidates if f"env={env_name}" in m.get("text", "")]
+                if filtered:
+                    memories = (memories or []) + filtered
 
         if not memories:
             # Fallback: try old-style tags for backward compat, but only for this env

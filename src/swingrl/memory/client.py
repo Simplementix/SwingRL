@@ -95,7 +95,7 @@ class MemoryClient:
                 log.debug("memory_ingest_ok", url=url, status=status)
                 return 200 <= status < 300
         except Exception as exc:
-            log.debug("memory_ingest_failed", url=url, error=str(exc))
+            log.warning("memory_ingest_failed", url=url, error=str(exc))
             return False
 
     def ingest_training(
@@ -154,7 +154,7 @@ class MemoryClient:
                 log.debug("memory_consolidate_ok", url=url, status=status)
                 return 200 <= status < 300
         except Exception as exc:
-            log.debug("memory_consolidate_failed", url=url, error=str(exc))
+            log.warning("memory_consolidate_failed", url=url, error=str(exc))
             return False
 
     def epoch_advice(self, payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
@@ -190,7 +190,7 @@ class MemoryClient:
                 body: dict[str, Any] = _json.loads(resp.read().decode("utf-8"))
                 return body
         except Exception as exc:
-            log.debug("memory_epoch_advice_failed", url=url, error=str(exc))
+            log.warning("memory_epoch_advice_failed", url=url, error=str(exc))
             return {}
 
     def record_outcome(
@@ -263,5 +263,5 @@ class MemoryClient:
                 log.debug("memory_record_outcome_ok", url=url, status=status)
                 return 200 <= status < 300
         except Exception as exc:
-            log.debug("memory_record_outcome_failed", url=url, error=str(exc))
+            log.warning("memory_record_outcome_failed", url=url, error=str(exc))
             return False
