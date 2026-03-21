@@ -135,7 +135,7 @@ _OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
 _OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "300"))
 _OLLAMA_MODEL = os.environ.get("OLLAMA_CONSOLIDATION_MODEL", "qwen2.5:3b")
 
-_MEMORY_BATCH_SIZE = 50
+_MEMORY_BATCH_SIZE = 200
 
 # ---------------------------------------------------------------------------
 # Category enum (shared across schema, prompts, validation)
@@ -866,7 +866,7 @@ class ConsolidateAgent:
                         ],
                         "format": schema,
                         "stream": False,
-                        "options": {"temperature": 0, "num_ctx": 8192},
+                        "options": {"temperature": 0, "num_ctx": 16384},
                     },
                 )
                 resp.raise_for_status()
