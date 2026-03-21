@@ -17,12 +17,11 @@ services:
   swingrl-ollama:
     container_name: swingrl-ollama
     image: ollama/ollama
-    # 4 GB RAM / 4 CPUs for qwen2.5:3b (~2.4 GB). qwen3:14b moved to cloud API.
-    # Hard-pinned to P-cores 0-3 (4 HT threads) for <3s inference during
+    # No mem_limit — Ollama is fallback-only (cloud API is primary for query).
+    # Hard-pinned to P-cores 0-5 (6 HT threads) for <3s inference during
     # concurrent retrain + live trading.
-    mem_limit: 4g
-    cpus: 4.0
-    cpuset: "0-3"
+    cpus: 6.0
+    cpuset: "0-5"
     volumes:
       # Named volume persists model weights across container restarts.
       # Models are pulled once by scripts/setup_ollama.sh (idempotent).
@@ -73,7 +72,7 @@ services:
     # Other containers use ~5.5 GB (Ollama 4G + memory 1G + dashboard 0.5G).
     # SAC replay buffer (500K × n_envs=6) + 36 SubprocVecEnv fork workers
     # peak ~12-15 GB during training. Let the OS manage memory.
-    cpus: 8.0
+    cpus: 10.0
     # Secrets: loaded from .env on the host; never baked into the image.
     env_file: .env
     environment:

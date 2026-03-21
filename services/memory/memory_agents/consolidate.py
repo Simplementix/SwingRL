@@ -7,8 +7,9 @@ Two-stage consolidation pipeline:
 
 Supports two LLM backends:
 1. **Cloud API** (default): OpenAI-compatible endpoint (NVIDIA NIM, OpenRouter, etc.)
-   Uses guided_json via nvext for token-level schema enforcement.
+   Uses json_schema response_format for VLM-compatible structured output.
 2. **Local Ollama** (fallback): Qwen2.5:3b with format parameter for schema enforcement.
+   Cloud failures automatically fall back to Ollama.
 
 Pattern lifecycle:
 - New patterns are deduplicated against existing active patterns.
@@ -733,16 +734,14 @@ class ConsolidateAgent:
     ) -> dict[str, Any] | None:
         """Call LLM (cloud or Ollama) with structured output.
 
-        Args:
-            system_prompt: System message content.
-            user_prompt: User message content.
-            schema: JSON schema for structured output.
-
-        Returns:
-            Parsed and validated dict, or None if invalid.
+        Tries cloud API first if API key is configured, falls back to
+        local Ollama on failure.
         """
         if _CLOUD_API_KEY:
-            return await self._call_cloud_api(system_prompt, user_prompt, schema)
+            result = await self._call_cloud_api(system_prompt, user_prompt, schema)
+            if result is not None:
+                return result
+            log.warning("cloud_api_fallback_to_ollama", provider=_PROVIDER)
         return await self._call_ollama(system_prompt, user_prompt, schema)
 
     async def _call_cloud_api(
@@ -751,12 +750,12 @@ class ConsolidateAgent:
         user_prompt: str,
         schema: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """Call OpenAI-compatible cloud API with guided_json schema enforcement.
+        """Call OpenAI-compatible cloud API with json_schema response format.
 
         Args:
             system_prompt: System message content.
             user_prompt: User message content.
-            schema: JSON schema for guided_json enforcement.
+            schema: JSON schema for structured output enforcement.
 
         Returns:
             Parsed and validated dict, or None if invalid.
@@ -780,17 +779,36 @@ class ConsolidateAgent:
                         "temperature": 0,
                         "max_tokens": 4096,
                         "frequency_penalty": 0.0,
-                        "response_format": {"type": "json_object"},
-                        # NVIDIA NIM guided_json for token-level schema enforcement
-                        **({"nvext": {"guided_json": schema}} if _PROVIDER == "nvidia" else {}),
+                        "response_format": {
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "ConsolidationOutput",
+                                "schema": schema,
+                            },
+                        },
                     },
                 )
                 resp.raise_for_status()
                 body = resp.json()
                 raw_content = body["choices"][0]["message"]["content"]
                 parsed = json.loads(raw_content)
+        except httpx.HTTPStatusError as exc:
+            log.error(
+                "cloud_api_call_failed",
+                provider=_PROVIDER,
+                error=str(exc),
+                status_code=exc.response.status_code,
+                response_body=exc.response.text[:500],
+                exc_type=type(exc).__name__,
+            )
+            return None
         except Exception as exc:
-            log.error("cloud_api_call_failed", provider=_PROVIDER, error=str(exc))
+            log.error(
+                "cloud_api_call_failed",
+                provider=_PROVIDER,
+                error=str(exc) or repr(exc),
+                exc_type=type(exc).__name__,
+            )
             return None
 
         return self._validate_consolidation(parsed)
@@ -825,7 +843,7 @@ class ConsolidateAgent:
                         ],
                         "format": schema,
                         "stream": False,
-                        "options": {"temperature": 0},
+                        "options": {"temperature": 0, "num_ctx": 8192},
                     },
                 )
                 resp.raise_for_status()

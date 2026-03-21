@@ -242,6 +242,7 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
 
     db = DatabaseManager(config)
     init_emergency_flags(db)
+    db.init_schema()
 
     alerter = Alerter(
         webhook_url=config.alerting.alerts_webhook_url,

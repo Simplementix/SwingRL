@@ -930,6 +930,195 @@ def _ingest_wf_results_to_memory(
         log.debug("wf_results_memory_ingest_failed", env_name=env_name, error=str(exc))
 
 
+def _ingest_trading_patterns_to_memory(
+    config: SwingRLConfig,
+    env_name: str,
+    all_wf_results: dict[str, list[Any]],
+    features: np.ndarray | None = None,
+    iteration_number: int = 0,
+) -> None:
+    """Extract per-asset trade stats with macro correlations and ingest to memory.
+
+    Computes regime-conditioned and macro-conditioned trade breakdowns from
+    round-trip trade data in FoldResult.trades. Feeds consolidation categories:
+    trade_quality, live_position, live_trade_veto, live_risk_thresholds,
+    live_cycle_gate, macro_transition.
+
+    Args:
+        config: SwingRL configuration.
+        env_name: Environment name ('equity' or 'crypto').
+        all_wf_results: Dict mapping algo names to lists of FoldResult.
+        features: Full feature array (bars x features). None if unavailable.
+        iteration_number: Current meta-training iteration (0 = baseline).
+    """
+    mem_cfg = getattr(config, "memory_agent", None)
+    if not mem_cfg:
+        return
+    api_key = getattr(mem_cfg, "api_key", "")
+    if not api_key:
+        return
+
+    try:
+        from swingrl.memory.client import MemoryClient
+
+        client = MemoryClient(
+            base_url=mem_cfg.base_url,
+            default_timeout=mem_cfg.timeout_sec,
+            api_key=api_key,
+        )
+    except Exception as exc:
+        log.warning("trading_pattern_memory_client_failed", error=str(exc))
+        return
+
+    # Symbol list for the environment
+    if env_name == "equity":
+        n_symbols = len(config.equity.symbols)
+        per_asset = 15
+        env_symbols = config.equity.symbols
+    else:
+        n_symbols = len(config.crypto.symbols)
+        per_asset = 13
+        env_symbols = config.crypto.symbols
+
+    # Feature indices: [tech_per_asset * n_symbols | 6 macro | 2 HMM | 1 turb]
+    macro_start = n_symbols * per_asset
+    hmm_start = macro_start + 6  # after 6 macro features
+
+    def _asset_stats(
+        trades: list[dict[str, Any]],
+        symbols: list[str],
+    ) -> list[str]:
+        """Compute per-asset trade statistics."""
+        from collections import defaultdict
+
+        by_asset: dict[int, list[float]] = defaultdict(list)
+        for t in trades:
+            by_asset[int(t["asset_idx"])].append(float(t["pnl"]))
+
+        lines: list[str] = []
+        for idx, pnls in sorted(by_asset.items()):
+            sym = symbols[idx] if idx < len(symbols) else f"asset_{idx}"
+            n = len(pnls)
+            wins = sum(1 for p in pnls if p > 0)
+            wr = wins / n if n > 0 else 0.0
+            avg = sum(pnls) / n if n > 0 else 0.0
+            worst = min(pnls) if pnls else 0.0
+            best = max(pnls) if pnls else 0.0
+            lines.append(
+                f"  {sym}: trades={n} win={wr:.3f} avg_pnl={avg:.4f}"
+                f" max_loss={worst:.4f} best={best:.4f}"
+            )
+        return lines
+
+    def _group_stats(trades: list[dict[str, Any]]) -> str:
+        """Compute aggregate stats for a group of trades."""
+        if not trades:
+            return "trades=0"
+        pnls = [float(t["pnl"]) for t in trades]
+        n = len(pnls)
+        wins = sum(1 for p in pnls if p > 0)
+        wr = wins / n if n > 0 else 0.0
+        avg = sum(pnls) / n if n > 0 else 0.0
+        return f"trades={n} win={wr:.3f} avg_pnl={avg:.4f}"
+
+    for algo_name, folds in all_wf_results.items():
+        if not folds:
+            continue
+
+        # Collect all round-trip trades across OOS folds
+        all_trades: list[dict[str, Any]] = []
+        bull_trades: list[dict[str, Any]] = []
+        bear_trades: list[dict[str, Any]] = []
+        # Macro-conditioned accumulators
+        high_vix_trades: list[dict[str, Any]] = []
+        low_vix_trades: list[dict[str, Any]] = []
+        neg_yield_trades: list[dict[str, Any]] = []
+        rate_hike_trades: list[dict[str, Any]] = []
+
+        for fold in folds:
+            fold_trades = getattr(fold, "trades", None) or []
+            all_trades.extend(fold_trades)
+
+            # Classify fold by regime and macro using features
+            if features is not None and hasattr(fold, "test_range"):
+                try:
+                    test_start, test_end = fold.test_range
+                except (TypeError, ValueError):
+                    continue
+                if test_end <= len(features):
+                    fold_features = features[test_start:test_end]
+                    mean_p_bear = float(fold_features[:, hmm_start + 1].mean())
+
+                    if mean_p_bear > 0.5:
+                        bear_trades.extend(fold_trades)
+                    else:
+                        bull_trades.extend(fold_trades)
+
+                    # Macro conditions (6 features at macro_start)
+                    macro_feats = fold_features[:, macro_start : macro_start + 6]
+                    mean_vix = float(macro_feats[:, 0].mean())
+                    mean_yield = float(macro_feats[:, 1].mean())
+                    mean_fed_change = float(macro_feats[:, 3].mean())
+
+                    if mean_vix > 1.5:
+                        high_vix_trades.extend(fold_trades)
+                    elif mean_vix < -0.5:
+                        low_vix_trades.extend(fold_trades)
+                    if mean_yield < 0:
+                        neg_yield_trades.extend(fold_trades)
+                    if mean_fed_change > 0.0025:
+                        rate_hike_trades.extend(fold_trades)
+
+        if not all_trades:
+            continue
+
+        parts: list[str] = [
+            f"TRADING PATTERNS: env={env_name} algo={algo_name.upper()}"
+            f" iteration={iteration_number}",
+            f"Per-asset OOS trade stats ({len(folds)} folds):",
+        ]
+        parts.extend(_asset_stats(all_trades, env_symbols))
+
+        if bull_trades or bear_trades:
+            parts.append("Regime breakdown:")
+            parts.append(f"  bull_folds: {_group_stats(bull_trades)}")
+            parts.append(f"  bear_folds: {_group_stats(bear_trades)}")
+
+        macro_lines: list[str] = []
+        if high_vix_trades:
+            macro_lines.append(f"  high_vix(>1.5\u03c3): {_group_stats(high_vix_trades)}")
+        if low_vix_trades:
+            macro_lines.append(f"  low_vix(<-0.5\u03c3): {_group_stats(low_vix_trades)}")
+        if neg_yield_trades:
+            macro_lines.append(f"  neg_yield_spread: {_group_stats(neg_yield_trades)}")
+        if rate_hike_trades:
+            macro_lines.append(f"  rate_hike(>25bp/90d): {_group_stats(rate_hike_trades)}")
+        if macro_lines:
+            parts.append("Macro-conditioned trades:")
+            parts.extend(macro_lines)
+
+        pattern_text = "\n".join(parts)
+
+        try:
+            client.ingest_training(
+                pattern_text,
+                source=f"trading_pattern:{env_name}:{algo_name}",
+            )
+            log.info(
+                "trading_patterns_ingested",
+                env_name=env_name,
+                algo_name=algo_name,
+                total_trades=len(all_trades),
+            )
+        except Exception as exc:
+            log.warning(
+                "trading_pattern_ingest_failed",
+                env_name=env_name,
+                algo_name=algo_name,
+                error=str(exc),
+            )
+
+
 def _write_json_report(report: dict[str, Any], report_path: Path) -> None:
     """Write training report to JSON file.
 
@@ -1309,6 +1498,13 @@ def run_environment(
         dates=dates_array,
         iteration_number=iteration_number,
         total_timesteps=DEFAULT_TIMESTEPS[env_name],
+    )
+    _ingest_trading_patterns_to_memory(
+        config,
+        env_name,
+        all_wf_results,
+        features=features_full,
+        iteration_number=iteration_number,
     )
 
     tuning_rounds: list[dict[str, Any]] = []

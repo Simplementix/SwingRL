@@ -7,7 +7,7 @@ Two public methods:
 Both methods:
 - Pull active consolidations (filtered by confidence + status) and raw memories
 - Prefer Stage 2 cross-env patterns over Stage 1 per-env patterns
-- Call Ollama qwen2.5:3b with structured JSON output schema
+- Call cloud API (NVIDIA NIM) as primary, Ollama qwen2.5:3b as fallback
 - Return safe clamped defaults on any failure (cold-start guard)
 - XML-wrap all memory text injected into prompts
 - Track which patterns were presented via pattern_presentations table
@@ -106,8 +106,47 @@ _SAFE_EPOCH_DEFAULTS: dict[str, Any] = {
 }
 
 _OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
-_OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "30"))
+_OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
 _QUERY_MODEL = "qwen2.5:3b"
+
+
+# ---------------------------------------------------------------------------
+# Cloud API config (primary LLM, Ollama is fallback)
+# ---------------------------------------------------------------------------
+
+
+def _load_query_cloud_config() -> tuple[str, str, str, float]:
+    """Load cloud API config for query agent from mounted swingrl.yaml."""
+    config_path = Path("/app/config/swingrl.yaml")
+    if config_path.exists():
+        cfg = yaml.safe_load(config_path.read_text()) or {}
+        mem = cfg.get("memory_agent", {})
+        cons = mem.get("consolidation", {})
+        providers = cons.get("providers", {})
+        provider_key = cons.get("provider", "nvidia")
+        provider = providers.get(provider_key, {})
+        base_url = provider.get("base_url", "https://integrate.api.nvidia.com/v1")
+        api_key = os.environ.get(f"{provider_key.upper()}_API_KEY", provider.get("api_key", ""))
+        model = cons.get("model") or provider.get("default_model", "moonshotai/kimi-k2.5")
+        timeout = float(cons.get("timeout_sec", 30))
+        return base_url, api_key, model, timeout
+    return (
+        os.environ.get("CONSOLIDATION_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+        os.environ.get("CONSOLIDATION_API_KEY", ""),
+        os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5"),
+        30.0,
+    )
+
+
+try:
+    _CLOUD_BASE_URL, _CLOUD_API_KEY, _CLOUD_MODEL, _CLOUD_TIMEOUT = _load_query_cloud_config()
+except Exception:
+    _CLOUD_BASE_URL = os.environ.get(
+        "CONSOLIDATION_BASE_URL", "https://integrate.api.nvidia.com/v1"
+    )
+    _CLOUD_API_KEY = os.environ.get("CONSOLIDATION_API_KEY", "")
+    _CLOUD_MODEL = os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5")
+    _CLOUD_TIMEOUT = 30.0
 
 
 def _build_system_prompt(
@@ -326,7 +365,7 @@ def _clamp_reward_weights(weights: dict[str, Any]) -> dict[str, float]:
 
 
 class QueryAgent:
-    """Advises RL training configuration using memory patterns + Ollama LLM."""
+    """Advises RL training configuration using memory patterns + cloud/Ollama LLM."""
 
     async def advise_run_config(self, query: str) -> dict[str, Any]:
         """Return LLM-advised run configuration hyperparameters.
@@ -354,7 +393,7 @@ class QueryAgent:
             "Please recommend hyperparameters for this training run."
         )
 
-        result = await self._call_ollama(user_content, _RUN_CONFIG_SCHEMA)
+        result = await self._call_lm(user_content, _RUN_CONFIG_SCHEMA)
         if result is None:
             log.warning("run_config_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_DEFAULTS)
@@ -395,7 +434,7 @@ class QueryAgent:
             "Should I adjust reward weights or stop training early?"
         )
 
-        result = await self._call_ollama(user_content, _EPOCH_ADVICE_SCHEMA)
+        result = await self._call_lm(user_content, _EPOCH_ADVICE_SCHEMA)
         if result is None:
             log.warning("epoch_advice_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_EPOCH_DEFAULTS)
@@ -471,8 +510,17 @@ class QueryAgent:
         # R3: Only include raw memories if insufficient consolidations (cold start)
         if len(consolidations) < 3 and raw_memories:
             parts.append("=== Recent Raw Memories ===")
+            _max_raw_chars = 20_000  # ~5K tokens, leaves room for system + response
+            total_chars = 0
             for m in raw_memories:
-                parts.append(m["text"])
+                text = m["text"]
+                if total_chars + len(text) > _max_raw_chars:
+                    remaining = _max_raw_chars - total_chars
+                    if remaining > 200:
+                        parts.append(text[:remaining] + "...[truncated]")
+                    break
+                parts.append(text)
+                total_chars += len(text)
 
         if not parts:
             return "<no_memories>No memories available yet (cold start)</no_memories>", []
@@ -527,7 +575,7 @@ class QueryAgent:
 
         raw_memories: list[dict[str, Any]] = []
         # Prefetch raw memories; _filter_and_format_context decides whether to use them
-        memories_candidate = get_memories(archived=False, limit=20)
+        memories_candidate = get_memories(archived=False, limit=10)
         if memories_candidate:
             raw_memories = memories_candidate
 
@@ -574,7 +622,7 @@ class QueryAgent:
         all_consolidations = stage2 + stage1
 
         raw_memories: list[dict[str, Any]] = []
-        memories_candidate = await get_memories_async(archived=False, limit=20)
+        memories_candidate = await get_memories_async(archived=False, limit=10)
         if memories_candidate:
             raw_memories = memories_candidate
 
@@ -678,7 +726,7 @@ class QueryAgent:
                         ],
                         "format": schema,
                         "stream": False,
-                        "options": {"temperature": 0},
+                        "options": {"temperature": 0, "num_ctx": 8192},
                     },
                 )
                 resp.raise_for_status()
@@ -687,3 +735,70 @@ class QueryAgent:
         except Exception as exc:
             log.error("query_ollama_call_failed", error=str(exc))
             return None
+
+    async def _call_cloud_api(
+        self, user_content: str, schema: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Call cloud API (NVIDIA NIM) with structured JSON output."""
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=_CLOUD_TIMEOUT, write=30.0, pool=10.0)
+            ) as client:
+                resp = await client.post(
+                    f"{_CLOUD_BASE_URL.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {_CLOUD_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": _CLOUD_MODEL,
+                        "messages": [
+                            {"role": "system", "content": _SYSTEM_PROMPT},
+                            {"role": "user", "content": user_content},
+                        ],
+                        "temperature": 0,
+                        "max_tokens": 2048,
+                        "response_format": {
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "QueryOutput",
+                                "schema": schema,
+                            },
+                        },
+                    },
+                )
+                if resp.status_code >= 400:
+                    log.error(
+                        "query_cloud_http_error",
+                        status_code=resp.status_code,
+                        response_body=resp.text[:500],
+                    )
+                resp.raise_for_status()
+                body = resp.json()
+                raw_content = body["choices"][0]["message"]["content"]
+                return json.loads(raw_content)
+        except httpx.HTTPStatusError as exc:
+            log.error(
+                "query_cloud_call_failed",
+                error=str(exc),
+                status_code=exc.response.status_code,
+                response_body=exc.response.text[:500],
+                exc_type=type(exc).__name__,
+            )
+            return None
+        except Exception as exc:
+            log.error(
+                "query_cloud_call_failed",
+                error=str(exc) or repr(exc),
+                exc_type=type(exc).__name__,
+            )
+            return None
+
+    async def _call_lm(self, user_content: str, schema: dict[str, Any]) -> dict[str, Any] | None:
+        """Try cloud API first, fall back to local Ollama."""
+        if _CLOUD_API_KEY:
+            result = await self._call_cloud_api(user_content, schema)
+            if result is not None:
+                return result
+            log.warning("query_cloud_fallback_to_ollama")
+        return await self._call_ollama(user_content, schema)
