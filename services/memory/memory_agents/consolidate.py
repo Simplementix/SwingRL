@@ -802,7 +802,7 @@ class ConsolidateAgent:
                             {"role": "user", "content": user_prompt},
                         ],
                         "temperature": 0,
-                        "max_tokens": 4096,
+                        "max_tokens": 8192,
                         "frequency_penalty": 0.0,
                         "response_format": {
                             "type": "json_schema",
