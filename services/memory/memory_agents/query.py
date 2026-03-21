@@ -140,13 +140,36 @@ def _load_query_cloud_config() -> tuple[str, str, str, float]:
 
 try:
     _CLOUD_BASE_URL, _CLOUD_API_KEY, _CLOUD_MODEL, _CLOUD_TIMEOUT = _load_query_cloud_config()
-except Exception:
+except Exception as _cfg_exc:
+    log.warning("query_cloud_config_load_failed", error=str(_cfg_exc), fallback="env_vars")
     _CLOUD_BASE_URL = os.environ.get(
         "CONSOLIDATION_BASE_URL", "https://integrate.api.nvidia.com/v1"
     )
     _CLOUD_API_KEY = os.environ.get("CONSOLIDATION_API_KEY", "")
     _CLOUD_MODEL = os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5")
     _CLOUD_TIMEOUT = 30.0
+
+
+def validate_query_config() -> None:
+    """Validate that query agent cloud config is usable at startup.
+
+    Logs warnings for missing API keys or base URLs. Call from app lifespan.
+    """
+    if _CLOUD_API_KEY:
+        log.info(
+            "query_cloud_config_validated",
+            model=_CLOUD_MODEL,
+            has_api_key=True,
+            base_url=_CLOUD_BASE_URL[:60],
+            timeout=_CLOUD_TIMEOUT,
+        )
+    else:
+        log.warning(
+            "query_cloud_no_api_key",
+            hint="Query agent will use Ollama only (slower on CPU)",
+            ollama_model=_QUERY_MODEL,
+            ollama_timeout=_OLLAMA_TIMEOUT,
+        )
 
 
 def _build_system_prompt(

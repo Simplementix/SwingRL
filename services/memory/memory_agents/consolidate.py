@@ -126,6 +126,7 @@ def validate_consolidation_config() -> None:
         model=_CLOUD_MODEL,
         has_api_key=bool(_CLOUD_API_KEY),
         base_url=_CLOUD_BASE_URL[:60],
+        ollama_fallback=_OLLAMA_MODEL,
     )
 
 

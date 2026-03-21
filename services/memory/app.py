@@ -28,6 +28,7 @@ import httpx
 import structlog
 from fastapi import FastAPI
 from memory_agents.consolidate import validate_consolidation_config
+from memory_agents.query import validate_query_config
 from routers import core, debug, training
 
 from db import init_capacity_limiters, init_db
@@ -97,7 +98,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 3. Validate consolidation config (warn on missing keys/URLs)
     validate_consolidation_config()
 
-    # 4. Wait for Ollama — never start degraded
+    # 4. Validate query agent cloud config
+    validate_query_config()
+
+    # 5. Wait for Ollama — never start degraded
     await _wait_for_ollama()
 
     log.info("memory_service_ready")
