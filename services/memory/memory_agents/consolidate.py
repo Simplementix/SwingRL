@@ -484,6 +484,28 @@ class ConsolidateAgent:
             limit=_MEMORY_BATCH_SIZE,
             archived=False,
         )
+        # Also fetch trading pattern memories (per-asset stats, regime/macro breakdowns)
+        trading_memories = await get_memories_by_source_prefix_async(
+            prefix=f"trading_pattern:{env_name}",
+            limit=_MEMORY_BATCH_SIZE,
+            archived=False,
+        )
+        if trading_memories:
+            memories = (memories or []) + trading_memories
+
+        # Fetch training dynamics memories (epoch snapshots, reward adjustments,
+        # run summaries). These use flat :historical tags so we can't filter by
+        # env — the LLM text contains algo= and env= fields for context.
+        # Archiving after consolidation prevents unbounded growth.
+        for prefix in ("training_epoch", "reward_adjustment", "training_run"):
+            extra = await get_memories_by_source_prefix_async(
+                prefix=prefix,
+                limit=_MEMORY_BATCH_SIZE,
+                archived=False,
+            )
+            if extra:
+                memories = (memories or []) + extra
+
         if not memories:
             # Fallback: try old-style tags for backward compat, but only for this env
             memories = await get_memories_by_source_prefix_async(
