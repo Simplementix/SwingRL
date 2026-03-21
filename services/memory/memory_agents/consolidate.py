@@ -467,10 +467,12 @@ class ConsolidateAgent:
         return total
 
     async def run_stage1(self, env_name: str) -> int:
-        """Stage 1: Per-environment consolidation.
+        """Stage 1: Per-environment consolidation, one algo at a time.
 
-        Fetches unarchived memories for this env, consolidates via LLM,
-        deduplicates against existing patterns, archives source memories.
+        Fetches unarchived memories for this env, groups by algo, and
+        consolidates each algo sequentially via LLM. Shared context
+        (ensemble summaries, epoch snapshots, reward adjustments) is
+        included in every call. Archives all source memories afterward.
 
         Args:
             env_name: Environment name ('equity' or 'crypto').
@@ -478,13 +480,15 @@ class ConsolidateAgent:
         Returns:
             Number of new patterns created.
         """
+        from collections import defaultdict
+
         # Fetch memories with env-specific source tags
         memories = await get_memories_by_source_prefix_async(
             prefix=f"walk_forward:{env_name}",
             limit=_MEMORY_BATCH_SIZE,
             archived=False,
         )
-        # Also fetch trading pattern memories (per-asset stats, regime/macro breakdowns)
+        # Also fetch trading pattern memories
         trading_memories = await get_memories_by_source_prefix_async(
             prefix=f"trading_pattern:{env_name}",
             limit=_MEMORY_BATCH_SIZE,
@@ -493,10 +497,7 @@ class ConsolidateAgent:
         if trading_memories:
             memories = (memories or []) + trading_memories
 
-        # Fetch training dynamics memories (epoch snapshots, reward adjustments,
-        # run summaries). These use flat :historical tags, so filter by checking
-        # for env={env_name} in the text to avoid cross-env contamination and
-        # prevent the first env's stage1 from archiving the other env's data.
+        # Fetch training dynamics memories filtered by env
         for prefix in ("training_epoch", "reward_adjustment", "training_run"):
             candidates = await get_memories_by_source_prefix_async(
                 prefix=prefix,
@@ -509,7 +510,6 @@ class ConsolidateAgent:
                     memories = (memories or []) + filtered
 
         if not memories:
-            # Fallback: try old-style tags for backward compat, but only for this env
             memories = await get_memories_by_source_prefix_async(
                 prefix=env_name,
                 limit=_MEMORY_BATCH_SIZE,
@@ -519,41 +519,78 @@ class ConsolidateAgent:
                 log.info("consolidation_skipped_no_memories", env_name=env_name)
                 return 0
 
-        log.info("consolidation_stage1_starting", env_name=env_name, memory_count=len(memories))
-        memory_texts = "\n\n".join(f"- {m['text']}" for m in memories)
-        memory_ids = [m["id"] for m in memories]
+        # Group memories: per-algo vs shared (ensemble, epoch, reward, run)
+        algo_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        shared_memories: list[dict[str, Any]] = []
 
-        result = await self._call_llm_with_retry(memory_texts)
+        for m in memories:
+            source = m.get("source", "")
+            parts = source.split(":")
+            # walk_forward:{env}:{algo} or trading_pattern:{env}:{algo}
+            if len(parts) >= 3 and parts[-1] not in ("ensemble", "historical"):
+                algo_groups[parts[-1]].append(m)
+            else:
+                shared_memories.append(m)
 
-        if result is None:
-            log.warning("consolidation_stage1_discarded", env_name=env_name)
-            return 0
+        if not algo_groups:
+            # No per-algo memories — consolidate shared only
+            algo_groups["_shared"] = []
 
-        patterns = result.get("patterns", [])
-        created = 0
+        all_memory_ids: list[int] = [m["id"] for m in memories]
+        total_created = 0
 
-        for pattern in patterns:
-            row_id = await self._dedup_and_insert(
-                pattern=pattern,
-                source_count=len(memories),
-                stage=1,
+        log.info(
+            "consolidation_stage1_starting",
+            env_name=env_name,
+            memory_count=len(memories),
+            algo_groups=sorted(algo_groups.keys()),
+            shared_count=len(shared_memories),
+        )
+
+        for algo_name, algo_mems in sorted(algo_groups.items()):
+            subset = algo_mems + shared_memories
+            if not subset:
+                continue
+
+            log.info(
+                "consolidation_stage1_algo_starting",
                 env_name=env_name,
-                memory_ids=memory_ids,
+                algo=algo_name,
+                memory_count=len(subset),
             )
-            if row_id is not None:
-                created += 1
 
-        # Archive source memories after all patterns processed — always archive
-        # regardless of whether new patterns were created (memories were consumed
-        # by the LLM either way; skipping archive causes infinite re-consolidation)
-        await archive_memories_async(memory_ids)
+            memory_texts = "\n\n".join(f"- {m['text']}" for m in subset)
+            result = await self._call_llm_with_retry(memory_texts)
+
+            if result is None:
+                log.warning(
+                    "consolidation_stage1_algo_discarded",
+                    env_name=env_name,
+                    algo=algo_name,
+                )
+                continue
+
+            patterns = result.get("patterns", [])
+            for pattern in patterns:
+                row_id = await self._dedup_and_insert(
+                    pattern=pattern,
+                    source_count=len(subset),
+                    stage=1,
+                    env_name=env_name,
+                    memory_ids=[m["id"] for m in algo_mems],
+                )
+                if row_id is not None:
+                    total_created += 1
+
+        # Archive ALL source memories after all algo groups processed
+        await archive_memories_async(all_memory_ids)
 
         log.info(
             "consolidation_stage1_complete",
             env_name=env_name,
-            patterns_created=created,
+            patterns_created=total_created,
         )
-        return created
+        return total_created
 
     async def run_stage2(
         self,
