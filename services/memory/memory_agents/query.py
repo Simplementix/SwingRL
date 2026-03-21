@@ -799,6 +799,12 @@ class QueryAgent:
                 resp.raise_for_status()
                 body = resp.json()
                 raw_content = body["choices"][0]["message"]["content"]
+                if raw_content is None:
+                    log.error(
+                        "query_cloud_empty_content",
+                        finish_reason=body["choices"][0].get("finish_reason"),
+                    )
+                    return None
                 return json.loads(raw_content)
         except httpx.HTTPStatusError as exc:
             log.error(
