@@ -73,14 +73,14 @@ def _load_consolidation_config() -> tuple[str, str, str, float, str]:
         # API key: check env var first (secrets), then config
         api_key = os.environ.get(f"{provider_key.upper()}_API_KEY", provider.get("api_key", ""))
         model = cons.get("model") or provider.get("default_model", "moonshotai/kimi-k2.5")
-        timeout = float(cons.get("timeout_sec", 300))
+        timeout = float(cons.get("timeout_sec", 600))
         return base_url, api_key, model, timeout, provider_key
     # Fallback to env vars (backward compat)
     return (
         os.environ.get("CONSOLIDATION_BASE_URL", "https://integrate.api.nvidia.com/v1"),
         os.environ.get("CONSOLIDATION_API_KEY", ""),
         os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5"),
-        float(os.environ.get("CONSOLIDATION_TIMEOUT", "300")),
+        float(os.environ.get("CONSOLIDATION_TIMEOUT", "600")),
         "env",
     )
 
@@ -100,7 +100,7 @@ except Exception as _cfg_exc:
     )
     _CLOUD_API_KEY = os.environ.get("CONSOLIDATION_API_KEY", "")
     _CLOUD_MODEL = os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5")
-    _CLOUD_TIMEOUT = float(os.environ.get("CONSOLIDATION_TIMEOUT", "300"))
+    _CLOUD_TIMEOUT = float(os.environ.get("CONSOLIDATION_TIMEOUT", "600"))
     _PROVIDER = "env"
 
 
@@ -839,15 +839,9 @@ class ConsolidateAgent:
                             {"role": "user", "content": user_prompt},
                         ],
                         "temperature": 0,
-                        "max_tokens": 8192,
+                        "max_tokens": 16384,
                         "frequency_penalty": 0.0,
-                        "response_format": {
-                            "type": "json_schema",
-                            "json_schema": {
-                                "name": "ConsolidationOutput",
-                                "schema": schema,
-                            },
-                        },
+                        "response_format": {"type": "json_object"},
                     },
                 )
                 resp.raise_for_status()

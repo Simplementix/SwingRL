@@ -780,14 +780,8 @@ class QueryAgent:
                             {"role": "user", "content": user_content},
                         ],
                         "temperature": 0,
-                        "max_tokens": 2048,
-                        "response_format": {
-                            "type": "json_schema",
-                            "json_schema": {
-                                "name": "QueryOutput",
-                                "schema": schema,
-                            },
-                        },
+                        "max_tokens": 16384,
+                        "response_format": {"type": "json_object"},
                     },
                 )
                 if resp.status_code >= 400:
