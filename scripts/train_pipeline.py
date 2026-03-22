@@ -477,7 +477,11 @@ def run_all_iterations(
                 api_key=api_key,
             )
             # Stage 1 per-env + Stage 2 cross-env consolidation
-            memory_client.consolidate(timeout=120.0)
+            # Use configured timeout (LLM consolidation can take 30+ minutes)
+            consolidate_timeout = float(
+                getattr(cfg.memory_agent.consolidation, "timeout_sec", 1800.0)
+            )
+            memory_client.consolidate(timeout=consolidate_timeout)
             log.info("memory_consolidated", after_iteration=i)
 
             # Record iteration outcomes for pattern effectiveness tracking
@@ -960,6 +964,7 @@ def _ingest_trading_patterns_to_memory(
     all_wf_results: dict[str, list[Any]],
     features: np.ndarray | None = None,
     iteration_number: int = 0,
+    hp_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Extract per-asset trade stats with macro correlations and ingest to memory.
 
@@ -1102,9 +1107,11 @@ def _ingest_trading_patterns_to_memory(
             )
             continue
 
+        algo_hp_override = (hp_overrides or {}).get(algo_name)
+        hp_source = "memory_advised" if algo_hp_override else "baseline"
         parts: list[str] = [
             f"TRADING PATTERNS: env={env_name} algo={algo_name.upper()}"
-            f" iteration={iteration_number}",
+            f" iteration={iteration_number} hp_source={hp_source}",
             f"Per-asset OOS trade stats ({len(folds)} folds):",
         ]
         parts.extend(_asset_stats(all_trades, env_symbols))
@@ -1578,6 +1585,7 @@ def run_environment(
         all_wf_results,
         features=features_full,
         iteration_number=iteration_number,
+        hp_overrides=wf_hp_overrides if iteration_number > 0 else None,
     )
 
     tuning_rounds: list[dict[str, Any]] = []
