@@ -646,6 +646,7 @@ def _ingest_wf_results_to_memory(
     dates: np.ndarray | None = None,
     iteration_number: int = 0,
     total_timesteps: int = 0,
+    hp_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Ingest enriched walk-forward performance metrics to memory agent.
 
@@ -820,20 +821,24 @@ def _ingest_wf_results_to_memory(
                     f"overfit_gap={ovf.get('gap', 0.0):.4f}"
                 )
 
-            # Hyperparameters used for this algo
+            # Hyperparameters actually used (baseline merged with any override)
             from swingrl.training.trainer import HYPERPARAMS
 
-            hp = HYPERPARAMS.get(algo_name, {})
+            hp = HYPERPARAMS.get(algo_name, {}).copy()
+            algo_hp_override = (hp_overrides or {}).get(algo_name)
+            if algo_hp_override:
+                hp.update(algo_hp_override)
             hp_parts = [f"{k}={v}" for k, v in hp.items()]
             if algo_name == "sac":
                 hp_parts.append(f"buffer_size={config.training.sac_buffer_size}")
             hp_str = " ".join(hp_parts)
+            hp_source = "memory_advised" if algo_hp_override else "baseline"
 
             # Category 4: iteration_number and total_timesteps in header
             algo_text = (
                 f"WALK-FORWARD ALGO RESULTS: env={env_name} algo={algo_name.upper()} "
                 f"iteration={iteration_number} total_timesteps={total_timesteps} "
-                f"memory_enabled={mem_cfg.enabled} "
+                f"memory_enabled={mem_cfg.enabled} hp_source={hp_source} "
                 f"hyperparams: {hp_str}\n"
                 f"folds={len(folds)} passed_gate={gate_pass_count}/{len(folds)} "
                 f"mean_sharpe={float(np.mean(sharpes)):.4f} "
@@ -1234,17 +1239,19 @@ def _run_wf_for_algo(
     prices: np.ndarray,
     models_dir: Path,
     timesteps: int,
+    hp_override: dict[str, Any] | None = None,
 ) -> tuple[str, list[Any]]:
-    """Run walk-forward validation for one algo. Top-level for picklability.
+    """Run walk-forward validation for one algo. Top-level for serialization.
 
     Args:
         env_name: Environment name.
         algo_name: Algorithm name.
-        config_dict: SwingRLConfig serialized as dict (avoids pickle issues).
+        config_dict: SwingRLConfig serialized as dict (avoids serialization issues).
         features: Full feature array.
         prices: Full price array.
         models_dir: Models root directory.
         timesteps: Training timesteps per fold.
+        hp_override: Memory-advised hyperparameter overrides (iter 1+).
 
     Returns:
         Tuple of (algo_name, fold_results_list).
@@ -1253,7 +1260,13 @@ def _run_wf_for_algo(
 
     config = _reconstruct_config(config_dict)
 
-    log.info("pipeline_wf_started", env_name=env_name, algo=algo_name, pid=os.getpid())
+    log.info(
+        "pipeline_wf_started",
+        env_name=env_name,
+        algo=algo_name,
+        pid=os.getpid(),
+        hp_override=bool(hp_override),
+    )
 
     backtester = WalkForwardBacktester(config=config, db=None)
     folds = backtester.run(
@@ -1263,6 +1276,7 @@ def _run_wf_for_algo(
         prices=prices,
         models_dir=models_dir,
         total_timesteps=timesteps,
+        hyperparams_override=hp_override,
     )
 
     log.info("pipeline_wf_complete", env_name=env_name, algo=algo_name, fold_count=len(folds))
@@ -1449,6 +1463,37 @@ def run_environment(
         else:
             algos_to_run.append(algo_name)
 
+    # Query memory-adjusted HP for WF (memory-enhanced iterations only)
+    wf_hp_overrides: dict[str, dict[str, Any]] = {}
+    if algos_to_run and iteration_number > 0:
+        mem_cfg = getattr(config, "memory_agent", None)
+        if mem_cfg and mem_cfg.enabled and mem_cfg.meta_training:
+            try:
+                from swingrl.memory.training.meta_orchestrator import (  # noqa: PLC0415
+                    MetaTrainingOrchestrator,
+                )
+
+                wf_client = MemoryClient(
+                    base_url=mem_cfg.base_url,
+                    default_timeout=mem_cfg.timeout_sec,
+                    api_key=getattr(mem_cfg, "api_key", ""),
+                )
+                wf_meta = MetaTrainingOrchestrator(
+                    config=config,
+                    memory_client=wf_client,
+                )
+                for algo in algos_to_run:
+                    hp = wf_meta.query_hyperparams(env_name, algo)
+                    if hp:
+                        wf_hp_overrides[algo] = hp
+            except Exception as exc:
+                log.warning(
+                    "wf_memory_hp_query_failed",
+                    env_name=env_name,
+                    iteration=iteration_number,
+                    error=str(exc),
+                )
+
     # Run walk-forward for all non-checkpointed algos in parallel
     if algos_to_run:
         max_workers = min(3, len(algos_to_run))
@@ -1457,6 +1502,7 @@ def run_environment(
             env_name=env_name,
             algos=algos_to_run,
             max_workers=max_workers,
+            memory_hp_algos=list(wf_hp_overrides.keys()),
         )
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -1470,6 +1516,7 @@ def run_environment(
                     prices_full,
                     models_dir,
                     DEFAULT_TIMESTEPS[env_name],
+                    wf_hp_overrides.get(algo),
                 ): algo
                 for algo in algos_to_run
             }
@@ -1523,6 +1570,7 @@ def run_environment(
         dates=dates_array,
         iteration_number=iteration_number,
         total_timesteps=DEFAULT_TIMESTEPS[env_name],
+        hp_overrides=wf_hp_overrides if iteration_number > 0 else None,
     )
     _ingest_trading_patterns_to_memory(
         config,

@@ -386,6 +386,51 @@ class TestMetaOrchestratorGenerateRunId:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# TestQueryHyperparams
+# ---------------------------------------------------------------------------
+
+
+class TestQueryHyperparams:
+    """TRAIN-09: query_hyperparams() returns clamped, SB3-keyed HP dict."""
+
+    def test_query_hyperparams_cold_start_returns_empty(self, tmp_path: Path) -> None:
+        """TRAIN-09: Zero patterns triggers cold-start guard, returns empty dict."""
+        orch = _make_orchestrator(tmp_path)
+        orch._get_pattern_count = MagicMock(return_value=0)
+        result = orch.query_hyperparams("equity", "ppo")
+        assert result == {}
+
+    def test_query_hyperparams_returns_clamped_hp(self, tmp_path: Path) -> None:
+        """TRAIN-09: Out-of-bound values are clamped; entropy_coeff mapped to ent_coef."""
+        orch = _make_orchestrator(tmp_path)
+        # _query_run_config returns raw (unclamped) values
+        orch._query_run_config = MagicMock(
+            return_value={"learning_rate": 0.005, "entropy_coeff": 0.1, "gamma": 0.95}
+        )
+        result = orch.query_hyperparams("equity", "ppo")
+
+        # learning_rate 0.005 > max 0.001 → clamped to 0.001
+        assert result["learning_rate"] == 0.001
+        # entropy_coeff 0.1 > max 0.05 → clamped to 0.05, key mapped to ent_coef
+        assert result["ent_coef"] == 0.05
+        assert "entropy_coeff" not in result
+        # gamma 0.95 is within [0.90, 0.9999] → passes through
+        assert result["gamma"] == 0.95
+
+    def test_query_hyperparams_fail_open(self, tmp_path: Path) -> None:
+        """TRAIN-09: _query_run_config returning empty dict yields empty result (fail-open)."""
+        orch = _make_orchestrator(tmp_path)
+        orch._query_run_config = MagicMock(return_value={})
+        result = orch.query_hyperparams("equity", "ppo")
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# TestMetaOrchestratorPatternCountWarning
+# ---------------------------------------------------------------------------
+
+
 class TestMetaOrchestratorPatternCountWarning:
     """TRAIN-09: _get_pattern_count logs warning on HTTP failure."""
 

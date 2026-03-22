@@ -856,3 +856,129 @@ class TestTradingPatternSkipWarning:
         assert "trading_patterns_skipped_no_trades" in log_events, (
             "Should log trading_patterns_skipped_no_trades when fold has empty trades"
         )
+
+
+# ===========================================================================
+# TestWfHpOverride
+# ===========================================================================
+
+
+class TestWfHpOverride:
+    """TRAIN-09: Walk-forward hp_override plumbing from pipeline to backtester."""
+
+    def test_wf_hp_override_passed_to_worker(self, tmp_path: Path) -> None:
+        """TRAIN-09: hp_override dict forwarded to WalkForwardBacktester.run() as hyperparams_override."""
+        pipeline = _import_pipeline()
+
+        import numpy as np
+
+        mock_backtester = MagicMock()
+        mock_backtester.run.return_value = []
+
+        hp_override = {"learning_rate": 0.0005}
+
+        with patch("swingrl.agents.backtest.WalkForwardBacktester", return_value=mock_backtester):
+            pipeline._run_wf_for_algo(
+                env_name="equity",
+                algo_name="ppo",
+                config_dict={},
+                features=np.zeros((100, 10)),
+                prices=np.zeros(100),
+                models_dir=tmp_path,
+                timesteps=100_000,
+                hp_override=hp_override,
+            )
+
+        mock_backtester.run.assert_called_once()
+        call_kwargs = mock_backtester.run.call_args
+        assert call_kwargs.kwargs.get("hyperparams_override") == {"learning_rate": 0.0005} or (
+            call_kwargs[1].get("hyperparams_override") == {"learning_rate": 0.0005}
+        )
+
+
+# ===========================================================================
+# TestWfMemoryIngestionHpSource
+# ===========================================================================
+
+
+class TestWfMemoryIngestionHpSource:
+    """TRAIN-09: _ingest_wf_results_to_memory tags hp_source correctly."""
+
+    def test_wf_memory_ingestion_includes_hp_source(self, tmp_path: Path) -> None:
+        """TRAIN-09: Ingested text contains hp_source=memory_advised when hp_overrides provided."""
+        pipeline = _import_pipeline()
+
+        # Build a mock config with memory_agent section
+        cfg = MagicMock()
+        cfg.memory_agent = MagicMock(
+            enabled=True,
+            base_url="http://localhost:8889",
+            timeout_sec=30.0,
+            api_key="test-key",  # pragma: allowlist secret
+        )
+        cfg.equity = MagicMock(symbols=["SPY", "QQQ"])
+        cfg.training = MagicMock(sac_buffer_size=100_000)
+
+        # Create a mock FoldResult with metrics and trades
+        mock_fold = MagicMock()
+        mock_fold.out_of_sample_metrics = {
+            "sharpe": 1.5,
+            "mdd": -0.05,
+            "sortino": 2.0,
+            "profit_factor": 1.8,
+            "win_rate": 0.55,
+            "total_trades": 10,
+            "calmar": 0.6,
+            "rachev": 1.2,
+            "avg_drawdown": -0.02,
+            "max_dd_duration": 5,
+            "total_return": 0.10,
+            "avg_win": 0.02,
+            "avg_loss": -0.01,
+            "trade_frequency_per_week": 2.0,
+        }
+        mock_fold.in_sample_metrics = {
+            "sharpe": 1.6,
+            "mdd": -0.04,
+            "sortino": 2.1,
+            "profit_factor": 1.9,
+            "win_rate": 0.56,
+        }
+        mock_fold.fold_number = 1
+        mock_fold.test_range = (0, 50)
+        mock_fold.train_range = (0, 80)
+        mock_fold.gate_result = MagicMock(passed=True, failures=[])
+        mock_fold.overfitting = {"classification": "mild", "gap": 0.05}
+        mock_fold.trades = [{"pnl": 0.01}, {"pnl": -0.005}]
+
+        all_wf_results: dict[str, list[Any]] = {"ppo": [mock_fold]}
+        ensemble_weights = {"ppo": 0.5, "a2c": 0.3, "sac": 0.2}
+        gate_result = {"passed": True, "sharpe": 1.5, "mdd": -0.05}
+
+        mock_client = MagicMock()
+        ingested_texts: list[str] = []
+
+        def capture_ingest(text: str, source: str = "") -> bool:
+            ingested_texts.append(text)
+            return True
+
+        mock_client.ingest_training = capture_ingest
+
+        with patch("swingrl.memory.client.MemoryClient", return_value=mock_client):
+            pipeline._ingest_wf_results_to_memory(
+                config=cfg,
+                env_name="equity",
+                all_wf_results=all_wf_results,
+                ensemble_weights=ensemble_weights,
+                gate_result=gate_result,
+                features=None,
+                dates=None,
+                iteration_number=1,
+                total_timesteps=100_000,
+                hp_overrides={"ppo": {"learning_rate": 0.0005}},
+            )
+
+        # At least one ingested text should contain hp_source=memory_advised
+        assert any("hp_source=memory_advised" in t for t in ingested_texts), (
+            f"Expected hp_source=memory_advised in ingested text, got: {ingested_texts}"
+        )

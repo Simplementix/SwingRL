@@ -259,6 +259,7 @@ class WalkForwardBacktester:
         prices: np.ndarray,
         models_dir: Path,
         total_timesteps: int = 1_000_000,
+        hyperparams_override: dict[str, Any] | None = None,
     ) -> list[FoldResult]:
         """Run walk-forward backtest for one algorithm on one environment.
 
@@ -269,6 +270,8 @@ class WalkForwardBacktester:
             prices: Full price array (all bars).
             models_dir: Root directory for model storage.
             total_timesteps: Training timesteps per fold.
+            hyperparams_override: Optional dict of hyperparameters to override
+                defaults during training. Passed through to orchestrator.train().
 
         Returns:
             List of FoldResult for each fold.
@@ -291,6 +294,7 @@ class WalkForwardBacktester:
             algo_name=algo_name,
             fold_count=len(folds),
             total_bars=total_bars,
+            hp_override=bool(hyperparams_override),
         )
 
         orchestrator = TrainingOrchestrator(
@@ -322,6 +326,7 @@ class WalkForwardBacktester:
                 features=train_features,
                 prices=train_prices,
                 total_timesteps=total_timesteps,
+                hyperparams_override=hyperparams_override,
             )
 
             # Evaluate on train data (in-sample)

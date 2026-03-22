@@ -125,17 +125,11 @@ class MetaTrainingOrchestrator:
             algo_name=algo_name,
         )
 
-        # OUTER LOOP: query run config
+        # Query full run config (HP + reward weights + rationale) — single call
         advised_config = self._query_run_config(env_name, algo_name)
+        safe_config = clamp_run_config(advised_config) if advised_config else {}
 
-        # Clamp through bounds.py (non-negotiable)
-        safe_config = clamp_run_config(advised_config)
-
-        # Merge with any baseline override (override wins on conflict)
-        merged_hp: dict[str, Any] = {}
-        if hyperparams_override:
-            merged_hp.update(hyperparams_override)
-        # Only pass known hyperparams from safe_config (not curriculum fields)
+        # Extract SB3-compatible HP keys
         hp_keys = {
             "learning_rate",
             "entropy_coeff",
@@ -144,14 +138,22 @@ class MetaTrainingOrchestrator:
             "batch_size",
             "gamma",
         }
+        memory_hp: dict[str, Any] = {}
         for k, v in safe_config.items():
-            if k in hp_keys and k not in merged_hp:
-                # Map entropy_coeff → ent_coef (SB3 parameter name)
+            if k in hp_keys:
                 key = "ent_coef" if k == "entropy_coeff" else k
-                merged_hp[key] = v
+                memory_hp[key] = v
+
+        # Merge: baseline overrides win on conflict
+        merged_hp: dict[str, Any] = {}
+        if hyperparams_override:
+            merged_hp.update(hyperparams_override)
+        for k, v in memory_hp.items():
+            if k not in merged_hp:
+                merged_hp[k] = v
 
         # Reward weights from LLM advice
-        reward_weights_raw = advised_config.get("reward_weights", {})
+        reward_weights_raw = safe_config.get("reward_weights", {})
         if reward_weights_raw:
             reward_weights = clamp_reward_weights(reward_weights_raw)
         else:
@@ -203,6 +205,41 @@ class MetaTrainingOrchestrator:
             wall_elapsed_s=round(wall_elapsed, 1),
         )
 
+        return result
+
+    def query_hyperparams(self, env_name: str, algo_name: str) -> dict[str, Any]:
+        """Query memory agent for walk-forward hyperparameter advice.
+
+        Returns SB3-compatible HP keys (learning_rate, ent_coef, clip_range,
+        n_epochs, batch_size, gamma). Returns empty dict on cold-start or
+        any failure (fail-open).
+        """
+        advised = self._query_run_config(env_name, algo_name)
+        if not advised:
+            return {}
+
+        safe = clamp_run_config(advised)
+
+        hp_keys = {
+            "learning_rate",
+            "entropy_coeff",
+            "clip_range",
+            "n_epochs",
+            "batch_size",
+            "gamma",
+        }
+        result: dict[str, Any] = {}
+        for k, v in safe.items():
+            if k in hp_keys:
+                key = "ent_coef" if k == "entropy_coeff" else k
+                result[key] = v
+
+        log.info(
+            "wf_hyperparams_queried",
+            env_name=env_name,
+            algo_name=algo_name,
+            hp=result,
+        )
         return result
 
     def _query_run_config(self, env_name: str, algo_name: str) -> dict[str, Any]:
