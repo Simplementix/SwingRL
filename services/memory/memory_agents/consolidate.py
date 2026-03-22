@@ -882,8 +882,7 @@ class ConsolidateAgent:
         Returns:
             Parsed and validated dict, or None if invalid.
         """
-        # NVIDIA kimi-k2.5 needs high max_tokens for reasoning mode
-        effective_max_tokens = 16384 if provider == "nvidia" else 4096
+        effective_max_tokens = 16384
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)

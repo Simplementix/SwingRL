@@ -777,7 +777,7 @@ class QueryAgent:
         Returns:
             Parsed dict from LLM response, or None on failure.
         """
-        effective_max_tokens = 16384 if provider == "nvidia" else 4096
+        effective_max_tokens = 16384
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
