@@ -5,11 +5,11 @@ Two-stage consolidation pipeline:
    into structured patterns with categories, confidence, and evidence.
 2. **Stage 2** (cross-env): Identifies patterns spanning both equity and crypto.
 
-Supports two LLM backends:
-1. **Cloud API** (default): OpenAI-compatible endpoint (NVIDIA NIM, OpenRouter, etc.)
-   Uses json_schema response_format for VLM-compatible structured output.
-2. **Local Ollama** (fallback): Qwen2.5:3b with format parameter for schema enforcement.
-   Cloud failures automatically fall back to Ollama.
+Supports two cloud LLM providers:
+1. **Primary** (OpenRouter): nemotron-120b via OpenRouter free tier.
+   Uses json_object response_format for structured output.
+2. **Backup** (NVIDIA NIM): kimi-k2.5 via NVIDIA Integrate API.
+   Primary failures automatically fall back to backup.
 
 Pattern lifecycle:
 - New patterns are deduplicated against existing active patterns.
@@ -58,50 +58,94 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _load_consolidation_config() -> tuple[str, str, str, float, str]:
-    """Load consolidation config from mounted swingrl.yaml, fallback to env vars."""
+def _load_consolidation_config() -> dict[str, Any]:
+    """Load consolidation config with primary (OpenRouter) and backup (NVIDIA) providers."""
     config_path = Path("/app/config/swingrl.yaml")
     if config_path.exists():
         # yaml.safe_load OK here: memory service can't import swingrl.config.schema
         cfg = yaml.safe_load(config_path.read_text()) or {}
         mem = cfg.get("memory_agent", {})
         cons = mem.get("consolidation", {})
-        provider_key = cons.get("provider", "nvidia")
         providers = cons.get("providers", {})
-        provider = providers.get(provider_key, {})
-        base_url = provider.get("base_url", "https://integrate.api.nvidia.com/v1")
-        # API key: check env var first (secrets), then config
-        api_key = os.environ.get(f"{provider_key.upper()}_API_KEY", provider.get("api_key", ""))
-        model = cons.get("model") or provider.get("default_model", "moonshotai/kimi-k2.5")
         timeout = float(cons.get("timeout_sec", 600))
-        return base_url, api_key, model, timeout, provider_key
-    # Fallback to env vars (backward compat)
-    return (
-        os.environ.get("CONSOLIDATION_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-        os.environ.get("CONSOLIDATION_API_KEY", ""),
-        os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5"),
-        float(os.environ.get("CONSOLIDATION_TIMEOUT", "600")),
-        "env",
-    )
 
+        # Primary: OpenRouter
+        or_cfg = providers.get("openrouter", {})
+        primary: dict[str, Any] = {
+            "base_url": or_cfg.get("base_url", "https://openrouter.ai/api/v1"),
+            "api_key": os.environ.get("OPENROUTER_API_KEY", or_cfg.get("api_key", "")),
+            "model": cons.get("model")
+            or or_cfg.get(
+                "default_model",
+                "nvidia/nemotron-3-super-120b-a12b:free",
+            ),
+            "timeout": timeout,
+            "provider": "openrouter",
+        }
+
+        # Backup: NVIDIA NIM
+        nv_cfg = providers.get("nvidia", {})
+        backup: dict[str, Any] = {
+            "base_url": nv_cfg.get("base_url", "https://integrate.api.nvidia.com/v1"),
+            "api_key": os.environ.get("NVIDIA_API_KEY", nv_cfg.get("api_key", "")),
+            "model": nv_cfg.get("default_model", "moonshotai/kimi-k2.5"),
+            "timeout": timeout,
+            "provider": "nvidia",
+        }
+
+        return {"primary": primary, "backup": backup}
+
+    # Fallback to env vars (backward compat)
+    return {
+        "primary": {
+            "base_url": os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+            "api_key": os.environ.get("OPENROUTER_API_KEY", ""),
+            "model": os.environ.get(
+                "OPENROUTER_MODEL",
+                "nvidia/nemotron-3-super-120b-a12b:free",
+            ),
+            "timeout": 600.0,
+            "provider": "openrouter",
+        },
+        "backup": {
+            "base_url": os.environ.get(
+                "CONSOLIDATION_BASE_URL",
+                "https://integrate.api.nvidia.com/v1",
+            ),
+            "api_key": os.environ.get("NVIDIA_API_KEY", ""),
+            "model": os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5"),
+            "timeout": 600.0,
+            "provider": "nvidia",
+        },
+    }
+
+
+_DEFAULT_PROVIDER_CONFIG: dict[str, Any] = {
+    "primary": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "",
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "timeout": 600.0,
+        "provider": "openrouter",
+    },
+    "backup": {
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "api_key": "",
+        "model": "moonshotai/kimi-k2.5",
+        "timeout": 600.0,
+        "provider": "nvidia",
+    },
+}
 
 try:
-    _CLOUD_BASE_URL, _CLOUD_API_KEY, _CLOUD_MODEL, _CLOUD_TIMEOUT, _PROVIDER = (
-        _load_consolidation_config()
-    )
+    _PROVIDER_CONFIG = _load_consolidation_config()
 except Exception as _cfg_exc:
     log.warning(
         "consolidation_config_load_failed",
         error=str(_cfg_exc),
-        fallback="env_vars",
+        fallback="defaults",
     )
-    _CLOUD_BASE_URL = os.environ.get(
-        "CONSOLIDATION_BASE_URL", "https://integrate.api.nvidia.com/v1"
-    )
-    _CLOUD_API_KEY = os.environ.get("CONSOLIDATION_API_KEY", "")
-    _CLOUD_MODEL = os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5")
-    _CLOUD_TIMEOUT = float(os.environ.get("CONSOLIDATION_TIMEOUT", "600"))
-    _PROVIDER = "env"
+    _PROVIDER_CONFIG = _DEFAULT_PROVIDER_CONFIG
 
 
 def validate_consolidation_config() -> None:
@@ -110,30 +154,18 @@ def validate_consolidation_config() -> None:
     Logs warnings for missing API keys or invalid base URLs rather than
     silently falling back to defaults. Call from app lifespan.
     """
-    if not _CLOUD_API_KEY and _PROVIDER != "env":
-        log.warning(
-            "consolidation_no_api_key",
-            provider=_PROVIDER,
-            hint="Set {provider}_API_KEY env var or configure in swingrl.yaml",
-        )
-    if not _CLOUD_BASE_URL:
-        log.warning("consolidation_no_base_url", provider=_PROVIDER)
-    if not _CLOUD_MODEL:
-        log.warning("consolidation_no_model", provider=_PROVIDER)
+    primary = _PROVIDER_CONFIG["primary"]
+    backup = _PROVIDER_CONFIG["backup"]
     log.info(
         "consolidation_config_validated",
-        provider=_PROVIDER,
-        model=_CLOUD_MODEL,
-        has_api_key=bool(_CLOUD_API_KEY),
-        base_url=_CLOUD_BASE_URL[:60],
-        ollama_fallback=_OLLAMA_MODEL,
+        primary_provider=primary["provider"],
+        primary_model=primary["model"],
+        primary_has_key=bool(primary["api_key"]),
+        backup_provider=backup["provider"],
+        backup_model=backup["model"],
+        backup_has_key=bool(backup["api_key"]),
     )
 
-
-# Local Ollama settings (fallback when no cloud API key is available)
-_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
-_OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "300"))
-_OLLAMA_MODEL = os.environ.get("OLLAMA_CONSOLIDATION_MODEL", "qwen2.5:3b")
 
 _MEMORY_BATCH_SIZE = 200
 
@@ -794,52 +826,82 @@ class ConsolidateAgent:
         user_prompt: str,
         schema: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """Call LLM (cloud or Ollama) with structured output.
-
-        Tries cloud API first if API key is configured, falls back to
-        local Ollama on failure.
-        """
-        if _CLOUD_API_KEY:
-            result = await self._call_cloud_api(system_prompt, user_prompt, schema)
+        """Call primary (OpenRouter) then backup (NVIDIA) cloud API."""
+        for tier in ("primary", "backup"):
+            cfg = _PROVIDER_CONFIG[tier]
+            if not cfg["api_key"]:
+                log.debug(
+                    "consolidation_provider_skipped_no_key",
+                    provider=cfg["provider"],
+                    tier=tier,
+                )
+                continue
+            result = await self._call_cloud_api(
+                system_prompt,
+                user_prompt,
+                schema,
+                base_url=cfg["base_url"],
+                api_key=cfg["api_key"],
+                model=cfg["model"],
+                timeout=cfg["timeout"],
+                provider=cfg["provider"],
+            )
             if result is not None:
                 return result
-            log.warning("cloud_api_fallback_to_ollama", provider=_PROVIDER)
-        return await self._call_ollama(system_prompt, user_prompt, schema)
+            log.warning(
+                "consolidation_provider_failed",
+                provider=cfg["provider"],
+                tier=tier,
+            )
+        return None
 
     async def _call_cloud_api(
         self,
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float,
+        provider: str,
     ) -> dict[str, Any] | None:
-        """Call OpenAI-compatible cloud API with json_schema response format.
+        """Call OpenAI-compatible cloud API with json_object response format.
 
         Args:
             system_prompt: System message content.
             user_prompt: User message content.
             schema: JSON schema for structured output enforcement.
+            base_url: API base URL.
+            api_key: Bearer token for authorization.
+            model: Model identifier string.
+            timeout: Read timeout in seconds.
+            provider: Provider name for logging.
 
         Returns:
             Parsed and validated dict, or None if invalid.
         """
+        # NVIDIA kimi-k2.5 needs high max_tokens for reasoning mode
+        effective_max_tokens = 16384 if provider == "nvidia" else 4096
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=_CLOUD_TIMEOUT, write=30.0, pool=10.0)
+                timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
             ) as client:
                 resp = await client.post(
-                    f"{_CLOUD_BASE_URL.rstrip('/')}/chat/completions",
+                    f"{base_url.rstrip('/')}/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {_CLOUD_API_KEY}",
+                        "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": _CLOUD_MODEL,
+                        "model": model,
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt},
                         ],
                         "temperature": 0,
-                        "max_tokens": 16384,
+                        "max_tokens": effective_max_tokens,
                         "frequency_penalty": 0.0,
                         "response_format": {"type": "json_object"},
                     },
@@ -850,7 +912,7 @@ class ConsolidateAgent:
                 if raw_content is None:
                     log.error(
                         "cloud_api_empty_content",
-                        provider=_PROVIDER,
+                        provider=provider,
                         finish_reason=body["choices"][0].get("finish_reason"),
                     )
                     return None
@@ -858,7 +920,7 @@ class ConsolidateAgent:
         except httpx.HTTPStatusError as exc:
             log.error(
                 "cloud_api_call_failed",
-                provider=_PROVIDER,
+                provider=provider,
                 error=str(exc),
                 status_code=exc.response.status_code,
                 response_body=exc.response.text[:500],
@@ -868,53 +930,10 @@ class ConsolidateAgent:
         except Exception as exc:
             log.error(
                 "cloud_api_call_failed",
-                provider=_PROVIDER,
+                provider=provider,
                 error=str(exc) or repr(exc),
                 exc_type=type(exc).__name__,
             )
-            return None
-
-        return self._validate_consolidation(parsed)
-
-    async def _call_ollama(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        schema: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """Call Ollama /api/chat with structured JSON output schema.
-
-        Args:
-            system_prompt: System message content.
-            user_prompt: User message content.
-            schema: JSON schema for format parameter enforcement.
-
-        Returns:
-            Parsed and validated dict, or None if invalid.
-        """
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=_OLLAMA_TIMEOUT, write=30.0, pool=10.0)
-            ) as client:
-                resp = await client.post(
-                    f"{_OLLAMA_URL}/api/chat",
-                    json={
-                        "model": _OLLAMA_MODEL,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "format": schema,
-                        "stream": False,
-                        "options": {"temperature": 0, "num_ctx": 16384},
-                    },
-                )
-                resp.raise_for_status()
-                body = resp.json()
-                raw_content = body["message"]["content"]
-                parsed = json.loads(raw_content)
-        except Exception as exc:
-            log.error("ollama_call_failed", error=str(exc))
             return None
 
         return self._validate_consolidation(parsed)

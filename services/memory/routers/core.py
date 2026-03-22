@@ -6,9 +6,6 @@
 
 from __future__ import annotations
 
-import os
-
-import httpx
 import structlog
 from auth import verify_api_key
 from fastapi import APIRouter, Depends
@@ -58,7 +55,6 @@ class HealthResponse(BaseModel):
     """Response body for GET /health."""
 
     status: str
-    ollama: bool
     db: bool
 
 
@@ -102,9 +98,8 @@ async def consolidate(
 async def health() -> HealthResponse:
     """Service health check — no authentication required.
 
-    Returns overall status, Ollama reachability, and SQLite accessibility.
+    Returns overall status and SQLite accessibility.
     """
-    ollama_url = os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
 
     # Check SQLite (via live thread pool to avoid blocking event loop)
     def _check_db() -> bool:
@@ -121,14 +116,5 @@ async def health() -> HealthResponse:
     except Exception as exc:
         log.warning("health_db_check_failed", error=str(exc))
 
-    # Check Ollama
-    ollama_ok = False
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{ollama_url}/api/tags")
-            ollama_ok = resp.status_code == 200
-    except Exception as exc:
-        log.warning("health_ollama_check_failed", error=str(exc))
-
-    overall = "healthy" if (db_ok and ollama_ok) else "degraded"
-    return HealthResponse(status=overall, ollama=ollama_ok, db=db_ok)
+    overall = "healthy" if db_ok else "degraded"
+    return HealthResponse(status=overall, db=db_ok)

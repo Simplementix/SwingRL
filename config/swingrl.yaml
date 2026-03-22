@@ -98,24 +98,20 @@ memory_agent:
     cycle_gate: false
     risk_thresholds: false
   consolidation:
-    provider: "nvidia"                      # key into providers map
+    provider: "openrouter"                  # key into providers map
     model: ""                               # empty = use provider's default_model
     timeout_sec: 600
     min_confidence_for_advice: 0.4          # minimum confidence for patterns used in query advice
     max_patterns_per_merge: 2               # max patterns per dedup/merge LLM call
     providers:
+      openrouter:
+        base_url: "https://openrouter.ai/api/v1"
+        api_key: ""                         # OVERRIDE via OPENROUTER_API_KEY in .env
+        default_model: "nvidia/nemotron-3-super-120b-a12b:free"
       nvidia:
         base_url: "https://integrate.api.nvidia.com/v1"
         api_key: ""                         # OVERRIDE via NVIDIA_API_KEY in .env
         default_model: "moonshotai/kimi-k2.5"
-      openrouter:
-        base_url: "https://openrouter.ai/api/v1"
-        api_key: ""                         # OVERRIDE via OPENROUTER_API_KEY in .env
-        default_model: "moonshotai/kimi-k2.5"
-      ollama:
-        base_url: "http://swingrl-ollama:11434/v1"
-        api_key: ""
-        default_model: "qwen2.5:3b"
 
 training:
   bounds:

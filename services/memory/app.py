@@ -2,8 +2,10 @@
 
 Startup sequence (lifespan):
 1. Initialize SQLite database (create tables if not exist)
-2. Wait for Ollama /api/tags to return 200 (block, timeout 300s)
-3. Register routers and serve
+2. Initialize capacity limiters
+3. Validate consolidation config (cloud LLM provider)
+4. Validate query config
+5. Log ready
 
 Consolidation is event-driven only (no background scheduler):
 - From train_pipeline.py at iteration_complete
@@ -12,19 +14,14 @@ Consolidation is event-driven only (no background scheduler):
 All config via environment variables:
 - MEMORY_API_KEY: Required for all endpoints except /health
 - MEMORY_DB_PATH: Path to SQLite file (default: /app/db/memory.db)
-- OLLAMA_URL: Ollama service URL (default: http://swingrl-ollama:11434)
-- OLLAMA_TIMEOUT: LLM call timeout in seconds (default: 30)
 """
 
 from __future__ import annotations
 
 import os
-import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-import anyio
-import httpx
 import structlog
 from fastapi import FastAPI
 from memory_agents.consolidate import validate_consolidation_config
@@ -42,42 +39,6 @@ structlog.configure(
 )
 
 log = structlog.get_logger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Ollama health polling
-# ---------------------------------------------------------------------------
-
-
-async def _wait_for_ollama(
-    url: str | None = None,
-    timeout_sec: int = 300,
-) -> None:
-    """Block until Ollama /api/tags returns 200. Raises RuntimeError on timeout.
-
-    Args:
-        url: Ollama base URL. Defaults to OLLAMA_URL env var.
-        timeout_sec: Total seconds to wait before raising.
-
-    Raises:
-        RuntimeError: If Ollama does not become healthy within timeout_sec.
-    """
-    ollama_url = url or os.environ.get("OLLAMA_URL", "http://swingrl-ollama:11434")
-    deadline = time.monotonic() + timeout_sec
-    log.info("waiting_for_ollama", url=ollama_url, timeout_sec=timeout_sec)
-
-    while time.monotonic() < deadline:
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{ollama_url}/api/tags")
-                if resp.status_code == 200:
-                    log.info("ollama_ready", url=ollama_url)
-                    return
-        except Exception:  # nosec B110 — intentional: connection refused is expected during startup
-            pass
-        await anyio.sleep(5)
-
-    raise RuntimeError(f"Ollama not healthy after {timeout_sec}s at {ollama_url}")
 
 
 # ---------------------------------------------------------------------------
@@ -100,9 +61,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # 4. Validate query agent cloud config
     validate_query_config()
-
-    # 5. Wait for Ollama — never start degraded
-    await _wait_for_ollama()
 
     log.info("memory_service_ready")
 

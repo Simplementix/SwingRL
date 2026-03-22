@@ -218,9 +218,9 @@ class TestMemoryAgentConfigDefaults:
         assert cfg.memory_agent is not None
         assert cfg.memory_agent.enabled is False
 
-    def test_memory_agent_ollama_smart_model(self) -> None:
-        """TRAIN-01: MemoryAgentConfig default ollama_smart_model is qwen2.5:3b."""
+    def test_memory_agent_cloud_smart_model(self) -> None:
+        """TRAIN-01: MemoryAgentConfig default cloud_smart_model is nemotron-120b."""
         from swingrl.config.schema import MemoryAgentConfig
 
         cfg = MemoryAgentConfig()
-        assert cfg.ollama_smart_model == "qwen2.5:3b"
+        assert cfg.cloud_smart_model == "nvidia/nemotron-3-super-120b-a12b:free"

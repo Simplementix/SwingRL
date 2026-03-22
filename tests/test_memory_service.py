@@ -58,13 +58,13 @@ def memory_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "memory.db"
     monkeypatch.setenv("MEMORY_DB_PATH", str(db_path))
     monkeypatch.setenv("MEMORY_API_KEY", "test-key")
-    monkeypatch.setenv("OLLAMA_URL", "http://mock-ollama:11434")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
     return db_path
 
 
 @pytest.fixture()
 def api_client(memory_db_env: Path):  # type: ignore[no-untyped-def]
-    """Return a FastAPI TestClient with Ollama wait mocked out."""
+    """Return a FastAPI TestClient."""
     from fastapi.testclient import TestClient
 
     # Evict cached memory service modules to ensure clean imports.
@@ -75,14 +75,10 @@ def api_client(memory_db_env: Path):  # type: ignore[no-untyped-def]
 
     memory_db_module.init_db()
 
-    async def _mock_wait(*args: Any, **kwargs: Any) -> None:
-        return
+    import app
 
-    with patch("app._wait_for_ollama", _mock_wait):
-        import app
-
-        client = TestClient(app.app, raise_server_exceptions=True)
-        yield client
+    client = TestClient(app.app, raise_server_exceptions=True)
+    yield client
 
     # Clean up memory service modules after each test to avoid cross-test pollution
     for mod_name in list(_MEMORY_MODULE_NAMES):
@@ -95,20 +91,23 @@ def auth_headers() -> dict[str, str]:
     return {"X-API-Key": "test-key"}
 
 
-def _make_ollama_response(content: dict[str, Any]) -> MagicMock:
-    """Build a mock httpx response that looks like Ollama /api/chat output."""
+def _make_cloud_response(content: dict[str, Any]) -> MagicMock:
+    """Build a mock httpx response in OpenAI-compatible format (OpenRouter/NVIDIA)."""
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {"message": {"content": json.dumps(content)}}
-    mock_resp.raise_for_status = MagicMock()
-    return mock_resp
-
-
-def _make_tags_response() -> MagicMock:
-    """Build a mock httpx response for Ollama /api/tags (health check)."""
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {"models": [{"name": "qwen2.5:3b"}]}
+    mock_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {"content": json.dumps(content)},
+                "finish_reason": "stop",
+            },
+        ],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+        },
+    }
     mock_resp.raise_for_status = MagicMock()
     return mock_resp
 
@@ -181,15 +180,9 @@ class TestIngest:
 class TestHealth:
     """Tests for GET /health endpoint."""
 
-    def test_health_returns_healthy_with_mocked_ollama(self, api_client: Any) -> None:
-        """TRAIN-06: GET /health returns status: healthy when Ollama responds."""
-        with patch("routers.core.httpx.AsyncClient") as mock_client_class:
-            mock_cm = AsyncMock()
-            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
-            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.get = AsyncMock(return_value=_make_tags_response())
-
-            response = api_client.get("/health")
+    def test_health_returns_healthy(self, api_client: Any) -> None:
+        """TRAIN-06: GET /health returns status: healthy when SQLite is reachable."""
+        response = api_client.get("/health")
 
         assert response.status_code == 200
         body = response.json()
@@ -198,31 +191,9 @@ class TestHealth:
 
     def test_health_no_auth_required(self, api_client: Any) -> None:
         """TRAIN-06: GET /health requires no authentication."""
-        with patch("routers.core.httpx.AsyncClient") as mock_client_class:
-            mock_cm = AsyncMock()
-            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
-            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.get = AsyncMock(return_value=_make_tags_response())
-
-            response = api_client.get("/health")
+        response = api_client.get("/health")
 
         assert response.status_code == 200
-
-    def test_health_degraded_when_ollama_down(self, api_client: Any) -> None:
-        """TRAIN-06: GET /health returns status: degraded when Ollama is unreachable."""
-        with patch("routers.core.httpx.AsyncClient") as mock_client_class:
-            mock_cm = AsyncMock()
-            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
-            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.get = AsyncMock(side_effect=ConnectionError("refused"))
-
-            response = api_client.get("/health")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["status"] == "degraded"
-        assert body["ollama"] is False
-        assert body["db"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +204,7 @@ class TestHealth:
 class TestTrainingEndpoints:
     """Tests for /training/run_config and /training/epoch_advice."""
 
-    def test_run_config_returns_valid_shape_with_mocked_ollama(
+    def test_run_config_returns_valid_shape(
         self, api_client: Any, auth_headers: dict[str, str]
     ) -> None:
         """TRAIN-06: POST /training/run_config returns RunConfigResponse shape."""
@@ -252,7 +223,7 @@ class TestTrainingEndpoints:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.post = AsyncMock(return_value=_make_ollama_response(mock_response))
+            mock_cm.post = AsyncMock(return_value=_make_cloud_response(mock_response))
 
             response = api_client.post(
                 "/training/run_config",
@@ -266,15 +237,15 @@ class TestTrainingEndpoints:
         assert "rationale" in body
         assert isinstance(body["reward_weights"], dict)
 
-    def test_run_config_returns_defaults_on_ollama_failure(
+    def test_run_config_returns_defaults_on_cloud_failure(
         self, api_client: Any, auth_headers: dict[str, str]
     ) -> None:
-        """TRAIN-06: /training/run_config returns safe defaults when Ollama fails."""
+        """TRAIN-06: /training/run_config returns safe defaults when cloud API fails."""
         with patch("memory_agents.query.httpx.AsyncClient") as mock_client_class:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.post = AsyncMock(side_effect=ConnectionError("Ollama down"))
+            mock_cm.post = AsyncMock(side_effect=ConnectionError("Cloud API down"))
 
             response = api_client.post(
                 "/training/run_config",
@@ -301,7 +272,7 @@ class TestTrainingEndpoints:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.post = AsyncMock(return_value=_make_ollama_response(mock_response))
+            mock_cm.post = AsyncMock(return_value=_make_cloud_response(mock_response))
 
             response = api_client.post(
                 "/training/epoch_advice",
@@ -331,7 +302,7 @@ class TestTrainingEndpoints:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.post = AsyncMock(return_value=_make_ollama_response(mock_response))
+            mock_cm.post = AsyncMock(return_value=_make_cloud_response(mock_response))
 
             response = api_client.post(
                 "/training/epoch_advice",
@@ -459,7 +430,7 @@ class TestConsolidation:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.post = AsyncMock(return_value=_make_ollama_response(mock_response))
+            mock_cm.post = AsyncMock(return_value=_make_cloud_response(mock_response))
 
             response = api_client.post("/consolidate", headers=auth_headers)
 
@@ -484,7 +455,7 @@ class TestConsolidation:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.post = AsyncMock(return_value=_make_ollama_response(malformed_response))
+            mock_cm.post = AsyncMock(return_value=_make_cloud_response(malformed_response))
 
             response = api_client.post("/consolidate", headers=auth_headers)
 
@@ -539,7 +510,7 @@ class TestConsolidation:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.post = AsyncMock(return_value=_make_ollama_response(mock_response))
+            mock_cm.post = AsyncMock(return_value=_make_cloud_response(mock_response))
 
             response = api_client.post("/consolidate", headers=auth_headers)
 
@@ -1047,7 +1018,7 @@ class TestConsolidationSchema:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.post = AsyncMock(return_value=_make_ollama_response(mock_response))
+            mock_cm.post = AsyncMock(return_value=_make_cloud_response(mock_response))
 
             response = api_client.post("/consolidate", headers=auth_headers)
 
@@ -1070,7 +1041,7 @@ class TestConsolidationSchema:
             mock_cm = AsyncMock()
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
             mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.post = AsyncMock(return_value=_make_ollama_response(mock_response))
+            mock_cm.post = AsyncMock(return_value=_make_cloud_response(mock_response))
 
             response = api_client.post("/consolidate", headers=auth_headers)
 
@@ -1140,51 +1111,6 @@ class TestAuth:
         else:
             response = fn(path)
         assert response.status_code == 401, f"Expected 401 for {method.upper()} {path}"
-
-
-# ---------------------------------------------------------------------------
-# TestWaitForOllama
-# ---------------------------------------------------------------------------
-
-
-class TestWaitForOllama:
-    """Tests for the _wait_for_ollama startup helper."""
-
-    @pytest.fixture(autouse=True)
-    def evict_stale_modules(self) -> None:  # type: ignore[return]
-        """Evict cached memory service modules for clean import."""
-        for mod_name in list(_MEMORY_MODULE_NAMES):
-            sys.modules.pop(mod_name, None)
-        yield
-        for mod_name in list(_MEMORY_MODULE_NAMES):
-            sys.modules.pop(mod_name, None)
-
-    @pytest.mark.anyio
-    async def test_wait_for_ollama_raises_on_timeout(self) -> None:
-        """TRAIN-06: _wait_for_ollama raises RuntimeError when Ollama never responds."""
-        import app
-
-        with patch("app.httpx.AsyncClient") as mock_client_class:
-            mock_cm = AsyncMock()
-            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
-            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.get = AsyncMock(side_effect=ConnectionError("refused"))
-
-            with pytest.raises(RuntimeError, match="not healthy"):
-                await app._wait_for_ollama(url="http://fake:11434", timeout_sec=1)
-
-    @pytest.mark.anyio
-    async def test_wait_for_ollama_returns_when_healthy(self) -> None:
-        """TRAIN-06: _wait_for_ollama returns immediately when Ollama responds 200."""
-        import app
-
-        with patch("app.httpx.AsyncClient") as mock_client_class:
-            mock_cm = AsyncMock()
-            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
-            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.get = AsyncMock(return_value=_make_tags_response())
-
-            await app._wait_for_ollama(url="http://mock:11434", timeout_sec=10)
 
 
 # ---------------------------------------------------------------------------

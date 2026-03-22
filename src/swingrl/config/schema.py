@@ -296,11 +296,7 @@ class ConsolidationConfig(BaseModel):
             ),
             "openrouter": ConsolidationProviderConfig(
                 base_url="https://openrouter.ai/api/v1",
-                default_model="moonshotai/kimi-k2.5",
-            ),
-            "ollama": ConsolidationProviderConfig(
-                base_url="http://swingrl-ollama:11434/v1",
-                default_model="qwen2.5:3b",
+                default_model="nvidia/nemotron-3-super-120b-a12b:free",
             ),
         }
     )
@@ -331,10 +327,10 @@ class MemoryAgentConfig(BaseModel):
     meta_training: bool = False
     meta_training_timeout_sec: float = 15.0
     min_run_history_for_meta: int = 3
-    llm_backend: str = "ollama"
+    llm_backend: str = "openrouter"
     openai_model: str = "gpt-4o-mini"
-    ollama_fast_model: str = "qwen2.5:3b"
-    ollama_smart_model: str = "qwen2.5:3b"
+    cloud_fast_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+    cloud_smart_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
 
     consolidate_interval_min: int = 30
     inbox_dir: str = "/data/memory_inbox"

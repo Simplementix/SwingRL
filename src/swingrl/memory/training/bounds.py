@@ -5,7 +5,7 @@ module before reaching the trainer. This is a non-negotiable safety layer.
 
 Bounds are read from SwingRLConfig.training.bounds (config/swingrl.yaml).
 Hardcoded fallbacks match the spec in memory_meta_trainer.md Section 1.
-The ollama_smart_model is qwen2.5:3b (sole local model; consolidation uses NVIDIA kimi-k2.5 cloud).
+Cloud models: OpenRouter nemotron-120b (primary), NVIDIA kimi-k2.5 (backup).
 
 Usage:
     from swingrl.memory.training.bounds import clamp_run_config, clamp_reward_weights

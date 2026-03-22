@@ -14,28 +14,6 @@
 #   DISCORD_WEBHOOK_URL=...
 
 services:
-  swingrl-ollama:
-    container_name: swingrl-ollama
-    image: ollama/ollama
-    # No mem_limit — Ollama is fallback-only (cloud API is primary for query).
-    # Hard-pinned to P-cores 0-5 (6 HT threads) for <3s inference during
-    # concurrent retrain + live trading.
-    cpus: 6.0
-    cpuset: "0-5"
-    volumes:
-      # Named volume persists model weights across container restarts.
-      # Models are pulled once by scripts/setup_ollama.sh (idempotent).
-      - ollama_models:/root/.ollama
-    healthcheck:
-      # Ollama image includes neither curl nor wget — use the ollama CLI.
-      test: ["CMD", "ollama", "list"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 60s
-    restart: unless-stopped
-    # No host port — accessed via internal Docker DNS as swingrl-ollama:11434.
-
   swingrl-memory:
     container_name: swingrl-memory
     build:
@@ -52,9 +30,6 @@ services:
       - ./db:/app/db
       - ./data:/app/data
       - ./config:/app/config
-    depends_on:
-      swingrl-ollama:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8889/health\")'"]
       interval: 10s
@@ -69,7 +44,7 @@ services:
       dockerfile: Dockerfile
       target: production
     # No mem_limit — swingrl is the primary workload on 64 GB homelab.
-    # Other containers use ~5.5 GB (Ollama 4G + memory 1G + dashboard 0.5G).
+    # Other containers use ~1.5 GB (memory 1G + dashboard 0.5G).
     # SAC replay buffer (500K × n_envs=6) + 36 SubprocVecEnv fork workers
     # peak ~12-15 GB during training. Let the OS manage memory.
     cpus: 10.0
@@ -112,7 +87,3 @@ services:
     depends_on:
       - swingrl
 
-volumes:
-  # Named volume for Ollama model weights — persists across container restarts.
-  # Models survive `docker compose down` but not `docker compose down --volumes`.
-  ollama_models:
