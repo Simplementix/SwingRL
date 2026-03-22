@@ -67,7 +67,7 @@ def _load_consolidation_config() -> dict[str, Any]:
         mem = cfg.get("memory_agent", {})
         cons = mem.get("consolidation", {})
         providers = cons.get("providers", {})
-        timeout = float(cons.get("timeout_sec", 600))
+        timeout = float(cons.get("timeout_sec", 1800))
 
         # Primary: OpenRouter
         or_cfg = providers.get("openrouter", {})
@@ -499,37 +499,78 @@ class ConsolidateAgent:
         return total
 
     async def run_stage1(self, env_name: str) -> int:
-        """Stage 1: Per-environment consolidation, one algo at a time.
+        """Stage 1: Per-environment hybrid consolidation.
 
-        Fetches unarchived memories for this env, groups by algo, and
-        consolidates each algo sequentially via LLM. Shared context
-        (ensemble summaries, epoch snapshots, reward adjustments) is
-        included in every call. Archives all source memories afterward.
+        Two phases per environment:
+        - Phase A: WF + trading pattern memories (cross-algo fold analysis)
+        - Phase B: Epoch + reward adjustment + run memories (training dynamics)
+
+        Each phase gets its own LLM call so the model can focus on the
+        signal type. Archives each phase's memories after its call.
 
         Args:
             env_name: Environment name ('equity' or 'crypto').
 
         Returns:
-            Number of new patterns created.
+            Number of new patterns created across both phases.
         """
-        from collections import defaultdict
+        total_created = 0
 
-        # Fetch memories with env-specific source tags
-        memories = await get_memories_by_source_prefix_async(
+        # --- Phase A: WF + trading patterns (cross-algo analysis) ---
+        wf_memories = await get_memories_by_source_prefix_async(
             prefix=f"walk_forward:{env_name}",
             limit=_MEMORY_BATCH_SIZE,
             archived=False,
         )
-        # Also fetch trading pattern memories
         trading_memories = await get_memories_by_source_prefix_async(
             prefix=f"trading_pattern:{env_name}",
             limit=_MEMORY_BATCH_SIZE,
             archived=False,
         )
-        if trading_memories:
-            memories = (memories or []) + trading_memories
+        phase_a: list[dict[str, Any]] = (wf_memories or []) + (trading_memories or [])
 
-        # Fetch training dynamics memories filtered by env
+        if not phase_a:
+            # Fallback: old-style tags for backward compat
+            phase_a = (
+                await get_memories_by_source_prefix_async(
+                    prefix=env_name,
+                    limit=_MEMORY_BATCH_SIZE,
+                    archived=False,
+                )
+                or []
+            )
+
+        if phase_a:
+            log.info(
+                "consolidation_stage1_wf_starting",
+                env_name=env_name,
+                memory_count=len(phase_a),
+            )
+            texts_a = "\n\n".join(f"- {m['text']}" for m in phase_a)
+            ids_a = [m["id"] for m in phase_a]
+
+            result = await self._call_llm_with_retry(texts_a)
+            if result is not None:
+                for pattern in result.get("patterns", []):
+                    row_id = await self._dedup_and_insert(
+                        pattern=pattern,
+                        source_count=len(phase_a),
+                        stage=1,
+                        env_name=env_name,
+                        memory_ids=ids_a,
+                    )
+                    if row_id is not None:
+                        total_created += 1
+            else:
+                log.warning(
+                    "consolidation_stage1_wf_discarded",
+                    env_name=env_name,
+                )
+
+            await archive_memories_async(ids_a)
+
+        # --- Phase B: Epoch + reward + run (training dynamics) ---
+        phase_b: list[dict[str, Any]] = []
         for prefix in ("training_epoch", "reward_adjustment", "training_run"):
             candidates = await get_memories_by_source_prefix_async(
                 prefix=prefix,
@@ -538,84 +579,40 @@ class ConsolidateAgent:
             )
             if candidates:
                 filtered = [m for m in candidates if f"env={env_name}" in m.get("text", "")]
-                if filtered:
-                    memories = (memories or []) + filtered
+                phase_b.extend(filtered)
 
-        if not memories:
-            memories = await get_memories_by_source_prefix_async(
-                prefix=env_name,
-                limit=_MEMORY_BATCH_SIZE,
-                archived=False,
-            )
-            if not memories:
-                log.info("consolidation_skipped_no_memories", env_name=env_name)
-                return 0
-
-        # Group memories: per-algo vs shared (ensemble, epoch, reward, run)
-        algo_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        shared_memories: list[dict[str, Any]] = []
-
-        for m in memories:
-            source = m.get("source", "")
-            parts = source.split(":")
-            # walk_forward:{env}:{algo} or trading_pattern:{env}:{algo}
-            if len(parts) >= 3 and parts[-1] not in ("ensemble", "historical"):
-                algo_groups[parts[-1]].append(m)
-            else:
-                shared_memories.append(m)
-
-        if not algo_groups:
-            # No per-algo memories — consolidate shared only
-            algo_groups["_shared"] = []
-
-        all_memory_ids: list[int] = [m["id"] for m in memories]
-        total_created = 0
-
-        log.info(
-            "consolidation_stage1_starting",
-            env_name=env_name,
-            memory_count=len(memories),
-            algo_groups=sorted(algo_groups.keys()),
-            shared_count=len(shared_memories),
-        )
-
-        for algo_name, algo_mems in sorted(algo_groups.items()):
-            subset = algo_mems + shared_memories
-            if not subset:
-                continue
-
+        if phase_b:
             log.info(
-                "consolidation_stage1_algo_starting",
+                "consolidation_stage1_epoch_starting",
                 env_name=env_name,
-                algo=algo_name,
-                memory_count=len(subset),
+                memory_count=len(phase_b),
             )
+            texts_b = "\n\n".join(f"- {m['text']}" for m in phase_b)
+            ids_b = [m["id"] for m in phase_b]
 
-            memory_texts = "\n\n".join(f"- {m['text']}" for m in subset)
-            result = await self._call_llm_with_retry(memory_texts)
-
-            if result is None:
+            result = await self._call_llm_with_retry(texts_b)
+            if result is not None:
+                for pattern in result.get("patterns", []):
+                    row_id = await self._dedup_and_insert(
+                        pattern=pattern,
+                        source_count=len(phase_b),
+                        stage=1,
+                        env_name=env_name,
+                        memory_ids=ids_b,
+                    )
+                    if row_id is not None:
+                        total_created += 1
+            else:
                 log.warning(
-                    "consolidation_stage1_algo_discarded",
+                    "consolidation_stage1_epoch_discarded",
                     env_name=env_name,
-                    algo=algo_name,
                 )
-                continue
 
-            patterns = result.get("patterns", [])
-            for pattern in patterns:
-                row_id = await self._dedup_and_insert(
-                    pattern=pattern,
-                    source_count=len(subset),
-                    stage=1,
-                    env_name=env_name,
-                    memory_ids=[m["id"] for m in algo_mems],
-                )
-                if row_id is not None:
-                    total_created += 1
+            await archive_memories_async(ids_b)
 
-        # Archive ALL source memories after all algo groups processed
-        await archive_memories_async(all_memory_ids)
+        if not phase_a and not phase_b:
+            log.info("consolidation_skipped_no_memories", env_name=env_name)
+            return 0
 
         log.info(
             "consolidation_stage1_complete",

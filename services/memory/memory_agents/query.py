@@ -118,7 +118,7 @@ def _load_query_cloud_config() -> dict[str, Any]:
         mem = cfg.get("memory_agent", {})
         cons = mem.get("consolidation", {})
         providers = cons.get("providers", {})
-        timeout = float(cons.get("timeout_sec", 600))
+        timeout = float(cons.get("timeout_sec", 1800))
 
         or_cfg = providers.get("openrouter", {})
         primary = {
@@ -155,7 +155,7 @@ def _load_query_cloud_config() -> dict[str, Any]:
             "base_url": "https://integrate.api.nvidia.com/v1",
             "api_key": os.environ.get("NVIDIA_API_KEY", ""),
             "model": "moonshotai/kimi-k2.5",
-            "timeout": 600.0,
+            "timeout": 1800.0,
             "provider": "nvidia",
         },
     }
@@ -177,7 +177,7 @@ except Exception as _cfg_exc:
             "base_url": "https://integrate.api.nvidia.com/v1",
             "api_key": "",
             "model": "moonshotai/kimi-k2.5",
-            "timeout": 600.0,
+            "timeout": 1800.0,
             "provider": "nvidia",
         },
     }
