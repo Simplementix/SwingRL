@@ -665,3 +665,194 @@ class TestCLIParser:
         parser = pipeline.build_parser()
         args = parser.parse_args(["--state-path", "data/my_state.json"])
         assert "data/my_state.json" in args.state_path
+
+
+# ===========================================================================
+# TestPerEnvCheckpointing
+# ===========================================================================
+
+
+class TestPerEnvCheckpointing:
+    """TRAIN-06: Per-env checkpointing saves/resumes partial iteration progress."""
+
+    def _mock_config(self, tmp_path: Path) -> MagicMock:
+        """Build a minimal mock SwingRLConfig."""
+        cfg = MagicMock()
+        cfg.system = MagicMock(duckdb_path=str(tmp_path / "test.ddb"))
+        cfg.paths = MagicMock(logs_dir=str(tmp_path / "logs"))
+        cfg.logging = MagicMock(json_logs=False, level="INFO")
+        cfg.memory_agent = MagicMock(
+            enabled=False,
+            meta_training=False,
+            base_url="http://localhost:8889",
+            timeout_sec=30.0,
+            api_key="",
+        )
+        cfg.model_copy = MagicMock(return_value=cfg)
+        return cfg
+
+    def test_per_env_checkpoint_saves_after_equity(self, tmp_path: Path) -> None:
+        """TRAIN-06: State file has iteration_0_env_equity after equity succeeds but crypto fails."""
+        pipeline = _import_pipeline()
+
+        state_path = tmp_path / "training_state.json"
+        cfg = self._mock_config(tmp_path)
+
+        saved_states: list[dict[str, Any]] = []
+
+        def mock_run_environment(env_name: str, config: Any, models_dir: Any, **kwargs: Any) -> Any:
+            if env_name == "crypto":
+                raise RuntimeError("crypto training exploded")
+            return _make_env_result(env_name)
+
+        real_save = pipeline.save_training_state
+
+        def spy_save(state: dict[str, Any], path: Path) -> None:
+            # Deep copy so we capture the state at this moment
+            import copy
+
+            saved_states.append(copy.deepcopy(state))
+            real_save(state, path)
+
+        with (
+            patch.object(pipeline, "run_environment", side_effect=mock_run_environment),
+            patch.object(pipeline, "save_training_state", side_effect=spy_save),
+            patch.object(pipeline, "check_memory_service_health", return_value=True),
+        ):
+            pipeline.run_all_iterations(
+                base_config=cfg,
+                iterations=0,
+                state_path=state_path,
+                models_dir=tmp_path,
+                report_path=tmp_path / "report.json",
+                comparison_path=tmp_path / "comparison.json",
+            )
+
+        # At least one saved state should contain the per-env equity checkpoint
+        equity_checkpoint_found = any("iteration_0_env_equity" in s for s in saved_states)
+        assert equity_checkpoint_found, (
+            "State should contain iteration_0_env_equity key after equity succeeds"
+        )
+
+    def test_resume_skips_checkpointed_env(self, tmp_path: Path) -> None:
+        """TRAIN-06: Pre-populated iteration_0_env_equity causes only crypto to run."""
+        pipeline = _import_pipeline()
+
+        state_path = tmp_path / "training_state.json"
+        cfg = self._mock_config(tmp_path)
+
+        # Pre-populate state with equity already checkpointed for iteration 0
+        initial_state: dict[str, Any] = {
+            "completed_iterations": [],
+            "current_iteration": 0,
+            "iteration_0_env_equity": _make_env_result("equity"),
+        }
+        pipeline.save_training_state(initial_state, state_path)
+
+        envs_called: list[str] = []
+
+        def mock_run_environment(env_name: str, config: Any, models_dir: Any, **kwargs: Any) -> Any:
+            envs_called.append(env_name)
+            return _make_env_result(env_name)
+
+        with (
+            patch.object(pipeline, "run_environment", side_effect=mock_run_environment),
+            patch.object(pipeline, "check_memory_service_health", return_value=True),
+        ):
+            pipeline.run_all_iterations(
+                base_config=cfg,
+                iterations=0,
+                state_path=state_path,
+                models_dir=tmp_path,
+                report_path=tmp_path / "report.json",
+                comparison_path=tmp_path / "comparison.json",
+            )
+
+        assert "equity" not in envs_called, (
+            "run_environment must not be called for equity (already checkpointed)"
+        )
+        assert "crypto" in envs_called, "run_environment must be called for crypto"
+
+    def test_partial_keys_cleaned_after_iteration(self, tmp_path: Path) -> None:
+        """TRAIN-06: No iteration_0_env_* keys remain after a completed iteration."""
+        pipeline = _import_pipeline()
+
+        state_path = tmp_path / "training_state.json"
+        cfg = self._mock_config(tmp_path)
+
+        def mock_run_environment(env_name: str, config: Any, models_dir: Any, **kwargs: Any) -> Any:
+            return _make_env_result(env_name)
+
+        with (
+            patch.object(pipeline, "run_environment", side_effect=mock_run_environment),
+            patch.object(pipeline, "check_memory_service_health", return_value=True),
+        ):
+            pipeline.run_all_iterations(
+                base_config=cfg,
+                iterations=0,
+                state_path=state_path,
+                models_dir=tmp_path,
+                report_path=tmp_path / "report.json",
+                comparison_path=tmp_path / "comparison.json",
+            )
+
+        final_state = pipeline.load_training_state(state_path)
+        assert "iteration_0_env_equity" not in final_state, (
+            "Per-env equity checkpoint must be cleaned after iteration completes"
+        )
+        assert "iteration_0_env_crypto" not in final_state, (
+            "Per-env crypto checkpoint must be cleaned after iteration completes"
+        )
+
+
+# ===========================================================================
+# TestTradingPatternSkipWarning
+# ===========================================================================
+
+
+class TestTradingPatternSkipWarning:
+    """TRAIN-06: _ingest_trading_patterns_to_memory warns when no trades found."""
+
+    def test_trading_patterns_logs_warning_on_no_trades(self, tmp_path: Path) -> None:
+        """TRAIN-06: Empty trades list logs trading_patterns_skipped_no_trades."""
+        pipeline = _import_pipeline()
+
+        # Build a mock config with memory_agent section
+        cfg = MagicMock()
+        cfg.memory_agent = MagicMock(
+            enabled=True,
+            base_url="http://localhost:8889",
+            timeout_sec=30.0,
+            api_key="test-key",  # pragma: allowlist secret
+        )
+        cfg.equity = MagicMock(symbols=["SPY", "QQQ"])
+
+        # Create a mock FoldResult with no trades
+        mock_fold = MagicMock()
+        mock_fold.trades = []
+        mock_fold.test_range = (0, 100)
+
+        all_wf_results: dict[str, list[Any]] = {"ppo": [mock_fold]}
+
+        log_events: list[str] = []
+
+        def capture_warning(event: str, **kwargs: Any) -> None:
+            log_events.append(event)
+
+        mock_client = MagicMock()
+
+        with (
+            patch.object(pipeline.log, "warning", side_effect=capture_warning),
+            patch("train_pipeline.MemoryClient", return_value=mock_client),
+        ):
+            pipeline._ingest_trading_patterns_to_memory(
+                config=cfg,
+                env_name="equity",
+                all_wf_results=all_wf_results,
+                features=None,
+                iteration_number=0,
+            )
+
+        assert "trading_patterns_skipped_no_trades" in log_events, (
+            "Should log trading_patterns_skipped_no_trades when fold has empty trades"
+        )

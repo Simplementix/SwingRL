@@ -388,6 +388,17 @@ def run_all_iterations(
 
         iter_result: dict[str, Any] = {}
         for env_name in ["equity", "crypto"]:
+            # Check for per-env checkpoint from a previous partial run
+            partial_key = f"iteration_{i}_env_{env_name}"
+            if partial_key in state:
+                log.info(
+                    "iteration_env_resumed_from_checkpoint",
+                    iteration=i,
+                    env=env_name,
+                )
+                iter_result[env_name] = state[partial_key]
+                continue
+
             try:
                 env_result = run_environment(
                     env_name=env_name,
@@ -398,6 +409,9 @@ def run_all_iterations(
                     iteration_number=i,
                 )
                 iter_result[env_name] = env_result
+                # Checkpoint per-env immediately so we can resume on crash
+                state[partial_key] = env_result
+                save_training_state(state, state_path)
             except Exception as exc:
                 log.error(
                     "iteration_env_failed_retry",
@@ -416,6 +430,9 @@ def run_all_iterations(
                         iteration_number=i,
                     )
                     iter_result[env_name] = env_result
+                    # Checkpoint per-env on retry success too
+                    state[partial_key] = env_result
+                    save_training_state(state, state_path)
                 except Exception as exc2:
                     # Chain original exception for full traceback context
                     exc2.__cause__ = exc
@@ -431,8 +448,10 @@ def run_all_iterations(
                         "original_error": str(exc),
                     }
 
-        # Save iteration results
+        # Save full iteration results and clean up per-env checkpoints
         state[f"iteration_{i}_result"] = iter_result
+        state.pop(f"iteration_{i}_env_equity", None)
+        state.pop(f"iteration_{i}_env_crypto", None)
         completed = state.get("completed_iterations", [])
         completed.append(i)
         state["completed_iterations"] = completed
@@ -1070,6 +1089,12 @@ def _ingest_trading_patterns_to_memory(
                         rate_hike_trades.extend(fold_trades)
 
         if not all_trades:
+            log.warning(
+                "trading_patterns_skipped_no_trades",
+                env_name=env_name,
+                algo_name=algo_name,
+                fold_count=len(folds),
+            )
             continue
 
         parts: list[str] = [

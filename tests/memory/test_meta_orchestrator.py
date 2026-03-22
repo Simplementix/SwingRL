@@ -379,3 +379,34 @@ class TestMetaOrchestratorGenerateRunId:
         # Both should start with the correct prefix
         assert r1.startswith("equity_ppo_")
         assert r2.startswith("equity_ppo_")
+
+
+# ---------------------------------------------------------------------------
+# TestMetaOrchestratorPatternCountWarning
+# ---------------------------------------------------------------------------
+
+
+class TestMetaOrchestratorPatternCountWarning:
+    """TRAIN-09: _get_pattern_count logs warning on HTTP failure."""
+
+    def test_pattern_count_warns_on_http_failure(self, tmp_path: Path) -> None:
+        """TRAIN-09: HTTP failure in _get_pattern_count emits meta_pattern_count_query_failed."""
+        orch = _make_orchestrator(tmp_path)
+
+        log_events: list[str] = []
+
+        import swingrl.memory.training.meta_orchestrator as meta_mod
+
+        def capture_warning(event: str, **kwargs: object) -> None:
+            log_events.append(event)
+
+        with (
+            patch("urllib.request.urlopen", side_effect=ConnectionError("refused")),
+            patch.object(meta_mod.log, "warning", side_effect=capture_warning),
+        ):
+            count = orch._get_pattern_count("equity")
+
+        assert count == 0, "_get_pattern_count should return 0 on failure"
+        assert "meta_pattern_count_query_failed" in log_events, (
+            "Should log meta_pattern_count_query_failed on HTTP failure"
+        )

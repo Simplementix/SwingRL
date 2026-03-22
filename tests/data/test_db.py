@@ -500,3 +500,92 @@ class TestPhase12SchemaMigrations:
         """INT-03: Running init_schema() twice does not error on ALTER TABLE."""
         db_manager.init_schema()
         db_manager.init_schema()  # Second call should not raise
+
+
+# ---------------------------------------------------------------------------
+# Phase 19.1: Schema migration for stale positions table
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaMigrationRecreatesStalePositions:
+    """init_schema() recreates stale positions table missing environment column."""
+
+    def test_schema_migration_recreates_stale_positions(self, tmp_path: Path) -> None:
+        """TRAIN-06: Stale positions table without environment column is recreated."""
+        from swingrl.data.db import DatabaseManager
+
+        # Create a SQLite DB with an old-schema positions table (no environment column)
+        sqlite_path = tmp_path / "trading_ops.db"
+        old_conn = sqlite3.connect(str(sqlite_path))
+        old_conn.execute("""
+            CREATE TABLE positions (
+                symbol TEXT NOT NULL PRIMARY KEY,
+                quantity REAL NOT NULL,
+                cost_basis REAL NOT NULL,
+                last_price REAL,
+                unrealized_pnl REAL,
+                updated_at TEXT
+            )
+        """)
+        old_conn.execute(
+            "INSERT INTO positions VALUES ('SPY', 10.0, 470.0, 475.0, 50.0, '2024-01-01')"
+        )
+        old_conn.commit()
+
+        # Verify the old table does NOT have environment column
+        old_cols = {row[1] for row in old_conn.execute("PRAGMA table_info(positions)").fetchall()}
+        assert "environment" not in old_cols, "Pre-condition: old table lacks environment"
+        old_conn.close()
+
+        # Build config pointing to this SQLite DB
+        duckdb_path = str(tmp_path / "market_data.ddb")
+        config_yaml = textwrap.dedent(f"""\
+            trading_mode: paper
+            equity:
+              symbols: [SPY, QQQ]
+              max_position_size: 0.25
+              max_drawdown_pct: 0.10
+              daily_loss_limit_pct: 0.02
+            crypto:
+              symbols: [BTCUSDT, ETHUSDT]
+              max_position_size: 0.50
+              max_drawdown_pct: 0.12
+              daily_loss_limit_pct: 0.03
+              min_order_usd: 10.0
+            capital:
+              equity_usd: 400.0
+              crypto_usd: 47.0
+            paths:
+              data_dir: data/
+              db_dir: db/
+              models_dir: models/
+              logs_dir: logs/
+            logging:
+              level: INFO
+              json_logs: false
+            system:
+              duckdb_path: "{duckdb_path}"
+              sqlite_path: "{sqlite_path}"
+            alerting:
+              alert_cooldown_minutes: 30
+              consecutive_failures_before_alert: 3
+        """)
+        config_file = tmp_path / "swingrl.yaml"
+        config_file.write_text(config_yaml)
+        config = load_config(config_file)
+
+        DatabaseManager.reset()
+        mgr = DatabaseManager(config)
+        try:
+            mgr.init_schema()
+
+            # Verify positions table now has environment column
+            with mgr.sqlite() as conn:
+                info = conn.execute("PRAGMA table_info(positions)").fetchall()
+                col_names = {row["name"] for row in info}
+
+            assert "environment" in col_names, (
+                "positions table must have environment column after migration"
+            )
+        finally:
+            DatabaseManager.reset()

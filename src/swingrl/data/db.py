@@ -484,6 +484,73 @@ class DatabaseManager:
                 )
             """)
 
+            # --- Migrations for stale DB files ---
+            # Tables with `environment` in the PRIMARY KEY cannot use ALTER TABLE
+            # ADD COLUMN. If the column is missing, the table was created from an
+            # older schema — recreate it (paper trading data is ephemeral).
+            _tables_requiring_environment = {
+                "positions": """
+                    CREATE TABLE IF NOT EXISTS positions (
+                        symbol TEXT NOT NULL,
+                        environment TEXT NOT NULL,
+                        quantity REAL NOT NULL,
+                        cost_basis REAL NOT NULL,
+                        last_price REAL,
+                        unrealized_pnl REAL,
+                        updated_at TEXT,
+                        PRIMARY KEY (symbol, environment)
+                    )
+                """,
+                "portfolio_snapshots": """
+                    CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                        timestamp TEXT NOT NULL,
+                        environment TEXT NOT NULL,
+                        total_value REAL NOT NULL,
+                        equity_value REAL,
+                        crypto_value REAL,
+                        cash_balance REAL,
+                        high_water_mark REAL,
+                        daily_pnl REAL,
+                        drawdown_pct REAL,
+                        PRIMARY KEY (timestamp, environment)
+                    )
+                """,
+                "trades": """
+                    CREATE TABLE IF NOT EXISTS trades (
+                        trade_id TEXT PRIMARY KEY,
+                        timestamp TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        side TEXT NOT NULL,
+                        quantity REAL NOT NULL,
+                        price REAL NOT NULL,
+                        commission REAL DEFAULT 0.0,
+                        slippage REAL DEFAULT 0.0,
+                        environment TEXT NOT NULL,
+                        broker TEXT,
+                        order_type TEXT,
+                        trade_type TEXT
+                    )
+                """,
+            }
+            for table_name, create_ddl in _tables_requiring_environment.items():
+                try:
+                    cols = {
+                        row[1]
+                        for row in conn.execute(
+                            f"PRAGMA table_info({table_name})"  # noqa: S608
+                        ).fetchall()
+                    }
+                except sqlite3.OperationalError:
+                    continue  # Table doesn't exist yet — CREATE above handles it
+                if cols and "environment" not in cols:
+                    log.warning(
+                        "sqlite_migration_recreating_table",
+                        table=table_name,
+                        reason="missing_environment_column",
+                    )
+                    conn.execute(f"DROP TABLE IF EXISTS {table_name}")  # noqa: S608
+                    conn.execute(create_ddl)
+
             # --- Indexes ---
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_cb_env_resumed

@@ -561,30 +561,42 @@ class ConsolidateAgent:
                     )
                     if row_id is not None:
                         total_created += 1
+                await archive_memories_async(ids_a)
             else:
                 log.warning(
-                    "consolidation_stage1_wf_discarded",
+                    "consolidation_memories_preserved",
                     env_name=env_name,
+                    phase="A",
+                    memory_count=len(ids_a),
                 )
 
-            await archive_memories_async(ids_a)
-
         # --- Phase B: Epoch + reward + run (training dynamics) ---
-        phase_b: list[dict[str, Any]] = []
-        for prefix in ("training_epoch", "reward_adjustment", "training_run"):
-            candidates = await get_memories_by_source_prefix_async(
-                prefix=prefix,
-                limit=_MEMORY_BATCH_SIZE,
-                archived=False,
-            )
-            if candidates:
-                filtered = [m for m in candidates if f"env={env_name}" in m.get("text", "")]
-                phase_b.extend(filtered)
+        # Process in batches — there can be 45K+ epoch memories. Loop until
+        # no unarchived memories remain or an LLM call fails.
+        _MAX_PHASE_B_BATCHES = 500
+        phase_b_total_created = 0
+        phase_b_any = False
 
-        if phase_b:
+        for batch_num in range(1, _MAX_PHASE_B_BATCHES + 1):
+            phase_b: list[dict[str, Any]] = []
+            for prefix in ("training_epoch", "reward_adjustment", "training_run"):
+                candidates = await get_memories_by_source_prefix_async(
+                    prefix=prefix,
+                    limit=_MEMORY_BATCH_SIZE,
+                    archived=False,
+                )
+                if candidates:
+                    filtered = [m for m in candidates if f"env={env_name}" in m.get("text", "")]
+                    phase_b.extend(filtered)
+
+            if not phase_b:
+                break  # No more unarchived memories for this env
+
+            phase_b_any = True
             log.info(
-                "consolidation_stage1_epoch_starting",
+                "consolidation_stage1_epoch_batch",
                 env_name=env_name,
+                batch=batch_num,
                 memory_count=len(phase_b),
             )
             texts_b = "\n\n".join(f"- {m['text']}" for m in phase_b)
@@ -601,16 +613,21 @@ class ConsolidateAgent:
                         memory_ids=ids_b,
                     )
                     if row_id is not None:
-                        total_created += 1
+                        phase_b_total_created += 1
+                await archive_memories_async(ids_b)
             else:
                 log.warning(
-                    "consolidation_stage1_epoch_discarded",
+                    "consolidation_memories_preserved",
                     env_name=env_name,
+                    phase="B",
+                    memory_count=len(ids_b),
+                    batch=batch_num,
                 )
+                break  # Stop processing on LLM failure
 
-            await archive_memories_async(ids_b)
+        total_created += phase_b_total_created
 
-        if not phase_a and not phase_b:
+        if not phase_a and not phase_b_any:
             log.info("consolidation_skipped_no_memories", env_name=env_name)
             return 0
 

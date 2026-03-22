@@ -228,6 +228,7 @@ class MetaTrainingOrchestrator:
                 min_patterns=_COLD_START_MIN_PATTERNS,
                 env=env_name,
                 algo=algo_name,
+                action="using_baseline_params",
             )
             return {}
 
@@ -311,10 +312,15 @@ class MetaTrainingOrchestrator:
                 for p in patterns
                 if p.get("env_name") == env_name or env_name in (p.get("affected_envs") or [])
             )
-            log.debug("meta_pattern_count", env=env_name, count=count)
+            log.info("meta_pattern_count", env=env_name, count=count)
             return count
         except Exception as exc:
-            log.debug("meta_pattern_count_failed", env=env_name, error=str(exc))
+            log.warning(
+                "meta_pattern_count_query_failed",
+                env=env_name,
+                error=str(exc),
+                fallback="cold_start_baseline",
+            )
             return 0
 
     def _current_regime_vector(self, env_name: str) -> dict[str, float]:

@@ -537,6 +537,350 @@ class TestConsolidation:
 
 
 # ---------------------------------------------------------------------------
+# TestConsolidationArchiving — Fix A (archiving behavior) and Fix F (batch loop)
+# ---------------------------------------------------------------------------
+
+
+class TestConsolidationArchiving:
+    """Tests for Fix A (no archive on LLM failure) and Fix F (batch loop)."""
+
+    def test_consolidate_does_not_archive_on_llm_failure(
+        self, api_client: Any, auth_headers: dict[str, str]
+    ) -> None:
+        """19.1-FIX-A: Memories remain archived=0 when LLM returns None."""
+        import db as memory_db_module
+
+        for i in range(3):
+            api_client.post(
+                "/ingest",
+                json={
+                    "text": f"WF observation {i}",
+                    "source": "walk_forward:equity:ppo",
+                },
+                headers=auth_headers,
+            )
+
+        with patch(
+            "memory_agents.consolidate.ConsolidateAgent._call_llm_with_retry",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            response = api_client.post("/consolidate", headers=auth_headers)
+
+        assert response.status_code == 200
+        assert response.json()["consolidated"] == 0
+
+        # Verify memories are NOT archived
+        conn = memory_db_module.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT id, archived FROM memories WHERE source LIKE 'walk_forward:equity%'"
+            ).fetchall()
+            assert len(rows) >= 3
+            assert all(row["archived"] == 0 for row in rows), (
+                "Memories must remain unarchived when LLM fails"
+            )
+        finally:
+            conn.close()
+
+    def test_consolidate_archives_on_success(
+        self, api_client: Any, auth_headers: dict[str, str]
+    ) -> None:
+        """19.1-FIX-A: Memories are archived=1 after successful LLM consolidation."""
+        import db as memory_db_module
+
+        for i in range(3):
+            api_client.post(
+                "/ingest",
+                json={
+                    "text": f"WF result {i}",
+                    "source": "walk_forward:equity:sac",
+                },
+                headers=auth_headers,
+            )
+
+        mock_response = {
+            "patterns": [
+                {
+                    "pattern_text": "SAC equity shows stable Sharpe across regimes",
+                    "category": "regime_performance",
+                    "affected_algos": ["sac"],
+                    "affected_envs": ["equity"],
+                    "actionable_implication": "Maintain SAC weight in ensemble",
+                    "confidence": 0.60,
+                    "evidence": "fold 1 sharpe=1.0; fold 2 sharpe=0.9",
+                },
+            ],
+        }
+
+        with patch("memory_agents.consolidate.httpx.AsyncClient") as mock_client_class:
+            mock_cm = AsyncMock()
+            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_cm)
+            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_cm.post = AsyncMock(return_value=_make_cloud_response(mock_response))
+
+            response = api_client.post("/consolidate", headers=auth_headers)
+
+        assert response.status_code == 200
+        assert response.json()["consolidated"] >= 1
+
+        # Verify memories ARE archived
+        conn = memory_db_module.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT id, archived FROM memories WHERE source LIKE 'walk_forward:equity:sac%'"
+            ).fetchall()
+            assert len(rows) >= 3
+            assert all(row["archived"] == 1 for row in rows), (
+                "Memories must be archived after successful consolidation"
+            )
+        finally:
+            conn.close()
+
+    def test_consolidate_batch_loop_processes_all(
+        self, api_client: Any, auth_headers: dict[str, str]
+    ) -> None:
+        """19.1-FIX-F: All 250+ epoch memories are archived across multiple batches."""
+        import db as memory_db_module
+
+        # Insert 250 epoch memories (> _MEMORY_BATCH_SIZE=200) directly into DB
+        for i in range(250):
+            memory_db_module.insert_memory(
+                text=f"epoch {i} env=equity algo=ppo sharpe=0.{i % 10}",
+                source=f"training_epoch:equity:ppo:iter0:epoch{i}",
+            )
+
+        mock_response = {
+            "patterns": [
+                {
+                    "pattern_text": "PPO equity epochs show gradual improvement",
+                    "category": "iteration_progression",
+                    "affected_algos": ["ppo"],
+                    "affected_envs": ["equity"],
+                    "actionable_implication": "Continue current training approach",
+                    "confidence": 0.55,
+                    "evidence": "epoch 0 sharpe=0.1; epoch 249 sharpe=0.9",
+                },
+            ],
+        }
+
+        call_count = 0
+
+        async def _mock_call_llm_with_retry(self_arg: Any, memory_texts: str) -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            return mock_response
+
+        with patch(
+            "memory_agents.consolidate.ConsolidateAgent._call_llm_with_retry",
+            _mock_call_llm_with_retry,
+        ):
+            response = api_client.post(
+                "/consolidate",
+                json={"env_name": "equity"},
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+
+        # Verify multiple LLM calls were made (one per batch)
+        assert call_count >= 2, f"Expected >= 2 LLM calls for 250 memories, got {call_count}"
+
+        # Verify ALL epoch memories are archived
+        conn = memory_db_module.get_connection()
+        try:
+            unarchived = conn.execute(
+                "SELECT COUNT(*) FROM memories "
+                "WHERE source LIKE 'training_epoch:%' AND archived = 0"
+            ).fetchone()[0]
+            assert unarchived == 0, f"Expected 0 unarchived epoch memories, got {unarchived}"
+        finally:
+            conn.close()
+
+    def test_consolidate_batch_stops_on_failure(
+        self, api_client: Any, auth_headers: dict[str, str]
+    ) -> None:
+        """19.1-FIX-F: First batch archived, second batch preserved when LLM fails mid-loop."""
+        import db as memory_db_module
+
+        # Insert 250 epoch memories directly
+        for i in range(250):
+            memory_db_module.insert_memory(
+                text=f"epoch {i} env=equity algo=a2c sharpe=0.{i % 10}",
+                source=f"training_epoch:equity:a2c:iter0:epoch{i}",
+            )
+
+        mock_response = {
+            "patterns": [
+                {
+                    "pattern_text": "A2C equity batch pattern",
+                    "category": "iteration_progression",
+                    "affected_algos": ["a2c"],
+                    "affected_envs": ["equity"],
+                    "actionable_implication": "Batch 1 finding",
+                    "confidence": 0.50,
+                    "evidence": "epoch 0 sharpe=0.1; epoch 100 sharpe=0.5",
+                },
+            ],
+        }
+
+        call_count = 0
+
+        async def _mock_call_llm_with_retry(
+            self_arg: Any, memory_texts: str
+        ) -> dict[str, Any] | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return mock_response
+            return None  # Fail on second batch
+
+        with patch(
+            "memory_agents.consolidate.ConsolidateAgent._call_llm_with_retry",
+            _mock_call_llm_with_retry,
+        ):
+            response = api_client.post(
+                "/consolidate",
+                json={"env_name": "equity"},
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+
+        # Verify first batch was archived but second batch was NOT
+        conn = memory_db_module.get_connection()
+        try:
+            archived = conn.execute(
+                "SELECT COUNT(*) FROM memories "
+                "WHERE source LIKE 'training_epoch:%' AND archived = 1"
+            ).fetchone()[0]
+            unarchived = conn.execute(
+                "SELECT COUNT(*) FROM memories "
+                "WHERE source LIKE 'training_epoch:%' AND archived = 0"
+            ).fetchone()[0]
+            assert archived > 0, "First batch should have been archived"
+            assert unarchived > 0, "Second batch should be preserved (not archived)"
+            assert archived + unarchived == 250
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# TestUnarchiveMechanism — Fix B (unarchive and prefix queries)
+# ---------------------------------------------------------------------------
+
+
+class TestUnarchiveMechanism:
+    """Tests for Fix B: unarchive_memories() and get_archived_memories_by_prefix()."""
+
+    def test_unarchive_resets_flag(self, memory_db_env: Path) -> None:
+        """19.1-FIX-B: unarchive_memories resets archived flag to 0."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # Insert and archive memories
+        ids = []
+        for i in range(5):
+            row_id = memory_db_module.insert_memory(
+                text=f"Memory to archive {i}",
+                source="walk_forward:equity:ppo",
+            )
+            ids.append(row_id)
+
+        memory_db_module.archive_memories(ids)
+
+        # Verify they are archived
+        conn = memory_db_module.get_connection()
+        try:
+            archived_count = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE archived = 1"
+            ).fetchone()[0]
+            assert archived_count == 5
+        finally:
+            conn.close()
+
+        # Unarchive them
+        updated = memory_db_module.unarchive_memories(ids)
+        assert updated == 5
+
+        # Verify they are back to active
+        conn = memory_db_module.get_connection()
+        try:
+            active_count = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE archived = 0"
+            ).fetchone()[0]
+            assert active_count == 5
+            archived_count = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE archived = 1"
+            ).fetchone()[0]
+            assert archived_count == 0
+        finally:
+            conn.close()
+
+    def test_get_archived_memories_by_prefix(self, memory_db_env: Path) -> None:
+        """19.1-FIX-B: get_archived_memories_by_prefix filters by source prefix."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # Insert memories with different source prefixes
+        equity_ids = []
+        for i in range(3):
+            row_id = memory_db_module.insert_memory(
+                text=f"Equity WF memory {i}",
+                source="walk_forward:equity:ppo",
+            )
+            equity_ids.append(row_id)
+
+        crypto_ids = []
+        for i in range(2):
+            row_id = memory_db_module.insert_memory(
+                text=f"Crypto WF memory {i}",
+                source="walk_forward:crypto:sac",
+            )
+            crypto_ids.append(row_id)
+
+        epoch_ids = []
+        for i in range(4):
+            row_id = memory_db_module.insert_memory(
+                text=f"Epoch memory {i}",
+                source="training_epoch:equity:ppo:iter0",
+            )
+            epoch_ids.append(row_id)
+
+        # Archive all
+        memory_db_module.archive_memories(equity_ids + crypto_ids + epoch_ids)
+
+        # Query archived by different prefixes
+        equity_archived = memory_db_module.get_archived_memories_by_prefix("walk_forward:equity")
+        assert len(equity_archived) == 3
+        assert all("equity" in m["source"] for m in equity_archived)
+
+        crypto_archived = memory_db_module.get_archived_memories_by_prefix("walk_forward:crypto")
+        assert len(crypto_archived) == 2
+        assert all("crypto" in m["source"] for m in crypto_archived)
+
+        epoch_archived = memory_db_module.get_archived_memories_by_prefix("training_epoch")
+        assert len(epoch_archived) == 4
+
+        # Non-matching prefix returns empty
+        empty = memory_db_module.get_archived_memories_by_prefix("nonexistent_prefix")
+        assert len(empty) == 0
+
+        # Unarchived memories should NOT appear
+        memory_db_module.unarchive_memories(equity_ids)
+        equity_after_unarchive = memory_db_module.get_archived_memories_by_prefix(
+            "walk_forward:equity"
+        )
+        assert len(equity_after_unarchive) == 0
+
+
+# ---------------------------------------------------------------------------
 # TestDBSchema — New tables and columns
 # ---------------------------------------------------------------------------
 

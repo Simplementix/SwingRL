@@ -369,6 +369,39 @@ def archive_memories(row_ids: list[int]) -> None:
         conn.close()
 
 
+def unarchive_memories(row_ids: list[int]) -> int:
+    """Reset archived memories to active state for re-consolidation."""
+    if not row_ids:
+        return 0
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" * len(row_ids))
+        cursor = conn.execute(
+            f"UPDATE memories SET archived = 0 WHERE id IN ({placeholders})",  # noqa: S608  # nosec B608
+            row_ids,
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def get_archived_memories_by_prefix(prefix: str, limit: int = 1000) -> list[dict[str, Any]]:
+    """Fetch archived memories matching source prefix."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, text, source, created_at FROM memories "
+            "WHERE source LIKE ? AND archived = 1 ORDER BY id LIMIT ?",
+            (f"{prefix}%", limit),
+        ).fetchall()
+        return [
+            {"id": row[0], "text": row[1], "source": row[2], "created_at": row[3]} for row in rows
+        ]
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Consolidation helpers
 # ---------------------------------------------------------------------------
@@ -820,6 +853,11 @@ async def get_memories_by_source_prefix_async(
 async def archive_memories_async(row_ids: list[int]) -> None:
     """Async wrapper for archive_memories (background pool)."""
     return await _run_background(archive_memories, row_ids)
+
+
+async def unarchive_memories_async(row_ids: list[int]) -> int:
+    """Async wrapper for unarchive_memories (background pool)."""
+    return await _run_background(unarchive_memories, row_ids)
 
 
 async def insert_consolidation_async(
