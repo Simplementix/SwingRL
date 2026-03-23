@@ -104,8 +104,8 @@ Plans:
 Plans:
 - [ ] 20-01-PLAN.md — Production dependencies, config schema extensions, startup validation, healthcheck
 - [ ] 20-02-PLAN.md — Memory live endpoints (5 /live/ routes in swingrl-memory service)
-- [ ] 20-03-PLAN.md — LiveMemoryClient, FillIngestors, execute_cycle() memory hooks, CB overrides
-- [ ] 20-04-PLAN.md — MacroWatcher, operational scripts, Docker compose updates, main.py wiring
+- [ ] 20-03-PLAN.md — LiveMemoryClient, execute_cycle() memory hooks, performance tracking, CB overrides
+- [ ] 20-04-PLAN.md — MacroWatcher, operational scripts, Docker compose, main.py wiring, PositionSizer removal + shadow runner rewrite
 - [ ] 20-05-PLAN.md — CI updates, homelab deployment, memory seeding, smoke test verification
 
 ### Phase 21: Discord Alert Suite
