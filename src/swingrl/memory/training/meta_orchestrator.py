@@ -50,6 +50,24 @@ log = structlog.get_logger(__name__)
 # walk-forward results must be consolidated first.
 _COLD_START_MIN_PATTERNS: int = 1
 
+# Valid SB3 hyperparameter keys per algorithm. Keys not in this set
+# are silently dropped to prevent TypeError from algo constructors.
+_VALID_HP_KEYS: dict[str, set[str]] = {
+    "ppo": {
+        "learning_rate",
+        "n_steps",
+        "batch_size",
+        "n_epochs",
+        "gamma",
+        "gae_lambda",
+        "clip_range",
+        "ent_coef",
+        "vf_coef",
+    },
+    "a2c": {"learning_rate", "n_steps", "gamma", "gae_lambda", "ent_coef", "vf_coef"},
+    "sac": {"learning_rate", "batch_size", "tau", "gamma", "ent_coef", "learning_starts"},
+}
+
 
 class MetaTrainingOrchestrator:
     """Outer loop that wraps TrainingOrchestrator with LLM-guided meta-training.
@@ -129,19 +147,12 @@ class MetaTrainingOrchestrator:
         advised_config = self._query_run_config(env_name, algo_name)
         safe_config = clamp_run_config(advised_config) if advised_config else {}
 
-        # Extract SB3-compatible HP keys
-        hp_keys = {
-            "learning_rate",
-            "entropy_coeff",
-            "clip_range",
-            "n_epochs",
-            "batch_size",
-            "gamma",
-        }
+        # Extract SB3-compatible HP keys (algo-filtered)
+        valid_keys = _VALID_HP_KEYS.get(algo_name, set())
         memory_hp: dict[str, Any] = {}
         for k, v in safe_config.items():
-            if k in hp_keys:
-                key = "ent_coef" if k == "entropy_coeff" else k
+            key = "ent_coef" if k == "entropy_coeff" else k
+            if key in valid_keys:
                 memory_hp[key] = v
 
         # Merge: baseline overrides win on conflict
@@ -220,18 +231,11 @@ class MetaTrainingOrchestrator:
 
         safe = clamp_run_config(advised)
 
-        hp_keys = {
-            "learning_rate",
-            "entropy_coeff",
-            "clip_range",
-            "n_epochs",
-            "batch_size",
-            "gamma",
-        }
+        valid_keys = _VALID_HP_KEYS.get(algo_name, set())
         result: dict[str, Any] = {}
         for k, v in safe.items():
-            if k in hp_keys:
-                key = "ent_coef" if k == "entropy_coeff" else k
+            key = "ent_coef" if k == "entropy_coeff" else k
+            if key in valid_keys:
                 result[key] = v
 
         log.info(

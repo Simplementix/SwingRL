@@ -211,7 +211,31 @@ class TrainingOrchestrator:
         # Create eval environment (separate instance for EvalCallback).
         # Uses DummyVecEnv(1) — eval runs 5 sequential inference episodes,
         # no parallelism benefit. Saves ~1.8 GB vs SubprocVecEnv(n_envs).
-        eval_vec_env = self._create_eval_env(env_name, features, prices)
+        # When memory wrapper is active, mirror the train env stack:
+        #   Base → MemoryVecRewardWrapper → VecNormalize
+        eval_vec_env: VecNormalize | DummyVecEnv
+        if memory_wrapper is not None:
+            eval_base = self._create_eval_env(
+                env_name,
+                features,
+                prices,
+                skip_vec_normalize=True,
+            )
+            from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
+
+            periods = 2191 if env_name == "crypto" else 252
+            eval_memory_wrapper = MemoryVecRewardWrapper(
+                eval_base,
+                initial_weights=initial_reward_weights,
+                periods_per_year=periods,
+            )
+            eval_vec_env = VecNormalize(
+                eval_memory_wrapper,
+                norm_obs=True,
+                norm_reward=True,
+            )
+        else:
+            eval_vec_env = self._create_eval_env(env_name, features, prices)
 
         # Instantiate algorithm with locked hyperparams
         algo_cls = ALGO_MAP[algo_name]
@@ -384,7 +408,8 @@ class TrainingOrchestrator:
         env_name: str,
         features: np.ndarray,
         prices: np.ndarray,
-    ) -> VecNormalize:
+        skip_vec_normalize: bool = False,
+    ) -> VecNormalize | DummyVecEnv:
         """Create lightweight eval environment for EvalCallback.
 
         Always uses DummyVecEnv with n_envs=1. Eval runs 5 sequential
@@ -396,9 +421,12 @@ class TrainingOrchestrator:
             env_name: Environment type ("equity" or "crypto").
             features: Feature array for the environment.
             prices: Price array for the environment.
+            skip_vec_normalize: If True, return the base DummyVecEnv without
+                VecNormalize wrapping (used when MemoryVecRewardWrapper
+                needs to be inserted before VecNormalize).
 
         Returns:
-            VecNormalize-wrapped single-env DummyVecEnv.
+            VecNormalize-wrapped or bare single-env DummyVecEnv.
         """
         env_cls = ENV_CLASS_MAP[env_name]
 
@@ -410,6 +438,8 @@ class TrainingOrchestrator:
             )
 
         base_env = DummyVecEnv([_init])
+        if skip_vec_normalize:
+            return base_env
         return VecNormalize(base_env, norm_obs=True, norm_reward=True)
 
     def _save_model(

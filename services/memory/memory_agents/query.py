@@ -238,6 +238,50 @@ def _build_system_prompt(
     )
 
 
+def _build_algo_system_prompt(
+    hp_bounds: dict[str, tuple[Any, Any]],
+    rw_bounds: dict[str, tuple[float, float]],
+    algo_name: str,
+) -> str:
+    """Build algo-specific system prompt with filtered HP bounds.
+
+    Args:
+        hp_bounds: Hyperparameter bounds dict (all algos).
+        rw_bounds: Reward weight bounds dict.
+        algo_name: Algorithm name ('ppo', 'a2c', 'sac').
+
+    Returns:
+        System prompt string with algo-specific bounds and field constraints.
+    """
+    valid_hp = set(_ALGO_HP_FIELDS.get(algo_name, {}).keys())
+    filtered_bounds = {k: v for k, v in hp_bounds.items() if k in valid_hp}
+    hp_lines = "\n".join(f"- {k}: [{lo}, {hi}]" for k, (lo, hi) in filtered_bounds.items())
+    rw_lines = "\n".join(f"- {k}: [{lo}, {hi}]" for k, (lo, hi) in rw_bounds.items())
+    algo_upper = algo_name.upper()
+    valid_fields = ", ".join(valid_hp)
+    return (
+        "You are the training advisor agent for SwingRL, an RL-based "
+        "swing trading system.\n\n"
+        f"You are advising hyperparameters for the {algo_upper} algorithm.\n"
+        f"ONLY include these hyperparameter fields: {valid_fields}\n\n"
+        "SwingRL context:\n"
+        "- Two environments: equity daily (8 ETFs) and crypto 4H (BTC/ETH)\n"
+        f"- Algorithm: {algo_upper} ("
+        f"{'on-policy' if algo_name in ('ppo', 'a2c') else 'off-policy, entropy-maximizing'}"
+        f")\n"
+        "- Capital preservation is the PRIMARY constraint — Sortino ratio and "
+        "MDD are the main metrics\n"
+        "- Market regimes: bull (0), bear (1), crisis (2) — detected by HMM "
+        "from FRED indicators\n\n"
+        f"Hyperparameter bounds for {algo_upper} (you MUST stay within these):\n{hp_lines}\n\n"
+        "Reward weight bounds (you MUST stay within these, weights should "
+        f"sum to ~1.0):\n{rw_lines}\n\n"
+        "Provide specific, numerical advice grounded in the memory patterns.\n"
+        "Cite which pattern supports each hyperparameter change.\n"
+        "If memory patterns are insufficient for a parameter, keep the baseline value."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Relevant categories per request type (R2)
 # ---------------------------------------------------------------------------
@@ -328,6 +372,60 @@ _RUN_CONFIG_SCHEMA = {
     },
     "required": ["rationale"],
 }
+
+# Per-algo HP field definitions (algo-aware schema enforcement)
+_ALGO_HP_FIELDS: dict[str, dict[str, dict[str, str]]] = {
+    "ppo": {
+        "learning_rate": {"type": "number"},
+        "entropy_coeff": {"type": "number"},
+        "clip_range": {"type": "number"},
+        "n_epochs": {"type": "integer"},
+        "batch_size": {"type": "integer"},
+        "gamma": {"type": "number"},
+    },
+    "a2c": {
+        "learning_rate": {"type": "number"},
+        "entropy_coeff": {"type": "number"},
+        "gamma": {"type": "number"},
+    },
+    "sac": {
+        "learning_rate": {"type": "number"},
+        "entropy_coeff": {"type": "number"},
+        "batch_size": {"type": "integer"},
+        "gamma": {"type": "number"},
+    },
+}
+
+
+def _build_run_config_schema(algo_name: str) -> dict[str, Any]:
+    """Build JSON schema for run_config filtered to algo-valid HP fields.
+
+    Args:
+        algo_name: Algorithm name ('ppo', 'a2c', 'sac').
+
+    Returns:
+        JSON schema dict with only the HP fields valid for the given algo.
+    """
+    hp_fields = _ALGO_HP_FIELDS.get(algo_name, _ALGO_HP_FIELDS["ppo"])
+    properties: dict[str, Any] = dict(hp_fields)
+    properties["reward_weights"] = {
+        "type": "object",
+        "properties": {
+            "profit": {"type": "number"},
+            "sharpe": {"type": "number"},
+            "drawdown": {"type": "number"},
+            "turnover": {"type": "number"},
+        },
+        "additionalProperties": False,
+    }
+    properties["rationale"] = {"type": "string"}
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": ["rationale"],
+        "additionalProperties": False,
+    }
+
 
 # JSON schema for epoch_advice response
 _EPOCH_ADVICE_SCHEMA = {
@@ -439,13 +537,25 @@ class QueryAgent:
             algo_name=parsed["algo_name"],
             request_type="run_config",
         )
+
+        algo = parsed["algo_name"] or "ppo"
+        algo_upper = algo.upper()
+        valid_fields = ", ".join(_ALGO_HP_FIELDS.get(algo, {}).keys())
+
         user_content = (
             f"Training context: {query}\n\n"
             f"Relevant memory patterns:\n{context}\n\n"
-            "Please recommend hyperparameters for this training run."
+            f"Algorithm: {algo_upper}\n"
+            f"Valid hyperparameter fields for {algo_upper}: {valid_fields}\n\n"
+            f"Based ONLY on the memory patterns above, recommend hyperparameters "
+            f"for this {algo_upper} training run. Cite the specific pattern that "
+            f"supports each recommendation."
         )
 
-        result = await self._call_lm(user_content, _RUN_CONFIG_SCHEMA)
+        schema = _build_run_config_schema(algo)
+        system_prompt = _build_algo_system_prompt(_HYPERPARAM_BOUNDS, _REWARD_BOUNDS, algo)
+
+        result = await self._call_lm(user_content, schema, system_prompt=system_prompt)
         if result is None:
             log.warning("run_config_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_DEFAULTS)
@@ -768,42 +878,62 @@ class QueryAgent:
         model: str,
         timeout: float,
         provider: str,
+        system_prompt: str | None = None,
     ) -> dict[str, Any] | None:
         """Call cloud API (OpenAI-compatible) with structured JSON output.
 
         Args:
             user_content: The user-turn message content.
-            schema: JSON schema dict (unused by cloud, kept for interface parity).
+            schema: JSON schema dict for structured output enforcement.
             base_url: Provider base URL.
             api_key: Bearer token for the provider.
             model: Model identifier string.
             timeout: Read timeout in seconds.
             provider: Provider name for logging ('openrouter' or 'nvidia').
+            system_prompt: Override system prompt (defaults to module-level _SYSTEM_PROMPT).
 
         Returns:
             Parsed dict from LLM response, or None on failure.
         """
         effective_max_tokens = 32768
+        effective_system_prompt = system_prompt if system_prompt is not None else _SYSTEM_PROMPT
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
             ) as client:
+                request_body: dict[str, Any] = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": effective_system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    "temperature": 0,
+                    "max_tokens": effective_max_tokens,
+                }
+
+                # Provider-specific structured output enforcement
+                if provider == "openrouter":
+                    request_body["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "run_config",
+                            "strict": True,
+                            "schema": schema,
+                        },
+                    }
+                elif provider == "nvidia":
+                    request_body["response_format"] = {"type": "json_object"}
+                    request_body["guided_json"] = schema
+                else:
+                    request_body["response_format"] = {"type": "json_object"}
+
                 resp = await client.post(
                     f"{base_url.rstrip('/')}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": _SYSTEM_PROMPT},
-                            {"role": "user", "content": user_content},
-                        ],
-                        "temperature": 0,
-                        "max_tokens": effective_max_tokens,
-                        "response_format": {"type": "json_object"},
-                    },
+                    json=request_body,
                 )
                 if resp.status_code >= 400:
                     log.error(
@@ -842,8 +972,20 @@ class QueryAgent:
             )
             return None
 
-    async def _call_lm(self, user_content: str, schema: dict[str, Any]) -> dict[str, Any] | None:
-        """Call primary (OpenRouter) then backup (NVIDIA) cloud API."""
+    async def _call_lm(
+        self,
+        user_content: str,
+        schema: dict[str, Any],
+        *,
+        system_prompt: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Call primary (OpenRouter) then backup (NVIDIA) cloud API.
+
+        Args:
+            user_content: The user-turn message content.
+            schema: JSON schema dict for structured output enforcement.
+            system_prompt: Override system prompt (defaults to module-level _SYSTEM_PROMPT).
+        """
         for tier in ("primary", "backup"):
             cfg = _PROVIDER_CONFIG[tier]
             if not cfg["api_key"]:
@@ -861,6 +1003,7 @@ class QueryAgent:
                 model=cfg["model"],
                 timeout=cfg["timeout"],
                 provider=cfg["provider"],
+                system_prompt=system_prompt,
             )
             if result is not None:
                 return result
