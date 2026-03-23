@@ -126,17 +126,18 @@ async def get_epoch_advice(
     body: EpochAdviceRequest,
     _key: str = Depends(verify_api_key),
 ) -> EpochAdviceResponse:
-    """Return LLM-advised reward weight adjustments for the current epoch.
+    """Return reward weight adjustments for the current epoch.
 
-    Returns clamped safe defaults on cold start or LLM failure.
+    Epoch advice LLM call is disabled — too many requests for CPU-only
+    Ollama inference. Returns safe defaults instantly. Epoch snapshots
+    are still ingested to memory for post-iteration consolidation.
+
     Requires X-API-Key header.
     """
-    agent = QueryAgent()
-    result: dict[str, Any] = await agent.advise_epoch(body.query)
     return EpochAdviceResponse(
-        reward_weights=result.get("reward_weights", {}),
-        stop_training=bool(result.get("stop_training", False)),
-        rationale=result.get("rationale", "cold_start"),
+        reward_weights={"profit": 0.4, "sharpe": 0.35, "drawdown": 0.20, "turnover": 0.05},
+        stop_training=False,
+        rationale="epoch_advice_disabled",
     )
 
 
