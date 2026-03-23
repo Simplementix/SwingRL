@@ -130,13 +130,18 @@ async def get_epoch_advice(
 
     Returns clamped safe defaults on cold start or LLM failure.
     Requires X-API-Key header.
+
+    NOTE: LLM call is temporarily bypassed (rate-limited on free tier).
+    Returns safe defaults instantly so training is not blocked.
+    Re-enable by removing the early return below.
     """
-    agent = QueryAgent()
-    result: dict[str, Any] = await agent.advise_epoch(body.query)
+    # TODO: Re-enable LLM epoch advice when rate limits are resolved.
+    # agent = QueryAgent()
+    # result: dict[str, Any] = await agent.advise_epoch(body.query)
     return EpochAdviceResponse(
-        reward_weights=result.get("reward_weights", {}),
-        stop_training=bool(result.get("stop_training", False)),
-        rationale=result.get("rationale", "cold_start"),
+        reward_weights={"profit": 0.4, "sharpe": 0.35, "drawdown": 0.20, "turnover": 0.05},
+        stop_training=False,
+        rationale="epoch_advice_bypassed_rate_limited",
     )
 
 
