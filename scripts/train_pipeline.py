@@ -1247,6 +1247,7 @@ def _run_wf_for_algo(
     models_dir: Path,
     timesteps: int,
     hp_override: dict[str, Any] | None = None,
+    memory_enabled: bool = False,
 ) -> tuple[str, list[Any]]:
     """Run walk-forward validation for one algo. Top-level for serialization.
 
@@ -1259,6 +1260,9 @@ def _run_wf_for_algo(
         models_dir: Models root directory.
         timesteps: Training timesteps per fold.
         hp_override: Memory-advised hyperparameter overrides (iter 1+).
+        memory_enabled: When True, construct a MemoryClient inside this subprocess
+            and pass it to the backtester for epoch-level memory ingestion and
+            LLM-guided reward weight adjustments during training.
 
     Returns:
         Tuple of (algo_name, fold_results_list).
@@ -1267,12 +1271,27 @@ def _run_wf_for_algo(
 
     config = _reconstruct_config(config_dict)
 
+    # Construct MemoryClient inside subprocess to avoid serialization boundary
+    memory_client = None
+    if memory_enabled:
+        try:
+            mem_cfg = config.memory_agent
+            memory_client = MemoryClient(
+                base_url=mem_cfg.base_url,
+                default_timeout=mem_cfg.meta_training_timeout_sec,
+                api_key=mem_cfg.api_key,
+            )
+            log.info("wf_memory_client_created", env=env_name, algo=algo_name)
+        except Exception as exc:
+            log.warning("wf_memory_client_create_failed", error=str(exc))
+
     log.info(
         "pipeline_wf_started",
         env_name=env_name,
         algo=algo_name,
         pid=os.getpid(),
         hp_override=bool(hp_override),
+        memory_enabled=memory_enabled,
     )
 
     backtester = WalkForwardBacktester(config=config, db=None)
@@ -1284,6 +1303,7 @@ def _run_wf_for_algo(
         models_dir=models_dir,
         total_timesteps=timesteps,
         hyperparams_override=hp_override,
+        memory_client=memory_client,
     )
 
     log.info("pipeline_wf_complete", env_name=env_name, algo=algo_name, fold_count=len(folds))
@@ -1502,6 +1522,10 @@ def run_environment(
                 )
 
     # Run walk-forward for all non-checkpointed algos in parallel
+    wf_memory_enabled = (
+        iteration_number > 0 and hasattr(config, "memory_agent") and config.memory_agent.enabled
+    )
+
     if algos_to_run:
         max_workers = min(3, len(algos_to_run))
         log.info(
@@ -1510,6 +1534,7 @@ def run_environment(
             algos=algos_to_run,
             max_workers=max_workers,
             memory_hp_algos=list(wf_hp_overrides.keys()),
+            memory_enabled=wf_memory_enabled,
         )
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -1524,6 +1549,7 @@ def run_environment(
                     models_dir,
                     DEFAULT_TIMESTEPS[env_name],
                     wf_hp_overrides.get(algo),
+                    wf_memory_enabled,
                 ): algo
                 for algo in algos_to_run
             }

@@ -157,14 +157,16 @@ class MemoryClient:
             log.warning("memory_consolidate_failed", url=url, error=str(exc))
             return False
 
-    def epoch_advice(self, payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+    def epoch_advice(self, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         """POST to /training/epoch_advice and return the JSON response.
 
         Fail-open: returns empty dict on any network or HTTP error.
 
         Args:
             payload: Dict to POST as JSON (must contain 'query' key).
-            timeout: Request timeout in seconds.
+            timeout: Request timeout in seconds. Defaults to client's
+                default_timeout (which should be set to meta_training_timeout_sec
+                for training clients, typically 120s for LLM calls).
 
         Returns:
             Parsed JSON response dict on success, empty dict on any error.
@@ -174,6 +176,7 @@ class MemoryClient:
         import urllib.request
 
         url = f"{self._base_url}/training/epoch_advice"
+        effective_timeout = timeout if timeout is not None else self._default_timeout
 
         try:
             data = _json.dumps(payload).encode("utf-8")
@@ -186,7 +189,7 @@ class MemoryClient:
                 headers=headers,
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310
+            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:  # noqa: S310  # nosec B310
                 body: dict[str, Any] = _json.loads(resp.read().decode("utf-8"))
                 return body
         except Exception as exc:

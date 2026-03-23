@@ -36,6 +36,7 @@ from swingrl.utils.exceptions import DataError
 if TYPE_CHECKING:
     from swingrl.config.schema import SwingRLConfig
     from swingrl.data.db import DatabaseManager
+    from swingrl.memory.client import MemoryClient
 
 log = structlog.get_logger(__name__)
 
@@ -260,6 +261,7 @@ class WalkForwardBacktester:
         models_dir: Path,
         total_timesteps: int = 1_000_000,
         hyperparams_override: dict[str, Any] | None = None,
+        memory_client: MemoryClient | None = None,
     ) -> list[FoldResult]:
         """Run walk-forward backtest for one algorithm on one environment.
 
@@ -272,6 +274,9 @@ class WalkForwardBacktester:
             total_timesteps: Training timesteps per fold.
             hyperparams_override: Optional dict of hyperparameters to override
                 defaults during training. Passed through to orchestrator.train().
+            memory_client: Optional MemoryClient for epoch-level memory ingestion
+                and LLM-guided reward weight adjustments during training.
+                Fail-open: if None, training proceeds without memory integration.
 
         Returns:
             List of FoldResult for each fold.
@@ -327,6 +332,8 @@ class WalkForwardBacktester:
                 prices=train_prices,
                 total_timesteps=total_timesteps,
                 hyperparams_override=hyperparams_override,
+                memory_client=memory_client,
+                run_id=f"{env_name}_{algo_name}_fold{fold_idx}",
             )
 
             # Evaluate on train data (in-sample)
