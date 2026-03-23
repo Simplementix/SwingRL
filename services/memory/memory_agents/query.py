@@ -238,12 +238,108 @@ def _build_system_prompt(
     )
 
 
+_HALLUCINATION_GUARD = (
+    "IMPORTANT — Evidence-based changes only:\n"
+    "- ONLY change a hyperparameter from its baseline when a specific pattern provides "
+    "direct evidence for that change. State which pattern supports each change.\n"
+    "- If no pattern provides evidence for changing a parameter, keep the baseline value "
+    "and state 'keeping baseline — insufficient evidence' in rationale.\n"
+    "- A single anomalous fold is an observation, not a pattern. Require consistent "
+    "evidence across at least 3 folds or 2 environments before recommending a change.\n"
+    "- Ask yourself: 'Could the observed behavior be explained by random variance?' "
+    "If yes, keep the baseline.\n"
+    "- It is better to return baseline values with honest rationale than to guess."
+)
+
+_ALGO_HP_GUIDES: dict[str, str] = {
+    "ppo": (
+        "PPO Hyperparameter Guide:\n"
+        "- learning_rate: Controls gradient step size. Higher = chases noise, lower = safer. "
+        "For overfitting: reduce from 3e-4 toward 5e-5.\n"
+        "- n_epochs: MOST CRITICAL for PPO overfitting. Each epoch reuses same data with stale "
+        "importance sampling. Reduce from 10 to 4-6 when overfit_gap is high.\n"
+        "- clip_range: Limits policy change per sample. Narrow (0.1-0.15) prevents overfitting "
+        "to any single rollout. Monitor clip_fraction: >0.3 means too narrow or too many epochs.\n"
+        "- ent_coef: Entropy bonus = regularization. Prevents deterministic overfitted policies. "
+        "Increase (0.01-0.02) when policy collapses.\n"
+        "- batch_size: Smaller = implicit regularization via gradient noise. "
+        "Reduce LR proportionally when reducing batch_size.\n"
+        "- gamma: Effective planning horizon. Lower (0.95-0.97) for capital preservation.\n\n"
+        "PPO Symptom → Fix mapping:\n"
+        "- High overfit_gap (IS >> OOS): Reduce n_epochs (10->5), then reduce learning_rate\n"
+        "- Exploding approx_kl: Reduce learning_rate\n"
+        "- clip_fraction > 0.3: Reduce n_epochs or narrow clip_range\n"
+        "- Policy collapse (entropy -> 0): Increase ent_coef"
+    ),
+    "a2c": (
+        "A2C Hyperparameter Guide:\n"
+        "CRITICAL: A2C has NO clipping protection (unlike PPO). Learning rate is the ONLY "
+        "lever controlling update magnitude. A2C is fundamentally more sensitive to all HPs.\n\n"
+        "- learning_rate: THE most sensitive A2C parameter. Without clipping, LR directly "
+        "controls how far the policy moves per update. For overfitting: reduce learning_rate "
+        "FIRST (this is A2C's primary lever, unlike PPO where n_epochs comes first). "
+        "Reduce to 1e-4 to 3e-4 range for noisy financial data.\n"
+        "- gamma: Lower to 0.95-0.97 to reduce the critic's prediction burden. "
+        "Higher gamma needs lower LR for stability.\n"
+        "- ent_coef: Even more important than PPO because A2C has no clipping to limit "
+        "policy changes. Entropy bonus is the main regularizer. Keep at 0.01-0.02.\n\n"
+        "A2C Symptom → Fix mapping:\n"
+        "- High overfit_gap: Reduce learning_rate FIRST (A2C's only real lever)\n"
+        "- Erratic policy (whipsawing trades): Reduce learning_rate\n"
+        "- Policy collapse: Increase ent_coef\n"
+        "- Myopic trading: Increase gamma (carefully — higher gamma needs lower LR)"
+    ),
+    "sac": (
+        "SAC Hyperparameter Guide:\n"
+        "SAC is off-policy with replay buffer. Maximum entropy framework provides built-in "
+        "exploration. Twin Q-networks reduce overestimation. Key concern: replay buffer "
+        "can hold stale data from different market regimes.\n\n"
+        "- learning_rate: Applied to actor, both critics, AND entropy coefficient optimizer. "
+        "Lower than PPO/A2C is appropriate because replay buffer provides more gradient "
+        "updates per step. For overfitting: reduce to 3e-5 to 1e-4.\n"
+        "- batch_size: Smaller (64) = implicit regularization through gradient noise. "
+        "When reducing batch_size, reduce LR proportionally.\n"
+        "- gamma: High gamma + large replay buffer = critic learns average across regimes. "
+        "Lower (0.95-0.97) helps with regime-specific accuracy.\n"
+        "- ent_coef: 'auto' learns optimal entropy coefficient. Fixed 0.01 is more "
+        "predictable. Default 'auto' starts at alpha=1.0 which can overwhelm small "
+        "financial reward signals.\n\n"
+        "SAC Symptom → Fix mapping:\n"
+        "- High overfit_gap: Reduce learning_rate, consider smaller buffer_size\n"
+        "- Q-values exploding: Reduce learning_rate\n"
+        "- Over-exploration (random trades): Recommend fixed ent_coef=0.01 instead of 'auto'\n"
+        "- Regime confusion: Reduce gamma (shorter horizon = less regime averaging)"
+    ),
+}
+
+_REWARD_WEIGHT_GUIDE = (
+    "Reward Weight Adjustment Guide:\n"
+    "- High MDD / frequent large losses: Increase drawdown weight (0.2 -> 0.35)\n"
+    "- Too many trades / high turnover: Increase turnover weight (0.05 -> 0.15)\n"
+    "- Good Sharpe but low total return: Increase profit weight\n"
+    "- Volatile returns: Increase sharpe weight (smooths returns)\n"
+    "- Agent holds through drawdowns: Increase drawdown weight\n\n"
+    "ONLY adjust reward weights when the current epoch metrics show a clear problem. "
+    "If rolling_sharpe > 0 and rolling_mdd > -0.05, the current weights are working — keep them. "
+    "Prefer small adjustments (delta < 0.1) over large swings."
+)
+
+_RUN_CONFIG_INSTRUCTIONS = (
+    "For each hyperparameter you recommend changing from baseline:\n"
+    "1. Name the specific pattern (by content, not ID) that supports the change\n"
+    "2. Cite the specific metric from that pattern (e.g., 'overfit_gap >0.30 in 9/13 folds')\n"
+    "3. Explain why that pattern implies this specific HP change\n\n"
+    "If fewer than 2 patterns support HP changes, return mostly baseline values.\n"
+    "It is better to return safe defaults with honest rationale than to over-tune."
+)
+
+
 def _build_algo_system_prompt(
     hp_bounds: dict[str, tuple[Any, Any]],
     rw_bounds: dict[str, tuple[float, float]],
     algo_name: str,
 ) -> str:
-    """Build algo-specific system prompt with filtered HP bounds.
+    """Build algo-specific system prompt with filtered HP bounds and tuning guide.
 
     Args:
         hp_bounds: Hyperparameter bounds dict (all algos).
@@ -251,7 +347,7 @@ def _build_algo_system_prompt(
         algo_name: Algorithm name ('ppo', 'a2c', 'sac').
 
     Returns:
-        System prompt string with algo-specific bounds and field constraints.
+        System prompt string with algo-specific bounds, HP guide, and hallucination guards.
     """
     valid_hp = set(_ALGO_HP_FIELDS.get(algo_name, {}).keys())
     filtered_bounds = {k: v for k, v in hp_bounds.items() if k in valid_hp}
@@ -259,6 +355,7 @@ def _build_algo_system_prompt(
     rw_lines = "\n".join(f"- {k}: [{lo}, {hi}]" for k, (lo, hi) in rw_bounds.items())
     algo_upper = algo_name.upper()
     valid_fields = ", ".join(valid_hp)
+    hp_guide = _ALGO_HP_GUIDES.get(algo_name, "")
     return (
         "You are the training advisor agent for SwingRL, an RL-based "
         "swing trading system.\n\n"
@@ -276,9 +373,48 @@ def _build_algo_system_prompt(
         f"Hyperparameter bounds for {algo_upper} (you MUST stay within these):\n{hp_lines}\n\n"
         "Reward weight bounds (you MUST stay within these, weights should "
         f"sum to ~1.0):\n{rw_lines}\n\n"
-        "Provide specific, numerical advice grounded in the memory patterns.\n"
-        "Cite which pattern supports each hyperparameter change.\n"
-        "If memory patterns are insufficient for a parameter, keep the baseline value."
+        f"{_HALLUCINATION_GUARD}\n\n"
+        f"{hp_guide}\n\n"
+        f"{_RUN_CONFIG_INSTRUCTIONS}"
+    )
+
+
+def _build_epoch_system_prompt(
+    hp_bounds: dict[str, tuple[Any, Any]],
+    rw_bounds: dict[str, tuple[float, float]],
+    algo_name: str,
+) -> str:
+    """Build algo-specific system prompt for mid-training epoch advice.
+
+    Includes the algo HP guide, reward weight adjustment guide, and hallucination guards.
+
+    Args:
+        hp_bounds: Hyperparameter bounds dict (all algos).
+        rw_bounds: Reward weight bounds dict.
+        algo_name: Algorithm name ('ppo', 'a2c', 'sac').
+
+    Returns:
+        System prompt for epoch_advice requests.
+    """
+    rw_lines = "\n".join(f"- {k}: [{lo}, {hi}]" for k, (lo, hi) in rw_bounds.items())
+    algo_upper = algo_name.upper()
+    hp_guide = _ALGO_HP_GUIDES.get(algo_name, "")
+    return (
+        "You are the training advisor agent for SwingRL, an RL-based "
+        "swing trading system.\n\n"
+        f"You are advising mid-training reward weight adjustments for {algo_upper}.\n\n"
+        "SwingRL context:\n"
+        "- Two environments: equity daily (8 ETFs) and crypto 4H (BTC/ETH)\n"
+        f"- Algorithm: {algo_upper} ("
+        f"{'on-policy' if algo_name in ('ppo', 'a2c') else 'off-policy, entropy-maximizing'}"
+        f")\n"
+        "- Capital preservation is the PRIMARY constraint — Sortino ratio and "
+        "MDD are the main metrics\n\n"
+        "Reward weight bounds (you MUST stay within these, weights should "
+        f"sum to ~1.0):\n{rw_lines}\n\n"
+        f"{_HALLUCINATION_GUARD}\n\n"
+        f"{hp_guide}\n\n"
+        f"{_REWARD_WEIGHT_GUIDE}"
     )
 
 
@@ -585,9 +721,10 @@ class QueryAgent:
             Dict with keys: reward_weights (dict), stop_training (bool), rationale (str).
         """
         parsed = _parse_query_context(query)
+        algo = parsed["algo_name"] or "ppo"
         context, presented_ids = await self._build_context_async(
             env_name=parsed["env_name"],
-            algo_name=parsed["algo_name"],
+            algo_name=algo,
             request_type="epoch_advice",
         )
         user_content = (
@@ -596,7 +733,8 @@ class QueryAgent:
             "Should I adjust reward weights or stop training early?"
         )
 
-        result = await self._call_lm(user_content, _EPOCH_ADVICE_SCHEMA)
+        epoch_prompt = _build_epoch_system_prompt(_HYPERPARAM_BOUNDS, _REWARD_BOUNDS, algo)
+        result = await self._call_lm(user_content, _EPOCH_ADVICE_SCHEMA, system_prompt=epoch_prompt)
         if result is None:
             log.warning("epoch_advice_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_EPOCH_DEFAULTS)
