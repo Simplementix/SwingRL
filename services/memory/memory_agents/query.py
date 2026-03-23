@@ -705,7 +705,10 @@ class QueryAgent:
         iteration = parsed["iteration"]
         env_name = parsed["env_name"]
 
-        advice_summary = result.get("rationale", "")[:200]
+        raw_rationale = result.get("rationale", "")
+        if isinstance(raw_rationale, list):
+            raw_rationale = " ".join(str(r) for r in raw_rationale)
+        advice_summary = str(raw_rationale)[:200]
 
         for cid in consolidation_ids:
             try:
@@ -738,7 +741,10 @@ class QueryAgent:
         iteration = parsed["iteration"]
         env_name = parsed["env_name"]
 
-        advice_summary = result.get("rationale", "")[:200]
+        raw_rationale = result.get("rationale", "")
+        if isinstance(raw_rationale, list):
+            raw_rationale = " ".join(str(r) for r in raw_rationale)
+        advice_summary = str(raw_rationale)[:200]
 
         for cid in consolidation_ids:
             try:

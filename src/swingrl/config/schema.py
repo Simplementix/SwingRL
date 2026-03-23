@@ -325,7 +325,7 @@ class MemoryAgentConfig(BaseModel):
     timeout_sec: float = 3.0
     blend_strength: float = 0.30
     meta_training: bool = False
-    meta_training_timeout_sec: float = 15.0
+    meta_training_timeout_sec: float = 120.0
     min_run_history_for_meta: int = 3
     llm_backend: str = "openrouter"
     openai_model: str = "gpt-4o-mini"

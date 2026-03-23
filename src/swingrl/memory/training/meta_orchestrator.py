@@ -303,7 +303,12 @@ class MetaTrainingOrchestrator:
             return dict(body)  # type: ignore[return-value]
 
         except Exception as exc:
-            log.debug("meta_run_config_failed", error=str(exc))
+            log.warning(
+                "meta_run_config_failed",
+                env_name=env_name,
+                algo_name=algo_name,
+                error=str(exc),
+            )
             return {}
 
     def _apply_run_config(

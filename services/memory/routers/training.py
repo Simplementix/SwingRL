@@ -104,6 +104,11 @@ async def get_run_config(
     """
     agent = QueryAgent()
     result: dict[str, Any] = await agent.advise_run_config(body.query)
+    # LLM may return rationale as list[str] — normalize to single string
+    raw_rationale = result.get("rationale", "cold_start")
+    if isinstance(raw_rationale, list):
+        raw_rationale = " ".join(str(r) for r in raw_rationale)
+
     return RunConfigResponse(
         learning_rate=result.get("learning_rate"),
         entropy_coeff=result.get("entropy_coeff"),
@@ -112,7 +117,7 @@ async def get_run_config(
         batch_size=result.get("batch_size"),
         gamma=result.get("gamma"),
         reward_weights=result.get("reward_weights", {}),
-        rationale=result.get("rationale", "cold_start"),
+        rationale=raw_rationale,
     )
 
 
