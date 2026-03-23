@@ -161,6 +161,27 @@ def _load_query_cloud_config() -> dict[str, Any]:
     }
 
 
+def _load_ollama_config() -> dict[str, str]:
+    """Load Ollama config for local query routing.
+
+    Returns dict with keys: query_provider, ollama_url, ollama_model.
+    """
+    config_path = Path("/app/config/swingrl.yaml")
+    if config_path.exists():
+        cfg = yaml.safe_load(config_path.read_text()) or {}
+        mem = cfg.get("memory_agent", {})
+        return {
+            "query_provider": mem.get("query_provider", "openrouter"),
+            "ollama_url": mem.get("ollama_url", "http://172.17.0.1:11434"),
+            "ollama_model": mem.get("ollama_model", "qwen3:14b"),
+        }
+    return {
+        "query_provider": "openrouter",
+        "ollama_url": "http://172.17.0.1:11434",
+        "ollama_model": "qwen3:14b",
+    }
+
+
 try:
     _PROVIDER_CONFIG = _load_query_cloud_config()
 except Exception as _cfg_exc:
@@ -181,6 +202,24 @@ except Exception as _cfg_exc:
             "provider": "nvidia",
         },
     }
+
+
+try:
+    _OLLAMA_CONFIG = _load_ollama_config()
+except Exception as _ollama_exc:
+    log.warning("ollama_config_load_failed", error=str(_ollama_exc))
+    _OLLAMA_CONFIG = {"query_provider": "openrouter", "ollama_url": "", "ollama_model": ""}
+
+_QUERY_PROVIDER: str = _OLLAMA_CONFIG["query_provider"]
+_OLLAMA_URL: str = _OLLAMA_CONFIG["ollama_url"]
+_OLLAMA_MODEL: str = _OLLAMA_CONFIG["ollama_model"]
+
+log.info(
+    "query_provider_configured",
+    provider=_QUERY_PROVIDER,
+    ollama_url=_OLLAMA_URL if _QUERY_PROVIDER == "ollama" else "n/a",
+    ollama_model=_OLLAMA_MODEL if _QUERY_PROVIDER == "ollama" else "n/a",
+)
 
 
 def validate_query_config() -> None:
@@ -691,7 +730,12 @@ class QueryAgent:
         schema = _build_run_config_schema(algo)
         system_prompt = _build_algo_system_prompt(_HYPERPARAM_BOUNDS, _REWARD_BOUNDS, algo)
 
-        result = await self._call_lm(user_content, schema, system_prompt=system_prompt)
+        result = await self._call_query_lm(
+            user_content,
+            schema,
+            system_prompt=system_prompt,
+            timeout=300.0,
+        )
         if result is None:
             log.warning("run_config_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_DEFAULTS)
@@ -734,7 +778,12 @@ class QueryAgent:
         )
 
         epoch_prompt = _build_epoch_system_prompt(_HYPERPARAM_BOUNDS, _REWARD_BOUNDS, algo)
-        result = await self._call_lm(user_content, _EPOCH_ADVICE_SCHEMA, system_prompt=epoch_prompt)
+        result = await self._call_query_lm(
+            user_content,
+            _EPOCH_ADVICE_SCHEMA,
+            system_prompt=epoch_prompt,
+            timeout=90.0,
+        )
         if result is None:
             log.warning("epoch_advice_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_EPOCH_DEFAULTS)
@@ -1151,3 +1200,110 @@ class QueryAgent:
                 tier=tier,
             )
         return None
+
+    async def _call_ollama(
+        self,
+        user_content: str,
+        schema: dict[str, Any],
+        *,
+        system_prompt: str | None = None,
+        timeout: float = 90.0,
+    ) -> dict[str, Any] | None:
+        """Call local Ollama API with structured JSON output.
+
+        Uses the Ollama /api/chat endpoint with ``format`` parameter for schema
+        enforcement. Qwen3 thinking mode is disabled via /no_think prefix.
+
+        Args:
+            user_content: The user-turn message content.
+            schema: JSON schema dict for structured output via format parameter.
+            system_prompt: System prompt (defaults to module-level _SYSTEM_PROMPT).
+            timeout: Request timeout in seconds.
+
+        Returns:
+            Parsed JSON dict on success, None on any error.
+        """
+        if not _OLLAMA_URL:
+            log.debug("ollama_skipped_no_url")
+            return None
+
+        effective_system = system_prompt or _SYSTEM_PROMPT
+        payload = {
+            "model": _OLLAMA_MODEL,
+            "messages": [
+                {"role": "system", "content": effective_system},
+                {"role": "user", "content": f"/no_think\n{user_content}"},
+            ],
+            "format": schema,
+            "stream": False,
+            "options": {"temperature": 0, "num_predict": 512},
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(
+                    f"{_OLLAMA_URL}/api/chat",
+                    json=payload,
+                )
+                resp.raise_for_status()
+                body = resp.json()
+
+            raw_content = body.get("message", {}).get("content")
+            if not raw_content:
+                log.warning("ollama_empty_content", model=_OLLAMA_MODEL)
+                return None
+
+            result = json.loads(raw_content)
+            total_ms = round(body.get("total_duration", 0) / 1e6)
+            log.info(
+                "ollama_query_success",
+                model=_OLLAMA_MODEL,
+                total_ms=total_ms,
+                eval_count=body.get("eval_count", 0),
+            )
+            return result
+        except Exception as exc:
+            log.warning(
+                "ollama_query_failed",
+                model=_OLLAMA_MODEL,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            return None
+
+    async def _call_query_lm(
+        self,
+        user_content: str,
+        schema: dict[str, Any],
+        *,
+        system_prompt: str | None = None,
+        timeout: float = 90.0,
+    ) -> dict[str, Any] | None:
+        """Route query to configured provider (Ollama or OpenRouter).
+
+        Uses ``_QUERY_PROVIDER`` config to decide routing. Switch between
+        providers by changing ``memory_agent.query_provider`` in config and
+        restarting the memory service.
+
+        Args:
+            user_content: The user-turn message content.
+            schema: JSON schema dict for structured output enforcement.
+            system_prompt: Override system prompt.
+            timeout: Request timeout in seconds (applies to Ollama; OpenRouter
+                uses its own configured timeout).
+
+        Returns:
+            Parsed JSON dict on success, None on any error.
+        """
+        if _QUERY_PROVIDER == "ollama":
+            return await self._call_ollama(
+                user_content,
+                schema,
+                system_prompt=system_prompt,
+                timeout=timeout,
+            )
+        return await self._call_lm(
+            user_content,
+            schema,
+            system_prompt=system_prompt,
+        )
