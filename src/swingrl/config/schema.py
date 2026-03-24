@@ -332,6 +332,13 @@ class MemoryAgentConfig(BaseModel):
     cloud_fast_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     cloud_smart_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
 
+    query_provider: str = "openrouter"  # HP tuning provider: "openrouter" or "ollama"
+    epoch_advice_provider: str = (
+        "ollama"  # Epoch advice provider: "ollama" (local fast) or "openrouter"
+    )
+    ollama_url: str = "http://swingrl-ollama:11434"  # Dedicated Ollama container URL
+    ollama_model: str = "qwen3:1.7b"  # Local model for epoch advice (fast, ~2-4s on CPU)
+
     consolidate_interval_min: int = 30
     inbox_dir: str = "/data/memory_inbox"
     api_key: str = ""  # Populated from SWINGRL_MEMORY_AGENT__API_KEY env var; empty = no auth

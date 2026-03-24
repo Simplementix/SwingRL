@@ -162,9 +162,9 @@ def _load_query_cloud_config() -> dict[str, Any]:
 
 
 def _load_ollama_config() -> dict[str, str]:
-    """Load Ollama config for local query routing.
+    """Load Ollama config for local epoch advice routing.
 
-    Returns dict with keys: query_provider, ollama_url, ollama_model.
+    Returns dict with keys: query_provider, epoch_advice_provider, ollama_url, ollama_model.
     """
     config_path = Path("/app/config/swingrl.yaml")
     if config_path.exists():
@@ -172,13 +172,15 @@ def _load_ollama_config() -> dict[str, str]:
         mem = cfg.get("memory_agent", {})
         return {
             "query_provider": mem.get("query_provider", "openrouter"),
-            "ollama_url": mem.get("ollama_url", "http://172.17.0.1:11434"),
-            "ollama_model": mem.get("ollama_model", "qwen3:14b"),
+            "epoch_advice_provider": mem.get("epoch_advice_provider", "ollama"),
+            "ollama_url": mem.get("ollama_url", "http://swingrl-ollama:11434"),
+            "ollama_model": mem.get("ollama_model", "qwen3:1.7b"),
         }
     return {
         "query_provider": "openrouter",
-        "ollama_url": "http://172.17.0.1:11434",
-        "ollama_model": "qwen3:14b",
+        "epoch_advice_provider": "ollama",
+        "ollama_url": "http://swingrl-ollama:11434",
+        "ollama_model": "qwen3:1.7b",
     }
 
 
@@ -208,17 +210,24 @@ try:
     _OLLAMA_CONFIG = _load_ollama_config()
 except Exception as _ollama_exc:
     log.warning("ollama_config_load_failed", error=str(_ollama_exc))
-    _OLLAMA_CONFIG = {"query_provider": "openrouter", "ollama_url": "", "ollama_model": ""}
+    _OLLAMA_CONFIG = {
+        "query_provider": "openrouter",
+        "epoch_advice_provider": "ollama",
+        "ollama_url": "",
+        "ollama_model": "",
+    }
 
 _QUERY_PROVIDER: str = _OLLAMA_CONFIG["query_provider"]
+_EPOCH_ADVICE_PROVIDER: str = _OLLAMA_CONFIG["epoch_advice_provider"]
 _OLLAMA_URL: str = _OLLAMA_CONFIG["ollama_url"]
 _OLLAMA_MODEL: str = _OLLAMA_CONFIG["ollama_model"]
 
 log.info(
     "query_provider_configured",
-    provider=_QUERY_PROVIDER,
-    ollama_url=_OLLAMA_URL if _QUERY_PROVIDER == "ollama" else "n/a",
-    ollama_model=_OLLAMA_MODEL if _QUERY_PROVIDER == "ollama" else "n/a",
+    hp_tuning_provider=_QUERY_PROVIDER,
+    epoch_advice_provider=_EPOCH_ADVICE_PROVIDER,
+    ollama_url=_OLLAMA_URL,
+    ollama_model=_OLLAMA_MODEL,
 )
 
 
@@ -730,12 +739,8 @@ class QueryAgent:
         schema = _build_run_config_schema(algo)
         system_prompt = _build_algo_system_prompt(_HYPERPARAM_BOUNDS, _REWARD_BOUNDS, algo)
 
-        result = await self._call_query_lm(
-            user_content,
-            schema,
-            system_prompt=system_prompt,
-            timeout=300.0,
-        )
+        # HP tuning uses cloud (OpenRouter nemotron) — smart model, 6 calls/run
+        result = await self._call_lm(user_content, schema, system_prompt=system_prompt)
         if result is None:
             log.warning("run_config_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_DEFAULTS)
@@ -778,11 +783,12 @@ class QueryAgent:
         )
 
         epoch_prompt = _build_epoch_system_prompt(_HYPERPARAM_BOUNDS, _REWARD_BOUNDS, algo)
-        result = await self._call_query_lm(
+        # Epoch advice uses local Ollama (qwen3:1.7b) — fast, unlimited, 60s timeout
+        result = await self._call_ollama(
             user_content,
             _EPOCH_ADVICE_SCHEMA,
             system_prompt=epoch_prompt,
-            timeout=90.0,
+            timeout=60.0,
         )
         if result is None:
             log.warning("epoch_advice_fallback_to_defaults", query=query[:100])

@@ -14,6 +14,23 @@
 #   DISCORD_WEBHOOK_URL=...
 
 services:
+  swingrl-ollama:
+    container_name: swingrl-ollama
+    image: ollama/ollama:latest
+    # No memory or CPU limits — dedicated inference for epoch advice.
+    # qwen3:1.7b uses ~1.5 GB RAM. Let the OS manage resources.
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11435:11434"    # Different host port to avoid ragflow conflict
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
   swingrl-memory:
     container_name: swingrl-memory
     build:
@@ -87,3 +104,5 @@ services:
     depends_on:
       - swingrl
 
+volumes:
+  ollama_data:    # Named volume for Ollama model persistence across container restarts
