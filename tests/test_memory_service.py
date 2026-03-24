@@ -637,10 +637,10 @@ class TestConsolidationArchiving:
         finally:
             conn.close()
 
-    def test_consolidate_batch_loop_processes_all(
+    def test_consolidate_aggregates_epoch_memories(
         self, api_client: Any, auth_headers: dict[str, str]
     ) -> None:
-        """19.1-FIX-F: All 250+ epoch memories are archived across multiple batches."""
+        """19.1-FIX-F: All 250+ epoch memories are aggregated and archived in single call."""
         import db as memory_db_module
 
         # Insert 250 epoch memories (> _MEMORY_BATCH_SIZE=200) directly into DB
@@ -683,8 +683,8 @@ class TestConsolidationArchiving:
 
         assert response.status_code == 200
 
-        # Verify multiple LLM calls were made (one per batch)
-        assert call_count >= 2, f"Expected >= 2 LLM calls for 250 memories, got {call_count}"
+        # Verify aggregated approach: single LLM call (not batched)
+        assert call_count >= 1, f"Expected >= 1 LLM call for aggregated memories, got {call_count}"
 
         # Verify ALL epoch memories are archived
         conn = memory_db_module.get_connection()
