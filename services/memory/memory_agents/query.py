@@ -164,7 +164,7 @@ def _load_query_cloud_config() -> dict[str, Any]:
 
 
 def _load_ollama_config() -> dict[str, str]:
-    """Load Ollama config for local epoch advice routing.
+    """Load Ollama + epoch advice provider config.
 
     Returns dict with keys: query_provider, epoch_advice_provider, ollama_url, ollama_model.
     """
@@ -174,15 +174,60 @@ def _load_ollama_config() -> dict[str, str]:
         mem = cfg.get("memory_agent", {})
         return {
             "query_provider": mem.get("query_provider", "openrouter"),
-            "epoch_advice_provider": mem.get("epoch_advice_provider", "ollama"),
+            "epoch_advice_provider": mem.get("epoch_advice_provider", "cerebras"),
             "ollama_url": mem.get("ollama_url", "http://swingrl-ollama:11434"),
             "ollama_model": mem.get("ollama_model", "qwen3:1.7b"),
         }
     return {
         "query_provider": "openrouter",
-        "epoch_advice_provider": "ollama",
+        "epoch_advice_provider": "cerebras",
         "ollama_url": "http://swingrl-ollama:11434",
         "ollama_model": "qwen3:1.7b",
+    }
+
+
+def _load_epoch_provider_config() -> dict[str, Any]:
+    """Load the cloud provider config for epoch advice (when not using Ollama).
+
+    Reads from consolidation.providers.{epoch_advice_provider} in config.
+    """
+    config_path = Path("/app/config/swingrl.yaml")
+    if config_path.exists():
+        cfg = yaml.safe_load(config_path.read_text()) or {}
+        mem = cfg.get("memory_agent", {})
+        provider_name = mem.get("epoch_advice_provider", "cerebras")
+        cons = mem.get("consolidation", {})
+        providers = cons.get("providers", {})
+        p = providers.get(provider_name, {})
+        env_key = f"{provider_name.upper()}_API_KEY"
+        return {
+            "base_url": p.get("base_url", ""),
+            "api_key": os.environ.get(env_key, p.get("api_key", "")),
+            "model": p.get("default_model", ""),
+            "timeout": float(p.get("timeout_sec", 30)),
+            "max_tokens": int(p.get("max_tokens", 32768)),
+            "provider": provider_name,
+        }
+    return {
+        "base_url": "https://api.cerebras.ai/v1",
+        "api_key": os.environ.get("CEREBRAS_API_KEY", ""),
+        "model": "qwen3-235b",
+        "timeout": 30.0,
+        "max_tokens": 65536,
+        "provider": "cerebras",
+    }
+
+
+try:
+    _EPOCH_PROVIDER_CONFIG = _load_epoch_provider_config()
+except Exception:
+    _EPOCH_PROVIDER_CONFIG = {
+        "base_url": "",
+        "api_key": "",
+        "model": "",
+        "timeout": 30.0,
+        "max_tokens": 32768,
+        "provider": "unknown",
     }
 
 
@@ -785,13 +830,20 @@ class QueryAgent:
         )
 
         epoch_prompt = _build_epoch_system_prompt(_HYPERPARAM_BOUNDS, _REWARD_BOUNDS, algo)
-        # Route based on epoch_advice_provider config (default: Ollama)
+        # Route based on epoch_advice_provider config
         if _EPOCH_ADVICE_PROVIDER == "ollama":
             result = await self._call_ollama(
                 user_content,
                 _EPOCH_ADVICE_SCHEMA,
                 system_prompt=epoch_prompt,
                 timeout=60.0,
+            )
+        elif _EPOCH_ADVICE_PROVIDER in ("cerebras", "mistral", "gemini"):
+            # Use a dedicated cloud call for epoch advice (fast providers)
+            result = await self._call_epoch_cloud(
+                user_content,
+                _EPOCH_ADVICE_SCHEMA,
+                system_prompt=epoch_prompt,
             )
         else:
             result = await self._call_lm(
@@ -1302,6 +1354,35 @@ class QueryAgent:
                 exc_type=type(exc).__name__,
             )
             return None
+
+    async def _call_epoch_cloud(
+        self,
+        user_content: str,
+        schema: dict[str, Any],
+        *,
+        system_prompt: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Call the dedicated epoch advice cloud provider (e.g. Cerebras).
+
+        Uses _EPOCH_PROVIDER_CONFIG loaded at startup. Fail-open: returns None
+        if provider is unavailable.
+        """
+        cfg = _EPOCH_PROVIDER_CONFIG
+        if not cfg.get("api_key"):
+            log.debug("epoch_cloud_skipped_no_key", provider=cfg.get("provider"))
+            return None
+
+        return await self._call_cloud_api(
+            user_content,
+            schema,
+            base_url=cfg["base_url"],
+            api_key=cfg["api_key"],
+            model=cfg["model"],
+            timeout=cfg["timeout"],
+            provider=cfg["provider"],
+            system_prompt=system_prompt,
+            max_tokens=cfg.get("max_tokens", 32768),
+        )
 
     async def _call_query_lm(
         self,

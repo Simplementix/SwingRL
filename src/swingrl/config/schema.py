@@ -298,6 +298,12 @@ class ConsolidationConfig(BaseModel):
                 timeout_sec=600,
                 max_tokens=128000,
             ),
+            "cerebras": ConsolidationProviderConfig(
+                base_url="https://api.cerebras.ai/v1",
+                default_model="qwen3-235b",
+                timeout_sec=30,
+                max_tokens=65536,
+            ),
             "gemini": ConsolidationProviderConfig(
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 default_model="gemini-2.5-flash",
@@ -352,7 +358,7 @@ class MemoryAgentConfig(BaseModel):
 
     query_provider: str = "gemini"  # HP tuning provider: "gemini", "openrouter", or "ollama"
     epoch_advice_provider: str = (
-        "ollama"  # Epoch advice provider: "ollama" (local fast) or "openrouter"
+        "cerebras"  # Epoch advice: "cerebras" (fast cloud), "ollama" (local), or "openrouter"
     )
     ollama_url: str = "http://swingrl-ollama:11434"  # Dedicated Ollama container URL
     ollama_model: str = "qwen3:1.7b"  # Local model for epoch advice (fast, ~2-4s on CPU)

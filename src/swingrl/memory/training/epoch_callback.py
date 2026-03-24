@@ -32,8 +32,10 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-# How often to store epoch snapshots
-EPOCH_STORE_CADENCE: int = 5
+# How often to store epoch snapshots and query epoch advice.
+# At cadence=20: ~42 calls per fold (1M steps / ~1200 per rollout / 20).
+# Previous cadence=5 generated 167 calls/fold with ~17s Ollama overhead each = 46 min/fold.
+EPOCH_STORE_CADENCE: int = 20
 # Thresholds for "notable" epoch events (P99/P1 based on iter 1 data analysis).
 # Previous values (0.02 KL, -0.08 MDD) fired on 80% of epochs, generating 2.8M
 # memories instead of the target ~45K. These thresholds capture only the top/bottom
