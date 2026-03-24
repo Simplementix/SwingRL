@@ -1242,7 +1242,7 @@ class QueryAgent:
             ],
             "format": schema,
             "stream": False,
-            "options": {"temperature": 0, "num_predict": 512},
+            "options": {"temperature": 0, "num_predict": 512, "num_ctx": 8192},
         }
 
         try:
