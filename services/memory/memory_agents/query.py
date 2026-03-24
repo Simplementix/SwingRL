@@ -1238,10 +1238,11 @@ class QueryAgent:
             "model": _OLLAMA_MODEL,
             "messages": [
                 {"role": "system", "content": effective_system},
-                {"role": "user", "content": f"/no_think\n{user_content}"},
+                {"role": "user", "content": user_content},
             ],
             "format": schema,
             "stream": False,
+            "think": False,
             "options": {"temperature": 0, "num_predict": 512, "num_ctx": 8192},
         }
 
