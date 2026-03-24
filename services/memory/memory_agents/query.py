@@ -211,7 +211,7 @@ def _load_epoch_provider_config() -> dict[str, Any]:
     return {
         "base_url": "https://api.cerebras.ai/v1",
         "api_key": os.environ.get("CEREBRAS_API_KEY", ""),
-        "model": "qwen3-235b",
+        "model": "qwen-3-235b-a22b-instruct-2507",
         "timeout": 30.0,
         "max_tokens": 65536,
         "provider": "cerebras",

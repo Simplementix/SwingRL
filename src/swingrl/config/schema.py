@@ -300,7 +300,7 @@ class ConsolidationConfig(BaseModel):
             ),
             "cerebras": ConsolidationProviderConfig(
                 base_url="https://api.cerebras.ai/v1",
-                default_model="qwen3-235b",
+                default_model="qwen-3-235b-a22b-instruct-2507",
                 timeout_sec=30,
                 max_tokens=65536,
             ),
