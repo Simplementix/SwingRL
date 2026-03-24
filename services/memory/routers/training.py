@@ -126,18 +126,29 @@ async def get_epoch_advice(
     body: EpochAdviceRequest,
     _key: str = Depends(verify_api_key),
 ) -> EpochAdviceResponse:
-    """Return LLM-advised reward weight adjustments for the current epoch.
+    """Return reward weight adjustments for the current epoch.
 
-    Routes to local Ollama (qwen3:1.7b) for fast, unlimited inference.
-    Returns clamped safe defaults on cold start or LLM failure.
+    Epoch advice is bypassed — local Ollama qwen3:1.7b takes ~30s on CPU
+    (i5-13500 competing with 3 parallel training processes). Returns safe
+    defaults instantly. Epoch snapshots still ingested to memory.
+
+    The swingrl-ollama container and routing code are ready — re-enable
+    by uncommenting the agent call below when hardware allows faster inference.
+
     Requires X-API-Key header.
     """
-    agent = QueryAgent()
-    result: dict[str, Any] = await agent.advise_epoch(body.query)
+    # TODO: Re-enable when Ollama inference is < 5s per call.
+    # agent = QueryAgent()
+    # result: dict[str, Any] = await agent.advise_epoch(body.query)
+    # return EpochAdviceResponse(
+    #     reward_weights=result.get("reward_weights", {}),
+    #     stop_training=bool(result.get("stop_training", False)),
+    #     rationale=result.get("rationale", "cold_start"),
+    # )
     return EpochAdviceResponse(
-        reward_weights=result.get("reward_weights", {}),
-        stop_training=bool(result.get("stop_training", False)),
-        rationale=result.get("rationale", "cold_start"),
+        reward_weights={"profit": 0.4, "sharpe": 0.35, "drawdown": 0.20, "turnover": 0.05},
+        stop_training=False,
+        rationale="epoch_advice_bypassed_cpu_too_slow",
     )
 
 
