@@ -187,13 +187,25 @@ def _load_ollama_config() -> dict[str, str]:
 
 
 def _load_epoch_provider_configs() -> list[dict[str, Any]]:
-    """Load cloud provider configs for epoch advice with fallback chain.
+    """Load cloud provider configs for epoch advice with 4-provider fallback chain.
 
-    Primary: Cerebras (fast, 1M TPD). Fallback: Groq (14,400 RPD, 500K TPD).
-    Combined: ~1.5M tokens/day for epoch advice.
+    Chain: Cerebras qwen3-235b (1M TPD) → Groq llama-3.1-8b (500K TPD) →
+    Cerebras llama3.1-8b (1M TPD) → Ollama (unlimited, handled separately).
+    Combined cloud: 2.5M TPD, 43,200 RPD. Ollama is safety net in advise_epoch().
     """
     config_path = Path("/app/config/swingrl.yaml")
     configs: list[dict[str, Any]] = []
+
+    def _build(name: str, p: dict[str, Any], model_override: str = "") -> dict[str, Any]:
+        env_key = f"{name.upper()}_API_KEY"
+        return {
+            "base_url": p.get("base_url", ""),
+            "api_key": os.environ.get(env_key, p.get("api_key", "")),
+            "model": model_override or p.get("default_model", ""),
+            "timeout": float(p.get("timeout_sec", 30)),
+            "max_tokens": int(p.get("max_tokens", 32768)),
+            "provider": name,
+        }
 
     if config_path.exists():
         cfg = yaml.safe_load(config_path.read_text()) or {}
@@ -201,37 +213,20 @@ def _load_epoch_provider_configs() -> list[dict[str, Any]]:
         cons = mem.get("consolidation", {})
         providers = cons.get("providers", {})
 
-        # Primary: from epoch_advice_provider config
-        primary_name = mem.get("epoch_advice_provider", "cerebras")
-        p = providers.get(primary_name, {})
-        env_key = f"{primary_name.upper()}_API_KEY"
-        configs.append(
-            {
-                "base_url": p.get("base_url", ""),
-                "api_key": os.environ.get(env_key, p.get("api_key", "")),
-                "model": p.get("default_model", ""),
-                "timeout": float(p.get("timeout_sec", 30)),
-                "max_tokens": int(p.get("max_tokens", 32768)),
-                "provider": primary_name,
-            }
-        )
+        # 1. Cerebras qwen3-235b (primary — smartest model)
+        cerebras_cfg = providers.get("cerebras", {})
+        configs.append(_build("cerebras", cerebras_cfg))
 
-        # Fallback: Groq (if not already primary)
-        if primary_name != "groq":
-            groq_cfg = providers.get("groq", {})
-            configs.append(
-                {
-                    "base_url": groq_cfg.get("base_url", "https://api.groq.com/openai/v1"),
-                    "api_key": os.environ.get("GROQ_API_KEY", groq_cfg.get("api_key", "")),
-                    "model": groq_cfg.get("default_model", "llama-3.1-8b-instant"),
-                    "timeout": float(groq_cfg.get("timeout_sec", 30)),
-                    "max_tokens": int(groq_cfg.get("max_tokens", 8192)),
-                    "provider": "groq",
-                }
-            )
+        # 2. Groq llama-3.1-8b-instant (fast, different provider to spread load)
+        groq_cfg = providers.get("groq", {})
+        configs.append(_build("groq", groq_cfg))
+
+        # 3. Cerebras llama3.1-8b (second Cerebras model, separate per-model TPD)
+        configs.append(_build("cerebras", cerebras_cfg, model_override="llama3.1-8b"))
 
         return configs
 
+    # Fallback defaults
     return [
         {
             "base_url": "https://api.cerebras.ai/v1",
@@ -248,6 +243,14 @@ def _load_epoch_provider_configs() -> list[dict[str, Any]]:
             "timeout": 30.0,
             "max_tokens": 8192,
             "provider": "groq",
+        },
+        {
+            "base_url": "https://api.cerebras.ai/v1",
+            "api_key": os.environ.get("CEREBRAS_API_KEY", ""),
+            "model": "llama3.1-8b",
+            "timeout": 30.0,
+            "max_tokens": 8192,
+            "provider": "cerebras",
         },
     ]
 

@@ -304,6 +304,12 @@ class ConsolidationConfig(BaseModel):
                 timeout_sec=30,
                 max_tokens=65536,
             ),
+            "groq": ConsolidationProviderConfig(
+                base_url="https://api.groq.com/openai/v1",
+                default_model="llama-3.1-8b-instant",
+                timeout_sec=30,
+                max_tokens=8192,
+            ),
             "gemini": ConsolidationProviderConfig(
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 default_model="gemini-2.5-flash",
@@ -362,6 +368,13 @@ class MemoryAgentConfig(BaseModel):
     )
     ollama_url: str = "http://swingrl-ollama:11434"  # Dedicated Ollama container URL
     ollama_model: str = "qwen3:1.7b"  # Local model for epoch advice (fast, ~2-4s on CPU)
+
+    # Per-algo epoch cadence (read from yaml by epoch_callback per fold).
+    # Normalized so each algo makes ~4-17 calls/fold regardless of n_steps.
+    epoch_cadence_ppo: int = 20  # ~82 rollouts/fold → ~4 calls
+    epoch_cadence_a2c: int = 2000  # ~33K rollouts/fold → ~17 calls
+    epoch_cadence_sac: int = 10000  # ~167K rollouts/fold → ~17 calls
+    epoch_cadence_default: int = 100  # Fallback for unknown algos
 
     consolidate_interval_min: int = 30
     inbox_dir: str = "/data/memory_inbox"

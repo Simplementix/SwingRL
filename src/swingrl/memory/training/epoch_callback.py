@@ -98,17 +98,49 @@ class MemoryEpochCallback(BaseCallback):
         self._algo = algo
         self._env = env
         self._epoch: int = 0
-        self._cadence: int = ALGO_EPOCH_CADENCE.get(algo, EPOCH_STORE_CADENCE)
+        self._cadence: int = self._load_cadence(algo)
         self._curriculum_window_active: str = "unknown"
         self._curriculum_window_year_range: str = "unknown"
 
         # Tracks whether epoch_advice has failed at least once (for log-level escalation)
         self._advice_failed_once: bool = False
 
+        log.info(
+            "epoch_callback_cadence",
+            algo=algo,
+            cadence=self._cadence,
+            run_id=run_id,
+        )
+
         # Two-pass adjustment tracking
         self._pending_adjustment: dict[str, Any] | None = None
         self._sharpe_at_trigger: float = 0.0
         self._mdd_at_trigger: float = 0.0
+
+    @staticmethod
+    def _load_cadence(algo: str) -> int:
+        """Read algo-specific cadence from bind-mounted config yaml.
+
+        Re-reads from disk each time a new callback is created (once per fold),
+        so config changes take effect on the next fold without container restart.
+        Falls back to hardcoded ALGO_EPOCH_CADENCE dict if yaml read fails.
+        """
+        try:
+            from pathlib import Path
+
+            import yaml
+
+            config_path = Path("/app/config/swingrl.yaml")
+            if config_path.exists():
+                cfg = yaml.safe_load(config_path.read_text()) or {}
+                mem = cfg.get("memory_agent", {})
+                key = f"epoch_cadence_{algo.lower()}"
+                val = mem.get(key, mem.get("epoch_cadence_default", None))
+                if val is not None:
+                    return int(val)
+        except Exception:  # nosec B110  # Fail-open: yaml read failure → use hardcoded defaults
+            pass
+        return ALGO_EPOCH_CADENCE.get(algo, EPOCH_STORE_CADENCE)
 
     def _on_step(self) -> bool:
         """Check if training should continue.
