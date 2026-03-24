@@ -203,7 +203,7 @@ class TestEpochAdviceFirstFailureLogging:
             algo="PPO",
             env="equity",
         )
-        cb._epoch = 5  # noqa: SLF001 — set to a storage cadence epoch
+        cb._epoch = 20  # noqa: SLF001 — set to PPO cadence epoch (20)
 
         cb._query_epoch_advice()  # noqa: SLF001
 

@@ -866,7 +866,7 @@ class QueryAgent:
                 user_content,
                 _EPOCH_ADVICE_SCHEMA,
                 system_prompt=epoch_prompt,
-                timeout=60.0,
+                timeout=30.0,
             )
         elif _EPOCH_ADVICE_PROVIDER in ("cerebras", "groq"):
             # Use dedicated 4-provider cloud chain for epoch advice
