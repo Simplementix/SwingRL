@@ -186,49 +186,76 @@ def _load_ollama_config() -> dict[str, str]:
     }
 
 
-def _load_epoch_provider_config() -> dict[str, Any]:
-    """Load the cloud provider config for epoch advice (when not using Ollama).
+def _load_epoch_provider_configs() -> list[dict[str, Any]]:
+    """Load cloud provider configs for epoch advice with fallback chain.
 
-    Reads from consolidation.providers.{epoch_advice_provider} in config.
+    Primary: Cerebras (fast, 1M TPD). Fallback: Groq (14,400 RPD, 500K TPD).
+    Combined: ~1.5M tokens/day for epoch advice.
     """
     config_path = Path("/app/config/swingrl.yaml")
+    configs: list[dict[str, Any]] = []
+
     if config_path.exists():
         cfg = yaml.safe_load(config_path.read_text()) or {}
         mem = cfg.get("memory_agent", {})
-        provider_name = mem.get("epoch_advice_provider", "cerebras")
         cons = mem.get("consolidation", {})
         providers = cons.get("providers", {})
-        p = providers.get(provider_name, {})
-        env_key = f"{provider_name.upper()}_API_KEY"
-        return {
-            "base_url": p.get("base_url", ""),
-            "api_key": os.environ.get(env_key, p.get("api_key", "")),
-            "model": p.get("default_model", ""),
-            "timeout": float(p.get("timeout_sec", 30)),
-            "max_tokens": int(p.get("max_tokens", 32768)),
-            "provider": provider_name,
-        }
-    return {
-        "base_url": "https://api.cerebras.ai/v1",
-        "api_key": os.environ.get("CEREBRAS_API_KEY", ""),
-        "model": "qwen-3-235b-a22b-instruct-2507",
-        "timeout": 30.0,
-        "max_tokens": 65536,
-        "provider": "cerebras",
-    }
+
+        # Primary: from epoch_advice_provider config
+        primary_name = mem.get("epoch_advice_provider", "cerebras")
+        p = providers.get(primary_name, {})
+        env_key = f"{primary_name.upper()}_API_KEY"
+        configs.append(
+            {
+                "base_url": p.get("base_url", ""),
+                "api_key": os.environ.get(env_key, p.get("api_key", "")),
+                "model": p.get("default_model", ""),
+                "timeout": float(p.get("timeout_sec", 30)),
+                "max_tokens": int(p.get("max_tokens", 32768)),
+                "provider": primary_name,
+            }
+        )
+
+        # Fallback: Groq (if not already primary)
+        if primary_name != "groq":
+            groq_cfg = providers.get("groq", {})
+            configs.append(
+                {
+                    "base_url": groq_cfg.get("base_url", "https://api.groq.com/openai/v1"),
+                    "api_key": os.environ.get("GROQ_API_KEY", groq_cfg.get("api_key", "")),
+                    "model": groq_cfg.get("default_model", "llama-3.1-8b-instant"),
+                    "timeout": float(groq_cfg.get("timeout_sec", 30)),
+                    "max_tokens": int(groq_cfg.get("max_tokens", 8192)),
+                    "provider": "groq",
+                }
+            )
+
+        return configs
+
+    return [
+        {
+            "base_url": "https://api.cerebras.ai/v1",
+            "api_key": os.environ.get("CEREBRAS_API_KEY", ""),
+            "model": "qwen-3-235b-a22b-instruct-2507",
+            "timeout": 30.0,
+            "max_tokens": 65536,
+            "provider": "cerebras",
+        },
+        {
+            "base_url": "https://api.groq.com/openai/v1",
+            "api_key": os.environ.get("GROQ_API_KEY", ""),
+            "model": "llama-3.1-8b-instant",
+            "timeout": 30.0,
+            "max_tokens": 8192,
+            "provider": "groq",
+        },
+    ]
 
 
 try:
-    _EPOCH_PROVIDER_CONFIG = _load_epoch_provider_config()
+    _EPOCH_PROVIDER_CONFIGS = _load_epoch_provider_configs()
 except Exception:
-    _EPOCH_PROVIDER_CONFIG = {
-        "base_url": "",
-        "api_key": "",
-        "model": "",
-        "timeout": 30.0,
-        "max_tokens": 32768,
-        "provider": "unknown",
-    }
+    _EPOCH_PROVIDER_CONFIGS = []
 
 
 try:
@@ -1191,7 +1218,18 @@ class QueryAgent:
                         },
                     }
                 elif provider == "mistral":
-                    # Mistral supports json_object response format
+                    request_body["response_format"] = {"type": "json_object"}
+                elif provider == "cerebras":
+                    # Cerebras supports strict JSON schema
+                    request_body["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "run_config",
+                            "strict": True,
+                            "schema": schema,
+                        },
+                    }
+                elif provider == "groq":
                     request_body["response_format"] = {"type": "json_object"}
                 else:
                     request_body["response_format"] = {"type": "json_object"}
@@ -1362,27 +1400,30 @@ class QueryAgent:
         *,
         system_prompt: str | None = None,
     ) -> dict[str, Any] | None:
-        """Call the dedicated epoch advice cloud provider (e.g. Cerebras).
+        """Call epoch advice cloud provider with fallback.
 
-        Uses _EPOCH_PROVIDER_CONFIG loaded at startup. Fail-open: returns None
-        if provider is unavailable.
+        Primary: Cerebras (fast, 1M TPD). Fallback: Groq (14,400 RPD, 500K TPD).
+        Combined: ~1.5M tokens/day. Fail-open: returns None if both fail.
         """
-        cfg = _EPOCH_PROVIDER_CONFIG
-        if not cfg.get("api_key"):
-            log.debug("epoch_cloud_skipped_no_key", provider=cfg.get("provider"))
-            return None
-
-        return await self._call_cloud_api(
-            user_content,
-            schema,
-            base_url=cfg["base_url"],
-            api_key=cfg["api_key"],
-            model=cfg["model"],
-            timeout=cfg["timeout"],
-            provider=cfg["provider"],
-            system_prompt=system_prompt,
-            max_tokens=cfg.get("max_tokens", 32768),
-        )
+        for cfg in _EPOCH_PROVIDER_CONFIGS:
+            if not cfg.get("api_key"):
+                log.debug("epoch_cloud_skipped_no_key", provider=cfg.get("provider"))
+                continue
+            result = await self._call_cloud_api(
+                user_content,
+                schema,
+                base_url=cfg["base_url"],
+                api_key=cfg["api_key"],
+                model=cfg["model"],
+                timeout=cfg["timeout"],
+                provider=cfg["provider"],
+                system_prompt=system_prompt,
+                max_tokens=cfg.get("max_tokens", 32768),
+            )
+            if result is not None:
+                return result
+            log.warning("epoch_cloud_provider_failed", provider=cfg["provider"])
+        return None
 
     async def _call_query_lm(
         self,

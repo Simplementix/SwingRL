@@ -32,10 +32,17 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-# How often to store epoch snapshots and query epoch advice.
-# At cadence=20: ~42 calls per fold (1M steps / ~1200 per rollout / 20).
-# Previous cadence=5 generated 167 calls/fold with ~17s Ollama overhead each = 46 min/fold.
-EPOCH_STORE_CADENCE: int = 20
+# Per-algo epoch store cadence. Normalized so each algo makes ~4-17 calls per fold,
+# regardless of n_steps (which determines rollouts per fold).
+# PPO: n_steps=2048, n_envs=6 → ~82 rollouts/fold → cadence 20 → ~4 calls
+# A2C: n_steps=5, n_envs=6 → ~33,334 rollouts/fold → cadence 2000 → ~17 calls
+# SAC: n_steps=1, n_envs=6 → ~166,667 rollouts/fold → cadence 10000 → ~17 calls
+ALGO_EPOCH_CADENCE: dict[str, int] = {
+    "PPO": 20,
+    "A2C": 2000,
+    "SAC": 10000,
+}
+EPOCH_STORE_CADENCE: int = 20  # Fallback for unknown algos
 # Thresholds for "notable" epoch events (P99/P1 based on iter 1 data analysis).
 # Previous values (0.02 KL, -0.08 MDD) fired on 80% of epochs, generating 2.8M
 # memories instead of the target ~45K. These thresholds capture only the top/bottom
@@ -91,6 +98,7 @@ class MemoryEpochCallback(BaseCallback):
         self._algo = algo
         self._env = env
         self._epoch: int = 0
+        self._cadence: int = ALGO_EPOCH_CADENCE.get(algo, EPOCH_STORE_CADENCE)
         self._curriculum_window_active: str = "unknown"
         self._curriculum_window_year_range: str = "unknown"
 
@@ -155,7 +163,7 @@ class MemoryEpochCallback(BaseCallback):
         Returns:
             Tuple of (should_store, notable_event_label or None).
         """
-        if epoch % EPOCH_STORE_CADENCE == 0:
+        if epoch % self._cadence == 0:
             return True, None
         if approx_kl > NOTABLE_KL_THRESHOLD:
             return True, "kl_spike"
@@ -322,7 +330,7 @@ class MemoryEpochCallback(BaseCallback):
         the current weights are unchanged and training continues uninterrupted.
         """
         # Only query on storage epochs to avoid hammering the API
-        if self._epoch % EPOCH_STORE_CADENCE != 0:
+        if self._epoch % self._cadence != 0:
             return
 
         try:
