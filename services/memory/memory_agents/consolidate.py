@@ -526,6 +526,8 @@ def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
 
         if metrics:
             folds[run_id].append(metrics)
+        else:
+            log.debug("epoch_memory_no_metrics_parsed", run_id=run_id)
 
         # Capture metadata once per fold
         if run_id not in fold_meta:

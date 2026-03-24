@@ -785,13 +785,20 @@ class QueryAgent:
         )
 
         epoch_prompt = _build_epoch_system_prompt(_HYPERPARAM_BOUNDS, _REWARD_BOUNDS, algo)
-        # Epoch advice uses local Ollama (qwen3:1.7b) — fast, unlimited, 60s timeout
-        result = await self._call_ollama(
-            user_content,
-            _EPOCH_ADVICE_SCHEMA,
-            system_prompt=epoch_prompt,
-            timeout=60.0,
-        )
+        # Route based on epoch_advice_provider config (default: Ollama)
+        if _EPOCH_ADVICE_PROVIDER == "ollama":
+            result = await self._call_ollama(
+                user_content,
+                _EPOCH_ADVICE_SCHEMA,
+                system_prompt=epoch_prompt,
+                timeout=60.0,
+            )
+        else:
+            result = await self._call_lm(
+                user_content,
+                _EPOCH_ADVICE_SCHEMA,
+                system_prompt=epoch_prompt,
+            )
         if result is None:
             log.warning("epoch_advice_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_EPOCH_DEFAULTS)
