@@ -58,82 +58,91 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _build_provider_entry(
+    name: str,
+    provider_cfg: dict[str, Any],
+    global_timeout: float = 600.0,
+) -> dict[str, Any]:
+    """Build a normalized provider entry from config.
+
+    Resolves API key from env var ({NAME}_API_KEY) if not set in config.
+    Reads per-provider timeout_sec and max_tokens with fallbacks.
+    """
+    env_key = f"{name.upper()}_API_KEY"
+    return {
+        "base_url": provider_cfg.get("base_url", ""),
+        "api_key": os.environ.get(env_key, provider_cfg.get("api_key", "")),
+        "model": provider_cfg.get("default_model", ""),
+        "timeout": float(provider_cfg.get("timeout_sec", global_timeout)),
+        "max_tokens": int(provider_cfg.get("max_tokens", 32768)),
+        "provider": name,
+    }
+
+
 def _load_consolidation_config() -> dict[str, Any]:
-    """Load consolidation config with primary (OpenRouter) and backup (NVIDIA) providers."""
+    """Load consolidation config with primary + backup providers.
+
+    Primary provider is determined by consolidation.provider config key.
+    Backup is OpenRouter (fallback). All providers read per-provider
+    timeout_sec and max_tokens from config.
+    """
     config_path = Path("/app/config/swingrl.yaml")
     if config_path.exists():
-        # yaml.safe_load OK here: memory service can't import swingrl.config.schema
         cfg = yaml.safe_load(config_path.read_text()) or {}
         mem = cfg.get("memory_agent", {})
         cons = mem.get("consolidation", {})
         providers = cons.get("providers", {})
-        timeout = float(cons.get("timeout_sec", 1800))
+        global_timeout = float(cons.get("timeout_sec", 600))
+        primary_name = cons.get("provider", "mistral")
 
-        # Primary: OpenRouter
-        or_cfg = providers.get("openrouter", {})
-        primary: dict[str, Any] = {
-            "base_url": or_cfg.get("base_url", "https://openrouter.ai/api/v1"),
-            "api_key": os.environ.get("OPENROUTER_API_KEY", or_cfg.get("api_key", "")),
-            "model": cons.get("model")
-            or or_cfg.get(
-                "default_model",
-                "nvidia/nemotron-3-super-120b-a12b:free",
-            ),
-            "timeout": timeout,
-            "provider": "openrouter",
-        }
+        # Build primary from configured provider
+        primary_cfg = providers.get(primary_name, {})
+        primary = _build_provider_entry(primary_name, primary_cfg, global_timeout)
 
-        # Backup: NVIDIA NIM
-        nv_cfg = providers.get("nvidia", {})
-        backup: dict[str, Any] = {
-            "base_url": nv_cfg.get("base_url", "https://integrate.api.nvidia.com/v1"),
-            "api_key": os.environ.get("NVIDIA_API_KEY", nv_cfg.get("api_key", "")),
-            "model": nv_cfg.get("default_model", "moonshotai/kimi-k2.5"),
-            "timeout": timeout,
-            "provider": "nvidia",
-        }
+        # Build backup — use openrouter if primary isn't openrouter, else nvidia
+        backup_name = "openrouter" if primary_name != "openrouter" else "nvidia"
+        backup_cfg = providers.get(backup_name, {})
+        backup = _build_provider_entry(backup_name, backup_cfg, global_timeout)
 
         return {"primary": primary, "backup": backup}
 
     # Fallback to env vars (backward compat)
     return {
         "primary": {
-            "base_url": os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-            "api_key": os.environ.get("OPENROUTER_API_KEY", ""),
-            "model": os.environ.get(
-                "OPENROUTER_MODEL",
-                "nvidia/nemotron-3-super-120b-a12b:free",
-            ),
+            "base_url": "https://api.mistral.ai/v1",
+            "api_key": os.environ.get("MISTRAL_API_KEY", ""),
+            "model": "mistral-large-latest",
             "timeout": 600.0,
-            "provider": "openrouter",
+            "max_tokens": 128000,
+            "provider": "mistral",
         },
         "backup": {
-            "base_url": os.environ.get(
-                "CONSOLIDATION_BASE_URL",
-                "https://integrate.api.nvidia.com/v1",
-            ),
-            "api_key": os.environ.get("NVIDIA_API_KEY", ""),
-            "model": os.environ.get("CONSOLIDATION_MODEL", "moonshotai/kimi-k2.5"),
-            "timeout": 600.0,
-            "provider": "nvidia",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": os.environ.get("OPENROUTER_API_KEY", ""),
+            "model": "nvidia/nemotron-3-super-120b-a12b:free",
+            "timeout": 1800.0,
+            "max_tokens": 32768,
+            "provider": "openrouter",
         },
     }
 
 
 _DEFAULT_PROVIDER_CONFIG: dict[str, Any] = {
     "primary": {
+        "base_url": "https://api.mistral.ai/v1",
+        "api_key": "",
+        "model": "mistral-large-latest",
+        "timeout": 600.0,
+        "max_tokens": 128000,
+        "provider": "mistral",
+    },
+    "backup": {
         "base_url": "https://openrouter.ai/api/v1",
         "api_key": "",
         "model": "nvidia/nemotron-3-super-120b-a12b:free",
-        "timeout": 600.0,
+        "timeout": 1800.0,
+        "max_tokens": 32768,
         "provider": "openrouter",
-    },
-    "backup": {
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        "api_key": "",
-        "model": "moonshotai/kimi-k2.5",
-        "timeout": 600.0,
-        "provider": "nvidia",
     },
 }
 
@@ -999,7 +1008,7 @@ class ConsolidateAgent:
         user_prompt: str,
         schema: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """Call primary (OpenRouter) then backup (NVIDIA) cloud API."""
+        """Call primary then backup cloud API (provider from config)."""
         for tier in ("primary", "backup"):
             cfg = _PROVIDER_CONFIG[tier]
             if not cfg["api_key"]:
@@ -1018,6 +1027,7 @@ class ConsolidateAgent:
                 model=cfg["model"],
                 timeout=cfg["timeout"],
                 provider=cfg["provider"],
+                max_tokens=cfg.get("max_tokens", 32768),
             )
             if result is not None:
                 return result
@@ -1039,6 +1049,7 @@ class ConsolidateAgent:
         model: str,
         timeout: float,
         provider: str,
+        max_tokens: int = 32768,
     ) -> dict[str, Any] | None:
         """Call OpenAI-compatible cloud API with json_object response format.
 
@@ -1051,11 +1062,12 @@ class ConsolidateAgent:
             model: Model identifier string.
             timeout: Read timeout in seconds.
             provider: Provider name for logging.
+            max_tokens: Maximum output tokens (per-provider from config).
 
         Returns:
             Parsed and validated dict, or None if invalid.
         """
-        effective_max_tokens = 32768
+        effective_max_tokens = max_tokens
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)

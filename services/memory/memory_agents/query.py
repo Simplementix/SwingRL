@@ -111,52 +111,54 @@ _SAFE_EPOCH_DEFAULTS: dict[str, Any] = {
 
 
 def _load_query_cloud_config() -> dict[str, Any]:
-    """Load query agent cloud config with primary (OpenRouter) and backup (NVIDIA)."""
+    """Load query agent cloud config for HP tuning (run_config).
+
+    Uses the query_provider config field to determine primary provider.
+    Supports gemini, openrouter, nvidia, and mistral. Falls back to
+    openrouter as backup.
+    """
     config_path = Path("/app/config/swingrl.yaml")
     if config_path.exists():
         cfg = yaml.safe_load(config_path.read_text()) or {}
         mem = cfg.get("memory_agent", {})
         cons = mem.get("consolidation", {})
         providers = cons.get("providers", {})
-        timeout = float(cons.get("timeout_sec", 1800))
+        primary_name = mem.get("query_provider", "gemini")
 
-        or_cfg = providers.get("openrouter", {})
-        primary = {
-            "base_url": or_cfg.get("base_url", "https://openrouter.ai/api/v1"),
-            "api_key": os.environ.get("OPENROUTER_API_KEY", or_cfg.get("api_key", "")),
-            "model": or_cfg.get(
-                "default_model",
-                "nvidia/nemotron-3-super-120b-a12b:free",
-            ),
-            "timeout": timeout,
-            "provider": "openrouter",
-        }
+        def _build_entry(name: str) -> dict[str, Any]:
+            p = providers.get(name, {})
+            env_key = f"{name.upper()}_API_KEY"
+            return {
+                "base_url": p.get("base_url", ""),
+                "api_key": os.environ.get(env_key, p.get("api_key", "")),
+                "model": p.get("default_model", ""),
+                "timeout": float(p.get("timeout_sec", 600)),
+                "max_tokens": int(p.get("max_tokens", 32768)),
+                "provider": name,
+            }
 
-        nv_cfg = providers.get("nvidia", {})
-        backup = {
-            "base_url": nv_cfg.get("base_url", "https://integrate.api.nvidia.com/v1"),
-            "api_key": os.environ.get("NVIDIA_API_KEY", nv_cfg.get("api_key", "")),
-            "model": nv_cfg.get("default_model", "moonshotai/kimi-k2.5"),
-            "timeout": timeout,
-            "provider": "nvidia",
-        }
+        primary = _build_entry(primary_name)
+        backup_name = "openrouter" if primary_name != "openrouter" else "nvidia"
+        backup = _build_entry(backup_name)
 
         return {"primary": primary, "backup": backup}
 
     return {
         "primary": {
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+            "api_key": os.environ.get("GEMINI_API_KEY", ""),
+            "model": "gemini-2.5-flash",
+            "timeout": 60.0,
+            "max_tokens": 65536,
+            "provider": "gemini",
+        },
+        "backup": {
             "base_url": "https://openrouter.ai/api/v1",
             "api_key": os.environ.get("OPENROUTER_API_KEY", ""),
             "model": "nvidia/nemotron-3-super-120b-a12b:free",
-            "timeout": 60.0,
-            "provider": "openrouter",
-        },
-        "backup": {
-            "base_url": "https://integrate.api.nvidia.com/v1",
-            "api_key": os.environ.get("NVIDIA_API_KEY", ""),
-            "model": "moonshotai/kimi-k2.5",
             "timeout": 1800.0,
-            "provider": "nvidia",
+            "max_tokens": 32768,
+            "provider": "openrouter",
         },
     }
 
@@ -1072,6 +1074,7 @@ class QueryAgent:
         timeout: float,
         provider: str,
         system_prompt: str | None = None,
+        max_tokens: int = 32768,
     ) -> dict[str, Any] | None:
         """Call cloud API (OpenAI-compatible) with structured JSON output.
 
@@ -1082,13 +1085,14 @@ class QueryAgent:
             api_key: Bearer token for the provider.
             model: Model identifier string.
             timeout: Read timeout in seconds.
-            provider: Provider name for logging ('openrouter' or 'nvidia').
+            provider: Provider name for logging.
             system_prompt: Override system prompt (defaults to module-level _SYSTEM_PROMPT).
+            max_tokens: Maximum output tokens (per-provider from config).
 
         Returns:
             Parsed dict from LLM response, or None on failure.
         """
-        effective_max_tokens = 32768
+        effective_max_tokens = max_tokens
         effective_system_prompt = system_prompt if system_prompt is not None else _SYSTEM_PROMPT
         try:
             async with httpx.AsyncClient(
@@ -1117,6 +1121,19 @@ class QueryAgent:
                 elif provider == "nvidia":
                     request_body["response_format"] = {"type": "json_object"}
                     request_body["guided_json"] = schema
+                elif provider == "gemini":
+                    # Gemini supports json_schema via OpenAI-compatible endpoint
+                    request_body["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "run_config",
+                            "strict": True,
+                            "schema": schema,
+                        },
+                    }
+                elif provider == "mistral":
+                    # Mistral supports json_object response format
+                    request_body["response_format"] = {"type": "json_object"}
                 else:
                     request_body["response_format"] = {"type": "json_object"}
 
@@ -1197,6 +1214,7 @@ class QueryAgent:
                 timeout=cfg["timeout"],
                 provider=cfg["provider"],
                 system_prompt=system_prompt,
+                max_tokens=cfg.get("max_tokens", 32768),
             )
             if result is not None:
                 return result

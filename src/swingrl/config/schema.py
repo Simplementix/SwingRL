@@ -269,6 +269,8 @@ class ConsolidationProviderConfig(BaseModel):
     base_url: str
     api_key: str = ""  # Override via env var (e.g. NVIDIA_API_KEY)
     default_model: str
+    timeout_sec: float = 600.0  # Per-provider read timeout (generous default)
+    max_tokens: int = 32768  # Per-provider max output tokens
 
 
 class ConsolidationConfig(BaseModel):
@@ -290,13 +292,29 @@ class ConsolidationConfig(BaseModel):
     )
     providers: dict[str, ConsolidationProviderConfig] = Field(
         default_factory=lambda: {
-            "nvidia": ConsolidationProviderConfig(
-                base_url="https://integrate.api.nvidia.com/v1",
-                default_model="moonshotai/kimi-k2.5",
+            "mistral": ConsolidationProviderConfig(
+                base_url="https://api.mistral.ai/v1",
+                default_model="mistral-large-latest",
+                timeout_sec=600,
+                max_tokens=128000,
+            ),
+            "gemini": ConsolidationProviderConfig(
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                default_model="gemini-2.5-flash",
+                timeout_sec=60,
+                max_tokens=65536,
             ),
             "openrouter": ConsolidationProviderConfig(
                 base_url="https://openrouter.ai/api/v1",
                 default_model="nvidia/nemotron-3-super-120b-a12b:free",
+                timeout_sec=1800,
+                max_tokens=32768,
+            ),
+            "nvidia": ConsolidationProviderConfig(
+                base_url="https://integrate.api.nvidia.com/v1",
+                default_model="moonshotai/kimi-k2.5",
+                timeout_sec=600,
+                max_tokens=32768,
             ),
         }
     )
@@ -332,7 +350,7 @@ class MemoryAgentConfig(BaseModel):
     cloud_fast_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     cloud_smart_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
 
-    query_provider: str = "openrouter"  # HP tuning provider: "openrouter" or "ollama"
+    query_provider: str = "gemini"  # HP tuning provider: "gemini", "openrouter", or "ollama"
     epoch_advice_provider: str = (
         "ollama"  # Epoch advice provider: "ollama" (local fast) or "openrouter"
     )
