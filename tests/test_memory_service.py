@@ -643,11 +643,16 @@ class TestConsolidationArchiving:
         """19.1-FIX-F: All 250+ epoch memories are aggregated and archived in single call."""
         import db as memory_db_module
 
-        # Insert 250 epoch memories (> _MEMORY_BATCH_SIZE=200) directly into DB
+        # Insert 250 epoch memories with realistic format for aggregation
         for i in range(250):
             memory_db_module.insert_memory(
-                text=f"epoch {i} env=equity algo=ppo sharpe=0.{i % 10}",
-                source=f"training_epoch:equity:ppo:iter0:epoch{i}",
+                text=(
+                    f"EPOCH SNAPSHOT: run_id=equity_ppo_fold0 algo=PPO env=equity "
+                    f"epoch={i} mean_reward=0.{i % 10:04d} rolling_sharpe_500=1.{i % 5} "
+                    f"rolling_mdd_500=-{i % 20}.0 approx_kl=0.00{i % 3} "
+                    f"reward_weights={{}} notable_event=None"
+                ),
+                source="training_epoch:historical",
             )
 
         mock_response = {
@@ -666,7 +671,12 @@ class TestConsolidationArchiving:
 
         call_count = 0
 
-        async def _mock_call_llm_with_retry(self_arg: Any, memory_texts: str) -> dict[str, Any]:
+        async def _mock_call_llm_with_retry(
+            self_arg: Any,
+            memory_texts: str,
+            system_prompt: Any = None,
+            few_shot_examples: Any = None,
+        ) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             return mock_response
@@ -697,43 +707,31 @@ class TestConsolidationArchiving:
         finally:
             conn.close()
 
-    def test_consolidate_batch_stops_on_failure(
+    def test_consolidate_preserves_memories_on_llm_failure(
         self, api_client: Any, auth_headers: dict[str, str]
     ) -> None:
-        """19.1-FIX-F: First batch archived, second batch preserved when LLM fails mid-loop."""
+        """19.1-FIX-F: All memories preserved (not archived) when LLM call fails."""
         import db as memory_db_module
 
-        # Insert 250 epoch memories directly
+        # Insert 250 epoch memories with realistic format
         for i in range(250):
             memory_db_module.insert_memory(
-                text=f"epoch {i} env=equity algo=a2c sharpe=0.{i % 10}",
-                source=f"training_epoch:equity:a2c:iter0:epoch{i}",
+                text=(
+                    f"EPOCH SNAPSHOT: run_id=equity_a2c_fold0 algo=A2C env=equity "
+                    f"epoch={i} mean_reward=0.{i % 10:04d} rolling_sharpe_500=1.0 "
+                    f"rolling_mdd_500=-5.0 approx_kl=0.001 "
+                    f"reward_weights={{}} notable_event=None"
+                ),
+                source="training_epoch:historical",
             )
 
-        mock_response = {
-            "patterns": [
-                {
-                    "pattern_text": "A2C equity batch pattern",
-                    "category": "iteration_progression",
-                    "affected_algos": ["a2c"],
-                    "affected_envs": ["equity"],
-                    "actionable_implication": "Batch 1 finding",
-                    "confidence": 0.50,
-                    "evidence": "epoch 0 sharpe=0.1; epoch 100 sharpe=0.5",
-                },
-            ],
-        }
-
-        call_count = 0
-
         async def _mock_call_llm_with_retry(
-            self_arg: Any, memory_texts: str
+            self_arg: Any,
+            memory_texts: str,
+            system_prompt: Any = None,
+            few_shot_examples: Any = None,
         ) -> dict[str, Any] | None:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return mock_response
-            return None  # Fail on second batch
+            return None  # LLM always fails
 
         with patch(
             "memory_agents.consolidate.ConsolidateAgent._call_llm_with_retry",
@@ -747,20 +745,14 @@ class TestConsolidationArchiving:
 
         assert response.status_code == 200
 
-        # Verify first batch was archived but second batch was NOT
+        # All memories should be preserved (not archived) on LLM failure
         conn = memory_db_module.get_connection()
         try:
-            archived = conn.execute(
-                "SELECT COUNT(*) FROM memories "
-                "WHERE source LIKE 'training_epoch:%' AND archived = 1"
-            ).fetchone()[0]
             unarchived = conn.execute(
                 "SELECT COUNT(*) FROM memories "
                 "WHERE source LIKE 'training_epoch:%' AND archived = 0"
             ).fetchone()[0]
-            assert archived > 0, "First batch should have been archived"
-            assert unarchived > 0, "Second batch should be preserved (not archived)"
-            assert archived + unarchived == 250
+            assert unarchived == 250, f"All 250 memories should be preserved, got {unarchived}"
         finally:
             conn.close()
 

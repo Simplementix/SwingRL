@@ -1305,9 +1305,19 @@ class ConsolidateAgent:
         )
 
         # Tier 1: Local statistical aggregation (no LLM)
-        # Split epoch memories from reward adjustment memories
-        epoch_memories = [m for m in all_phase_b if "EPOCH SNAPSHOT" in m.get("text", "")]
-        reward_memories = [m for m in all_phase_b if "REWARD_ADJUSTMENT" in m.get("text", "")]
+        # Split epoch memories from reward adjustment memories by source tag
+        epoch_memories = [
+            m for m in all_phase_b if m.get("source", "").startswith("training_epoch")
+        ]
+        reward_memories = [
+            m for m in all_phase_b if m.get("source", "").startswith("reward_adjustment")
+        ]
+        # If source tags not available, fall back to text content matching
+        if not epoch_memories and not reward_memories:
+            epoch_memories = [m for m in all_phase_b if "EPOCH" in m.get("text", "").upper()]
+            reward_memories = [
+                m for m in all_phase_b if "REWARD_ADJUSTMENT" in m.get("text", "").upper()
+            ]
 
         fold_summaries = _aggregate_epoch_summaries(epoch_memories)
         reward_summaries = _summarize_reward_adjustments(reward_memories, env_name)
