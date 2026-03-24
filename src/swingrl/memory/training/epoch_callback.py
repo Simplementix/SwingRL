@@ -34,9 +34,12 @@ log = structlog.get_logger(__name__)
 
 # How often to store epoch snapshots
 EPOCH_STORE_CADENCE: int = 5
-# Thresholds for "notable" epoch events
-NOTABLE_KL_THRESHOLD: float = 0.02
-NOTABLE_MDD_THRESHOLD: float = -0.08
+# Thresholds for "notable" epoch events (P99/P1 based on iter 1 data analysis).
+# Previous values (0.02 KL, -0.08 MDD) fired on 80% of epochs, generating 2.8M
+# memories instead of the target ~45K. These thresholds capture only the top/bottom
+# ~1% of events.
+NOTABLE_KL_THRESHOLD: float = 0.10
+NOTABLE_MDD_THRESHOLD: float = -25.0
 # Epochs to wait before resolving pending adjustment
 ADJUSTMENT_RESOLVE_EPOCHS: int = 10
 

@@ -458,6 +458,134 @@ _FEW_SHOT_EXAMPLES = json.dumps(
 
 
 # ---------------------------------------------------------------------------
+# Epoch memory aggregation (Tier 1 — local stats, no LLM)
+# ---------------------------------------------------------------------------
+
+
+def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
+    """Aggregate raw epoch memories into per-fold statistical summaries.
+
+    Groups memories by run_id (algo_fold), computes stats for each fold, and
+    returns a list of human-readable summary strings suitable for a single LLM
+    consolidation call.
+
+    Args:
+        memories: List of memory dicts with 'text' field containing epoch data.
+
+    Returns:
+        List of summary strings, one per fold (algo_fold combination).
+    """
+    import re
+    from collections import defaultdict
+
+    # Parse metrics from memory text into per-fold groups
+    folds: dict[str, list[dict[str, float]]] = defaultdict(list)
+    fold_meta: dict[str, dict[str, str]] = {}
+
+    for mem in memories:
+        text = mem.get("text", "")
+
+        # Extract key fields via regex
+        run_id_m = re.search(r"run_id=(\S+)", text)
+        if not run_id_m:
+            continue
+        run_id = run_id_m.group(1)
+
+        metrics: dict[str, float] = {}
+        for key in (
+            "epoch",
+            "mean_reward",
+            "policy_loss",
+            "value_loss",
+            "entropy_loss",
+            "approx_kl",
+            "rolling_sharpe_500",
+            "rolling_mdd_500",
+            "rolling_win_rate_500",
+        ):
+            m = re.search(rf"{key}=([0-9.e+-]+)", text)
+            if m:
+                try:
+                    metrics[key] = float(m.group(1))
+                except ValueError:
+                    pass
+
+        if metrics:
+            folds[run_id].append(metrics)
+
+        # Capture metadata once per fold
+        if run_id not in fold_meta:
+            algo_m = re.search(r"algo=(\S+)", text)
+            env_m = re.search(r"env=(\S+)", text)
+            fold_meta[run_id] = {
+                "algo": algo_m.group(1) if algo_m else "unknown",
+                "env": env_m.group(1) if env_m else "unknown",
+            }
+
+    def _stat(
+        epochs_list: list[dict[str, float]],
+        key: str,
+    ) -> tuple[float, float, float, float]:
+        """Return (mean, min, max, last) for a metric across epochs."""
+        vals = [e[key] for e in epochs_list if key in e]
+        if not vals:
+            return (0.0, 0.0, 0.0, 0.0)
+        mean = sum(vals) / len(vals)
+        return (mean, min(vals), max(vals), vals[-1])
+
+    # Build summaries per fold
+    summaries: list[str] = []
+    for run_id in sorted(folds.keys()):
+        epochs = folds[run_id]
+        meta = fold_meta.get(run_id, {})
+        n = len(epochs)
+        if n == 0:
+            continue
+
+        reward_mean, reward_min, reward_max, reward_last = _stat(epochs, "mean_reward")
+        sharpe_mean, sharpe_min, sharpe_max, sharpe_last = _stat(epochs, "rolling_sharpe_500")
+        mdd_mean, mdd_min, mdd_max, mdd_last = _stat(epochs, "rolling_mdd_500")
+        ploss_mean, _, _, ploss_last = _stat(epochs, "policy_loss")
+        vloss_mean, _, _, vloss_last = _stat(epochs, "value_loss")
+        kl_mean, _, kl_max, _ = _stat(epochs, "approx_kl")
+        winrate_mean, _, _, winrate_last = _stat(epochs, "rolling_win_rate_500")
+
+        # Count notable events
+        kl_spikes = sum(1 for e in epochs if e.get("approx_kl", 0) > 0.10)
+        mdd_breaches = sum(1 for e in epochs if e.get("rolling_mdd_500", 0) < -25.0)
+
+        # First and last epoch numbers
+        epoch_nums = [e.get("epoch", 0) for e in epochs if "epoch" in e]
+        first_epoch = min(epoch_nums) if epoch_nums else 0
+        last_epoch = max(epoch_nums) if epoch_nums else 0
+
+        summary = (
+            f"FOLD SUMMARY: {run_id} algo={meta.get('algo', '?')} "
+            f"env={meta.get('env', '?')} "
+            f"epochs={first_epoch}-{last_epoch} snapshots={n}\n"
+            f"  reward: mean={reward_mean:.4f} min={reward_min:.4f} "
+            f"max={reward_max:.4f} last={reward_last:.4f}\n"
+            f"  rolling_sharpe: mean={sharpe_mean:.4f} min={sharpe_min:.4f} "
+            f"max={sharpe_max:.4f} last={sharpe_last:.4f}\n"
+            f"  rolling_mdd: mean={mdd_mean:.4f} worst={mdd_min:.4f} "
+            f"best={mdd_max:.4f} last={mdd_last:.4f}\n"
+            f"  policy_loss: mean={ploss_mean:.6f} last={ploss_last:.6f}\n"
+            f"  value_loss: mean={vloss_mean:.6f} last={vloss_last:.6f}\n"
+            f"  approx_kl: mean={kl_mean:.6f} max={kl_max:.6f} spikes(>0.10)={kl_spikes}\n"
+            f"  win_rate: mean={winrate_mean:.4f} last={winrate_last:.4f}\n"
+            f"  mdd_breaches(<-25.0)={mdd_breaches}"
+        )
+        summaries.append(summary)
+
+    log.info(
+        "epoch_summaries_aggregated",
+        fold_count=len(summaries),
+        total_memories=len(memories),
+    )
+    return summaries
+
+
+# ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
 
@@ -571,59 +699,90 @@ class ConsolidateAgent:
                 )
 
         # --- Phase B: Epoch + reward + run (training dynamics) ---
-        # Process in batches — there can be 45K+ epoch memories. Loop until
-        # no unarchived memories remain or an LLM call fails.
-        _MAX_PHASE_B_BATCHES = 500
+        # Instead of batching 200 memories per LLM call (which can't scale to
+        # millions of epoch memories), we aggregate locally by fold/algo then
+        # send a single summary to the LLM. This gives the LLM a holistic
+        # cross-fold view in one call instead of fragmented per-batch views.
         phase_b_total_created = 0
         phase_b_any = False
 
-        for batch_num in range(1, _MAX_PHASE_B_BATCHES + 1):
-            phase_b: list[dict[str, Any]] = []
-            for prefix in ("training_epoch", "reward_adjustment", "training_run"):
+        # Collect ALL epoch/reward/run memory IDs and texts for this env
+        all_phase_b: list[dict[str, Any]] = []
+        for prefix in ("training_epoch", "reward_adjustment", "training_run"):
+            # Fetch in chunks to avoid memory issues, but don't LLM-process each chunk
+            offset = 0
+            _FETCH_CHUNK = 10_000
+            while True:
                 candidates = await get_memories_by_source_prefix_async(
                     prefix=prefix,
-                    limit=_MEMORY_BATCH_SIZE,
+                    limit=_FETCH_CHUNK,
                     archived=False,
                 )
-                if candidates:
-                    filtered = [m for m in candidates if f"env={env_name}" in m.get("text", "")]
-                    phase_b.extend(filtered)
+                if not candidates:
+                    break
+                filtered = [m for m in candidates if f"env={env_name}" in m.get("text", "")]
+                all_phase_b.extend(filtered)
+                if len(candidates) < _FETCH_CHUNK:
+                    break  # No more pages
+                # Archive this chunk so next fetch gets new rows
+                chunk_ids = [m["id"] for m in candidates]
+                await archive_memories_async(chunk_ids)
+                offset += _FETCH_CHUNK
 
-            if not phase_b:
-                break  # No more unarchived memories for this env
+        if not all_phase_b:
+            total_created += phase_b_total_created
+            if not phase_a and not all_phase_b:
+                log.info("consolidation_skipped_no_memories", env_name=env_name)
+                return 0
 
-            phase_b_any = True
             log.info(
-                "consolidation_stage1_epoch_batch",
+                "consolidation_stage1_complete",
                 env_name=env_name,
-                batch=batch_num,
-                memory_count=len(phase_b),
+                patterns_created=total_created,
             )
-            texts_b = "\n\n".join(f"- {m['text']}" for m in phase_b)
-            ids_b = [m["id"] for m in phase_b]
+            return total_created
 
-            result = await self._call_llm_with_retry(texts_b)
-            if result is not None:
-                for pattern in result.get("patterns", []):
-                    row_id = await self._dedup_and_insert(
-                        pattern=pattern,
-                        source_count=len(phase_b),
-                        stage=1,
-                        env_name=env_name,
-                        memory_ids=ids_b,
-                    )
-                    if row_id is not None:
-                        phase_b_total_created += 1
-                await archive_memories_async(ids_b)
-            else:
-                log.warning(
-                    "consolidation_memories_preserved",
+        phase_b_any = True
+        all_ids_b = [m["id"] for m in all_phase_b]
+
+        log.info(
+            "consolidation_stage1_epoch_aggregating",
+            env_name=env_name,
+            total_memories=len(all_phase_b),
+        )
+
+        # Tier 1: Local statistical aggregation (no LLM)
+        summaries = _aggregate_epoch_summaries(all_phase_b)
+        summary_text = "\n\n".join(summaries)
+
+        log.info(
+            "consolidation_stage1_epoch_aggregated",
+            env_name=env_name,
+            fold_summaries=len(summaries),
+            summary_tokens=len(summary_text) // 4,
+        )
+
+        # Tier 2: Single LLM call with aggregated summaries
+        result = await self._call_llm_with_retry(summary_text)
+        if result is not None:
+            for pattern in result.get("patterns", []):
+                row_id = await self._dedup_and_insert(
+                    pattern=pattern,
+                    source_count=len(all_phase_b),
+                    stage=1,
                     env_name=env_name,
-                    phase="B",
-                    memory_count=len(ids_b),
-                    batch=batch_num,
+                    memory_ids=all_ids_b[:1000],  # Link first 1000 as sample
                 )
-                break  # Stop processing on LLM failure
+                if row_id is not None:
+                    phase_b_total_created += 1
+            await archive_memories_async(all_ids_b)
+        else:
+            log.warning(
+                "consolidation_memories_preserved",
+                env_name=env_name,
+                phase="B",
+                memory_count=len(all_ids_b),
+            )
 
         total_created += phase_b_total_created
 
