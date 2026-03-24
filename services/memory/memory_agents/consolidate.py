@@ -1609,6 +1609,42 @@ class ConsolidateAgent:
             )
         return None
 
+    @staticmethod
+    def _build_request_body(
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict[str, Any],
+        max_tokens: int,
+        provider: str,
+    ) -> dict[str, Any]:
+        """Build provider-specific request body with structured output routing."""
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0,
+            "max_tokens": max_tokens,
+            "frequency_penalty": 0.0,
+        }
+        if provider in ("cerebras", "gemini"):
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "consolidation",
+                    "strict": True,
+                    "schema": schema,
+                },
+            }
+        elif provider == "nvidia":
+            body["response_format"] = {"type": "json_object"}
+            body["guided_json"] = schema
+        else:
+            body["response_format"] = {"type": "json_object"}
+        return body
+
     async def _call_cloud_api(
         self,
         system_prompt: str,
@@ -1649,17 +1685,14 @@ class ConsolidateAgent:
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "temperature": 0,
-                        "max_tokens": effective_max_tokens,
-                        "frequency_penalty": 0.0,
-                        "response_format": {"type": "json_object"},
-                    },
+                    json=self._build_request_body(
+                        model=model,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        schema=schema,
+                        max_tokens=effective_max_tokens,
+                        provider=provider,
+                    ),
                 )
                 resp.raise_for_status()
                 body = resp.json()

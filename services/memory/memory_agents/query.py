@@ -868,8 +868,8 @@ class QueryAgent:
                 system_prompt=epoch_prompt,
                 timeout=60.0,
             )
-        elif _EPOCH_ADVICE_PROVIDER in ("cerebras", "mistral", "gemini"):
-            # Use a dedicated cloud call for epoch advice (fast providers)
+        elif _EPOCH_ADVICE_PROVIDER in ("cerebras", "groq"):
+            # Use dedicated 4-provider cloud chain for epoch advice
             result = await self._call_epoch_cloud(
                 user_content,
                 _EPOCH_ADVICE_SCHEMA,
