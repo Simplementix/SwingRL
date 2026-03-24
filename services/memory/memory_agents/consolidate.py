@@ -474,9 +474,14 @@ _FEW_SHOT_EXAMPLES = json.dumps(
 def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
     """Aggregate raw epoch memories into per-fold statistical summaries.
 
-    Groups memories by run_id (algo_fold), computes stats for each fold, and
-    returns a list of human-readable summary strings suitable for a single LLM
-    consolidation call.
+    Groups memories by run_id (algo_fold), computes stats for each fold,
+    identifies per-fold P1/P99 outlier events, and returns human-readable
+    summary strings suitable for a single LLM consolidation call.
+
+    Each summary includes:
+    - Overall stats (mean/min/max/last) computed from ALL memories in the fold
+    - Per-fold P1/P99 outlier details (worst/best MDD events, KL spikes)
+    - Reward weight trajectory (first → last → number of changes)
 
     Args:
         memories: List of memory dicts with 'text' field containing epoch data.
@@ -490,11 +495,11 @@ def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
     # Parse metrics from memory text into per-fold groups
     folds: dict[str, list[dict[str, float]]] = defaultdict(list)
     fold_meta: dict[str, dict[str, str]] = {}
+    fold_weights: dict[str, list[str]] = defaultdict(list)
 
     for mem in memories:
         text = mem.get("text", "")
 
-        # Extract key fields via regex
         run_id_m = re.search(r"run_id=(\S+)", text)
         if not run_id_m:
             continue
@@ -531,6 +536,11 @@ def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
                 "env": env_m.group(1) if env_m else "unknown",
             }
 
+        # Track reward weight changes
+        weights_m = re.search(r"reward_weights=(\{[^}]+\})", text)
+        if weights_m:
+            fold_weights[run_id].append(weights_m.group(1))
+
     def _stat(
         epochs_list: list[dict[str, float]],
         key: str,
@@ -542,6 +552,33 @@ def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
         mean = sum(vals) / len(vals)
         return (mean, min(vals), max(vals), vals[-1])
 
+    def _percentile(vals: list[float], pct: float) -> float:
+        """Compute percentile from sorted values."""
+        if not vals:
+            return 0.0
+        idx = int(len(vals) * pct / 100)
+        return vals[min(idx, len(vals) - 1)]
+
+    def _find_outlier_event(
+        epochs_list: list[dict[str, float]],
+        key: str,
+        worst: bool = True,
+    ) -> str:
+        """Find the epoch with the most extreme value for a metric."""
+        candidates = [(e.get(key, 0.0), e) for e in epochs_list if key in e]
+        if not candidates:
+            return "none"
+        if worst:
+            _, event = min(candidates, key=lambda x: x[0])
+        else:
+            _, event = max(candidates, key=lambda x: x[0])
+        return (
+            f"epoch={event.get('epoch', '?'):.0f} "
+            f"{key}={event.get(key, 0):.4f} "
+            f"reward={event.get('mean_reward', 0):.4f} "
+            f"sharpe={event.get('rolling_sharpe_500', 0):.4f}"
+        )
+
     # Build summaries per fold
     summaries: list[str] = []
     for run_id in sorted(folds.keys()):
@@ -551,6 +588,7 @@ def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
         if n == 0:
             continue
 
+        # Overall stats from ALL memories
         reward_mean, reward_min, reward_max, reward_last = _stat(epochs, "mean_reward")
         sharpe_mean, sharpe_min, sharpe_max, sharpe_last = _stat(epochs, "rolling_sharpe_500")
         mdd_mean, mdd_min, mdd_max, mdd_last = _stat(epochs, "rolling_mdd_500")
@@ -559,30 +597,59 @@ def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
         kl_mean, _, kl_max, _ = _stat(epochs, "approx_kl")
         winrate_mean, _, _, winrate_last = _stat(epochs, "rolling_win_rate_500")
 
-        # Count notable events
-        kl_spikes = sum(1 for e in epochs if e.get("approx_kl", 0) > 0.10)
-        mdd_breaches = sum(1 for e in epochs if e.get("rolling_mdd_500", 0) < -25.0)
+        # Per-fold P1/P99 thresholds
+        mdd_vals = sorted(e.get("rolling_mdd_500", 0) for e in epochs if "rolling_mdd_500" in e)
+        kl_vals = sorted(e.get("approx_kl", 0) for e in epochs if "approx_kl" in e)
+        mdd_p1 = _percentile(mdd_vals, 1)
+        mdd_p99 = _percentile(mdd_vals, 99)
+        kl_p99 = _percentile(kl_vals, 99)
 
-        # First and last epoch numbers
+        # Count outliers using per-fold thresholds
+        mdd_bottom1 = sum(1 for v in mdd_vals if v < mdd_p1) if mdd_vals else 0
+        mdd_top1 = sum(1 for v in mdd_vals if v > mdd_p99) if mdd_vals else 0
+        kl_top1 = sum(1 for v in kl_vals if v > kl_p99) if kl_vals else 0
+
+        # Outlier event details
+        worst_mdd_event = _find_outlier_event(epochs, "rolling_mdd_500", worst=True)
+        best_mdd_event = _find_outlier_event(epochs, "rolling_mdd_500", worst=False)
+        max_kl_event = _find_outlier_event(epochs, "approx_kl", worst=False)
+
+        # Epoch range
         epoch_nums = [e.get("epoch", 0) for e in epochs if "epoch" in e]
-        first_epoch = min(epoch_nums) if epoch_nums else 0
-        last_epoch = max(epoch_nums) if epoch_nums else 0
+        first_epoch = int(min(epoch_nums)) if epoch_nums else 0
+        last_epoch = int(max(epoch_nums)) if epoch_nums else 0
+
+        # Reward weight trajectory
+        weights_list = fold_weights.get(run_id, [])
+        first_weights = weights_list[0] if weights_list else "unknown"
+        last_weights = weights_list[-1] if weights_list else "unknown"
+        unique_weights = len(set(weights_list))
+        weight_changes = max(0, unique_weights - 1)
 
         summary = (
             f"FOLD SUMMARY: {run_id} algo={meta.get('algo', '?')} "
             f"env={meta.get('env', '?')} "
             f"epochs={first_epoch}-{last_epoch} snapshots={n}\n"
-            f"  reward: mean={reward_mean:.4f} min={reward_min:.4f} "
+            f"  STATS (all epochs):\n"
+            f"    reward: mean={reward_mean:.4f} min={reward_min:.4f} "
             f"max={reward_max:.4f} last={reward_last:.4f}\n"
-            f"  rolling_sharpe: mean={sharpe_mean:.4f} min={sharpe_min:.4f} "
+            f"    rolling_sharpe: mean={sharpe_mean:.4f} min={sharpe_min:.4f} "
             f"max={sharpe_max:.4f} last={sharpe_last:.4f}\n"
-            f"  rolling_mdd: mean={mdd_mean:.4f} worst={mdd_min:.4f} "
+            f"    rolling_mdd: mean={mdd_mean:.4f} worst={mdd_min:.4f} "
             f"best={mdd_max:.4f} last={mdd_last:.4f}\n"
-            f"  policy_loss: mean={ploss_mean:.6f} last={ploss_last:.6f}\n"
-            f"  value_loss: mean={vloss_mean:.6f} last={vloss_last:.6f}\n"
-            f"  approx_kl: mean={kl_mean:.6f} max={kl_max:.6f} spikes(>0.10)={kl_spikes}\n"
-            f"  win_rate: mean={winrate_mean:.4f} last={winrate_last:.4f}\n"
-            f"  mdd_breaches(<-25.0)={mdd_breaches}"
+            f"    policy_loss: mean={ploss_mean:.6f} last={ploss_last:.6f}\n"
+            f"    value_loss: mean={vloss_mean:.6f} last={vloss_last:.6f}\n"
+            f"    approx_kl: mean={kl_mean:.6f} max={kl_max:.6f}\n"
+            f"    win_rate: mean={winrate_mean:.4f} last={winrate_last:.4f}\n"
+            f"  OUTLIERS (per-fold P1/P99):\n"
+            f"    mdd_bottom1%({mdd_bottom1} events, threshold={mdd_p1:.4f}): "
+            f"worst={worst_mdd_event}\n"
+            f"    mdd_top1%({mdd_top1} events, threshold={mdd_p99:.4f}): "
+            f"best={best_mdd_event}\n"
+            f"    kl_top1%({kl_top1} events, threshold={kl_p99:.6f}): "
+            f"max={max_kl_event}\n"
+            f"  REWARD WEIGHTS: start={first_weights} end={last_weights} "
+            f"changes={weight_changes}"
         )
         summaries.append(summary)
 
@@ -590,6 +657,105 @@ def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
         "epoch_summaries_aggregated",
         fold_count=len(summaries),
         total_memories=len(memories),
+    )
+    return summaries
+
+
+def _summarize_reward_adjustments(memories: list[dict[str, Any]], env_name: str) -> list[str]:
+    """Summarize reward adjustment memories per algo for consolidation.
+
+    Groups reward adjustments by algo, computes trends and effectiveness,
+    and returns per-algo summary strings.
+
+    Args:
+        memories: List of reward adjustment memory dicts.
+        env_name: Environment name to filter by.
+
+    Returns:
+        List of per-algo summary strings.
+    """
+    import re
+    from collections import defaultdict
+
+    algo_adjustments: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
+    for mem in memories:
+        text = mem.get("text", "")
+        if f"env={env_name}" not in text:
+            continue
+
+        algo_m = re.search(r"algo=(\S+)", text)
+        algo = algo_m.group(1) if algo_m else "unknown"
+
+        adj: dict[str, Any] = {}
+        for key in ("epoch_triggered", "trigger_value"):
+            m = re.search(rf"{key}=([0-9.e+-]+)", text)
+            if m:
+                try:
+                    adj[key] = float(m.group(1))
+                except ValueError:
+                    pass
+
+        trigger_m = re.search(r"trigger_metric=(\S+)", text)
+        adj["trigger_metric"] = trigger_m.group(1) if trigger_m else "unknown"
+
+        # Extract before/after weights
+        before_m = re.search(r"weights_before=(\{[^}]+\})", text)
+        after_m = re.search(r"weights_after=(\{[^}]+\})", text)
+        adj["weights_before"] = before_m.group(1) if before_m else ""
+        adj["weights_after"] = after_m.group(1) if after_m else ""
+
+        # Check effectiveness (from outcome memories)
+        effective_m = re.search(r"adjustment_effective=(True|False)", text)
+        if effective_m:
+            adj["effective"] = effective_m.group(1) == "True"
+
+        sharpe_delta_m = re.search(r"post_adjustment_sharpe_delta=([0-9.e+-]+)", text)
+        if sharpe_delta_m:
+            try:
+                adj["sharpe_delta"] = float(sharpe_delta_m.group(1))
+            except ValueError:
+                pass
+
+        algo_adjustments[algo].append(adj)
+
+    summaries: list[str] = []
+    for algo in sorted(algo_adjustments.keys()):
+        adjs = algo_adjustments[algo]
+        n = len(adjs)
+        if n == 0:
+            continue
+
+        # Trigger breakdown
+        triggers: dict[str, int] = defaultdict(int)
+        for a in adjs:
+            triggers[a.get("trigger_metric", "unknown")] += 1
+        trigger_str = ", ".join(f"{k}={v}" for k, v in sorted(triggers.items()))
+
+        # Effectiveness
+        effective_count = sum(1 for a in adjs if a.get("effective", False))
+        deltas = [a["sharpe_delta"] for a in adjs if "sharpe_delta" in a]
+        avg_delta = sum(deltas) / len(deltas) if deltas else 0.0
+
+        # Weight trend (first and last)
+        first_after = adjs[0].get("weights_after", "unknown")
+        last_after = adjs[-1].get("weights_after", "unknown")
+
+        summary = (
+            f"REWARD ADJUSTMENTS: {algo} env={env_name} count={n}\n"
+            f"  triggers: {trigger_str}\n"
+            f"  effectiveness: {effective_count}/{n} positive "
+            f"({effective_count / n * 100:.0f}%), avg_sharpe_delta={avg_delta:.4f}\n"
+            f"  weight_trend: first_adjustment={first_after} "
+            f"last_adjustment={last_after}"
+        )
+        summaries.append(summary)
+
+    log.info(
+        "reward_adjustments_summarized",
+        env_name=env_name,
+        algo_count=len(summaries),
+        total_adjustments=sum(len(v) for v in algo_adjustments.values()),
     )
     return summaries
 
@@ -761,17 +927,30 @@ class ConsolidateAgent:
         )
 
         # Tier 1: Local statistical aggregation (no LLM)
-        summaries = _aggregate_epoch_summaries(all_phase_b)
-        summary_text = "\n\n".join(summaries)
+        # Split epoch memories from reward adjustment memories
+        epoch_memories = [m for m in all_phase_b if "EPOCH SNAPSHOT" in m.get("text", "")]
+        reward_memories = [m for m in all_phase_b if "REWARD_ADJUSTMENT" in m.get("text", "")]
+
+        fold_summaries = _aggregate_epoch_summaries(epoch_memories)
+        reward_summaries = _summarize_reward_adjustments(reward_memories, env_name)
+
+        # Combine into single prompt
+        parts = []
+        if fold_summaries:
+            parts.append("=== FOLD TRAINING SUMMARIES ===\n" + "\n\n".join(fold_summaries))
+        if reward_summaries:
+            parts.append("=== REWARD WEIGHT ADJUSTMENTS ===\n" + "\n\n".join(reward_summaries))
+        summary_text = "\n\n".join(parts)
 
         log.info(
             "consolidation_stage1_epoch_aggregated",
             env_name=env_name,
-            fold_summaries=len(summaries),
+            fold_summaries=len(fold_summaries),
+            reward_summaries=len(reward_summaries),
             summary_tokens=len(summary_text) // 4,
         )
 
-        # Tier 2: Single LLM call with aggregated summaries
+        # Tier 2: Single LLM call with aggregated summaries + reward adjustments
         result = await self._call_llm_with_retry(summary_text)
         if result is not None:
             for pattern in result.get("patterns", []):
