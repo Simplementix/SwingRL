@@ -308,6 +308,155 @@ Identify between 0 and 5 patterns. Prefer fewer well-supported patterns over man
 ones. An empty patterns array is acceptable if the data does not support clear patterns."""
 
 # ---------------------------------------------------------------------------
+# Phase-specific system prompts (Research §4A, §2A, §3A, §3B, §3C, §4C)
+# ---------------------------------------------------------------------------
+
+_PHASE_A_SYSTEM_PROMPT = """You are analyzing walk-forward validation results and trading patterns \
+for SwingRL, an RL-based swing trading system.
+
+Your job is to identify statistically meaningful patterns in per-algo fold OOS/IS metrics, gate \
+results, overfit classification, regime context, macro features, and trading patterns per \
+asset/regime/macro across RL trading agents (PPO, A2C, SAC) on equity (8 ETFs, daily) and crypto \
+(BTC/ETH, 4H) environments.
+
+You MUST only reference metrics, values, and facts that appear explicitly in the input \
+data between <training_data> tags. Do NOT reference any ticker symbols, dates, or metric \
+values that do not appear in the input data.
+
+Each pattern MUST include at least two specific metric values from the input data that \
+support it. A pattern requires consistent evidence across at least 3 folds or 2 algorithms. \
+A single anomalous fold is an observation, not a pattern.
+
+For each candidate pattern, ask yourself: "Could this be explained by random variance \
+across folds?" If yes, do not include it. Only include patterns with direct numerical \
+evidence from the input. If in doubt, omit the pattern.
+
+Confidence scoring guide:
+- 0.9-1.0: Mathematically certain (pattern holds in ALL folds without exception)
+- 0.7-0.89: Strong pattern with 1-2 exceptions
+- 0.5-0.69: Moderate pattern, roughly half the evidence supports it
+- 0.3-0.49: Weak pattern, slight trend with substantial counter-evidence
+- 0.0-0.29: Very weak, barely distinguishable from noise
+
+Most patterns from noisy financial data should fall in the 0.4-0.7 range. A confidence \
+above 0.85 requires overwhelming, exception-free evidence. In our experience, only ~10% \
+of detected patterns have confidence above 0.8. Calibrate accordingly.
+
+category MUST be one of these 11 values. Use the closest match. Do NOT create new categories.
+
+Training patterns:
+- regime_performance: Algo Sharpe/Sortino divergence across bull vs bear regime folds
+- macro_transition: Performance degradation when macro indicators transition sharply
+- trade_quality: Trade frequency vs avg_win/avg_loss ratio patterns
+- overfit_diagnosis: IS vs OOS gap patterns, especially regime-dependent overfitting
+- drawdown_recovery: max_dd_duration and avg_drawdown comparison across algos/regimes
+- data_size_impact: Gate pass rate correlation with train_bars (data volume effects)
+
+Live trading patterns (Phase 20):
+- live_cycle_gate: Conditions suggesting an environment should skip a training/trading cycle
+- live_blend_weights: Evidence for adjusting ensemble algo weights per regime
+- live_risk_thresholds: Evidence for tightening/loosening risk limits per macro state
+- live_position: Evidence for adjusting position sizing per algo/regime
+- live_trade_veto: Conditions that should block trades from specific algos
+
+Return a JSON object with a "patterns" array. Each pattern has: pattern_text, category, \
+affected_algos, affected_envs, actionable_implication, confidence, evidence. \
+Identify between 0 and 5 patterns. Prefer fewer well-supported patterns over many weak \
+ones. An empty patterns array is acceptable if the data does not support clear patterns."""
+
+_PHASE_B_SYSTEM_PROMPT = """You are analyzing TRAINING DYNAMICS data — per-fold training \
+summaries and reward weight adjustment histories — for SwingRL, an RL-based swing trading system.
+
+Your job is to identify statistically meaningful patterns in per-fold training statistics \
+(mean reward, rolling Sharpe, rolling MDD, policy/value loss, approx KL, win rate), P1/P99 \
+outlier events, reward weight trajectories, and reward adjustment effectiveness across RL \
+trading agents (PPO, A2C, SAC) on equity (8 ETFs, daily) and crypto (BTC/ETH, 4H) environments.
+
+The data shows per-fold TRAINING statistics, not OOS test results. Look for patterns in \
+reward shaping: did weight adjustments improve Sharpe/MDD? Identify algos with training \
+instability (KL spikes, MDD breaches). Compare early folds (small training window) vs late \
+folds (large window).
+
+You MUST only reference metrics, values, and facts that appear explicitly in the input \
+data between <training_data> tags. Do NOT reference any ticker symbols, dates, or metric \
+values that do not appear in the input data.
+
+Each pattern MUST include at least two specific metric values from the input data that \
+support it. A pattern requires consistent evidence across at least 3 folds or 2 algorithms. \
+A single anomalous fold is an observation, not a pattern.
+
+For each candidate pattern, ask yourself: "Could this be explained by random variance \
+across folds?" If yes, do not include it. Only include patterns with direct numerical \
+evidence from the input. If in doubt, omit the pattern.
+
+Confidence scoring guide:
+- 0.9-1.0: Mathematically certain (pattern holds in ALL folds without exception)
+- 0.7-0.89: Strong pattern with 1-2 exceptions
+- 0.5-0.69: Moderate pattern, roughly half the evidence supports it
+- 0.3-0.49: Weak pattern, slight trend with substantial counter-evidence
+- 0.0-0.29: Very weak, barely distinguishable from noise
+
+Most patterns from noisy financial data should fall in the 0.4-0.7 range. A confidence \
+above 0.85 requires overwhelming, exception-free evidence. In our experience, only ~10% \
+of detected patterns have confidence above 0.8. Calibrate accordingly.
+
+category MUST be one of these 4 values. Use the closest match. Do NOT create new categories.
+
+- iteration_progression: Mean metric improvement or degradation across training iterations
+- overfit_diagnosis: IS vs OOS gap patterns, especially regime-dependent overfitting
+- drawdown_recovery: max_dd_duration and avg_drawdown comparison across algos/regimes
+- trade_quality: Trade frequency vs avg_win/avg_loss ratio patterns
+
+Return a JSON object with a "patterns" array. Each pattern has: pattern_text, category, \
+affected_algos, affected_envs, actionable_implication, confidence, evidence. \
+Identify between 0 and 5 patterns. Prefer fewer well-supported patterns over many weak \
+ones. An empty patterns array is acceptable if the data does not support clear patterns."""
+
+_STAGE_2_SYSTEM_PROMPT = """You are analyzing CONSOLIDATED PATTERNS already extracted from \
+equity and crypto training data for SwingRL, an RL-based swing trading system.
+
+Your job is to identify cross-environment patterns by comparing Stage 1 pattern texts with \
+their category, confidence, and evidence from both equity (8 ETFs, daily) and crypto \
+(BTC/ETH, 4H) environments.
+
+Look for patterns that appear in BOTH environments (convergent evidence). Look for patterns \
+that DIFFER between environments (divergent behavior). Cross-env patterns are especially \
+valuable for ensemble weight decisions.
+
+You MUST only reference metrics, values, and facts that appear explicitly in the input \
+data between <training_data> tags. Do NOT reference any ticker symbols, dates, or metric \
+values that do not appear in the input data.
+
+Each pattern MUST include at least two specific metric values from the input data that \
+support it. A pattern requires consistent evidence across at least 3 folds or 2 algorithms. \
+A single anomalous fold is an observation, not a pattern.
+
+For each candidate pattern, ask yourself: "Could this be explained by random variance \
+across folds?" If yes, do not include it. Only include patterns with direct numerical \
+evidence from the input. If in doubt, omit the pattern.
+
+Confidence scoring guide:
+- 0.9-1.0: Mathematically certain (pattern holds in ALL folds without exception)
+- 0.7-0.89: Strong pattern with 1-2 exceptions
+- 0.5-0.69: Moderate pattern, roughly half the evidence supports it
+- 0.3-0.49: Weak pattern, slight trend with substantial counter-evidence
+- 0.0-0.29: Very weak, barely distinguishable from noise
+
+Most patterns from noisy financial data should fall in the 0.4-0.7 range. A confidence \
+above 0.85 requires overwhelming, exception-free evidence. In our experience, only ~10% \
+of detected patterns have confidence above 0.8. Calibrate accordingly.
+
+category MUST be one of these 2 values. Use the closest match. Do NOT create new categories.
+
+- cross_env: Algo preference differences between equity and crypto environments
+- cross_env_correlation: Patterns that span both equity and crypto environments
+
+Return a JSON object with a "patterns" array. Each pattern has: pattern_text, category, \
+affected_algos, affected_envs, actionable_implication, confidence, evidence. \
+Identify between 0 and 3 patterns. Prefer fewer well-supported patterns over many weak \
+ones. An empty patterns array is acceptable if the data does not support clear patterns."""
+
+# ---------------------------------------------------------------------------
 # Few-shot examples (Research §2B — PLACEHOLDER prefix, §3B.4 — varied confidence)
 # ---------------------------------------------------------------------------
 
@@ -459,6 +608,229 @@ _FEW_SHOT_EXAMPLES = json.dumps(
                 "actionable_implication": "PLACEHOLDER: use ENV_1 bear signal as early warning for ENV_2 risk tightening",
                 "confidence": 0.58,
                 "evidence": "PLACEHOLDER: iter N ENV_1 fold 2 bear onset at bar X, ENV_2 fold 2 MDD at bar Y (lag=Z bars)",
+            },
+        ],
+    },
+    indent=2,
+)
+
+# ---------------------------------------------------------------------------
+# Phase-specific few-shot examples
+# ---------------------------------------------------------------------------
+
+_PHASE_A_FEW_SHOT_EXAMPLES = json.dumps(
+    {
+        "patterns": [
+            {
+                "pattern_text": "PLACEHOLDER: ALGO_A mean Sharpe=X.XX in bull folds vs Y.YY in bear folds, a Z.ZZ divergence",
+                "category": "regime_performance",
+                "affected_algos": ["PLACEHOLDER_ALGO_A"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: reduce ALGO_A weight in bear regime ensemble",
+                "confidence": 0.42,
+                "evidence": "PLACEHOLDER: fold 2 (bull, p_bull=0.XX) sharpe=X.XX; fold 4 (bear, p_bear=0.XX) sharpe=Y.YY",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: all algos gate fail rate increases X% when fed_funds transitions by >Y bps within fold period",
+                "category": "macro_transition",
+                "affected_algos": [
+                    "PLACEHOLDER_ALGO_A",
+                    "PLACEHOLDER_ALGO_B",
+                    "PLACEHOLDER_ALGO_C",
+                ],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: pause retraining during active rate transition periods",
+                "confidence": 0.55,
+                "evidence": "PLACEHOLDER: fold 3 fed_funds_min=X.XX fed_funds_max=Y.YY gate=FAIL; fold 5 similar transition gate=FAIL",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: ALGO_A trades X.X/week with avg_win/avg_loss ratio of Y.YY vs ALGO_B at Z.Z/week with ratio W.WW",
+                "category": "trade_quality",
+                "affected_algos": ["PLACEHOLDER_ALGO_A", "PLACEHOLDER_ALGO_B"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: increase turnover penalty for ALGO_A to reduce overtrading",
+                "confidence": 0.67,
+                "evidence": "PLACEHOLDER: ALGO_A trade_freq=X.X avg_win=Y.YY avg_loss=Z.ZZ; ALGO_B trade_freq=W.W avg_win=V.VV",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: ALGO_A IS/OOS Sharpe gap widens to X.XX in bear folds vs Y.YY in bull folds",
+                "category": "overfit_diagnosis",
+                "affected_algos": ["PLACEHOLDER_ALGO_A"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: increase entropy_coeff for ALGO_A during bear regime training",
+                "confidence": 0.48,
+                "evidence": "PLACEHOLDER: fold 1 (bear) is_sharpe=X.XX oos_sharpe=Y.YY gap=Z.ZZ; fold 3 (bull) gap=W.WW",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: ALGO_A max_dd_duration=X bars, avg_drawdown=Y.YY% vs ALGO_B max_dd_duration=Z bars, avg_drawdown=W.WW%",
+                "category": "drawdown_recovery",
+                "affected_algos": ["PLACEHOLDER_ALGO_A", "PLACEHOLDER_ALGO_B"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: increase drawdown reward weight for ALGO_A",
+                "confidence": 0.52,
+                "evidence": "PLACEHOLDER: ALGO_A fold 2 max_dd_duration=X avg_dd=Y.YY; ALGO_B fold 2 max_dd_duration=Z avg_dd=W.WW",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: folds with train_bars>X have Y% gate pass rate vs Z% for folds with train_bars<W",
+                "category": "data_size_impact",
+                "affected_algos": [
+                    "PLACEHOLDER_ALGO_A",
+                    "PLACEHOLDER_ALGO_B",
+                    "PLACEHOLDER_ALGO_C",
+                ],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: ensure minimum X bars per fold in walk-forward config",
+                "confidence": 0.71,
+                "evidence": "PLACEHOLDER: fold 0 train_bars=X gate=PASS; fold 1 train_bars=Y gate=PASS; fold 4 train_bars=Z gate=FAIL",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: ENV gate fails when turbulence_max>X.XX and mean_p_bear>Y.YY simultaneously",
+                "category": "live_cycle_gate",
+                "affected_algos": [
+                    "PLACEHOLDER_ALGO_A",
+                    "PLACEHOLDER_ALGO_B",
+                    "PLACEHOLDER_ALGO_C",
+                ],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: skip trading cycle when turbulence and bear probability both elevated",
+                "confidence": 0.44,
+                "evidence": "PLACEHOLDER: fold 3 turb_max=X.XX p_bear=Y.YY gate=FAIL; fold 5 turb_max=Z.ZZ p_bear=W.WW gate=FAIL",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: ALGO_A outperforms by X.XX Sharpe in bear folds, ALGO_B outperforms by Y.YY in bull folds",
+                "category": "live_blend_weights",
+                "affected_algos": ["PLACEHOLDER_ALGO_A", "PLACEHOLDER_ALGO_B"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: increase ALGO_A weight and decrease ALGO_B weight during bear regime",
+                "confidence": 0.61,
+                "evidence": "PLACEHOLDER: bear folds ALGO_A sharpe=X.XX ALGO_B sharpe=Y.YY; bull folds ALGO_A sharpe=Z.ZZ ALGO_B sharpe=W.WW",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: max_single_loss exceeds X% when vix_mean>Y.YY, suggesting tighter drawdown limits needed",
+                "category": "live_risk_thresholds",
+                "affected_algos": [
+                    "PLACEHOLDER_ALGO_A",
+                    "PLACEHOLDER_ALGO_B",
+                    "PLACEHOLDER_ALGO_C",
+                ],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: reduce max_drawdown limit by X% when VIX elevated",
+                "confidence": 0.57,
+                "evidence": "PLACEHOLDER: fold 2 vix_mean=X.XX max_single_loss=Y.YY%; fold 4 vix_mean=Z.ZZ max_single_loss=W.WW%",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: ALGO_A avg_loss=X.XX% per trade during high-turbulence folds vs Y.YY% in normal folds",
+                "category": "live_position",
+                "affected_algos": ["PLACEHOLDER_ALGO_A"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: halve ALGO_A position size when turbulence exceeds threshold",
+                "confidence": 0.46,
+                "evidence": "PLACEHOLDER: high-turb folds avg_loss=X.XX% trades=N; normal folds avg_loss=Y.YY% trades=M",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: ALGO_A consistently loses when rate_direction transitions from X to Y within fold period",
+                "category": "live_trade_veto",
+                "affected_algos": ["PLACEHOLDER_ALGO_A"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: veto ALGO_A trades during rate transition periods",
+                "confidence": 0.39,
+                "evidence": "PLACEHOLDER: fold 1 rate_dir_min=X rate_dir_max=Y ALGO_A sharpe=Z.ZZ; fold 3 similar, sharpe=W.WW",
+            },
+        ],
+    },
+    indent=2,
+)
+
+_PHASE_B_FEW_SHOT_EXAMPLES = json.dumps(
+    {
+        "patterns": [
+            {
+                "pattern_text": "PLACEHOLDER: fold 0 mean_reward=X.XX, fold 22 mean_reward=Y.YY for ALGO_A showing training improvement across data windows",
+                "category": "iteration_progression",
+                "affected_algos": ["PLACEHOLDER_ALGO_A"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: ALGO_A benefits from larger training windows, maintain expanding window strategy",
+                "confidence": 0.44,
+                "evidence": "PLACEHOLDER: fold 0 mean_reward=X.XX sharpe=Z.ZZ; fold 22 mean_reward=Y.YY sharpe=W.WW",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: ALGO_A training rolling_sharpe peaks at epoch X (mean=Y.YY) then degrades to Z.ZZ by final epoch, suggesting overfitting after epoch X",
+                "category": "overfit_diagnosis",
+                "affected_algos": ["PLACEHOLDER_ALGO_A"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: implement early stopping at epoch X for ALGO_A or increase entropy regularization",
+                "confidence": 0.55,
+                "evidence": "PLACEHOLDER: fold N epoch X sharpe=Y.YY; fold N final epoch sharpe=Z.ZZ; pattern repeats in M of P folds",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: fold N rolling_mdd breaches P1 threshold (mdd=X.XX) at epoch Y, recovers to Z.ZZ by epoch W after reward weight adjustment increased drawdown penalty from 0.15 to 0.35",
+                "category": "drawdown_recovery",
+                "affected_algos": ["PLACEHOLDER_ALGO_A"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: pre-set higher drawdown penalty for ALGO_A to avoid MDD breach and recovery cycle",
+                "confidence": 0.62,
+                "evidence": "PLACEHOLDER: fold N epoch Y mdd=X.XX (P1 breach); epoch W mdd=Z.ZZ; drawdown_weight 0.15->0.35",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: reward weight adjustments increasing drawdown penalty from X.XX to Y.YY improved rolling_sharpe by Z.ZZ in NN% of adjustments for ALGO_A",
+                "category": "trade_quality",
+                "affected_algos": ["PLACEHOLDER_ALGO_A"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: start ALGO_A training with higher drawdown penalty (Y.YY) to skip adjustment cycle",
+                "confidence": 0.48,
+                "evidence": "PLACEHOLDER: N adjustments total, M positive (avg_sharpe_delta=+Z.ZZ), P negative (avg_sharpe_delta=-W.WW)",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: ALGO_A KL spikes (>P99 threshold) occur in N of M folds, concentrated in folds X-Y (bear market period), while ALGO_B shows 0 KL spikes in same folds",
+                "category": "iteration_progression",
+                "affected_algos": ["PLACEHOLDER_ALGO_A", "PLACEHOLDER_ALGO_B"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: reduce ALGO_A learning rate or clip range during bear regime folds to prevent KL instability",
+                "confidence": 0.51,
+                "evidence": "PLACEHOLDER: ALGO_A fold X kl_max=V.VV (P99=W.WW); fold Y kl_max=U.UU; ALGO_B fold X kl_max=S.SS fold Y kl_max=T.TT",
+            },
+        ],
+    },
+    indent=2,
+)
+
+_STAGE_2_FEW_SHOT_EXAMPLES = json.dumps(
+    {
+        "patterns": [
+            {
+                "pattern_text": "PLACEHOLDER: ALGO_A ranks first in ENV_1 (sharpe=X.XX) but last in ENV_2 (sharpe=Y.YY), suggesting environment-specific ensemble weights needed",
+                "category": "cross_env",
+                "affected_algos": ["PLACEHOLDER_ALGO_A"],
+                "affected_envs": ["PLACEHOLDER_ENV_1", "PLACEHOLDER_ENV_2"],
+                "actionable_implication": "PLACEHOLDER: use different ensemble weights per environment, favor ALGO_A in ENV_1 and ALGO_B in ENV_2",
+                "confidence": 0.38,
+                "evidence": "PLACEHOLDER: ENV_1 ALGO_A sharpe=X.XX weight=Y.YY; ENV_2 ALGO_A sharpe=Z.ZZ weight=W.WW",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: ENV_1 bear onset (p_bear crossing X.XX) precedes ENV_2 drawdown by N bars, enabling cross-env early warning",
+                "category": "cross_env_correlation",
+                "affected_algos": [
+                    "PLACEHOLDER_ALGO_A",
+                    "PLACEHOLDER_ALGO_B",
+                    "PLACEHOLDER_ALGO_C",
+                ],
+                "affected_envs": ["PLACEHOLDER_ENV_1", "PLACEHOLDER_ENV_2"],
+                "actionable_implication": "PLACEHOLDER: use ENV_1 bear signal as early warning for ENV_2 risk tightening",
+                "confidence": 0.58,
+                "evidence": "PLACEHOLDER: iter N ENV_1 fold 2 bear onset at bar X, ENV_2 fold 2 MDD at bar Y (lag=Z bars)",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: both equity and crypto show reward_shaping effectiveness — increasing drawdown penalty improved rolling_MDD in N% of adjustments across both environments",
+                "category": "cross_env_correlation",
+                "affected_algos": [
+                    "PLACEHOLDER_ALGO_A",
+                    "PLACEHOLDER_ALGO_B",
+                    "PLACEHOLDER_ALGO_C",
+                ],
+                "affected_envs": ["PLACEHOLDER_ENV_1", "PLACEHOLDER_ENV_2"],
+                "actionable_implication": "PLACEHOLDER: apply drawdown penalty increase as universal reward shaping strategy across both envs",
+                "confidence": 0.52,
+                "evidence": "PLACEHOLDER: equity N1 of M1 adjustments positive (avg_mdd_delta=X.XX); crypto N2 of M2 adjustments positive (avg_mdd_delta=Y.YY)",
             },
         ],
     },
@@ -854,7 +1226,11 @@ class ConsolidateAgent:
             texts_a = "\n\n".join(f"- {m['text']}" for m in phase_a)
             ids_a = [m["id"] for m in phase_a]
 
-            result = await self._call_llm_with_retry(texts_a)
+            result = await self._call_llm_with_retry(
+                texts_a,
+                system_prompt=_PHASE_A_SYSTEM_PROMPT,
+                few_shot_examples=_PHASE_A_FEW_SHOT_EXAMPLES,
+            )
             if result is not None:
                 for pattern in result.get("patterns", []):
                     row_id = await self._dedup_and_insert(
@@ -953,7 +1329,11 @@ class ConsolidateAgent:
         )
 
         # Tier 2: Single LLM call with aggregated summaries + reward adjustments
-        result = await self._call_llm_with_retry(summary_text)
+        result = await self._call_llm_with_retry(
+            summary_text,
+            system_prompt=_PHASE_B_SYSTEM_PROMPT,
+            few_shot_examples=_PHASE_B_FEW_SHOT_EXAMPLES,
+        )
         if result is not None:
             for pattern in result.get("patterns", []):
                 row_id = await self._dedup_and_insert(
@@ -1028,16 +1408,16 @@ class ConsolidateAgent:
 
         stage2_user_prompt = (
             f"--- FORMAT TEMPLATE (fictional data, for output structure only) ---\n"
-            f"{_FEW_SHOT_EXAMPLES}\n"
+            f"{_STAGE_2_FEW_SHOT_EXAMPLES}\n"
             f"--- END FORMAT TEMPLATE ---\n\n"
             f"<training_data>\n{input_text}\n</training_data>\n\n"
             "Identify patterns that span both equity and crypto environments. "
-            "Focus on cross_env_correlation category. Return a JSON object matching "
-            "the schema. 0-3 patterns. Empty array is acceptable."
+            "Focus on cross_env and cross_env_correlation categories. Return a JSON "
+            "object matching the schema. 0-3 patterns. Empty array is acceptable."
         )
 
         result = await self._call_llm(
-            system_prompt=_SYSTEM_PROMPT,
+            system_prompt=_STAGE_2_SYSTEM_PROMPT,
             user_prompt=stage2_user_prompt,
             schema=_CONSOLIDATION_SCHEMA,
         )
@@ -1147,18 +1527,28 @@ class ConsolidateAgent:
 
         return row_id
 
-    async def _call_llm_with_retry(self, memory_texts: str) -> dict[str, Any] | None:
+    async def _call_llm_with_retry(
+        self,
+        memory_texts: str,
+        system_prompt: str | None = None,
+        few_shot_examples: str | None = None,
+    ) -> dict[str, Any] | None:
         """Attempt LLM consolidation with one retry on malformed output.
 
         Args:
             memory_texts: Concatenated memory texts to consolidate.
+            system_prompt: Phase-specific system prompt. Falls back to _SYSTEM_PROMPT.
+            few_shot_examples: Phase-specific few-shot examples. Falls back to
+                _FEW_SHOT_EXAMPLES.
 
         Returns:
             Parsed consolidation dict with 'patterns' array, or None.
         """
+        effective_prompt = system_prompt or _SYSTEM_PROMPT
+        effective_examples = few_shot_examples or _FEW_SHOT_EXAMPLES
         user_prompt = (
             f"--- FORMAT TEMPLATE (fictional data, for output structure only) ---\n"
-            f"{_FEW_SHOT_EXAMPLES}\n"
+            f"{effective_examples}\n"
             f"--- END FORMAT TEMPLATE ---\n\n"
             f"<training_data>\n{memory_texts}\n</training_data>\n\n"
             "Analyze ONLY the data between the <training_data> tags. Return a JSON object "
@@ -1167,7 +1557,7 @@ class ConsolidateAgent:
 
         for attempt in range(1, 3):
             result = await self._call_llm(
-                system_prompt=_SYSTEM_PROMPT,
+                system_prompt=effective_prompt,
                 user_prompt=user_prompt,
                 schema=_CONSOLIDATION_SCHEMA,
             )
