@@ -353,18 +353,23 @@ def get_memories_by_source_prefix(
 def archive_memories(row_ids: list[int]) -> None:
     """Mark memories as archived after successful consolidation.
 
+    Batches updates to stay within SQLite's variable limit (~32766).
+
     Args:
         row_ids: List of memory row IDs to archive.
     """
     if not row_ids:
         return
+    _BATCH = 10_000  # well within SQLite's SQLITE_MAX_VARIABLE_NUMBER
     conn = get_connection()
     try:
-        placeholders = ",".join("?" * len(row_ids))
-        conn.execute(
-            f"UPDATE memories SET archived = 1 WHERE id IN ({placeholders})",  # nosec B608 — placeholders are all '?' literals
-            row_ids,
-        )
+        for start in range(0, len(row_ids), _BATCH):
+            chunk = row_ids[start : start + _BATCH]
+            placeholders = ",".join("?" * len(chunk))
+            conn.execute(
+                f"UPDATE memories SET archived = 1 WHERE id IN ({placeholders})",  # nosec B608
+                chunk,
+            )
         conn.commit()
         log.info("memories_archived", count=len(row_ids))
     finally:
