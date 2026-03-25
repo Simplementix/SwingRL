@@ -36,6 +36,54 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+# Columns added to backtest_results for iteration tracking (Phase 20.1).
+# Used by _migrate_backtest_results() to idempotently add missing columns.
+_BACKTEST_RESULTS_MIGRATIONS: list[tuple[str, str]] = [
+    ("iteration_number", "INTEGER DEFAULT 0"),
+    ("run_type", "TEXT DEFAULT 'baseline'"),
+    ("is_sharpe", "DOUBLE"),
+    ("is_sortino", "DOUBLE"),
+    ("is_mdd", "DOUBLE"),
+    ("is_total_return", "DOUBLE"),
+    ("overfitting_gap", "DOUBLE"),
+    ("overfitting_class", "TEXT"),
+    ("hmm_p_bull", "DOUBLE"),
+    ("hmm_p_bear", "DOUBLE"),
+    ("vix_mean", "DOUBLE"),
+    ("yield_spread_mean", "DOUBLE"),
+    ("converged_at_step", "INTEGER"),
+    ("total_timesteps_configured", "INTEGER"),
+    ("max_single_loss", "DOUBLE"),
+    ("best_single_trade", "DOUBLE"),
+    ("train_start_date", "TEXT"),
+    ("train_end_date", "TEXT"),
+    ("test_start_date", "TEXT"),
+    ("test_end_date", "TEXT"),
+]
+
+
+def _migrate_backtest_results(cursor: Any) -> None:
+    """Idempotently add new columns to backtest_results for existing databases.
+
+    Queries information_schema.columns and adds any missing columns from
+    the _BACKTEST_RESULTS_MIGRATIONS list. Safe to call on fresh databases
+    (all columns already exist) or old databases (columns get added).
+
+    Args:
+        cursor: Active DuckDB cursor.
+    """
+    existing_cols = {
+        row[0]
+        for row in cursor.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'backtest_results'"
+        ).fetchall()
+    }
+    for col_name, col_def in _BACKTEST_RESULTS_MIGRATIONS:
+        if col_name not in existing_cols:
+            cursor.execute(f"ALTER TABLE backtest_results ADD COLUMN {col_name} {col_def}")
+            log.info("backtest_results_column_added", column=col_name)
+
 
 class DatabaseManager:
     """Singleton manager for DuckDB and SQLite database connections.
@@ -256,7 +304,60 @@ class DatabaseManager:
                     max_dd_duration INTEGER,
                     final_portfolio_value DOUBLE,
                     total_return DOUBLE,
-                    created_at TIMESTAMP DEFAULT current_timestamp
+                    created_at TIMESTAMP DEFAULT current_timestamp,
+                    iteration_number INTEGER DEFAULT 0,
+                    run_type TEXT DEFAULT 'baseline',
+                    is_sharpe DOUBLE,
+                    is_sortino DOUBLE,
+                    is_mdd DOUBLE,
+                    is_total_return DOUBLE,
+                    overfitting_gap DOUBLE,
+                    overfitting_class TEXT,
+                    hmm_p_bull DOUBLE,
+                    hmm_p_bear DOUBLE,
+                    vix_mean DOUBLE,
+                    yield_spread_mean DOUBLE,
+                    converged_at_step INTEGER,
+                    total_timesteps_configured INTEGER,
+                    max_single_loss DOUBLE,
+                    best_single_trade DOUBLE,
+                    train_start_date TEXT,
+                    train_end_date TEXT,
+                    test_start_date TEXT,
+                    test_end_date TEXT
+                )
+            """)
+
+            # Migration: add columns for existing databases with old schema
+            _migrate_backtest_results(cursor)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS iteration_results (
+                    result_id TEXT PRIMARY KEY,
+                    iteration_number INTEGER NOT NULL,
+                    environment TEXT NOT NULL,
+                    ensemble_sharpe DOUBLE,
+                    ensemble_mdd DOUBLE,
+                    gate_passed BOOLEAN,
+                    ppo_weight DOUBLE,
+                    a2c_weight DOUBLE,
+                    sac_weight DOUBLE,
+                    ppo_mean_sharpe DOUBLE,
+                    a2c_mean_sharpe DOUBLE,
+                    sac_mean_sharpe DOUBLE,
+                    ppo_mean_mdd DOUBLE,
+                    a2c_mean_mdd DOUBLE,
+                    sac_mean_mdd DOUBLE,
+                    total_folds INTEGER,
+                    ppo_hyperparams TEXT,
+                    a2c_hyperparams TEXT,
+                    sac_hyperparams TEXT,
+                    hp_source TEXT DEFAULT 'baseline',
+                    run_type TEXT DEFAULT 'baseline',
+                    wall_clock_s DOUBLE,
+                    memory_enabled BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT current_timestamp,
+                    UNIQUE(iteration_number, environment, run_type)
                 )
             """)
 

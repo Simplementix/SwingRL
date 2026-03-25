@@ -33,6 +33,10 @@ import duckdb
 import numpy as np
 import structlog
 
+from swingrl.agents.backtest import (
+    store_fold_results_to_duckdb,
+    store_iteration_results_to_duckdb,
+)
 from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.memory.client import MemoryClient
 from swingrl.training.pipeline_helpers import (
@@ -596,6 +600,40 @@ def _verify_deployment(env_name: str, models_dir: Path) -> None:
             raise ModelError(msg)
 
     log.info("deployment_verified", env_name=env_name)
+
+
+def _serialize_fold(f: Any) -> dict[str, Any]:
+    """Serialize a FoldResult to a dict for JSON state persistence.
+
+    Includes full OOS + IS metrics, overfitting, convergence, and ranges
+    so training_state.json serves as a rich secondary backup.
+
+    Args:
+        f: FoldResult instance.
+
+    Returns:
+        Dict with all fold data suitable for JSON serialization.
+    """
+    return {
+        "fold": f.fold_number,
+        "train_range": f.train_range,
+        "test_range": f.test_range,
+        "oos_sharpe": f.out_of_sample_metrics.get("sharpe"),
+        "oos_sortino": f.out_of_sample_metrics.get("sortino"),
+        "oos_calmar": f.out_of_sample_metrics.get("calmar"),
+        "oos_mdd": f.out_of_sample_metrics.get("mdd"),
+        "oos_profit_factor": f.out_of_sample_metrics.get("profit_factor"),
+        "oos_win_rate": f.out_of_sample_metrics.get("win_rate"),
+        "oos_total_trades": f.out_of_sample_metrics.get("total_trades"),
+        "oos_total_return": f.out_of_sample_metrics.get("total_return"),
+        "is_sharpe": f.in_sample_metrics.get("sharpe"),
+        "is_sortino": f.in_sample_metrics.get("sortino"),
+        "is_mdd": f.in_sample_metrics.get("mdd"),
+        "overfitting_gap": f.overfitting.get("gap"),
+        "overfitting_class": f.overfitting.get("classification"),
+        "gate_passed": f.gate_result.passed,
+        "converged_at_step": f.converged_at_step,
+    }
 
 
 def _evaluate_gate_and_decide(
@@ -1562,6 +1600,35 @@ def run_environment(
                     log.error("walk_forward_failed", algo=algo_name, exc_info=True)
                     continue
 
+    # Deferred DuckDB writes — fold-level results from all WF subprocess workers
+    if env_name == "equity":
+        _n_symbols = len(config.equity.symbols)
+        _per_asset = 15
+    else:
+        _n_symbols = len(config.crypto.symbols)
+        _per_asset = 13
+
+    conn_wf = duckdb.connect(str(db_path))
+    try:
+        for _algo, _folds in all_wf_results.items():
+            if _folds:
+                store_fold_results_to_duckdb(
+                    conn=conn_wf,
+                    fold_results=_folds,
+                    env_name=env_name,
+                    algo_name=_algo,
+                    iteration_number=iteration_number,
+                    run_type="baseline",
+                    features=features_full,
+                    dates=dates_array,
+                    n_symbols=_n_symbols,
+                    per_asset=_per_asset,
+                )
+    except Exception as exc:
+        log.warning("fold_results_duckdb_write_failed", env_name=env_name, error=str(exc))
+    finally:
+        conn_wf.close()
+
     # If all algos were checkpointed, skip ensemble computation
     has_wf_data = any(len(v) > 0 for v in all_wf_results.values())
 
@@ -1591,6 +1658,28 @@ def run_environment(
         "mdd": float(ensemble_mdd),
     }
     _evaluate_gate_and_decide(gate_result, ensemble_sharpe, env_name)
+
+    # Deferred DuckDB write — ensemble-level iteration results
+    conn_ens = duckdb.connect(str(db_path))
+    try:
+        store_iteration_results_to_duckdb(
+            conn=conn_ens,
+            iteration_number=iteration_number,
+            env_name=env_name,
+            ensemble_sharpe=ensemble_sharpe,
+            ensemble_mdd=ensemble_mdd,
+            gate_passed=passed,
+            ensemble_weights=ensemble_weights,
+            all_wf_results=all_wf_results,
+            run_type="baseline",
+            wall_clock_s=time.monotonic() - env_start,
+            memory_enabled=wf_memory_enabled,
+            hp_overrides=wf_hp_overrides if iteration_number > 0 else None,
+        )
+    except Exception as exc:
+        log.warning("iteration_results_duckdb_write_failed", env_name=env_name, error=str(exc))
+    finally:
+        conn_ens.close()
 
     # Ingest WF performance metrics to memory agent (if enabled)
     _ingest_wf_results_to_memory(
@@ -1673,6 +1762,27 @@ def run_environment(
             }
         )
 
+        # Deferred DuckDB write — tuning round 1 fold results
+        if best_ppo_folds:
+            conn_t1 = duckdb.connect(str(db_path))
+            try:
+                store_fold_results_to_duckdb(
+                    conn=conn_t1,
+                    fold_results=best_ppo_folds,
+                    env_name=env_name,
+                    algo_name="ppo",
+                    iteration_number=iteration_number,
+                    run_type="tuning_r1",
+                    features=features_full,
+                    dates=dates_array,
+                    n_symbols=_n_symbols,
+                    per_asset=_per_asset,
+                )
+            except Exception as exc:
+                log.warning("tuning_r1_duckdb_write_failed", error=str(exc))
+            finally:
+                conn_t1.close()
+
         # Recompute gate after tuning round 1
         if best_ppo_folds:
             tuned_wf_results = {**all_wf_results, "ppo": best_ppo_folds}
@@ -1690,6 +1800,7 @@ def run_environment(
             for algo_r2, variants in TUNING_GRID.get(2, {}).items():
                 best_sharpe_r2 = 0.0
                 best_params_r2: dict[str, Any] = {}
+                best_folds_r2: list[Any] = []
 
                 for variant_params in variants:
                     orchestrator_r2 = TrainingOrchestrator(
@@ -1717,9 +1828,31 @@ def run_environment(
                     if sharpe_r2 > best_sharpe_r2:
                         best_sharpe_r2 = sharpe_r2
                         best_params_r2 = variant_params
+                        best_folds_r2 = folds_r2
 
                 if best_params_r2:
                     tuning_best_params[algo_r2] = best_params_r2
+
+                # Deferred DuckDB write — tuning round 2 fold results
+                if best_folds_r2:
+                    conn_t2 = duckdb.connect(str(db_path))
+                    try:
+                        store_fold_results_to_duckdb(
+                            conn=conn_t2,
+                            fold_results=best_folds_r2,
+                            env_name=env_name,
+                            algo_name=algo_r2,
+                            iteration_number=iteration_number,
+                            run_type="tuning_r2",
+                            features=features_full,
+                            dates=dates_array,
+                            n_symbols=_n_symbols,
+                            per_asset=_per_asset,
+                        )
+                    except Exception as exc:
+                        log.warning("tuning_r2_duckdb_write_failed", error=str(exc))
+                    finally:
+                        conn_t2.close()
 
                 tuning_rounds.append(
                     {
@@ -1753,11 +1886,7 @@ def run_environment(
             "ensemble_gate": gate_result,
             "ensemble_weights": ensemble_weights,
             "walk_forward": {
-                k: [
-                    {"fold": f.fold_number, "oos_sharpe": f.out_of_sample_metrics.get("sharpe")}
-                    for f in folds
-                ]
-                for k, folds in all_wf_results.items()
+                k: [_serialize_fold(f) for f in folds] for k, folds in all_wf_results.items()
             },
             "tuning_rounds": tuning_rounds,
             "wall_clock_total_s": round(time.monotonic() - env_start, 1),
@@ -1880,16 +2009,7 @@ def run_environment(
 
     result = {
         "walk_forward": {
-            k: [
-                {
-                    "fold": f.fold_number,
-                    "oos_sharpe": f.out_of_sample_metrics.get("sharpe"),
-                    "oos_mdd": f.out_of_sample_metrics.get("mdd"),
-                    "oos_profit_factor": f.out_of_sample_metrics.get("profit_factor"),
-                }
-                for f in folds
-            ]
-            for k, folds in all_wf_results.items()
+            k: [_serialize_fold(f) for f in folds] for k, folds in all_wf_results.items()
         },
         "ensemble_weights": ensemble_weights,
         "ensemble_gate": gate_result,

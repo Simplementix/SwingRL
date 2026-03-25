@@ -52,6 +52,22 @@ sys.path.insert(0, str(_MEMORY_SERVICE_DIR))
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _patch_consolidation_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Eliminate 60s asyncio.sleep in consolidation module for all tests."""
+    import asyncio
+
+    original_sleep = asyncio.sleep
+
+    async def _fast_sleep(seconds: float, *args: Any, **kwargs: Any) -> None:
+        """Replace long sleeps with instant ones to speed up tests."""
+        if seconds > 1:
+            return
+        await original_sleep(seconds, *args, **kwargs)
+
+    monkeypatch.setattr("asyncio.sleep", _fast_sleep)
+
+
 @pytest.fixture()
 def memory_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect SQLite db to a temp directory and set required env vars."""

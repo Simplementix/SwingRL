@@ -72,6 +72,8 @@ class FoldResult:
         trades: List of trade dicts from test evaluation.
         gate_result: Validation gate pass/fail result.
         overfitting: Overfitting diagnosis dict.
+        converged_at_step: Step where training converged (None if not converged).
+        total_timesteps: Total timesteps configured for this fold's training.
     """
 
     fold_number: int
@@ -82,6 +84,8 @@ class FoldResult:
     trades: list[dict[str, Any]]
     gate_result: GateResult
     overfitting: dict[str, Any]
+    converged_at_step: int | None = None
+    total_timesteps: int | None = None
 
 
 def _reconstruct_round_trips(
@@ -381,6 +385,8 @@ class WalkForwardBacktester:
                 trades=oos_trades,
                 gate_result=gate,
                 overfitting=overfit,
+                converged_at_step=training_result.converged_at_step,
+                total_timesteps=total_timesteps,
             )
 
             results.append(fold_result)
@@ -598,3 +604,361 @@ class WalkForwardBacktester:
             model_id=model_id,
             fold=fold_result.fold_number,
         )
+
+
+# ---------------------------------------------------------------------------
+# Deferred DuckDB storage functions (called from main process after
+# subprocess workers return FoldResult lists via ProcessPoolExecutor).
+# ---------------------------------------------------------------------------
+
+
+def _compute_regime_context(
+    features: np.ndarray,
+    test_start: int,
+    test_end: int,
+    n_symbols: int,
+    per_asset: int,
+) -> dict[str, float | None]:
+    """Extract HMM and macro feature means for a fold's test period.
+
+    Feature layout: [n_symbols * per_asset | 6 macro | 2 HMM | 1 turb]
+
+    Args:
+        features: Full feature array (bars x features).
+        test_start: Test period start index.
+        test_end: Test period end index.
+        n_symbols: Number of symbols in the environment.
+        per_asset: Features per asset (equity=15, crypto=13).
+
+    Returns:
+        Dict with hmm_p_bull, hmm_p_bear, vix_mean, yield_spread_mean.
+    """
+    if test_end > len(features):
+        return {
+            "hmm_p_bull": None,
+            "hmm_p_bear": None,
+            "vix_mean": None,
+            "yield_spread_mean": None,
+        }
+
+    macro_start = n_symbols * per_asset
+    hmm_start = macro_start + 6
+
+    test_features = features[test_start:test_end]
+    hmm_cols = test_features[:, hmm_start : hmm_start + 2]
+    macro_cols = test_features[:, macro_start : macro_start + 6]
+
+    return {
+        "hmm_p_bull": float(hmm_cols[:, 0].mean()),
+        "hmm_p_bear": float(hmm_cols[:, 1].mean()),
+        "vix_mean": float(macro_cols[:, 0].mean()),
+        "yield_spread_mean": float(macro_cols[:, 1].mean()),
+    }
+
+
+def _compute_trade_extremes(
+    trades: list[dict[str, Any]],
+) -> tuple[float | None, float | None]:
+    """Compute max single loss and best single trade from round-trip trades.
+
+    Args:
+        trades: List of round-trip trade dicts with 'pnl' key.
+
+    Returns:
+        Tuple of (max_single_loss, best_single_trade). None if no trades.
+    """
+    if not trades:
+        return None, None
+    pnls = [float(t.get("pnl", 0.0)) for t in trades]
+    return min(pnls), max(pnls)
+
+
+def store_fold_results_to_duckdb(
+    conn: Any,
+    fold_results: list[FoldResult],
+    env_name: str,
+    algo_name: str,
+    iteration_number: int = 0,
+    run_type: str = "baseline",
+    features: np.ndarray | None = None,
+    dates: np.ndarray | None = None,
+    n_symbols: int = 0,
+    per_asset: int = 0,
+) -> int:
+    """Write fold results to DuckDB backtest_results table.
+
+    Designed for deferred writes from the main process after subprocess
+    workers return FoldResult lists via ProcessPoolExecutor. Includes full
+    OOS + IS metrics, regime context, convergence, trade quality, and dates.
+
+    Args:
+        conn: Active DuckDB connection.
+        fold_results: List of completed FoldResult from walk-forward.
+        env_name: Environment name ("equity" or "crypto").
+        algo_name: Algorithm name ("ppo", "a2c", or "sac").
+        iteration_number: Training iteration (0=baseline, 1+=memory-enhanced).
+        run_type: One of "baseline", "tuning_r1", "tuning_r2".
+        features: Full feature array for regime context extraction. None to skip.
+        dates: Date strings aligned with feature indices. None to skip.
+        n_symbols: Number of symbols (needed for regime context index math).
+        per_asset: Features per asset (equity=15, crypto=13).
+
+    Returns:
+        Number of rows written.
+    """
+    if not fold_results:
+        return 0
+
+    rows_written = 0
+    for fold in fold_results:
+        result_id = str(uuid.uuid4())
+        model_id = f"{env_name}-{algo_name}-iter{iteration_number}-fold{fold.fold_number}"
+        oos = fold.out_of_sample_metrics
+        ins = fold.in_sample_metrics
+
+        # Regime context
+        regime: dict[str, float | None] = {
+            "hmm_p_bull": None,
+            "hmm_p_bear": None,
+            "vix_mean": None,
+            "yield_spread_mean": None,
+        }
+        if features is not None and n_symbols > 0:
+            regime = _compute_regime_context(
+                features, fold.test_range[0], fold.test_range[1], n_symbols, per_asset
+            )
+
+        # Trade quality extremes
+        max_loss, best_trade = _compute_trade_extremes(fold.trades)
+
+        # Date context
+        train_start_date = None
+        train_end_date = None
+        test_start_date = None
+        test_end_date = None
+        if dates is not None:
+            t0, t1 = fold.train_range
+            ts0, ts1 = fold.test_range
+            if t0 < len(dates):
+                train_start_date = str(dates[t0])
+            if t1 - 1 < len(dates) and t1 > 0:
+                train_end_date = str(dates[t1 - 1])
+            if ts0 < len(dates):
+                test_start_date = str(dates[ts0])
+            if ts1 - 1 < len(dates) and ts1 > 0:
+                test_end_date = str(dates[ts1 - 1])
+
+        conn.execute(
+            """
+            INSERT INTO backtest_results (
+                result_id, model_id, environment, algorithm, fold_number,
+                fold_type, train_start_idx, train_end_idx,
+                test_start_idx, test_end_idx,
+                sharpe, sortino, calmar, mdd, profit_factor,
+                win_rate, total_trades, avg_drawdown, max_dd_duration,
+                final_portfolio_value, total_return,
+                iteration_number, run_type,
+                is_sharpe, is_sortino, is_mdd, is_total_return,
+                overfitting_gap, overfitting_class,
+                hmm_p_bull, hmm_p_bear, vix_mean, yield_spread_mean,
+                converged_at_step, total_timesteps_configured,
+                max_single_loss, best_single_trade,
+                train_start_date, train_end_date, test_start_date, test_end_date
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            """,
+            [
+                result_id,
+                model_id,
+                env_name,
+                algo_name,
+                fold.fold_number,
+                "walk_forward",
+                fold.train_range[0],
+                fold.train_range[1],
+                fold.test_range[0],
+                fold.test_range[1],
+                oos.get("sharpe"),
+                oos.get("sortino"),
+                oos.get("calmar"),
+                oos.get("mdd"),
+                oos.get("profit_factor"),
+                oos.get("win_rate"),
+                int(oos.get("total_trades", 0)),
+                oos.get("avg_drawdown"),
+                int(oos.get("max_dd_duration", 0)),
+                oos.get("final_portfolio_value"),
+                oos.get("total_return"),
+                iteration_number,
+                run_type,
+                ins.get("sharpe"),
+                ins.get("sortino"),
+                ins.get("mdd"),
+                ins.get("total_return"),
+                fold.overfitting.get("gap"),
+                fold.overfitting.get("classification"),
+                regime["hmm_p_bull"],
+                regime["hmm_p_bear"],
+                regime["vix_mean"],
+                regime["yield_spread_mean"],
+                fold.converged_at_step,
+                fold.total_timesteps,
+                max_loss,
+                best_trade,
+                train_start_date,
+                train_end_date,
+                test_start_date,
+                test_end_date,
+            ],
+        )
+        rows_written += 1
+
+    log.info(
+        "fold_results_stored_to_duckdb",
+        env_name=env_name,
+        algo_name=algo_name,
+        iteration=iteration_number,
+        run_type=run_type,
+        rows=rows_written,
+    )
+    return rows_written
+
+
+def store_iteration_results_to_duckdb(
+    conn: Any,
+    iteration_number: int,
+    env_name: str,
+    ensemble_sharpe: float,
+    ensemble_mdd: float,
+    gate_passed: bool,
+    ensemble_weights: dict[str, float],
+    all_wf_results: dict[str, list[FoldResult]],
+    run_type: str = "baseline",
+    wall_clock_s: float = 0.0,
+    memory_enabled: bool = False,
+    hp_overrides: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    """Write ensemble-level iteration results to DuckDB iteration_results table.
+
+    Computes per-algo mean Sharpe/MDD from fold data and stores alongside
+    ensemble metrics, gate result, weights, and hyperparameters.
+    Uses INSERT ... ON CONFLICT to be idempotent on re-runs.
+
+    Args:
+        conn: Active DuckDB connection.
+        iteration_number: Training iteration (0=baseline, 1+=memory-enhanced).
+        env_name: Environment name.
+        ensemble_sharpe: Mean OOS Sharpe across all algos/folds.
+        ensemble_mdd: Mean OOS MDD across all algos/folds.
+        gate_passed: Whether ensemble gate passed.
+        ensemble_weights: Per-algo softmax weights from OOS Sharpe.
+        all_wf_results: Dict mapping algo name to list of FoldResult.
+        run_type: One of "baseline", "tuning_r1", "tuning_r2".
+        wall_clock_s: Wall clock seconds for this environment's pipeline.
+        memory_enabled: Whether memory agent was enabled for this iteration.
+        hp_overrides: Per-algo hyperparameter overrides (None for baseline).
+    """
+    import json as _json
+
+    result_id = str(uuid.uuid4())
+
+    # Per-algo mean metrics
+    algo_means: dict[str, dict[str, float | None]] = {}
+    total_folds = 0
+    for algo in ("ppo", "a2c", "sac"):
+        folds = all_wf_results.get(algo, [])
+        total_folds += len(folds)
+        if folds:
+            sharpes = [f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds]
+            mdds = [f.out_of_sample_metrics.get("mdd", 0.0) for f in folds]
+            algo_means[algo] = {
+                "mean_sharpe": float(np.mean(sharpes)),
+                "mean_mdd": float(np.mean(mdds)),
+            }
+        else:
+            algo_means[algo] = {"mean_sharpe": None, "mean_mdd": None}
+
+    # Serialize hyperparams as JSON text
+    hp_source = "memory_advised" if hp_overrides else "baseline"
+    ppo_hp = _json.dumps(hp_overrides["ppo"]) if hp_overrides and "ppo" in hp_overrides else None
+    a2c_hp = _json.dumps(hp_overrides["a2c"]) if hp_overrides and "a2c" in hp_overrides else None
+    sac_hp = _json.dumps(hp_overrides["sac"]) if hp_overrides and "sac" in hp_overrides else None
+
+    # Use INSERT ... ON CONFLICT for idempotent re-runs
+    conn.execute(
+        """
+        INSERT INTO iteration_results (
+            result_id, iteration_number, environment,
+            ensemble_sharpe, ensemble_mdd, gate_passed,
+            ppo_weight, a2c_weight, sac_weight,
+            ppo_mean_sharpe, a2c_mean_sharpe, sac_mean_sharpe,
+            ppo_mean_mdd, a2c_mean_mdd, sac_mean_mdd,
+            total_folds,
+            ppo_hyperparams, a2c_hyperparams, sac_hyperparams, hp_source,
+            run_type, wall_clock_s, memory_enabled
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?
+        )
+        ON CONFLICT (iteration_number, environment, run_type) DO UPDATE SET
+            ensemble_sharpe = EXCLUDED.ensemble_sharpe,
+            ensemble_mdd = EXCLUDED.ensemble_mdd,
+            gate_passed = EXCLUDED.gate_passed,
+            ppo_weight = EXCLUDED.ppo_weight,
+            a2c_weight = EXCLUDED.a2c_weight,
+            sac_weight = EXCLUDED.sac_weight,
+            ppo_mean_sharpe = EXCLUDED.ppo_mean_sharpe,
+            a2c_mean_sharpe = EXCLUDED.a2c_mean_sharpe,
+            sac_mean_sharpe = EXCLUDED.sac_mean_sharpe,
+            ppo_mean_mdd = EXCLUDED.ppo_mean_mdd,
+            a2c_mean_mdd = EXCLUDED.a2c_mean_mdd,
+            sac_mean_mdd = EXCLUDED.sac_mean_mdd,
+            total_folds = EXCLUDED.total_folds,
+            ppo_hyperparams = EXCLUDED.ppo_hyperparams,
+            a2c_hyperparams = EXCLUDED.a2c_hyperparams,
+            sac_hyperparams = EXCLUDED.sac_hyperparams,
+            hp_source = EXCLUDED.hp_source,
+            wall_clock_s = EXCLUDED.wall_clock_s,
+            memory_enabled = EXCLUDED.memory_enabled
+        """,
+        [
+            result_id,
+            iteration_number,
+            env_name,
+            ensemble_sharpe,
+            ensemble_mdd,
+            gate_passed,
+            ensemble_weights.get("ppo"),
+            ensemble_weights.get("a2c"),
+            ensemble_weights.get("sac"),
+            algo_means["ppo"]["mean_sharpe"],
+            algo_means["a2c"]["mean_sharpe"],
+            algo_means["sac"]["mean_sharpe"],
+            algo_means["ppo"]["mean_mdd"],
+            algo_means["a2c"]["mean_mdd"],
+            algo_means["sac"]["mean_mdd"],
+            total_folds,
+            ppo_hp,
+            a2c_hp,
+            sac_hp,
+            hp_source,
+            run_type,
+            wall_clock_s,
+            memory_enabled,
+        ],
+    )
+
+    log.info(
+        "iteration_results_stored_to_duckdb",
+        iteration=iteration_number,
+        env_name=env_name,
+        ensemble_sharpe=round(ensemble_sharpe, 4),
+        gate_passed=gate_passed,
+        total_folds=total_folds,
+        hp_source=hp_source,
+    )
