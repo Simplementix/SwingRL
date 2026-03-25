@@ -97,10 +97,22 @@ memory_agent:
     trade_veto: false
     cycle_gate: false
     risk_thresholds: false
+  ollama_instances:
+    - name: clawbot
+      url: "http://172.184.70.2:11434"
+      model: "qwen2.5:1.5b"
+      timeout: 15
+    - name: homelab
+      url: "http://swingrl-ollama:11434"
+      model: "qwen3:1.7b"
+      timeout: 30
   consolidation:
     provider: "openrouter"                  # key into providers map
     model: ""                               # empty = use provider's default_model
     timeout_sec: 1800
+    inter_phase_delay_sec: 60               # seconds between LLM calls to respect rate limits
+    rate_limit_max_retries: 3               # max 429 retry attempts per provider
+    rate_limit_backoff_base_sec: 30         # exponential backoff base (30, 60, 120s)
     min_confidence_for_advice: 0.4          # minimum confidence for patterns used in query advice
     max_patterns_per_merge: 2               # max patterns per dedup/merge LLM call
     providers:
@@ -108,10 +120,34 @@ memory_agent:
         base_url: "https://openrouter.ai/api/v1"
         api_key: ""                         # OVERRIDE via OPENROUTER_API_KEY in .env
         default_model: "nvidia/nemotron-3-super-120b-a12b:free"
+      gemini:
+        base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+        api_key: ""                         # OVERRIDE via GEMINI_API_KEY in .env
+        default_model: "gemini-2.5-flash"
+        timeout_sec: 60
+        max_tokens: 65536
+      cerebras:
+        base_url: "https://api.cerebras.ai/v1"
+        api_key: ""                         # OVERRIDE via CEREBRAS_API_KEY in .env
+        default_model: "qwen-3-235b-a22b-instruct-2507"
+        timeout_sec: 30
+        max_tokens: 65536
+      groq:
+        base_url: "https://api.groq.com/openai/v1"
+        api_key: ""                         # OVERRIDE via GROQ_API_KEY in .env
+        default_model: "llama-3.1-8b-instant"
+        timeout_sec: 30
+        max_tokens: 8192
       nvidia:
         base_url: "https://integrate.api.nvidia.com/v1"
         api_key: ""                         # OVERRIDE via NVIDIA_API_KEY in .env
         default_model: "moonshotai/kimi-k2.5"
+      sambanova:
+        base_url: "https://api.sambanova.ai/v1"
+        api_key: ""                         # OVERRIDE via SAMBANOVA_API_KEY in .env
+        default_model: "Meta-Llama-3.3-70B-Instruct"
+        timeout_sec: 30
+        max_tokens: 8192
 
 training:
   bounds:

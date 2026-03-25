@@ -322,6 +322,7 @@ def get_memories_by_source_prefix(
     prefix: str,
     limit: int = 100,
     archived: bool = False,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Retrieve memories whose source tag starts with prefix.
 
@@ -329,6 +330,7 @@ def get_memories_by_source_prefix(
         prefix: Source tag prefix, e.g. 'walk_forward:equity'.
         limit: Maximum rows to return.
         archived: If True, include archived memories.
+        offset: Number of rows to skip (for pagination).
 
     Returns:
         List of row dicts.
@@ -340,8 +342,8 @@ def get_memories_by_source_prefix(
         if not archived:
             clauses.append("archived = 0")
         where = "WHERE " + " AND ".join(clauses)
-        params.append(limit)
-        sql = f"SELECT id, text, source, created_at, archived FROM memories {where} ORDER BY created_at DESC LIMIT ?"  # noqa: E501  # nosec B608
+        params.extend([limit, offset])
+        sql = f"SELECT id, text, source, created_at, archived FROM memories {where} ORDER BY created_at DESC LIMIT ? OFFSET ?"  # noqa: E501  # nosec B608
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -845,9 +847,10 @@ async def get_memories_by_source_prefix_async(
     prefix: str,
     limit: int = 100,
     archived: bool = False,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Async wrapper for get_memories_by_source_prefix (background pool)."""
-    return await _run_background(get_memories_by_source_prefix, prefix, limit, archived)
+    return await _run_background(get_memories_by_source_prefix, prefix, limit, archived, offset)
 
 
 async def archive_memories_async(row_ids: list[int]) -> None:

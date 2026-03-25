@@ -343,6 +343,15 @@ class ConsolidationConfig(BaseModel):
         return self
 
 
+class OllamaInstanceConfig(BaseModel):
+    """Single Ollama instance for the fallback chain."""
+
+    name: str = "default"
+    url: str = ""
+    model: str = ""
+    timeout: float = 30.0
+
+
 class MemoryAgentConfig(BaseModel):
     """Memory agent (LLM meta-trainer) configuration.
 
@@ -366,8 +375,9 @@ class MemoryAgentConfig(BaseModel):
     epoch_advice_provider: str = (
         "cerebras"  # Epoch advice: "cerebras" (fast cloud), "ollama" (local), or "openrouter"
     )
-    ollama_url: str = "http://swingrl-ollama:11434"  # Dedicated Ollama container URL
-    ollama_model: str = "qwen3:1.7b"  # Local model for epoch advice (fast, ~2-4s on CPU)
+    ollama_url: str = "http://swingrl-ollama:11434"  # Legacy single-instance (backward compat)
+    ollama_model: str = "qwen3:1.7b"  # Legacy single-instance (backward compat)
+    ollama_instances: list[OllamaInstanceConfig] = Field(default_factory=list)
 
     # Per-algo epoch cadence (read from yaml by epoch_callback per fold).
     # Normalized so each algo makes ~4-17 calls/fold regardless of n_steps.

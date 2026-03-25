@@ -163,35 +163,54 @@ def _load_query_cloud_config() -> dict[str, Any]:
     }
 
 
-def _load_ollama_config() -> dict[str, str]:
-    """Load Ollama + epoch advice provider config.
+def _load_ollama_config() -> dict[str, Any]:
+    """Load Ollama instances + epoch advice provider config.
 
-    Returns dict with keys: query_provider, epoch_advice_provider, ollama_url, ollama_model.
+    Returns dict with keys: query_provider, epoch_advice_provider,
+    ollama_instances (list of {name, url, model, timeout}).
+    Backward compatible: wraps single ollama_url/ollama_model as one-item list.
     """
     config_path = Path("/app/config/swingrl.yaml")
+    base = {
+        "query_provider": "openrouter",
+        "epoch_advice_provider": "cerebras",
+    }
+
+    mem: dict[str, Any] = {}
     if config_path.exists():
         cfg = yaml.safe_load(config_path.read_text()) or {}
         mem = cfg.get("memory_agent", {})
-        return {
-            "query_provider": mem.get("query_provider", "openrouter"),
-            "epoch_advice_provider": mem.get("epoch_advice_provider", "cerebras"),
-            "ollama_url": mem.get("ollama_url", "http://swingrl-ollama:11434"),
-            "ollama_model": mem.get("ollama_model", "qwen3:1.7b"),
-        }
-    return {
-        "query_provider": "openrouter",
-        "epoch_advice_provider": "cerebras",
-        "ollama_url": "http://swingrl-ollama:11434",
-        "ollama_model": "qwen3:1.7b",
-    }
+        base["query_provider"] = mem.get("query_provider", "openrouter")
+        base["epoch_advice_provider"] = mem.get("epoch_advice_provider", "cerebras")
+
+        # New multi-instance format
+        raw_instances = mem.get("ollama_instances")
+        if raw_instances and isinstance(raw_instances, list):
+            base["ollama_instances"] = [
+                {
+                    "name": inst.get("name", f"ollama-{idx}"),
+                    "url": inst.get("url", ""),
+                    "model": inst.get("model", ""),
+                    "timeout": float(inst.get("timeout", 30)),
+                }
+                for idx, inst in enumerate(raw_instances)
+                if inst.get("url")  # skip entries with empty url
+            ]
+            return base
+
+    # Backward compat: single ollama_url/ollama_model → one-item list
+    url = mem.get("ollama_url", "http://swingrl-ollama:11434")
+    model = mem.get("ollama_model", "qwen3:1.7b")
+    base["ollama_instances"] = [{"name": "default", "url": url, "model": model, "timeout": 30.0}]
+    return base
 
 
 def _load_epoch_provider_configs() -> list[dict[str, Any]]:
     """Load cloud provider configs for epoch advice with 4-provider fallback chain.
 
     Chain: Cerebras qwen3-235b (1M TPD) → Groq llama-3.1-8b (500K TPD) →
-    Cerebras llama3.1-8b (1M TPD) → Ollama (unlimited, handled separately).
-    Combined cloud: 2.5M TPD, 43,200 RPD. Ollama is safety net in advise_epoch().
+    SambaNova Llama-3.3-70B (200K TPD) → Ollama (unlimited, wired in advise_epoch()).
+    Combined cloud: ~1.7M TPD. Ollama is safety net in advise_epoch().
     """
     config_path = Path("/app/config/swingrl.yaml")
     configs: list[dict[str, Any]] = []
@@ -213,16 +232,17 @@ def _load_epoch_provider_configs() -> list[dict[str, Any]]:
         cons = mem.get("consolidation", {})
         providers = cons.get("providers", {})
 
-        # 1. Cerebras qwen3-235b (primary — smartest model)
+        # 1. Cerebras qwen3-235b (primary — smartest model, 1M TPD)
         cerebras_cfg = providers.get("cerebras", {})
         configs.append(_build("cerebras", cerebras_cfg))
 
-        # 2. Groq llama-3.1-8b-instant (fast, different provider to spread load)
+        # 2. Groq llama-3.1-8b-instant (fast, different provider, 500K TPD)
         groq_cfg = providers.get("groq", {})
         configs.append(_build("groq", groq_cfg))
 
-        # 3. Cerebras llama3.1-8b (second Cerebras model, separate per-model TPD)
-        configs.append(_build("cerebras", cerebras_cfg, model_override="llama3.1-8b"))
+        # 3. SambaNova Llama-3.3-70B (different provider, 200K TPD free tier, 1-3s)
+        sambanova_cfg = providers.get("sambanova", {})
+        configs.append(_build("sambanova", sambanova_cfg))
 
         return configs
 
@@ -245,12 +265,12 @@ def _load_epoch_provider_configs() -> list[dict[str, Any]]:
             "provider": "groq",
         },
         {
-            "base_url": "https://api.cerebras.ai/v1",
-            "api_key": os.environ.get("CEREBRAS_API_KEY", ""),
-            "model": "llama3.1-8b",
+            "base_url": "https://api.sambanova.ai/v1",
+            "api_key": os.environ.get("SAMBANOVA_API_KEY", ""),
+            "model": "Meta-Llama-3.3-70B-Instruct",
             "timeout": 30.0,
             "max_tokens": 8192,
-            "provider": "cerebras",
+            "provider": "sambanova",
         },
     ]
 
@@ -290,21 +310,21 @@ except Exception as _ollama_exc:
     _OLLAMA_CONFIG = {
         "query_provider": "openrouter",
         "epoch_advice_provider": "ollama",
-        "ollama_url": "",
-        "ollama_model": "",
+        "ollama_instances": [],
     }
 
 _QUERY_PROVIDER: str = _OLLAMA_CONFIG["query_provider"]
 _EPOCH_ADVICE_PROVIDER: str = _OLLAMA_CONFIG["epoch_advice_provider"]
-_OLLAMA_URL: str = _OLLAMA_CONFIG["ollama_url"]
-_OLLAMA_MODEL: str = _OLLAMA_CONFIG["ollama_model"]
+_OLLAMA_INSTANCES: list[dict[str, Any]] = _OLLAMA_CONFIG.get("ollama_instances", [])
 
 log.info(
     "query_provider_configured",
     hp_tuning_provider=_QUERY_PROVIDER,
     epoch_advice_provider=_EPOCH_ADVICE_PROVIDER,
-    ollama_url=_OLLAMA_URL,
-    ollama_model=_OLLAMA_MODEL,
+    ollama_instance_count=len(_OLLAMA_INSTANCES),
+    ollama_instances=[
+        {"name": i["name"], "url": i["url"], "model": i["model"]} for i in _OLLAMA_INSTANCES
+    ],
 )
 
 
@@ -539,7 +559,8 @@ def _build_epoch_system_prompt(
         f"sum to ~1.0):\n{rw_lines}\n\n"
         f"{_HALLUCINATION_GUARD}\n\n"
         f"{hp_guide}\n\n"
-        f"{_REWARD_WEIGHT_GUIDE}"
+        f"{_REWARD_WEIGHT_GUIDE}\n\n"
+        "You MUST respond with a valid JSON object matching the schema."
     )
 
 
@@ -866,21 +887,27 @@ class QueryAgent:
                 user_content,
                 _EPOCH_ADVICE_SCHEMA,
                 system_prompt=epoch_prompt,
-                timeout=30.0,
             )
-        elif _EPOCH_ADVICE_PROVIDER in ("cerebras", "groq"):
-            # Use dedicated 4-provider cloud chain for epoch advice
+        elif _EPOCH_ADVICE_PROVIDER != "ollama":
+            # Use dedicated cloud chain for epoch advice
             result = await self._call_epoch_cloud(
                 user_content,
                 _EPOCH_ADVICE_SCHEMA,
                 system_prompt=epoch_prompt,
             )
-        else:
-            result = await self._call_lm(
-                user_content,
-                _EPOCH_ADVICE_SCHEMA,
-                system_prompt=epoch_prompt,
-            )
+            # Ollama safety net: if all cloud providers failed, try local Ollama instances
+            if result is None and _OLLAMA_INSTANCES:
+                log.info(
+                    "epoch_advice_cloud_exhausted_trying_ollama",
+                    instance_count=len(_OLLAMA_INSTANCES),
+                )
+                result = await self._call_ollama(
+                    user_content,
+                    _EPOCH_ADVICE_SCHEMA,
+                    system_prompt=epoch_prompt,
+                )
+                if result is not None:
+                    log.info("epoch_advice_ollama_fallback_succeeded")
         if result is None:
             log.warning("epoch_advice_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_EPOCH_DEFAULTS)
@@ -1331,70 +1358,100 @@ class QueryAgent:
         schema: dict[str, Any],
         *,
         system_prompt: str | None = None,
-        timeout: float = 90.0,
     ) -> dict[str, Any] | None:
-        """Call local Ollama API with structured JSON output.
+        """Call Ollama API with structured JSON output, trying instances sequentially.
 
-        Uses the Ollama /api/chat endpoint with ``format`` parameter for schema
-        enforcement. Qwen3 thinking mode is disabled via /no_think prefix.
+        Iterates ``_OLLAMA_INSTANCES`` in order (clawbot GPU first, homelab CPU second).
+        Returns the first successful result or None if all instances fail.
 
         Args:
             user_content: The user-turn message content.
             schema: JSON schema dict for structured output via format parameter.
             system_prompt: System prompt (defaults to module-level _SYSTEM_PROMPT).
-            timeout: Request timeout in seconds.
 
         Returns:
             Parsed JSON dict on success, None on any error.
         """
-        if not _OLLAMA_URL:
-            log.debug("ollama_skipped_no_url")
+        if not _OLLAMA_INSTANCES:
+            log.debug("ollama_skipped_no_instances")
             return None
 
         effective_system = system_prompt or _SYSTEM_PROMPT
-        payload = {
-            "model": _OLLAMA_MODEL,
-            "messages": [
-                {"role": "system", "content": effective_system},
-                {"role": "user", "content": user_content},
-            ],
-            "format": schema,
-            "stream": False,
-            "think": False,
-            "options": {"temperature": 0, "num_predict": 512, "num_ctx": 8192},
-        }
 
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(
-                    f"{_OLLAMA_URL}/api/chat",
-                    json=payload,
+        for idx, instance in enumerate(_OLLAMA_INSTANCES):
+            inst_url = instance["url"]
+            inst_model = instance["model"]
+            inst_name = instance["name"]
+            inst_timeout = instance.get("timeout", 30.0)
+
+            if idx > 0:
+                log.info(
+                    "ollama_trying_next_instance",
+                    instance=inst_name,
+                    url=inst_url,
+                    model=inst_model,
+                    position=idx + 1,
+                    total=len(_OLLAMA_INSTANCES),
                 )
-                resp.raise_for_status()
-                body = resp.json()
 
-            raw_content = body.get("message", {}).get("content")
-            if not raw_content:
-                log.warning("ollama_empty_content", model=_OLLAMA_MODEL)
-                return None
+            payload = {
+                "model": inst_model,
+                "messages": [
+                    {"role": "system", "content": effective_system},
+                    {"role": "user", "content": user_content},
+                ],
+                "format": schema,
+                "stream": False,
+                "think": False,
+                "options": {"temperature": 0, "num_predict": 512, "num_ctx": 8192},
+            }
 
-            result = json.loads(raw_content)
-            total_ms = round(body.get("total_duration", 0) / 1e6)
-            log.info(
-                "ollama_query_success",
-                model=_OLLAMA_MODEL,
-                total_ms=total_ms,
-                eval_count=body.get("eval_count", 0),
-            )
-            return result
-        except Exception as exc:
-            log.warning(
-                "ollama_query_failed",
-                model=_OLLAMA_MODEL,
-                error=str(exc),
-                exc_type=type(exc).__name__,
-            )
-            return None
+            try:
+                async with httpx.AsyncClient(timeout=inst_timeout) as client:
+                    resp = await client.post(
+                        f"{inst_url}/api/chat",
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+                    body = resp.json()
+
+                raw_content = body.get("message", {}).get("content")
+                if not raw_content:
+                    log.warning(
+                        "ollama_empty_content",
+                        instance=inst_name,
+                        model=inst_model,
+                    )
+                    continue
+
+                result = json.loads(raw_content)
+                total_ms = round(body.get("total_duration", 0) / 1e6)
+                log.info(
+                    "ollama_query_success",
+                    instance=inst_name,
+                    model=inst_model,
+                    total_ms=total_ms,
+                    eval_count=body.get("eval_count", 0),
+                )
+                return result
+            except Exception as exc:
+                log.warning(
+                    "ollama_instance_failed",
+                    instance=inst_name,
+                    url=inst_url,
+                    model=inst_model,
+                    error=str(exc),
+                    exc_type=type(exc).__name__,
+                    position=idx + 1,
+                    total=len(_OLLAMA_INSTANCES),
+                )
+                continue
+
+        log.warning(
+            "ollama_all_instances_exhausted",
+            instances_tried=len(_OLLAMA_INSTANCES),
+        )
+        return None
 
     async def _call_epoch_cloud(
         self,
@@ -1408,10 +1465,21 @@ class QueryAgent:
         Primary: Cerebras (fast, 1M TPD). Fallback: Groq (14,400 RPD, 500K TPD).
         Combined: ~1.5M tokens/day. Fail-open: returns None if both fail.
         """
-        for cfg in _EPOCH_PROVIDER_CONFIGS:
+        total_providers = len(_EPOCH_PROVIDER_CONFIGS)
+        for idx, cfg in enumerate(_EPOCH_PROVIDER_CONFIGS):
             if not cfg.get("api_key"):
                 log.debug("epoch_cloud_skipped_no_key", provider=cfg.get("provider"))
                 continue
+
+            if idx > 0:
+                log.info(
+                    "epoch_cloud_trying_fallback",
+                    provider=cfg["provider"],
+                    model=cfg["model"],
+                    position=idx + 1,
+                    total=total_providers,
+                )
+
             result = await self._call_cloud_api(
                 user_content,
                 schema,
@@ -1425,7 +1493,18 @@ class QueryAgent:
             )
             if result is not None:
                 return result
-            log.warning("epoch_cloud_provider_failed", provider=cfg["provider"])
+            log.warning(
+                "epoch_cloud_provider_failed",
+                provider=cfg["provider"],
+                model=cfg["model"],
+                position=idx + 1,
+                total=total_providers,
+            )
+
+        log.warning(
+            "epoch_cloud_all_providers_exhausted",
+            providers_tried=total_providers,
+        )
         return None
 
     async def _call_query_lm(
@@ -1457,7 +1536,6 @@ class QueryAgent:
                 user_content,
                 schema,
                 system_prompt=system_prompt,
-                timeout=timeout,
             )
         return await self._call_lm(
             user_content,

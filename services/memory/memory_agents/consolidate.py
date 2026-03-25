@@ -30,6 +30,7 @@ Prompt engineering follows LLM-PROMPT-RESEARCH.md recommendations:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
@@ -52,6 +53,17 @@ from db import (
 )
 
 log = structlog.get_logger(__name__)
+
+
+class _RateLimitError(Exception):
+    """Internal signal for 429 rate-limit responses to trigger backoff retry."""
+
+    def __init__(self, status_code: int, provider: str, body: str) -> None:
+        self.status_code = status_code
+        self.provider = provider
+        self.body = body
+        super().__init__(f"{provider} returned {status_code}: {body[:200]}")
+
 
 # ---------------------------------------------------------------------------
 # Config loading
@@ -104,7 +116,13 @@ def _load_consolidation_config() -> dict[str, Any]:
         backup_cfg = providers.get(backup_name, {})
         backup = _build_provider_entry(backup_name, backup_cfg, global_timeout)
 
-        return {"primary": primary, "backup": backup}
+        return {
+            "primary": primary,
+            "backup": backup,
+            "inter_phase_delay_sec": int(cons.get("inter_phase_delay_sec", 60)),
+            "rate_limit_max_retries": int(cons.get("rate_limit_max_retries", 3)),
+            "rate_limit_backoff_base_sec": int(cons.get("rate_limit_backoff_base_sec", 30)),
+        }
 
     # Fallback to env vars (backward compat)
     return {
@@ -124,6 +142,9 @@ def _load_consolidation_config() -> dict[str, Any]:
             "max_tokens": 32768,
             "provider": "openrouter",
         },
+        "inter_phase_delay_sec": 60,
+        "rate_limit_max_retries": 3,
+        "rate_limit_backoff_base_sec": 30,
     }
 
 
@@ -144,6 +165,9 @@ _DEFAULT_PROVIDER_CONFIG: dict[str, Any] = {
         "max_tokens": 32768,
         "provider": "openrouter",
     },
+    "inter_phase_delay_sec": 60,
+    "rate_limit_max_retries": 3,
+    "rate_limit_backoff_base_sec": 30,
 }
 
 try:
@@ -1158,19 +1182,27 @@ class ConsolidateAgent:
             Total number of new consolidation patterns created.
         """
         total = 0
+        inter_phase_delay = _PROVIDER_CONFIG.get("inter_phase_delay_sec", 60)
 
         if env_name:
             total += await self.run_stage1(env_name)
         else:
-            # Run Stage 1 for both environments
+            # Run Stage 1 for both environments with delays between phases
             equity_count = await self.run_stage1("equity")
+            total += equity_count
+
+            log.info("consolidation_inter_env_delay", delay_s=inter_phase_delay)
+            await asyncio.sleep(inter_phase_delay)
+
             crypto_count = await self.run_stage1("crypto")
-            total += equity_count + crypto_count
+            total += crypto_count
 
             # Stage 2: cross-env (only if both envs have Stage 1 patterns)
             equity_patterns = await get_active_consolidations_async(env_name="equity", stage=1)
             crypto_patterns = await get_active_consolidations_async(env_name="crypto", stage=1)
             if equity_patterns and crypto_patterns:
+                log.info("consolidation_pre_stage2_delay", delay_s=inter_phase_delay)
+                await asyncio.sleep(inter_phase_delay)
                 total += await self.run_stage2(equity_patterns, crypto_patterns)
 
         return total
@@ -1256,13 +1288,25 @@ class ConsolidateAgent:
         # millions of epoch memories), we aggregate locally by fold/algo then
         # send a single summary to the LLM. This gives the LLM a holistic
         # cross-fold view in one call instead of fragmented per-batch views.
+
+        # Delay between Phase A and Phase B to respect provider rate limits
+        if phase_a:
+            inter_phase_delay = _PROVIDER_CONFIG.get("inter_phase_delay_sec", 60)
+            log.info(
+                "consolidation_phase_a_to_b_delay",
+                env_name=env_name,
+                delay_s=inter_phase_delay,
+            )
+            await asyncio.sleep(inter_phase_delay)
+
         phase_b_total_created = 0
         phase_b_any = False
 
         # Collect ALL epoch/reward/run memory IDs and texts for this env
+        # Uses OFFSET-based pagination — no archiving during fetch so memories
+        # are preserved if the LLM call fails.
         all_phase_b: list[dict[str, Any]] = []
         for prefix in ("training_epoch", "reward_adjustment", "training_run"):
-            # Fetch in chunks to avoid memory issues, but don't LLM-process each chunk
             offset = 0
             _FETCH_CHUNK = 10_000
             while True:
@@ -1270,6 +1314,7 @@ class ConsolidateAgent:
                     prefix=prefix,
                     limit=_FETCH_CHUNK,
                     archived=False,
+                    offset=offset,
                 )
                 if not candidates:
                     break
@@ -1277,9 +1322,6 @@ class ConsolidateAgent:
                 all_phase_b.extend(filtered)
                 if len(candidates) < _FETCH_CHUNK:
                     break  # No more pages
-                # Archive this chunk so next fetch gets new rows
-                chunk_ids = [m["id"] for m in candidates]
-                await archive_memories_async(chunk_ids)
                 offset += _FETCH_CHUNK
 
         if not all_phase_b:
@@ -1599,6 +1641,19 @@ class ConsolidateAgent:
                     tier=tier,
                 )
                 continue
+
+            if tier == "backup":
+                log.info(
+                    "consolidation_falling_back_to_backup",
+                    backup_provider=cfg["provider"],
+                    backup_model=cfg["model"],
+                )
+
+            # Total timeout = provider's configured timeout (hard wall-clock ceiling).
+            # Prevents infinite hangs from keepalive bytes while respecting each
+            # provider's expected response time (e.g., OpenRouter free = 1800s).
+            call_total_timeout = cfg["timeout"]
+
             result = await self._call_cloud_api(
                 system_prompt,
                 user_prompt,
@@ -1609,8 +1664,14 @@ class ConsolidateAgent:
                 timeout=cfg["timeout"],
                 provider=cfg["provider"],
                 max_tokens=cfg.get("max_tokens", 32768),
+                total_timeout=call_total_timeout,
             )
             if result is not None:
+                if tier == "backup":
+                    log.info(
+                        "consolidation_backup_succeeded",
+                        provider=cfg["provider"],
+                    )
                 return result
             log.warning(
                 "consolidation_provider_failed",
@@ -1667,6 +1728,7 @@ class ConsolidateAgent:
         timeout: float,
         provider: str,
         max_tokens: int = 32768,
+        total_timeout: float = 300.0,
     ) -> dict[str, Any] | None:
         """Call OpenAI-compatible cloud API with json_object response format.
 
@@ -1677,14 +1739,79 @@ class ConsolidateAgent:
             base_url: API base URL.
             api_key: Bearer token for authorization.
             model: Model identifier string.
-            timeout: Read timeout in seconds.
+            timeout: Read timeout in seconds (per-chunk).
             provider: Provider name for logging.
             max_tokens: Maximum output tokens (per-provider from config).
+            total_timeout: Hard ceiling on total wall time for this call.
 
         Returns:
             Parsed and validated dict, or None if invalid.
         """
-        effective_max_tokens = max_tokens
+        # Retry with exponential backoff on 429 rate-limit errors
+        max_retries = _PROVIDER_CONFIG.get("rate_limit_max_retries", 3)
+        backoff_base = _PROVIDER_CONFIG.get("rate_limit_backoff_base_sec", 30)
+
+        for attempt in range(max_retries):
+            try:
+                result = await asyncio.wait_for(
+                    self._do_cloud_request(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        schema=schema,
+                        base_url=base_url,
+                        api_key=api_key,
+                        model=model,
+                        timeout=timeout,
+                        provider=provider,
+                        max_tokens=max_tokens,
+                    ),
+                    timeout=total_timeout,
+                )
+                return result
+            except TimeoutError:
+                log.error(
+                    "cloud_api_total_timeout",
+                    provider=provider,
+                    total_timeout_s=total_timeout,
+                    attempt=attempt + 1,
+                )
+                return None
+            except _RateLimitError as exc:
+                delay = backoff_base * (2**attempt)
+                log.warning(
+                    "cloud_api_rate_limited_retrying",
+                    provider=provider,
+                    status_code=exc.status_code,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    backoff_s=delay,
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(delay)
+                else:
+                    log.error(
+                        "cloud_api_rate_limit_exhausted",
+                        provider=provider,
+                        attempts=max_retries,
+                    )
+                    return None
+
+        return None
+
+    async def _do_cloud_request(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict[str, Any],
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float,
+        provider: str,
+        max_tokens: int,
+    ) -> dict[str, Any] | None:
+        """Execute a single cloud API request. Raises _RateLimitError on 429."""
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
@@ -1700,7 +1827,7 @@ class ConsolidateAgent:
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
                         schema=schema,
-                        max_tokens=effective_max_tokens,
+                        max_tokens=max_tokens,
                         provider=provider,
                     ),
                 )
@@ -1716,6 +1843,12 @@ class ConsolidateAgent:
                     return None
                 parsed = json.loads(raw_content)
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise _RateLimitError(
+                    status_code=429,
+                    provider=provider,
+                    body=exc.response.text[:500],
+                ) from exc
             log.error(
                 "cloud_api_call_failed",
                 provider=provider,
