@@ -107,7 +107,7 @@ memory_agent:
       model: "qwen3:1.7b"
       timeout: 30
   consolidation:
-    provider: "openrouter"                  # key into providers map
+    provider: "mistral"                     # key into providers map (fast ~18s, openrouter as backup)
     model: ""                               # empty = use provider's default_model
     timeout_sec: 1800
     inter_phase_delay_sec: 60               # seconds between LLM calls to respect rate limits
@@ -116,6 +116,12 @@ memory_agent:
     min_confidence_for_advice: 0.4          # minimum confidence for patterns used in query advice
     max_patterns_per_merge: 2               # max patterns per dedup/merge LLM call
     providers:
+      mistral:
+        base_url: "https://api.mistral.ai/v1"
+        api_key: ""                         # OVERRIDE via MISTRAL_API_KEY in .env
+        default_model: "mistral-large-latest"
+        timeout_sec: 600
+        max_tokens: 128000
       openrouter:
         base_url: "https://openrouter.ai/api/v1"
         api_key: ""                         # OVERRIDE via OPENROUTER_API_KEY in .env
