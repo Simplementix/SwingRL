@@ -18,7 +18,7 @@ services:
     container_name: swingrl-ollama
     image: ollama/ollama:latest
     # No memory or CPU limits — dedicated inference for epoch advice.
-    # qwen3:1.7b uses ~1.5 GB RAM. Let the OS manage resources.
+    # qwen2.5:1.5b uses ~1.2 GB RAM. Let the OS manage resources.
     volumes:
       - ollama_data:/root/.ollama
     ports:

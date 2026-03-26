@@ -128,7 +128,7 @@ async def get_epoch_advice(
 ) -> EpochAdviceResponse:
     """Return LLM-advised reward weight adjustments for the current epoch.
 
-    Routes to local Ollama (qwen3:1.7b) for fast, unlimited inference (~4s warm).
+    Routes to local Ollama (qwen2.5:1.5b) for fast, unlimited inference (~4s warm).
     Returns clamped safe defaults on cold start or LLM failure.
     Requires X-API-Key header.
     """

@@ -97,6 +97,8 @@ memory_agent:
     trade_veto: false
     cycle_gate: false
     risk_thresholds: false
+  cloud_block_on_429: true            # skip cloud providers that returned 429 today (resets daily UTC)
+  cloud_block_codes: [429]            # HTTP status codes that trigger calendar-day blocking
   ollama_instances:
     - name: clawbot
       url: "http://172.184.70.2:11434"
@@ -104,7 +106,7 @@ memory_agent:
       timeout: 60
     - name: homelab
       url: "http://swingrl-ollama:11434"
-      model: "qwen3:1.7b"
+      model: "qwen2.5:1.5b"
       timeout: 60
   # Epoch aggregation parameters (used by consolidation to summarize epoch memories)
   outlier_iqr_mild: 1.5                     # Tukey mild fence multiplier for IQR outlier detection

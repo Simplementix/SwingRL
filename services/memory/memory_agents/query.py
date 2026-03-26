@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,14 @@ from db import (
 )
 
 log = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Cloud provider 429 blocking (calendar-day reset)
+# ---------------------------------------------------------------------------
+# Tracks providers that returned a blocking HTTP code (e.g. 429) today.
+# Key = provider name, value = UTC date when blocked.
+# Auto-resets: if blocked date < today, the block is removed on next check.
+_CLOUD_BLOCKED: dict[str, date] = {}
 
 # ---------------------------------------------------------------------------
 # Constants (loaded from mounted config YAML, fallback to hardcoded defaults)
@@ -171,9 +180,11 @@ def _load_ollama_config() -> dict[str, Any]:
     Backward compatible: wraps single ollama_url/ollama_model as one-item list.
     """
     config_path = Path("/app/config/swingrl.yaml")
-    base = {
+    base: dict[str, Any] = {
         "query_provider": "openrouter",
         "epoch_advice_provider": "cerebras",
+        "cloud_block_on_429": True,
+        "cloud_block_codes": [429],
     }
 
     mem: dict[str, Any] = {}
@@ -182,6 +193,9 @@ def _load_ollama_config() -> dict[str, Any]:
         mem = cfg.get("memory_agent", {})
         base["query_provider"] = mem.get("query_provider", "openrouter")
         base["epoch_advice_provider"] = mem.get("epoch_advice_provider", "cerebras")
+        base["cloud_block_on_429"] = bool(mem.get("cloud_block_on_429", True))
+        raw_codes = mem.get("cloud_block_codes", [429])
+        base["cloud_block_codes"] = [int(c) for c in raw_codes] if raw_codes else [429]
 
         # New multi-instance format
         raw_instances = mem.get("ollama_instances")
@@ -200,7 +214,7 @@ def _load_ollama_config() -> dict[str, Any]:
 
     # Backward compat: single ollama_url/ollama_model → one-item list
     url = mem.get("ollama_url", "http://swingrl-ollama:11434")
-    model = mem.get("ollama_model", "qwen3:1.7b")
+    model = mem.get("ollama_model", "qwen2.5:1.5b")
     base["ollama_instances"] = [{"name": "default", "url": url, "model": model, "timeout": 30.0}]
     return base
 
@@ -316,6 +330,8 @@ except Exception as _ollama_exc:
 _QUERY_PROVIDER: str = _OLLAMA_CONFIG["query_provider"]
 _EPOCH_ADVICE_PROVIDER: str = _OLLAMA_CONFIG["epoch_advice_provider"]
 _OLLAMA_INSTANCES: list[dict[str, Any]] = _OLLAMA_CONFIG.get("ollama_instances", [])
+_CLOUD_BLOCK_ENABLED: bool = _OLLAMA_CONFIG.get("cloud_block_on_429", True)
+_CLOUD_BLOCK_CODES: list[int] = _OLLAMA_CONFIG.get("cloud_block_codes", [429])
 
 log.info(
     "query_provider_configured",
@@ -325,7 +341,46 @@ log.info(
     ollama_instances=[
         {"name": i["name"], "url": i["url"], "model": i["model"]} for i in _OLLAMA_INSTANCES
     ],
+    cloud_block_on_429=_CLOUD_BLOCK_ENABLED,
+    cloud_block_codes=_CLOUD_BLOCK_CODES,
 )
+
+
+def _is_provider_blocked(provider: str) -> bool:
+    """Check if a cloud provider is blocked for the rest of today (UTC).
+
+    Auto-resets: if the block was set on a previous calendar day, removes it
+    and returns False so the provider gets retried.
+    """
+    if not _CLOUD_BLOCK_ENABLED:
+        return False
+    blocked_date = _CLOUD_BLOCKED.get(provider)
+    if blocked_date is None:
+        return False
+    today_utc = datetime.now(UTC).date()
+    if blocked_date < today_utc:
+        del _CLOUD_BLOCKED[provider]
+        log.info(
+            "cloud_provider_block_expired",
+            provider=provider,
+            blocked_date=str(blocked_date),
+            today=str(today_utc),
+        )
+        return False
+    return True
+
+
+def _block_provider(provider: str, status_code: int) -> None:
+    """Block a cloud provider for the rest of today (UTC) after a rate-limit response."""
+    today_utc = datetime.now(UTC).date()
+    _CLOUD_BLOCKED[provider] = today_utc
+    log.warning(
+        "cloud_provider_blocked",
+        provider=provider,
+        status_code=status_code,
+        blocked_until=f"end of {today_utc} UTC",
+        total_blocked=len(_CLOUD_BLOCKED),
+    )
 
 
 def validate_query_config() -> None:
@@ -1280,6 +1335,8 @@ class QueryAgent:
                         status_code=resp.status_code,
                         response_body=resp.text[:500],
                     )
+                    if resp.status_code in _CLOUD_BLOCK_CODES:
+                        _block_provider(provider, resp.status_code)
                 resp.raise_for_status()
                 body = resp.json()
                 raw_content = body["choices"][0]["message"]["content"]
@@ -1329,6 +1386,13 @@ class QueryAgent:
             if not cfg["api_key"]:
                 log.debug(
                     "query_provider_skipped_no_key",
+                    provider=cfg["provider"],
+                    tier=tier,
+                )
+                continue
+            if _is_provider_blocked(cfg["provider"]):
+                log.info(
+                    "query_provider_skipped_blocked",
                     provider=cfg["provider"],
                     tier=tier,
                 )
@@ -1403,7 +1467,6 @@ class QueryAgent:
                 ],
                 "format": schema,
                 "stream": False,
-                "think": False,
                 "options": {"temperature": 0, "num_predict": 512, "num_ctx": 8192},
             }
 
@@ -1470,6 +1533,14 @@ class QueryAgent:
         for idx, cfg in enumerate(_EPOCH_PROVIDER_CONFIGS):
             if not cfg.get("api_key"):
                 log.debug("epoch_cloud_skipped_no_key", provider=cfg.get("provider"))
+                continue
+            if _is_provider_blocked(cfg["provider"]):
+                log.info(
+                    "epoch_cloud_skipped_blocked",
+                    provider=cfg["provider"],
+                    position=idx + 1,
+                    total=total_providers,
+                )
                 continue
 
             if idx > 0:

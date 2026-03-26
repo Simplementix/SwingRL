@@ -375,8 +375,14 @@ class MemoryAgentConfig(BaseModel):
     epoch_advice_provider: str = (
         "cerebras"  # Epoch advice: "cerebras" (fast cloud), "ollama" (local), or "openrouter"
     )
+    cloud_block_on_429: bool = (
+        True  # Skip cloud providers that returned 429 today (resets daily UTC)
+    )
+    cloud_block_codes: list[int] = Field(
+        default_factory=lambda: [429]
+    )  # HTTP codes triggering block
     ollama_url: str = "http://swingrl-ollama:11434"  # Legacy single-instance (backward compat)
-    ollama_model: str = "qwen3:1.7b"  # Legacy single-instance (backward compat)
+    ollama_model: str = "qwen2.5:1.5b"  # Legacy single-instance (backward compat)
     ollama_instances: list[OllamaInstanceConfig] = Field(default_factory=list)
 
     # Per-algo epoch cadence (read from yaml by epoch_callback per fold).
