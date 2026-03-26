@@ -2128,3 +2128,430 @@ class TestRetrievalEfficiency:
         # Empty list should be treated as "no category filter" (falsy)
         results = memory_db_module.get_active_consolidations(categories=[])
         assert len(results) == 1  # No filter applied, returns all
+
+
+# ---------------------------------------------------------------------------
+# Epoch aggregation helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestEpochAggregationHelpers:
+    """Tests for _quartiles, _iqr_outliers, _iqm, _trend_slope, _skewness,
+    _temporal_windows, and _aggregate_epoch_summaries."""
+
+    def test_quartiles_n4(self) -> None:
+        """Quartiles with N=4 (PPO typical fold size)."""
+        from memory_agents.consolidate import _quartiles
+
+        vals = [1.0, 2.0, 3.0, 4.0]
+        q1, med, q3 = _quartiles(vals)
+        assert q1 == pytest.approx(1.75)
+        assert med == pytest.approx(2.5)
+        assert q3 == pytest.approx(3.25)
+
+    def test_quartiles_n17(self) -> None:
+        """Quartiles with N=17 (A2C/SAC typical fold size)."""
+        from memory_agents.consolidate import _quartiles
+
+        vals = list(range(1, 18))  # 1..17
+        q1, med, q3 = _quartiles(vals)
+        assert med == pytest.approx(9.0)
+        assert q1 == pytest.approx(5.0)
+        assert q3 == pytest.approx(13.0)
+
+    def test_quartiles_n1(self) -> None:
+        """Quartiles with single value returns that value for all."""
+        from memory_agents.consolidate import _quartiles
+
+        q1, med, q3 = _quartiles([42.0])
+        assert q1 == 42.0
+        assert med == 42.0
+        assert q3 == 42.0
+
+    def test_quartiles_empty(self) -> None:
+        """Quartiles with empty list returns zeros."""
+        from memory_agents.consolidate import _quartiles
+
+        q1, med, q3 = _quartiles([])
+        assert q1 == 0.0
+        assert med == 0.0
+        assert q3 == 0.0
+
+    def test_iqr_outliers_small_n(self) -> None:
+        """IQR outlier detection at N=4 with an extreme value."""
+        from memory_agents.consolidate import _iqr_outliers
+
+        # Normal values + one extreme outlier
+        vals = [1.0, 2.0, 3.0, 100.0]
+        result = _iqr_outliers(vals, mild_k=1.5, extreme_k=3.0)
+        assert result["q1"] == pytest.approx(1.75)
+        assert result["q3"] == pytest.approx(27.25)
+        assert result["iqr"] == pytest.approx(25.5)
+        assert 100.0 in result["mild_outliers"]
+        assert len(result["mild_outliers"]) >= 1
+
+    def test_iqr_no_outliers(self) -> None:
+        """All values within IQR fences returns empty outlier lists."""
+        from memory_agents.consolidate import _iqr_outliers
+
+        vals = [1.0, 2.0, 3.0, 4.0, 5.0]
+        result = _iqr_outliers(vals, mild_k=1.5, extreme_k=3.0)
+        assert result["mild_outliers"] == []
+        assert result["extreme_outliers"] == []
+
+    def test_iqr_extreme_vs_mild(self) -> None:
+        """Extreme outliers are a subset of mild outliers."""
+        from memory_agents.consolidate import _iqr_outliers
+
+        vals = [1.0, 2.0, 3.0, 4.0, 5.0, 50.0, 200.0]
+        result = _iqr_outliers(vals, mild_k=1.5, extreme_k=3.0)
+        # Every extreme outlier should also be in mild outliers
+        for v in result["extreme_outliers"]:
+            assert v in result["mild_outliers"]
+
+    def test_iqm_basic(self) -> None:
+        """IQM excludes outer quartiles."""
+        from memory_agents.consolidate import _iqm
+
+        vals = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+        # IQM should average the middle 50%: vals[2:6] = [3, 4, 5, 6] = mean 4.5
+        assert _iqm(vals) == pytest.approx(4.5)
+
+    def test_iqm_small_n(self) -> None:
+        """IQM falls back to mean when N < 4."""
+        from memory_agents.consolidate import _iqm
+
+        vals = [1.0, 2.0, 3.0]
+        assert _iqm(vals) == pytest.approx(2.0)
+
+    def test_iqm_empty(self) -> None:
+        """IQM of empty list returns 0."""
+        from memory_agents.consolidate import _iqm
+
+        assert _iqm([]) == 0.0
+
+    def test_trend_slope_increasing(self) -> None:
+        """Positive slope for increasing sequence."""
+        from memory_agents.consolidate import _trend_slope
+
+        vals = [1.0, 2.0, 3.0, 4.0, 5.0]
+        assert _trend_slope(vals) == pytest.approx(1.0)
+
+    def test_trend_slope_decreasing(self) -> None:
+        """Negative slope for decreasing sequence."""
+        from memory_agents.consolidate import _trend_slope
+
+        vals = [5.0, 4.0, 3.0, 2.0, 1.0]
+        assert _trend_slope(vals) == pytest.approx(-1.0)
+
+    def test_trend_slope_flat(self) -> None:
+        """Near-zero slope for constant values."""
+        from memory_agents.consolidate import _trend_slope
+
+        vals = [3.0, 3.0, 3.0, 3.0]
+        assert abs(_trend_slope(vals)) < 1e-6
+
+    def test_trend_slope_small_n(self) -> None:
+        """Returns 0.0 when N < 3."""
+        from memory_agents.consolidate import _trend_slope
+
+        assert _trend_slope([1.0, 2.0]) == 0.0
+        assert _trend_slope([1.0]) == 0.0
+
+    def test_skewness_symmetric(self) -> None:
+        """Near-zero skewness for symmetric data."""
+        from memory_agents.consolidate import _skewness
+
+        # Symmetric around 5
+        vals = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+        skew = _skewness(vals)
+        assert skew is not None
+        assert abs(skew) < 0.3
+
+    def test_skewness_right_skewed(self) -> None:
+        """Positive skewness for right-skewed data."""
+        from memory_agents.consolidate import _skewness
+
+        vals = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 20.0]
+        skew = _skewness(vals)
+        assert skew is not None
+        assert skew > 0.5
+
+    def test_skewness_small_n_returns_none(self) -> None:
+        """Returns None when N < skewness_min_n."""
+        from memory_agents.consolidate import _skewness
+
+        vals = [1.0, 2.0, 3.0]  # N=3 < default min_n=8
+        assert _skewness(vals) is None
+
+    def test_temporal_windows_n17(self) -> None:
+        """3-window split for N >= 6."""
+        from memory_agents.consolidate import _temporal_windows
+
+        epochs = [{"mean_reward": float(i)} for i in range(17)]
+        windows = _temporal_windows(epochs, ["mean_reward"])
+        assert len(windows) == 3
+        assert windows[0]["label"] == "early"
+        assert windows[1]["label"] == "mid"
+        assert windows[2]["label"] == "late"
+        # Late window should have higher mean than early
+        assert windows[2]["mean_reward"] > windows[0]["mean_reward"]
+
+    def test_temporal_windows_n4(self) -> None:
+        """2-window split for 4 <= N < 6."""
+        from memory_agents.consolidate import _temporal_windows
+
+        epochs = [{"mean_reward": float(i)} for i in range(4)]
+        windows = _temporal_windows(epochs, ["mean_reward"])
+        assert len(windows) == 2
+        assert windows[0]["label"] == "early"
+        assert windows[1]["label"] == "late"
+
+    def test_temporal_windows_n2(self) -> None:
+        """No windowing for N < 4."""
+        from memory_agents.consolidate import _temporal_windows
+
+        epochs = [{"mean_reward": 1.0}, {"mean_reward": 2.0}]
+        assert _temporal_windows(epochs, ["mean_reward"]) == []
+
+    def test_aggregate_kl_skipped_for_a2c(self) -> None:
+        """A2C fold summaries should not contain approx_kl lines."""
+        from memory_agents.consolidate import _aggregate_epoch_summaries
+
+        memories = []
+        for i in range(10):
+            memories.append(
+                {
+                    "text": (
+                        f"run_id=equity_a2c_fold0 algo=a2c env=equity "
+                        f"epoch={i * 2000} mean_reward={0.1 * i:.4f} "
+                        f"policy_loss=0.01 value_loss=0.02 "
+                        f"rolling_sharpe_500={0.5 + 0.05 * i:.4f} "
+                        f"rolling_mdd_500=-0.05 rolling_win_rate_500=0.52"
+                    ),
+                }
+            )
+        summaries = _aggregate_epoch_summaries(memories)
+        assert len(summaries) == 1
+        assert "approx_kl" not in summaries[0]
+
+    def test_aggregate_kl_present_for_ppo(self) -> None:
+        """PPO fold summaries should contain approx_kl lines."""
+        from memory_agents.consolidate import _aggregate_epoch_summaries
+
+        memories = []
+        for i in range(5):
+            memories.append(
+                {
+                    "text": (
+                        f"run_id=equity_ppo_fold0 algo=ppo env=equity "
+                        f"epoch={i * 20} mean_reward={0.1 * i:.4f} "
+                        f"policy_loss=0.01 value_loss=0.02 approx_kl=0.015 "
+                        f"rolling_sharpe_500=0.5 rolling_mdd_500=-0.05 "
+                        f"rolling_win_rate_500=0.52"
+                    ),
+                }
+            )
+        summaries = _aggregate_epoch_summaries(memories)
+        assert len(summaries) == 1
+        assert "approx_kl" in summaries[0]
+
+    def test_aggregate_fold_metadata(self) -> None:
+        """Fold summary includes N, cadence, and confidence label."""
+        from memory_agents.consolidate import _aggregate_epoch_summaries
+
+        memories = []
+        for i in range(4):
+            memories.append(
+                {
+                    "text": (
+                        f"run_id=equity_ppo_fold0 algo=ppo env=equity "
+                        f"epoch={i * 20} mean_reward={0.1 * i:.4f} "
+                        f"policy_loss=0.01 value_loss=0.02 approx_kl=0.01 "
+                        f"rolling_sharpe_500=0.5 rolling_mdd_500=-0.05 "
+                        f"rolling_win_rate_500=0.52"
+                    ),
+                }
+            )
+        summaries = _aggregate_epoch_summaries(memories)
+        summary = summaries[0]
+        assert "N=4" in summary
+        assert "cadence=20" in summary
+        assert "confidence=low" in summary  # N=4 <= 5
+
+    def test_aggregate_iqr_outliers_format(self) -> None:
+        """Fold summary uses IQR-based outlier detection, not P1/P99."""
+        from memory_agents.consolidate import _aggregate_epoch_summaries
+
+        memories = []
+        for i in range(10):
+            memories.append(
+                {
+                    "text": (
+                        f"run_id=crypto_sac_fold0 algo=sac env=crypto "
+                        f"epoch={i * 10000} mean_reward={0.1 * i:.4f} "
+                        f"policy_loss=0.01 value_loss=0.02 "
+                        f"rolling_sharpe_500=0.5 "
+                        f"rolling_mdd_500={-0.05 if i != 5 else -0.50} "
+                        f"rolling_win_rate_500=0.52"
+                    ),
+                }
+            )
+        summaries = _aggregate_epoch_summaries(memories)
+        summary = summaries[0]
+        assert "IQR fences" in summary
+        assert "P1/P99" not in summary
+
+    def test_aggregate_trajectory_present(self) -> None:
+        """Fold with N >= 4 includes TRAJECTORY section."""
+        from memory_agents.consolidate import _aggregate_epoch_summaries
+
+        memories = []
+        for i in range(6):
+            memories.append(
+                {
+                    "text": (
+                        f"run_id=equity_a2c_fold0 algo=a2c env=equity "
+                        f"epoch={i * 2000} mean_reward={0.1 * i:.4f} "
+                        f"policy_loss=0.01 value_loss=0.02 "
+                        f"rolling_sharpe_500={0.5 + 0.1 * i:.4f} "
+                        f"rolling_mdd_500=-0.05 rolling_win_rate_500=0.52"
+                    ),
+                }
+            )
+        summaries = _aggregate_epoch_summaries(memories)
+        assert "TRAJECTORY" in summaries[0]
+        assert "early" in summaries[0]
+        assert "late" in summaries[0]
+
+    def test_aggregate_ppo_vs_sac_handling(self) -> None:
+        """PPO and SAC folds have different output: KL for PPO, no KL for SAC."""
+        from memory_agents.consolidate import _aggregate_epoch_summaries
+
+        memories = []
+        # PPO fold
+        for i in range(4):
+            memories.append(
+                {
+                    "text": (
+                        f"run_id=equity_ppo_fold0 algo=ppo env=equity "
+                        f"epoch={i * 20} mean_reward=0.1 "
+                        f"policy_loss=0.01 value_loss=0.02 approx_kl=0.02 "
+                        f"rolling_sharpe_500=0.5 rolling_mdd_500=-0.05 "
+                        f"rolling_win_rate_500=0.52"
+                    ),
+                }
+            )
+        # SAC fold
+        for i in range(17):
+            memories.append(
+                {
+                    "text": (
+                        f"run_id=equity_sac_fold0 algo=sac env=equity "
+                        f"epoch={i * 10000} mean_reward=0.2 "
+                        f"policy_loss=0.01 value_loss=0.02 "
+                        f"rolling_sharpe_500=0.6 rolling_mdd_500=-0.04 "
+                        f"rolling_win_rate_500=0.55"
+                    ),
+                }
+            )
+        summaries = _aggregate_epoch_summaries(memories)
+        assert len(summaries) == 2
+        # Find each fold's summary
+        ppo_summary = [s for s in summaries if "algo=ppo" in s][0]
+        sac_summary = [s for s in summaries if "algo=sac" in s][0]
+        # PPO has KL, SAC doesn't
+        assert "approx_kl" in ppo_summary
+        assert "approx_kl" not in sac_summary
+        # PPO has low confidence (N=4), SAC has high (N=17)
+        assert "confidence=low" in ppo_summary
+        assert "confidence=high" in sac_summary
+
+    def test_aggregate_weight_trajectory_with_changes(self) -> None:
+        """Weight changes include pre/post sharpe deltas."""
+        from memory_agents.consolidate import _aggregate_epoch_summaries
+
+        memories = [
+            {
+                "text": (
+                    "run_id=equity_ppo_fold0 algo=ppo env=equity "
+                    "epoch=0 mean_reward=0.10 policy_loss=0.01 value_loss=0.02 "
+                    "approx_kl=0.01 rolling_sharpe_500=0.50 rolling_mdd_500=-0.05 "
+                    "rolling_win_rate_500=0.52 "
+                    "reward_weights={sharpe: 0.4, drawdown: 0.3}"
+                ),
+            },
+            {
+                "text": (
+                    "run_id=equity_ppo_fold0 algo=ppo env=equity "
+                    "epoch=20 mean_reward=0.15 policy_loss=0.01 value_loss=0.02 "
+                    "approx_kl=0.01 rolling_sharpe_500=0.60 rolling_mdd_500=-0.05 "
+                    "rolling_win_rate_500=0.52 "
+                    "reward_weights={sharpe: 0.4, drawdown: 0.3}"
+                ),
+            },
+            {
+                "text": (
+                    "run_id=equity_ppo_fold0 algo=ppo env=equity "
+                    "epoch=40 mean_reward=0.20 policy_loss=0.01 value_loss=0.02 "
+                    "approx_kl=0.01 rolling_sharpe_500=0.80 rolling_mdd_500=-0.04 "
+                    "rolling_win_rate_500=0.55 "
+                    "reward_weights={sharpe: 0.3, drawdown: 0.5}"
+                ),
+            },
+            {
+                "text": (
+                    "run_id=equity_ppo_fold0 algo=ppo env=equity "
+                    "epoch=60 mean_reward=0.25 policy_loss=0.01 value_loss=0.02 "
+                    "approx_kl=0.01 rolling_sharpe_500=0.90 rolling_mdd_500=-0.03 "
+                    "rolling_win_rate_500=0.55 "
+                    "reward_weights={sharpe: 0.3, drawdown: 0.5}"
+                ),
+            },
+        ]
+        summaries = _aggregate_epoch_summaries(memories)
+        summary = summaries[0]
+        assert "REWARD WEIGHTS:" in summary
+        assert "change@epoch=40" in summary
+        assert "total_changes=1" in summary
+
+    def test_aggregate_iqm_in_stats(self) -> None:
+        """Stats section includes iqm= field."""
+        from memory_agents.consolidate import _aggregate_epoch_summaries
+
+        memories = []
+        for i in range(8):
+            memories.append(
+                {
+                    "text": (
+                        f"run_id=equity_a2c_fold0 algo=a2c env=equity "
+                        f"epoch={i * 2000} mean_reward={float(i):.4f} "
+                        f"policy_loss=0.01 value_loss=0.02 "
+                        f"rolling_sharpe_500=0.5 rolling_mdd_500=-0.05 "
+                        f"rolling_win_rate_500=0.52"
+                    ),
+                }
+            )
+        summaries = _aggregate_epoch_summaries(memories)
+        assert "iqm=" in summaries[0]
+
+    def test_aggregate_trend_in_stats(self) -> None:
+        """Stats section includes trend= field with direction label."""
+        from memory_agents.consolidate import _aggregate_epoch_summaries
+
+        memories = []
+        for i in range(6):
+            memories.append(
+                {
+                    "text": (
+                        f"run_id=equity_a2c_fold0 algo=a2c env=equity "
+                        f"epoch={i * 2000} mean_reward={0.1 * i:.4f} "
+                        f"policy_loss=0.01 value_loss=0.02 "
+                        f"rolling_sharpe_500={0.5 + 0.1 * i:.4f} "
+                        f"rolling_mdd_500=-0.05 rolling_win_rate_500=0.52"
+                    ),
+                }
+            )
+        summaries = _aggregate_epoch_summaries(memories)
+        assert "trend=" in summaries[0]
+        assert "improving" in summaries[0]

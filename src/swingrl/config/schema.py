@@ -386,6 +386,14 @@ class MemoryAgentConfig(BaseModel):
     epoch_cadence_sac: int = 10000  # ~167K rollouts/fold → ~17 calls
     epoch_cadence_default: int = 100  # Fallback for unknown algos
 
+    # Epoch aggregation parameters (used by consolidate.py _aggregate_epoch_summaries)
+    outlier_iqr_mild: float = 1.5  # Tukey mild fence multiplier (Q1 - k*IQR, Q3 + k*IQR)
+    outlier_iqr_extreme: float = 3.0  # Tukey extreme fence multiplier
+    max_outlier_events: int = 3  # Max extreme events reported per metric per fold
+    skewness_min_n: int = 8  # Min snapshots to compute skewness (unreliable below this)
+    confidence_n_low: int = 5  # N <= this → "low" confidence label
+    confidence_n_high: int = 15  # N >= this → "high" confidence label
+
     consolidate_interval_min: int = 30
     inbox_dir: str = "/data/memory_inbox"
     api_key: str = ""  # Populated from SWINGRL_MEMORY_AGENT__API_KEY env var; empty = no auth

@@ -203,6 +203,56 @@ def validate_consolidation_config() -> None:
 _MEMORY_BATCH_SIZE = 200
 
 # ---------------------------------------------------------------------------
+# Epoch aggregation config (read from mounted swingrl.yaml)
+# ---------------------------------------------------------------------------
+
+# SB3 algos that produce approx_kl — architectural fact, not tunable.
+_KL_CAPABLE_ALGOS: frozenset[str] = frozenset({"ppo"})
+
+# Default aggregation parameters (overridden by yaml config)
+_DEFAULT_AGGREGATION_CONFIG: dict[str, Any] = {
+    "outlier_iqr_mild": 1.5,
+    "outlier_iqr_extreme": 3.0,
+    "max_outlier_events": 3,
+    "skewness_min_n": 8,
+    "confidence_n_low": 5,
+    "confidence_n_high": 15,
+    "epoch_cadence_ppo": 20,
+    "epoch_cadence_a2c": 2000,
+    "epoch_cadence_sac": 10000,
+    "epoch_cadence_default": 100,
+}
+
+
+def _load_aggregation_config() -> dict[str, Any]:
+    """Load epoch aggregation config from mounted swingrl.yaml.
+
+    Reads memory_agent section for outlier detection, skewness, confidence,
+    and epoch cadence parameters. Falls back to _DEFAULT_AGGREGATION_CONFIG
+    for any missing keys.
+
+    Same yaml.safe_load pattern as _load_consolidation_config() — memory
+    service cannot import src/swingrl/config/schema.py.
+    """
+    config_path = Path("/app/config/swingrl.yaml")
+    result = dict(_DEFAULT_AGGREGATION_CONFIG)
+    if config_path.exists():
+        try:
+            cfg = yaml.safe_load(config_path.read_text()) or {}
+            mem = cfg.get("memory_agent", {})
+            for key in _DEFAULT_AGGREGATION_CONFIG:
+                val = mem.get(key)
+                if val is not None:
+                    expected_type = type(_DEFAULT_AGGREGATION_CONFIG[key])
+                    result[key] = expected_type(val)
+        except Exception:  # nosec B110  # Fail-open: use defaults on parse error
+            log.warning("aggregation_config_load_failed", fallback="defaults")
+    return result
+
+
+_AGGREGATION_CONFIG = _load_aggregation_config()
+
+# ---------------------------------------------------------------------------
 # Category enum (shared across schema, prompts, validation)
 # ---------------------------------------------------------------------------
 
@@ -392,14 +442,25 @@ _PHASE_B_SYSTEM_PROMPT = """You are analyzing TRAINING DYNAMICS data — per-fol
 summaries and reward weight adjustment histories — for SwingRL, an RL-based swing trading system.
 
 Your job is to identify statistically meaningful patterns in per-fold training statistics \
-(mean reward, rolling Sharpe, rolling MDD, policy/value loss, approx KL, win rate), P1/P99 \
-outlier events, reward weight trajectories, and reward adjustment effectiveness across RL \
-trading agents (PPO, A2C, SAC) on equity (8 ETFs, daily) and crypto (BTC/ETH, 4H) environments.
+across RL trading agents (PPO, A2C, SAC) on equity (8 ETFs, daily) and crypto (BTC/ETH, 4H) \
+environments.
 
-The data shows per-fold TRAINING statistics, not OOS test results. Look for patterns in \
-reward shaping: did weight adjustments improve Sharpe/MDD? Identify algos with training \
-instability (KL spikes, MDD breaches). Compare early folds (small training window) vs late \
-folds (large window).
+DATA FORMAT — Each fold summary contains:
+- STATS: Per-metric extended stats including IQM (interquartile mean, robust central \
+tendency), 5-number summary (Q1/median/Q3/min/max), trend slope (OLS, positive=improving), \
+and skewness (for large-N folds). IQM is MORE reliable than mean — prefer it for comparisons.
+- TRAJECTORY: Temporal windows (early/mid/late) showing how metrics evolved during training. \
+Use this to detect convergence, divergence, or overfitting (mid better than late).
+- OUTLIERS: IQR-based detection (Tukey fences), reported as rate (count/N). Only PPO has \
+approx_kl metrics — A2C and SAC do not produce KL divergence.
+- REWARD WEIGHTS: Weight changes with pre/post sharpe deltas showing impact of adjustments.
+- METADATA: N=sample_count, cadence=epochs_between_snapshots, confidence=low/moderate/high. \
+Low-confidence folds (N<=5, typically PPO) have less reliable statistics.
+
+The data shows per-fold TRAINING statistics, not OOS test results. Look for patterns in: \
+(1) training convergence via trajectory and trend slopes, (2) reward shaping effectiveness \
+via weight change deltas, (3) algo-specific instability via IQR outliers, (4) early vs late \
+fold comparison for data window effects.
 
 You MUST only reference metrics, values, and facts that appear explicitly in the input \
 data between <training_data> tags. Do NOT reference any ticker symbols, dates, or metric \
@@ -407,7 +468,8 @@ values that do not appear in the input data.
 
 Each pattern MUST include at least two specific metric values from the input data that \
 support it. A pattern requires consistent evidence across at least 3 folds or 2 algorithms. \
-A single anomalous fold is an observation, not a pattern.
+A single anomalous fold is an observation, not a pattern. Weight low-confidence folds less \
+heavily when assessing pattern consistency.
 
 For each candidate pattern, ask yourself: "Could this be explained by random variance \
 across folds?" If yes, do not include it. Only include patterns with direct numerical \
@@ -769,49 +831,49 @@ _PHASE_B_FEW_SHOT_EXAMPLES = json.dumps(
     {
         "patterns": [
             {
-                "pattern_text": "PLACEHOLDER: fold 0 mean_reward=X.XX, fold 22 mean_reward=Y.YY for ALGO_A showing training improvement across data windows",
+                "pattern_text": "PLACEHOLDER: ALGO_A reward IQM improves from X.XX (early folds) to Y.YY (late folds) with positive trend slopes across N of M folds, showing data window benefits",
                 "category": "iteration_progression",
                 "affected_algos": ["PLACEHOLDER_ALGO_A"],
                 "affected_envs": ["PLACEHOLDER_ENV"],
                 "actionable_implication": "PLACEHOLDER: ALGO_A benefits from larger training windows, maintain expanding window strategy",
                 "confidence": 0.44,
-                "evidence": "PLACEHOLDER: fold 0 mean_reward=X.XX sharpe=Z.ZZ; fold 22 mean_reward=Y.YY sharpe=W.WW",
+                "evidence": "PLACEHOLDER: fold 0 reward iqm=X.XX trend=+A.AA; fold 22 reward iqm=Y.YY trend=+B.BB; trajectory early->late improving in N/M folds",
             },
             {
-                "pattern_text": "PLACEHOLDER: ALGO_A training rolling_sharpe peaks at epoch X (mean=Y.YY) then degrades to Z.ZZ by final epoch, suggesting overfitting after epoch X",
+                "pattern_text": "PLACEHOLDER: ALGO_A trajectory shows sharpe improving early->mid (X.XX->Y.YY) then declining mid->late (Y.YY->Z.ZZ) in N of M folds, suggesting overfitting",
                 "category": "overfit_diagnosis",
                 "affected_algos": ["PLACEHOLDER_ALGO_A"],
                 "affected_envs": ["PLACEHOLDER_ENV"],
-                "actionable_implication": "PLACEHOLDER: implement early stopping at epoch X for ALGO_A or increase entropy regularization",
+                "actionable_implication": "PLACEHOLDER: implement early stopping for ALGO_A or increase entropy regularization",
                 "confidence": 0.55,
-                "evidence": "PLACEHOLDER: fold N epoch X sharpe=Y.YY; fold N final epoch sharpe=Z.ZZ; pattern repeats in M of P folds",
+                "evidence": "PLACEHOLDER: fold N trajectory sharpe early=X.XX mid=Y.YY late=Z.ZZ (declining); pattern in M of P folds",
             },
             {
-                "pattern_text": "PLACEHOLDER: fold N rolling_mdd breaches P1 threshold (mdd=X.XX) at epoch Y, recovers to Z.ZZ by epoch W after reward weight adjustment increased drawdown penalty from 0.15 to 0.35",
+                "pattern_text": "PLACEHOLDER: fold N MDD IQR outlier (mdd=X.XX, below lower fence Y.YY) at epoch Z recovers after reward weight change increased drawdown penalty — sharpe delta +W.WW",
                 "category": "drawdown_recovery",
                 "affected_algos": ["PLACEHOLDER_ALGO_A"],
                 "affected_envs": ["PLACEHOLDER_ENV"],
                 "actionable_implication": "PLACEHOLDER: pre-set higher drawdown penalty for ALGO_A to avoid MDD breach and recovery cycle",
                 "confidence": 0.62,
-                "evidence": "PLACEHOLDER: fold N epoch Y mdd=X.XX (P1 breach); epoch W mdd=Z.ZZ; drawdown_weight 0.15->0.35",
+                "evidence": "PLACEHOLDER: fold N epoch Z mdd=X.XX (IQR outlier, fence=Y.YY); change@epoch=W sharpe delta=+V.VV; drawdown_weight 0.15->0.35",
             },
             {
-                "pattern_text": "PLACEHOLDER: reward weight adjustments increasing drawdown penalty from X.XX to Y.YY improved rolling_sharpe by Z.ZZ in NN% of adjustments for ALGO_A",
+                "pattern_text": "PLACEHOLDER: reward weight adjustments increasing drawdown penalty improved sharpe in NN% of changes (avg delta +Z.ZZ) for ALGO_A across N folds",
                 "category": "trade_quality",
                 "affected_algos": ["PLACEHOLDER_ALGO_A"],
                 "affected_envs": ["PLACEHOLDER_ENV"],
-                "actionable_implication": "PLACEHOLDER: start ALGO_A training with higher drawdown penalty (Y.YY) to skip adjustment cycle",
+                "actionable_implication": "PLACEHOLDER: start ALGO_A training with higher drawdown penalty to skip adjustment cycle",
                 "confidence": 0.48,
                 "evidence": "PLACEHOLDER: N adjustments total, M positive (avg_sharpe_delta=+Z.ZZ), P negative (avg_sharpe_delta=-W.WW)",
             },
             {
-                "pattern_text": "PLACEHOLDER: ALGO_A KL spikes (>P99 threshold) occur in N of M folds, concentrated in folds X-Y (bear market period), while ALGO_B shows 0 KL spikes in same folds",
+                "pattern_text": "PLACEHOLDER: PPO KL IQR outliers (N/M rate) concentrated in bear-regime folds X-Y, while A2C/SAC (no KL metric) show elevated MDD outliers in same folds",
                 "category": "iteration_progression",
                 "affected_algos": ["PLACEHOLDER_ALGO_A", "PLACEHOLDER_ALGO_B"],
                 "affected_envs": ["PLACEHOLDER_ENV"],
-                "actionable_implication": "PLACEHOLDER: reduce ALGO_A learning rate or clip range during bear regime folds to prevent KL instability",
+                "actionable_implication": "PLACEHOLDER: reduce PPO learning rate or clip range during bear regime folds to prevent KL instability",
                 "confidence": 0.51,
-                "evidence": "PLACEHOLDER: ALGO_A fold X kl_max=V.VV (P99=W.WW); fold Y kl_max=U.UU; ALGO_B fold X kl_max=S.SS fold Y kl_max=T.TT",
+                "evidence": "PLACEHOLDER: PPO fold X kl outlier=V.VV (fence=W.WW); fold Y kl outlier=U.UU; A2C/SAC fold X mdd outlier=S.SS (N=17, high confidence)",
             },
         ],
     },
@@ -867,17 +929,250 @@ _STAGE_2_FEW_SHOT_EXAMPLES = json.dumps(
 # ---------------------------------------------------------------------------
 
 
+def _quartiles(vals: list[float]) -> tuple[float, float, float]:
+    """Compute Q1, median, Q3 using linear interpolation.
+
+    Args:
+        vals: Sorted list of floats (must have len >= 1).
+
+    Returns:
+        (Q1, median, Q3) tuple.
+    """
+    n = len(vals)
+    if n == 0:
+        return (0.0, 0.0, 0.0)
+    if n == 1:
+        return (vals[0], vals[0], vals[0])
+
+    def _interp(sorted_vals: list[float], p: float) -> float:
+        """Interpolated percentile (matches numpy default 'linear' method)."""
+        k = (len(sorted_vals) - 1) * p
+        f = int(k)
+        c = f + 1 if f + 1 < len(sorted_vals) else f
+        d = k - f
+        return sorted_vals[f] + d * (sorted_vals[c] - sorted_vals[f])
+
+    return (_interp(vals, 0.25), _interp(vals, 0.50), _interp(vals, 0.75))
+
+
+def _iqr_outliers(
+    vals: list[float],
+    mild_k: float | None = None,
+    extreme_k: float | None = None,
+) -> dict[str, Any]:
+    """Detect outliers using Tukey's IQR fences.
+
+    Args:
+        vals: Unsorted list of floats.
+        mild_k: Multiplier for mild fences (default from config).
+        extreme_k: Multiplier for extreme fences (default from config).
+
+    Returns:
+        Dict with q1, median, q3, iqr, lower/upper fences, and outlier lists.
+    """
+    if mild_k is None:
+        mild_k = _AGGREGATION_CONFIG["outlier_iqr_mild"]
+    if extreme_k is None:
+        extreme_k = _AGGREGATION_CONFIG["outlier_iqr_extreme"]
+
+    sorted_vals = sorted(vals)
+    q1, median, q3 = _quartiles(sorted_vals)
+    iqr = q3 - q1
+
+    lower_fence = q1 - mild_k * iqr
+    upper_fence = q3 + mild_k * iqr
+    lower_extreme = q1 - extreme_k * iqr
+    upper_extreme = q3 + extreme_k * iqr
+
+    mild = [v for v in sorted_vals if v < lower_fence or v > upper_fence]
+    extreme = [v for v in sorted_vals if v < lower_extreme or v > upper_extreme]
+
+    return {
+        "q1": q1,
+        "median": median,
+        "q3": q3,
+        "iqr": iqr,
+        "lower_fence": lower_fence,
+        "upper_fence": upper_fence,
+        "mild_outliers": mild,
+        "extreme_outliers": extreme,
+    }
+
+
+def _iqm(vals: list[float]) -> float:
+    """Interquartile mean — average of values between Q1 and Q3.
+
+    Recommended by Google Research "Deep RL at Statistical Precipice"
+    (NeurIPS 2021) for robust RL evaluation. Discards the most extreme
+    25% on each tail, reducing sensitivity to outliers.
+
+    Falls back to simple mean when N < 4 (insufficient for quartile exclusion).
+    """
+    n = len(vals)
+    if n < 4:
+        return sum(vals) / n if n else 0.0
+    sorted_vals = sorted(vals)
+    q1_idx = n // 4
+    q3_idx = n - q1_idx
+    middle = sorted_vals[q1_idx:q3_idx]
+    return sum(middle) / len(middle) if middle else 0.0
+
+
+def _trend_slope(vals: list[float]) -> float:
+    """OLS slope of values vs index. Positive = metric increasing over time.
+
+    Returns 0.0 for N < 3 (insufficient for meaningful trend).
+    """
+    n = len(vals)
+    if n < 3:
+        return 0.0
+    x_mean = (n - 1) / 2.0
+    y_mean = sum(vals) / n
+    numerator = sum((i - x_mean) * (v - y_mean) for i, v in enumerate(vals))
+    denominator = sum((i - x_mean) ** 2 for i in range(n))
+    return numerator / denominator if denominator != 0 else 0.0
+
+
+def _skewness(vals: list[float]) -> float | None:
+    """Sample skewness (Fisher's definition). Returns None if N < min threshold.
+
+    Uses skewness_min_n from config (default 8) as minimum sample size.
+    """
+    min_n = _AGGREGATION_CONFIG["skewness_min_n"]
+    n = len(vals)
+    if n < min_n:
+        return None
+    mean = sum(vals) / n
+    m2 = sum((v - mean) ** 2 for v in vals) / n
+    m3 = sum((v - mean) ** 3 for v in vals) / n
+    if m2 == 0:
+        return 0.0
+    return m3 / (m2**1.5)
+
+
+def _skewness_label(skew: float) -> str:
+    """Classify skewness magnitude."""
+    if skew < -0.5:
+        return "left-skewed"
+    if skew > 0.5:
+        return "right-skewed"
+    return "symmetric"
+
+
+def _temporal_windows(
+    epochs: list[dict[str, float]],
+    metric_keys: list[str],
+) -> list[dict[str, Any]]:
+    """Split fold snapshots into temporal windows and compute per-window means.
+
+    Window strategy:
+    - N >= 6: 3 windows (early/mid/late)
+    - 4 <= N < 6: 2 windows (early/late)
+    - N < 4: empty list (too few for windowing)
+
+    Args:
+        epochs: List of epoch metric dicts (assumed chronologically ordered).
+        metric_keys: Which metrics to compute window means for.
+
+    Returns:
+        List of window dicts with 'label' and per-metric mean values.
+    """
+    n = len(epochs)
+    if n < 4:
+        return []
+
+    if n >= 6:
+        third = n // 3
+        splits = [
+            ("early", epochs[:third]),
+            ("mid", epochs[third : 2 * third]),
+            ("late", epochs[2 * third :]),
+        ]
+    else:
+        half = n // 2
+        splits = [
+            ("early", epochs[:half]),
+            ("late", epochs[half:]),
+        ]
+
+    windows: list[dict[str, Any]] = []
+    for label, window_epochs in splits:
+        window: dict[str, Any] = {"label": label}
+        for key in metric_keys:
+            vals = [e[key] for e in window_epochs if key in e]
+            window[key] = sum(vals) / len(vals) if vals else 0.0
+        windows.append(window)
+    return windows
+
+
+def _trend_direction(
+    slope: float,
+    key: str,
+) -> str:
+    """Label trend direction. MDD is inverted (positive slope = recovering)."""
+    if abs(slope) < 1e-6:
+        return "flat"
+    # For MDD, positive slope means getting less negative = recovering
+    if key in ("rolling_mdd_500",):
+        return "recovering" if slope > 0 else "worsening"
+    return "improving" if slope > 0 else "declining"
+
+
+def _format_outlier_events(
+    epochs: list[dict[str, float]],
+    key: str,
+    outlier_vals: list[float],
+    max_events: int,
+    worst: bool = True,
+) -> str:
+    """Format up to max_events outlier epochs for a metric.
+
+    Args:
+        epochs: All fold epochs.
+        key: Metric key to match outliers on.
+        outlier_vals: List of values identified as outliers by IQR.
+        max_events: Maximum events to report (from config).
+        worst: If True, sort ascending (worst MDD first); if False, descending.
+
+    Returns:
+        Formatted string of outlier events, or "none (within IQR fences)".
+    """
+    if not outlier_vals:
+        return "none (within IQR fences)"
+
+    outlier_set = set(outlier_vals)
+    candidates = [(e.get(key, 0.0), e) for e in epochs if e.get(key) in outlier_set]
+    candidates.sort(key=lambda x: x[0], reverse=not worst)
+    selected = candidates[:max_events]
+
+    parts = []
+    for _, event in selected:
+        parts.append(
+            f"epoch={event.get('epoch', '?'):.0f} "
+            f"{key}={event.get(key, 0):.4f} "
+            f"reward={event.get('mean_reward', 0):.4f} "
+            f"sharpe={event.get('rolling_sharpe_500', 0):.4f}"
+        )
+    result = "; ".join(parts)
+    if len(candidates) > max_events:
+        result += f" (+{len(candidates) - max_events} more)"
+    return result
+
+
 def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
     """Aggregate raw epoch memories into per-fold statistical summaries.
 
-    Groups memories by run_id (algo_fold), computes stats for each fold,
-    identifies per-fold P1/P99 outlier events, and returns human-readable
-    summary strings suitable for a single LLM consolidation call.
+    Groups memories by run_id (algo_fold), computes robust statistics for each
+    fold (5-number summary, IQM, trend slopes, temporal windows, IQR-based
+    outlier detection, skewness), and returns human-readable summary strings
+    suitable for a single LLM consolidation call.
 
     Each summary includes:
-    - Overall stats (mean/min/max/last) computed from ALL memories in the fold
-    - Per-fold P1/P99 outlier details (worst/best MDD events, KL spikes)
-    - Reward weight trajectory (first → last → number of changes)
+    - Fold metadata with N, cadence, and confidence label
+    - Extended stats (mean/IQM/Q1/median/Q3/min/max/last + trend) per metric
+    - Temporal trajectory (early/mid/late window means)
+    - IQR-based outlier detection with up to N extreme events
+    - Reward weight trajectory with pre/post sharpe deltas
 
     Args:
         memories: List of memory dicts with 'text' field containing epoch data.
@@ -888,10 +1183,14 @@ def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
     import re
     from collections import defaultdict
 
+    agg_cfg = _AGGREGATION_CONFIG
+    max_events = agg_cfg["max_outlier_events"]
+
     # Parse metrics from memory text into per-fold groups
     folds: dict[str, list[dict[str, float]]] = defaultdict(list)
     fold_meta: dict[str, dict[str, str]] = {}
-    fold_weights: dict[str, list[str]] = defaultdict(list)
+    # Track (epoch_number, weight_json) pairs for pre/post delta analysis
+    fold_weights: dict[str, list[tuple[float, str]]] = defaultdict(list)
 
     for mem in memories:
         text = mem.get("text", "")
@@ -934,48 +1233,11 @@ def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
                 "env": env_m.group(1) if env_m else "unknown",
             }
 
-        # Track reward weight changes
+        # Track reward weight changes with epoch association
         weights_m = re.search(r"reward_weights=(\{[^}]+\})", text)
         if weights_m:
-            fold_weights[run_id].append(weights_m.group(1))
-
-    def _stat(
-        epochs_list: list[dict[str, float]],
-        key: str,
-    ) -> tuple[float, float, float, float]:
-        """Return (mean, min, max, last) for a metric across epochs."""
-        vals = [e[key] for e in epochs_list if key in e]
-        if not vals:
-            return (0.0, 0.0, 0.0, 0.0)
-        mean = sum(vals) / len(vals)
-        return (mean, min(vals), max(vals), vals[-1])
-
-    def _percentile(vals: list[float], pct: float) -> float:
-        """Compute percentile from sorted values."""
-        if not vals:
-            return 0.0
-        idx = int(len(vals) * pct / 100)
-        return vals[min(idx, len(vals) - 1)]
-
-    def _find_outlier_event(
-        epochs_list: list[dict[str, float]],
-        key: str,
-        worst: bool = True,
-    ) -> str:
-        """Find the epoch with the most extreme value for a metric."""
-        candidates = [(e.get(key, 0.0), e) for e in epochs_list if key in e]
-        if not candidates:
-            return "none"
-        if worst:
-            _, event = min(candidates, key=lambda x: x[0])
-        else:
-            _, event = max(candidates, key=lambda x: x[0])
-        return (
-            f"epoch={event.get('epoch', '?'):.0f} "
-            f"{key}={event.get(key, 0):.4f} "
-            f"reward={event.get('mean_reward', 0):.4f} "
-            f"sharpe={event.get('rolling_sharpe_500', 0):.4f}"
-        )
+            epoch_num = metrics.get("epoch", 0.0)
+            fold_weights[run_id].append((epoch_num, weights_m.group(1)))
 
     # Build summaries per fold
     summaries: list[str] = []
@@ -986,70 +1248,201 @@ def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
         if n == 0:
             continue
 
-        # Overall stats from ALL memories
-        reward_mean, reward_min, reward_max, reward_last = _stat(epochs, "mean_reward")
-        sharpe_mean, sharpe_min, sharpe_max, sharpe_last = _stat(epochs, "rolling_sharpe_500")
-        mdd_mean, mdd_min, mdd_max, mdd_last = _stat(epochs, "rolling_mdd_500")
-        ploss_mean, _, _, ploss_last = _stat(epochs, "policy_loss")
-        vloss_mean, _, _, vloss_last = _stat(epochs, "value_loss")
-        kl_mean, _, kl_max, _ = _stat(epochs, "approx_kl")
-        winrate_mean, _, _, winrate_last = _stat(epochs, "rolling_win_rate_500")
+        algo = meta.get("algo", "unknown").lower()
+        has_kl = algo in _KL_CAPABLE_ALGOS
 
-        # Per-fold P1/P99 thresholds
-        mdd_vals = sorted(e.get("rolling_mdd_500", 0) for e in epochs if "rolling_mdd_500" in e)
-        kl_vals = sorted(e.get("approx_kl", 0) for e in epochs if "approx_kl" in e)
-        mdd_p1 = _percentile(mdd_vals, 1)
-        mdd_p99 = _percentile(mdd_vals, 99)
-        kl_p99 = _percentile(kl_vals, 99)
+        # Derive cadence from config
+        cadence_key = f"epoch_cadence_{algo}"
+        cadence = agg_cfg.get(cadence_key, agg_cfg["epoch_cadence_default"])
 
-        # Count outliers using per-fold thresholds
-        mdd_bottom1 = sum(1 for v in mdd_vals if v < mdd_p1) if mdd_vals else 0
-        mdd_top1 = sum(1 for v in mdd_vals if v > mdd_p99) if mdd_vals else 0
-        kl_top1 = sum(1 for v in kl_vals if v > kl_p99) if kl_vals else 0
-
-        # Outlier event details
-        worst_mdd_event = _find_outlier_event(epochs, "rolling_mdd_500", worst=True)
-        best_mdd_event = _find_outlier_event(epochs, "rolling_mdd_500", worst=False)
-        max_kl_event = _find_outlier_event(epochs, "approx_kl", worst=False)
+        # Confidence label based on sample size
+        n_low = agg_cfg["confidence_n_low"]
+        n_high = agg_cfg["confidence_n_high"]
+        if n <= n_low:
+            confidence = "low"
+        elif n >= n_high:
+            confidence = "high"
+        else:
+            confidence = "moderate"
 
         # Epoch range
         epoch_nums = [e.get("epoch", 0) for e in epochs if "epoch" in e]
         first_epoch = int(min(epoch_nums)) if epoch_nums else 0
         last_epoch = int(max(epoch_nums)) if epoch_nums else 0
 
-        # Reward weight trajectory
-        weights_list = fold_weights.get(run_id, [])
-        first_weights = weights_list[0] if weights_list else "unknown"
-        last_weights = weights_list[-1] if weights_list else "unknown"
-        unique_weights = len(set(weights_list))
-        weight_changes = max(0, unique_weights - 1)
+        # --- STATS section: 5-number summary + IQM + trend ---
+        # Metrics to report with extended stats
+        core_metrics = [
+            ("reward", "mean_reward"),
+            ("rolling_sharpe", "rolling_sharpe_500"),
+            ("rolling_mdd", "rolling_mdd_500"),
+            ("policy_loss", "policy_loss"),
+            ("value_loss", "value_loss"),
+            ("win_rate", "rolling_win_rate_500"),
+        ]
+        if has_kl:
+            core_metrics.append(("approx_kl", "approx_kl"))
 
-        summary = (
+        stat_lines: list[str] = []
+        for display_name, key in core_metrics:
+            vals = [e[key] for e in epochs if key in e]
+            if not vals:
+                continue
+            sorted_vals = sorted(vals)
+            mean = sum(vals) / len(vals)
+            q1, median, q3 = _quartiles(sorted_vals)
+            iqm_val = _iqm(vals)
+            slope = _trend_slope(vals)
+            direction = _trend_direction(slope, key)
+            last = vals[-1]
+
+            line = (
+                f"    {display_name}: mean={mean:.4f} iqm={iqm_val:.4f} "
+                f"Q1={q1:.4f} med={median:.4f} Q3={q3:.4f} "
+                f"min={sorted_vals[0]:.4f} max={sorted_vals[-1]:.4f} "
+                f"last={last:.4f} trend={slope:+.4f}({direction})"
+            )
+
+            # Append skewness for large-N folds
+            skew = _skewness(vals)
+            if skew is not None:
+                line += f" skew={skew:.2f}({_skewness_label(skew)})"
+
+            stat_lines.append(line)
+
+        # --- TRAJECTORY section: temporal windows ---
+        window_metric_keys = [
+            "mean_reward",
+            "rolling_sharpe_500",
+            "rolling_mdd_500",
+            "rolling_win_rate_500",
+        ]
+        windows = _temporal_windows(epochs, window_metric_keys)
+        trajectory_lines: list[str] = []
+        if windows:
+            labels = [w["label"] for w in windows]
+            arrow = "->".join(labels)
+            trajectory_lines.append(f"  TRAJECTORY ({arrow}):")
+            for display_name, key in [
+                ("reward", "mean_reward"),
+                ("sharpe", "rolling_sharpe_500"),
+                ("mdd", "rolling_mdd_500"),
+            ]:
+                window_vals = [w.get(key, 0.0) for w in windows]
+                vals_str = " -> ".join(f"{v:.4f}" for v in window_vals)
+                # Determine direction from first to last window
+                if len(window_vals) >= 2:
+                    delta = window_vals[-1] - window_vals[0]
+                    direction = _trend_direction(delta, key)
+                else:
+                    direction = "flat"
+                trajectory_lines.append(f"    {display_name}: {vals_str} ({direction})")
+
+        # --- OUTLIERS section: IQR-based detection ---
+        mdd_vals = [e.get("rolling_mdd_500", 0) for e in epochs if "rolling_mdd_500" in e]
+        mdd_iqr = _iqr_outliers(mdd_vals)
+        mdd_mild_count = len(mdd_iqr["mild_outliers"])
+
+        outlier_lines: list[str] = []
+        outlier_lines.append(f"  OUTLIERS (IQR fences, N={n}):")
+
+        # MDD outliers — worst events (most negative)
+        mdd_worst_events = _format_outlier_events(
+            epochs,
+            "rolling_mdd_500",
+            [v for v in mdd_iqr["mild_outliers"] if v < mdd_iqr["lower_fence"]],
+            max_events,
+            worst=True,
+        )
+        mdd_best_events = _format_outlier_events(
+            epochs,
+            "rolling_mdd_500",
+            [v for v in mdd_iqr["mild_outliers"] if v > mdd_iqr["upper_fence"]],
+            max_events,
+            worst=False,
+        )
+        rate_str = f"{mdd_mild_count}/{n}" if n > 0 else "0/0"
+        rate_pct = f"({mdd_mild_count / n * 100:.0f}%)" if n > 0 else "(0%)"
+        outlier_lines.append(
+            f"    mdd: {rate_str} {rate_pct} mild outliers "
+            f"(fences=[{mdd_iqr['lower_fence']:.4f}, {mdd_iqr['upper_fence']:.4f}])"
+        )
+        outlier_lines.append(f"      worst: {mdd_worst_events}")
+        outlier_lines.append(f"      best: {mdd_best_events}")
+
+        # KL outliers (PPO only)
+        if has_kl:
+            kl_vals = [e.get("approx_kl", 0) for e in epochs if "approx_kl" in e]
+            kl_iqr = _iqr_outliers(kl_vals)
+            kl_mild_count = len(kl_iqr["mild_outliers"])
+            kl_high_events = _format_outlier_events(
+                epochs,
+                "approx_kl",
+                [v for v in kl_iqr["mild_outliers"] if v > kl_iqr["upper_fence"]],
+                max_events,
+                worst=False,
+            )
+            kl_rate = f"{kl_mild_count}/{n}" if n > 0 else "0/0"
+            kl_pct = f"({kl_mild_count / n * 100:.0f}%)" if n > 0 else "(0%)"
+            outlier_lines.append(
+                f"    kl: {kl_rate} {kl_pct} mild outliers "
+                f"(fences=[{kl_iqr['lower_fence']:.6f}, {kl_iqr['upper_fence']:.6f}])"
+            )
+            outlier_lines.append(f"      high: {kl_high_events}")
+
+        # --- REWARD WEIGHTS section: trajectory with pre/post deltas ---
+        weight_pairs = fold_weights.get(run_id, [])
+        # Sort by epoch
+        weight_pairs.sort(key=lambda x: x[0])
+        weight_lines: list[str] = []
+        if weight_pairs:
+            first_w = weight_pairs[0][1]
+            last_w = weight_pairs[-1][1]
+            # Detect changes
+            changes: list[tuple[float, str, str]] = []  # (epoch, old, new)
+            for i in range(1, len(weight_pairs)):
+                if weight_pairs[i][1] != weight_pairs[i - 1][1]:
+                    changes.append((weight_pairs[i][0], weight_pairs[i - 1][1], weight_pairs[i][1]))
+
+            weight_lines.append("  REWARD WEIGHTS:")
+            weight_lines.append(f"    initial={first_w}")
+            for change_epoch, old_w, new_w in changes:
+                # Find nearest sharpe before and after the change
+                pre_sharpe = None
+                post_sharpe = None
+                for e in epochs:
+                    ep = e.get("epoch", -1)
+                    if ep <= change_epoch and "rolling_sharpe_500" in e:
+                        pre_sharpe = e["rolling_sharpe_500"]
+                    if ep >= change_epoch and "rolling_sharpe_500" in e:
+                        post_sharpe = e["rolling_sharpe_500"]
+                        break
+                delta_str = ""
+                if pre_sharpe is not None and post_sharpe is not None:
+                    delta = post_sharpe - pre_sharpe
+                    delta_str = f" sharpe {pre_sharpe:.4f}->{post_sharpe:.4f} ({delta:+.4f})"
+                weight_lines.append(
+                    f"    change@epoch={change_epoch:.0f}: {old_w}->{new_w}{delta_str}"
+                )
+            weight_lines.append(f"    final={last_w} total_changes={len(changes)}")
+        else:
+            weight_lines.append("  REWARD WEIGHTS: none tracked")
+
+        # --- Assemble summary ---
+        header = (
             f"FOLD SUMMARY: {run_id} algo={meta.get('algo', '?')} "
             f"env={meta.get('env', '?')} "
-            f"epochs={first_epoch}-{last_epoch} snapshots={n}\n"
-            f"  STATS (all epochs):\n"
-            f"    reward: mean={reward_mean:.4f} min={reward_min:.4f} "
-            f"max={reward_max:.4f} last={reward_last:.4f}\n"
-            f"    rolling_sharpe: mean={sharpe_mean:.4f} min={sharpe_min:.4f} "
-            f"max={sharpe_max:.4f} last={sharpe_last:.4f}\n"
-            f"    rolling_mdd: mean={mdd_mean:.4f} worst={mdd_min:.4f} "
-            f"best={mdd_max:.4f} last={mdd_last:.4f}\n"
-            f"    policy_loss: mean={ploss_mean:.6f} last={ploss_last:.6f}\n"
-            f"    value_loss: mean={vloss_mean:.6f} last={vloss_last:.6f}\n"
-            f"    approx_kl: mean={kl_mean:.6f} max={kl_max:.6f}\n"
-            f"    win_rate: mean={winrate_mean:.4f} last={winrate_last:.4f}\n"
-            f"  OUTLIERS (per-fold P1/P99):\n"
-            f"    mdd_bottom1%({mdd_bottom1} events, threshold={mdd_p1:.4f}): "
-            f"worst={worst_mdd_event}\n"
-            f"    mdd_top1%({mdd_top1} events, threshold={mdd_p99:.4f}): "
-            f"best={best_mdd_event}\n"
-            f"    kl_top1%({kl_top1} events, threshold={kl_p99:.6f}): "
-            f"max={max_kl_event}\n"
-            f"  REWARD WEIGHTS: start={first_weights} end={last_weights} "
-            f"changes={weight_changes}"
+            f"epochs={first_epoch}-{last_epoch} N={n} cadence={cadence} "
+            f"confidence={confidence}"
         )
-        summaries.append(summary)
+        parts = [header, "  STATS (all epochs):"]
+        parts.extend(stat_lines)
+        if trajectory_lines:
+            parts.extend(trajectory_lines)
+        parts.extend(outlier_lines)
+        parts.extend(weight_lines)
+
+        summaries.append("\n".join(parts))
 
     log.info(
         "epoch_summaries_aggregated",
@@ -1364,10 +1757,21 @@ class ConsolidateAgent:
         fold_summaries = _aggregate_epoch_summaries(epoch_memories)
         reward_summaries = _summarize_reward_adjustments(reward_memories, env_name)
 
-        # Combine into single prompt
+        # Combine into single prompt with global preamble
         parts = []
         if fold_summaries:
-            parts.append("=== FOLD TRAINING SUMMARIES ===\n" + "\n\n".join(fold_summaries))
+            preamble = (
+                f"AGGREGATION NOTE: {len(epoch_memories)} raw epoch memories reduced "
+                f"to {len(fold_summaries)} fold summaries.\n"
+                f"Small-N folds (PPO, ~4 snapshots) have lower statistical confidence "
+                f"than large-N folds (A2C/SAC, ~17 snapshots).\n"
+                f"Stats use IQM (interquartile mean) as primary central tendency — "
+                f"more robust than mean for RL metrics.\n"
+                f"Outliers detected via IQR fences (Tukey method), not percentiles."
+            )
+            parts.append(
+                preamble + "\n\n=== FOLD TRAINING SUMMARIES ===\n" + "\n\n".join(fold_summaries)
+            )
         if reward_summaries:
             parts.append("=== REWARD WEIGHT ADJUSTMENTS ===\n" + "\n\n".join(reward_summaries))
         summary_text = "\n\n".join(parts)
