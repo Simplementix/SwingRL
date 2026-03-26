@@ -71,6 +71,9 @@ def _make_callback(
     }
     cb.model = MagicMock()
     cb.model.logger = mock_logger
+    # SB3 stores completed episode stats in ep_info_buffer (deque of dicts).
+    # mean_reward is computed from this buffer, not the logger.
+    cb.model.ep_info_buffer = [{"r": 1.0, "l": 100, "t": 0.0}, {"r": 2.0, "l": 100, "t": 0.0}]
     cb.num_timesteps = 1000
     return cb
 
@@ -134,24 +137,48 @@ class TestEpochCallbackShouldStore:
 class TestEpochCallbackCollectMetrics:
     """TRAIN-10: _collect_metrics() assembles the epoch metrics dict."""
 
-    def test_collect_metrics_pulls_from_logger(self) -> None:
-        """TRAIN-10: mean_reward, policy_loss, approx_kl pulled from logger.name_to_value."""
+    def test_collect_metrics_pulls_from_model_and_logger(self) -> None:
+        """TRAIN-10: mean_reward from ep_info_buffer; policy_loss, approx_kl from logger."""
         cb = _make_callback()
         cb._epoch = 5
         metrics = cb._collect_metrics(None)
+        # mean_reward comes from ep_info_buffer: mean([1.0, 2.0]) = 1.5
         assert abs(metrics["mean_reward"] - 1.5) < 1e-6
         assert abs(metrics["approx_kl"] - 0.01) < 1e-6
         assert abs(metrics["policy_loss"] - (-0.002)) < 1e-6
 
     def test_collect_metrics_missing_keys_default_to_zero(self) -> None:
-        """TRAIN-10: Absent logger keys default to 0.0."""
+        """TRAIN-10: Absent logger keys default to 0.0; empty buffer → mean_reward 0.0."""
         cb = _make_callback()
         cb.model.logger.name_to_value = {}  # empty — no keys present
+        cb.model.ep_info_buffer = []  # empty buffer
         cb._epoch = 1
         metrics = cb._collect_metrics(None)
         assert metrics["mean_reward"] == 0.0
         assert metrics["approx_kl"] == 0.0
         assert metrics["policy_loss"] == 0.0
+
+    def test_collect_metrics_mean_reward_from_ep_info_buffer(self) -> None:
+        """TRAIN-10: mean_reward computed from model.ep_info_buffer, not logger."""
+        cb = _make_callback()
+        # Override buffer with known values
+        cb.model.ep_info_buffer = [
+            {"r": 10.0, "l": 50, "t": 0.0},
+            {"r": 20.0, "l": 50, "t": 0.0},
+            {"r": 30.0, "l": 50, "t": 0.0},
+        ]
+        cb._epoch = 5
+        metrics = cb._collect_metrics(None)
+        # mean([10, 20, 30]) = 20.0
+        assert abs(metrics["mean_reward"] - 20.0) < 1e-6
+
+    def test_collect_metrics_mean_reward_no_buffer_attribute(self) -> None:
+        """TRAIN-10: mean_reward falls back to 0.0 if ep_info_buffer missing."""
+        cb = _make_callback()
+        del cb.model.ep_info_buffer
+        cb._epoch = 5
+        metrics = cb._collect_metrics(None)
+        assert metrics["mean_reward"] == 0.0
 
     def test_collect_metrics_calls_wrapper_rolling_methods(self) -> None:
         """TRAIN-10: rolling_sharpe(), rolling_mdd(), rolling_win_rate() are called."""
