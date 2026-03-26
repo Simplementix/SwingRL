@@ -79,7 +79,7 @@ HYPERPARAM_BOUNDS: dict[str, tuple[Any, Any]]
 REWARD_BOUNDS: dict[str, tuple[float, float]]
 HYPERPARAM_BOUNDS, REWARD_BOUNDS = _load_bounds()
 
-MIN_EPOCHS_BEFORE_STOP: int = 10  # hard floor — never lower
+MIN_TRAINING_PROGRESS: float = 0.20  # hard floor — never lower
 MAX_EPOCHS: int = 200
 MIN_WINDOW_YEARS: float = 1.0
 CRISIS_PERIOD_PCT: tuple[float, float] = (0.05, 0.50)

@@ -266,6 +266,8 @@ class WalkForwardBacktester:
         total_timesteps: int = 1_000_000,
         hyperparams_override: dict[str, Any] | None = None,
         memory_client: MemoryClient | None = None,
+        fold_queue: Any | None = None,
+        advice_enabled: bool = True,
     ) -> list[FoldResult]:
         """Run walk-forward backtest for one algorithm on one environment.
 
@@ -281,6 +283,12 @@ class WalkForwardBacktester:
             memory_client: Optional MemoryClient for epoch-level memory ingestion
                 and LLM-guided reward weight adjustments during training.
                 Fail-open: if None, training proceeds without memory integration.
+            fold_queue: Optional multiprocessing.Queue for real-time per-fold
+                DuckDB writes. Each completed fold is enqueued as
+                (algo_name, FoldResult) for the background writer thread.
+            advice_enabled: When True, enable LLM epoch advice and reward weight
+                adjustments during training. When False, only capture epoch
+                memories without querying for advice (used for iteration 0).
 
         Returns:
             List of FoldResult for each fold.
@@ -338,6 +346,7 @@ class WalkForwardBacktester:
                 hyperparams_override=hyperparams_override,
                 memory_client=memory_client,
                 run_id=f"{env_name}_{algo_name}_fold{fold_idx}",
+                advice_enabled=advice_enabled,
             )
 
             # Evaluate on train data (in-sample)
@@ -390,6 +399,13 @@ class WalkForwardBacktester:
             )
 
             results.append(fold_result)
+
+            # Enqueue fold result for real-time DuckDB write
+            if fold_queue is not None:
+                try:
+                    fold_queue.put((algo_name, fold_result))
+                except Exception:
+                    log.warning("fold_queue_put_failed", fold=fold_result.fold_number)
 
             # Store to DuckDB if available
             if self._db is not None:

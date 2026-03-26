@@ -136,6 +136,7 @@ class TrainingOrchestrator:
         memory_client: MemoryClient | None = None,
         run_id: str | None = None,
         initial_reward_weights: dict[str, float] | None = None,
+        advice_enabled: bool = True,
     ) -> TrainingResult:
         """Train an SB3 algorithm on the specified environment.
 
@@ -159,6 +160,10 @@ class TrainingOrchestrator:
                 training proceeds without memory integration.
             run_id: Training run identifier for memory tagging (e.g.
                 "equity_ppo_20260318T120000Z"). Auto-generated if None.
+            advice_enabled: When True, MemoryEpochCallback queries the LLM for
+                epoch advice and applies reward weight adjustments. When False,
+                epoch snapshots are still captured but no advice is requested.
+                Defaults to True. Set to False for iteration 0 (baseline).
 
         Returns:
             TrainingResult with paths and metadata.
@@ -294,6 +299,7 @@ class TrainingOrchestrator:
                     algo=algo_name.upper(),
                     env=env_name,
                     verbose=0,
+                    advice_enabled=advice_enabled,
                 )
                 callbacks.append(memory_cb)
                 log.info(

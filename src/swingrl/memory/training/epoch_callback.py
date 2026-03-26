@@ -43,6 +43,32 @@ ALGO_EPOCH_CADENCE: dict[str, int] = {
     "SAC": 10000,
 }
 EPOCH_STORE_CADENCE: int = 20  # Fallback for unknown algos
+
+# Per-algo SB3 logger key mappings. PPO/A2C/SAC use different internal names
+# for the same conceptual metrics. None means the metric does not exist for that algo.
+_ALGO_LOGGER_KEYS: dict[str, dict[str, str | None]] = {
+    "ppo": {
+        "policy_loss": "train/policy_gradient_loss",
+        "value_loss": "train/value_loss",
+        "entropy_loss": "train/entropy_loss",
+        "approx_kl": "train/approx_kl",
+        "clip_fraction": "train/clip_fraction",
+    },
+    "a2c": {
+        "policy_loss": "train/policy_loss",
+        "value_loss": "train/value_loss",
+        "entropy_loss": "train/entropy_loss",
+        "approx_kl": None,
+        "clip_fraction": None,
+    },
+    "sac": {
+        "policy_loss": "train/actor_loss",
+        "value_loss": "train/critic_loss",
+        "entropy_loss": "train/ent_coef_loss",
+        "approx_kl": None,
+        "clip_fraction": None,
+    },
+}
 # Thresholds for "notable" epoch events (P99/P1 based on iter 1 data analysis).
 # Previous values (0.02 KL, -0.08 MDD) fired on 80% of epochs, generating 2.8M
 # memories instead of the target ~45K. These thresholds capture only the top/bottom
@@ -80,6 +106,7 @@ class MemoryEpochCallback(BaseCallback):
         algo: str,
         env: str,
         verbose: int = 0,
+        advice_enabled: bool = True,
     ) -> None:
         """Initialize the epoch callback.
 
@@ -90,13 +117,21 @@ class MemoryEpochCallback(BaseCallback):
             algo: Algorithm name.
             env: Environment name.
             verbose: Verbosity level.
+            advice_enabled: If False, epoch snapshots are stored but LLM advice is skipped.
         """
         super().__init__(verbose=verbose)
         self._client = memory_client
         self._wrapper = wrapper
         self._run_id = run_id
-        self._algo = algo
         self._env = env
+        self._advice_enabled = advice_enabled
+
+        # Parse algo from run_id (format: {env}_{algo}_fold{N}), fallback to algo param.
+        try:
+            parts = run_id.split("_")
+            self._algo = parts[1].lower() if len(parts) >= 3 else algo.lower()
+        except (IndexError, AttributeError):
+            self._algo = "ppo"
         self._epoch: int = 0
         self._cadence: int = self._load_cadence(algo)
         self._curriculum_window_active: str = "unknown"
@@ -160,7 +195,8 @@ class MemoryEpochCallback(BaseCallback):
         """
         self._epoch += 1
 
-        approx_kl = float(self.logger.name_to_value.get("train/approx_kl", 0.0))
+        kl_key = _ALGO_LOGGER_KEYS.get(self._algo, _ALGO_LOGGER_KEYS["ppo"])["approx_kl"]
+        approx_kl = float(self.logger.name_to_value.get(kl_key, 0.0)) if kl_key else 0.0
         rolling_mdd = self._wrapper.rolling_mdd()
 
         # Check if epoch should be stored
@@ -213,6 +249,7 @@ class MemoryEpochCallback(BaseCallback):
             Dict of epoch metrics for memory ingestion.
         """
         get = self.logger.name_to_value.get
+        keys = _ALGO_LOGGER_KEYS.get(self._algo, _ALGO_LOGGER_KEYS["ppo"])
 
         return {
             "run_id": self._run_id,
@@ -221,11 +258,13 @@ class MemoryEpochCallback(BaseCallback):
             "epoch": self._epoch,
             "timestep": self.num_timesteps,
             "mean_reward": float(get("rollout/ep_rew_mean", 0.0)),
-            "policy_loss": float(get("train/policy_gradient_loss", 0.0)),
-            "value_loss": float(get("train/value_loss", 0.0)),
-            "entropy_loss": float(get("train/entropy_loss", 0.0)),
-            "approx_kl": float(get("train/approx_kl", 0.0)),
-            "clip_fraction": float(get("train/clip_fraction", 0.0)),
+            "policy_loss": float(get(keys["policy_loss"], 0.0)) if keys["policy_loss"] else 0.0,
+            "value_loss": float(get(keys["value_loss"], 0.0)) if keys["value_loss"] else 0.0,
+            "entropy_loss": float(get(keys["entropy_loss"], 0.0)) if keys["entropy_loss"] else 0.0,
+            "approx_kl": float(get(keys["approx_kl"], 0.0)) if keys["approx_kl"] else 0.0,
+            "clip_fraction": float(get(keys["clip_fraction"], 0.0))
+            if keys["clip_fraction"]
+            else 0.0,
             "rolling_sharpe_500": self._wrapper.rolling_sharpe(),
             "rolling_mdd_500": self._wrapper.rolling_mdd(),
             "rolling_win_rate_500": self._wrapper.rolling_win_rate(),
@@ -365,6 +404,9 @@ class MemoryEpochCallback(BaseCallback):
         if self._epoch % self._cadence != 0:
             return
 
+        if not self._advice_enabled:
+            return
+
         try:
             import json as _json
 
@@ -385,14 +427,15 @@ class MemoryEpochCallback(BaseCallback):
 
             stop_training = body.get("stop_training", False)
             if stop_training:
-                from swingrl.memory.training.bounds import MIN_EPOCHS_BEFORE_STOP
+                from swingrl.memory.training.bounds import MIN_TRAINING_PROGRESS
 
-                if self._epoch < MIN_EPOCHS_BEFORE_STOP:
+                progress = self.num_timesteps / max(getattr(self.model, "_total_timesteps", 1), 1)
+                if progress < MIN_TRAINING_PROGRESS:
                     log.info(
                         "stop_training_ignored_too_early",
+                        progress=f"{progress:.1%}",
+                        min_required="20%",
                         epoch=self._epoch,
-                        min_epochs=MIN_EPOCHS_BEFORE_STOP,
-                        reason=reason,
                     )
                 else:
                     log.warning(

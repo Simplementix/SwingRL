@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import os
 import shutil
 import sys
+import threading
 import time
 import urllib.request
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -1286,6 +1288,8 @@ def _run_wf_for_algo(
     timesteps: int,
     hp_override: dict[str, Any] | None = None,
     memory_enabled: bool = False,
+    fold_queue: multiprocessing.Queue | None = None,
+    advice_enabled: bool = True,
 ) -> tuple[str, list[Any]]:
     """Run walk-forward validation for one algo. Top-level for serialization.
 
@@ -1299,8 +1303,11 @@ def _run_wf_for_algo(
         timesteps: Training timesteps per fold.
         hp_override: Memory-advised hyperparameter overrides (iter 1+).
         memory_enabled: When True, construct a MemoryClient inside this subprocess
-            and pass it to the backtester for epoch-level memory ingestion and
-            LLM-guided reward weight adjustments during training.
+            and pass it to the backtester for epoch-level memory ingestion.
+        fold_queue: Optional multiprocessing.Queue for real-time per-fold DuckDB
+            writes. Each completed fold is enqueued as (algo_name, FoldResult).
+        advice_enabled: When True, enable LLM epoch advice and reward weight
+            adjustments. When False, only capture epoch memories (no advice).
 
     Returns:
         Tuple of (algo_name, fold_results_list).
@@ -1330,6 +1337,7 @@ def _run_wf_for_algo(
         pid=os.getpid(),
         hp_override=bool(hp_override),
         memory_enabled=memory_enabled,
+        advice_enabled=advice_enabled,
     )
 
     backtester = WalkForwardBacktester(config=config, db=None)
@@ -1342,6 +1350,8 @@ def _run_wf_for_algo(
         total_timesteps=timesteps,
         hyperparams_override=hp_override,
         memory_client=memory_client,
+        fold_queue=fold_queue,
+        advice_enabled=advice_enabled,
     )
 
     log.info("pipeline_wf_complete", env_name=env_name, algo=algo_name, fold_count=len(folds))
@@ -1437,6 +1447,90 @@ def _train_final_algo(
     )
 
     return (algo_name, result_dict)
+
+
+# ---------------------------------------------------------------------------
+# Background fold writer (real-time per-fold DuckDB writes)
+# ---------------------------------------------------------------------------
+
+
+def _fold_writer(
+    queue: multiprocessing.Queue,
+    db_path: Path,
+    env_name: str,
+    iteration_number: int,
+    run_type: str,
+    features: np.ndarray,
+    dates: np.ndarray,
+    n_symbols: int,
+    per_asset: int,
+) -> None:
+    """Background writer thread that reads FoldResults from queue and writes to DuckDB.
+
+    Runs in a threading.Thread (not subprocess) in the main process.
+    Single writer = no DuckDB lock conflicts.
+    Exits when sentinel None is received.
+    """
+    conn = duckdb.connect(str(db_path))
+    written = 0
+    try:
+        while True:
+            item = queue.get()
+            if item is None:
+                break
+            algo_name, fold_result = item
+            try:
+                store_fold_results_to_duckdb(
+                    conn=conn,
+                    fold_results=[fold_result],
+                    env_name=env_name,
+                    algo_name=algo_name,
+                    iteration_number=iteration_number,
+                    run_type=run_type,
+                    features=features,
+                    dates=dates,
+                    n_symbols=n_symbols,
+                    per_asset=per_asset,
+                )
+                written += 1
+                log.info(
+                    "fold_written_to_duckdb",
+                    algo=algo_name,
+                    fold=fold_result.fold_number,
+                    env=env_name,
+                    iteration=iteration_number,
+                    total_written=written,
+                )
+            except Exception as exc:
+                log.error(
+                    "fold_write_failed",
+                    algo=algo_name,
+                    fold=fold_result.fold_number,
+                    error=str(exc),
+                )
+    finally:
+        # Verify row count
+        try:
+            row_count = conn.execute(
+                "SELECT count(1) FROM backtest_results"
+                " WHERE iteration_number = ? AND environment = ?",
+                [iteration_number, env_name],
+            ).fetchone()[0]
+            log.info(
+                "duckdb_fold_writer_done",
+                env=env_name,
+                iteration=iteration_number,
+                rows_written=written,
+                verified_rows=row_count,
+            )
+        except Exception:
+            log.info(
+                "duckdb_fold_writer_done",
+                env=env_name,
+                iteration=iteration_number,
+                rows_written=written,
+            )
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1559,10 +1653,20 @@ def run_environment(
                     error=str(exc),
                 )
 
-    # Run walk-forward for all non-checkpointed algos in parallel
-    wf_memory_enabled = (
-        iteration_number > 0 and hasattr(config, "memory_agent") and config.memory_agent.enabled
+    # Always capture raw epoch memories if memory service API key is configured
+    wf_memory_capture = hasattr(config, "memory_agent") and bool(
+        getattr(config.memory_agent, "api_key", "")
     )
+    # Only enable LLM advice (epoch advice + reward adjustments) for iter 1+
+    wf_memory_advice = iteration_number > 0 and wf_memory_capture and config.memory_agent.enabled
+
+    # Compute n_symbols and per_asset for DuckDB fold writes
+    if env_name == "equity":
+        _n_symbols = len(config.equity.symbols)
+        _per_asset = 15
+    else:
+        _n_symbols = len(config.crypto.symbols)
+        _per_asset = 13
 
     if algos_to_run:
         max_workers = min(3, len(algos_to_run))
@@ -1572,8 +1676,28 @@ def run_environment(
             algos=algos_to_run,
             max_workers=max_workers,
             memory_hp_algos=list(wf_hp_overrides.keys()),
-            memory_enabled=wf_memory_enabled,
+            memory_capture=wf_memory_capture,
+            memory_advice=wf_memory_advice,
         )
+
+        # Start background writer thread for real-time per-fold DuckDB writes
+        fold_queue: multiprocessing.Queue = multiprocessing.Queue()
+        writer_thread = threading.Thread(
+            target=_fold_writer,
+            args=(
+                fold_queue,
+                db_path,
+                env_name,
+                iteration_number,
+                "baseline",
+                features_full,
+                dates_array,
+                _n_symbols,
+                _per_asset,
+            ),
+            daemon=True,
+        )
+        writer_thread.start()
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
@@ -1587,7 +1711,9 @@ def run_environment(
                     models_dir,
                     DEFAULT_TIMESTEPS[env_name],
                     wf_hp_overrides.get(algo),
-                    wf_memory_enabled,
+                    wf_memory_capture,
+                    fold_queue,
+                    wf_memory_advice,
                 ): algo
                 for algo in algos_to_run
             }
@@ -1600,34 +1726,9 @@ def run_environment(
                     log.error("walk_forward_failed", algo=algo_name, exc_info=True)
                     continue
 
-    # Deferred DuckDB writes — fold-level results from all WF subprocess workers
-    if env_name == "equity":
-        _n_symbols = len(config.equity.symbols)
-        _per_asset = 15
-    else:
-        _n_symbols = len(config.crypto.symbols)
-        _per_asset = 13
-
-    conn_wf = duckdb.connect(str(db_path))
-    try:
-        for _algo, _folds in all_wf_results.items():
-            if _folds:
-                store_fold_results_to_duckdb(
-                    conn=conn_wf,
-                    fold_results=_folds,
-                    env_name=env_name,
-                    algo_name=_algo,
-                    iteration_number=iteration_number,
-                    run_type="baseline",
-                    features=features_full,
-                    dates=dates_array,
-                    n_symbols=_n_symbols,
-                    per_asset=_per_asset,
-                )
-    except Exception as exc:
-        log.warning("fold_results_duckdb_write_failed", env_name=env_name, error=str(exc))
-    finally:
-        conn_wf.close()
+        # Signal writer thread to finish and wait for it
+        fold_queue.put(None)
+        writer_thread.join(timeout=30)
 
     # If all algos were checkpointed, skip ensemble computation
     has_wf_data = any(len(v) > 0 for v in all_wf_results.values())
@@ -1673,7 +1774,7 @@ def run_environment(
             all_wf_results=all_wf_results,
             run_type="baseline",
             wall_clock_s=time.monotonic() - env_start,
-            memory_enabled=wf_memory_enabled,
+            memory_enabled=wf_memory_capture,
             hp_overrides=wf_hp_overrides if iteration_number > 0 else None,
         )
     except Exception as exc:
