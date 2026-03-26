@@ -101,11 +101,11 @@ memory_agent:
     - name: clawbot
       url: "http://172.184.70.2:11434"
       model: "qwen2.5:1.5b"
-      timeout: 15
+      timeout: 60
     - name: homelab
       url: "http://swingrl-ollama:11434"
       model: "qwen3:1.7b"
-      timeout: 30
+      timeout: 60
   # Epoch aggregation parameters (used by consolidation to summarize epoch memories)
   outlier_iqr_mild: 1.5                     # Tukey mild fence multiplier for IQR outlier detection
   outlier_iqr_extreme: 3.0                  # Tukey extreme fence multiplier
