@@ -1681,7 +1681,9 @@ def run_environment(
         )
 
         # Start background writer thread for real-time per-fold DuckDB writes
-        fold_queue: multiprocessing.Queue = multiprocessing.Queue()
+        # Use Manager().Queue() — proxy objects are picklable across ProcessPoolExecutor
+        manager = multiprocessing.Manager()
+        fold_queue = manager.Queue()
         writer_thread = threading.Thread(
             target=_fold_writer,
             args=(
@@ -1729,6 +1731,7 @@ def run_environment(
         # Signal writer thread to finish and wait for it
         fold_queue.put(None)
         writer_thread.join(timeout=30)
+        manager.shutdown()
 
     # If all algos were checkpointed, skip ensemble computation
     has_wf_data = any(len(v) > 0 for v in all_wf_results.values())
