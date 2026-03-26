@@ -251,15 +251,10 @@ class MemoryEpochCallback(BaseCallback):
         get = self.logger.name_to_value.get
         keys = _ALGO_LOGGER_KEYS.get(self._algo, _ALGO_LOGGER_KEYS["ppo"])
 
-        # SB3 only writes rollout/ep_rew_mean to the logger during _dump_logs(),
-        # which doesn't align with _on_rollout_end timing. Read mean episode
-        # reward directly from the model's ep_info_buffer (deque of completed
-        # episodes with keys r=reward, l=length, t=time). This is the same
-        # source SB3 uses internally to compute rollout/ep_rew_mean.
-        mean_reward = 0.0
-        ep_buf = getattr(self.model, "ep_info_buffer", None)
-        if ep_buf and len(ep_buf) > 0:
-            mean_reward = float(sum(ep["r"] for ep in ep_buf) / len(ep_buf))
+        # SB3's rollout/ep_rew_mean requires Monitor wrapper (not used here).
+        # Use the MemoryVecRewardWrapper's rolling mean instead — it tracks
+        # the same shaped per-step rewards used for rolling_sharpe/mdd/win_rate.
+        mean_reward = self._wrapper.rolling_mean_reward()
 
         return {
             "run_id": self._run_id,

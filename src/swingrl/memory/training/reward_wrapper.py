@@ -202,6 +202,16 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         drawdown = cumsum - running_max
         return float(np.min(drawdown))
 
+    def rolling_mean_reward(self) -> float:
+        """Compute mean reward over the rolling window.
+
+        Returns:
+            Mean per-step reward. 0.0 if no steps recorded.
+        """
+        if not self._reward_history:
+            return 0.0
+        return float(sum(self._reward_history) / len(self._reward_history))
+
     def rolling_win_rate(self) -> float:
         """Compute fraction of steps with positive reward over rolling window.
 

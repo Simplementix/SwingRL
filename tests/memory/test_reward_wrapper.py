@@ -212,6 +212,23 @@ class TestRollingMetrics:
         wrapper = MemoryVecRewardWrapper(mock_venv)
         assert wrapper.rolling_win_rate() == pytest.approx(0.0)
 
+    def test_rolling_mean_reward_empty(self) -> None:
+        """rolling_mean_reward returns 0.0 with no history."""
+        from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
+
+        mock_venv = _make_mock_venv()
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+        assert wrapper.rolling_mean_reward() == pytest.approx(0.0)
+
+    def test_rolling_mean_reward_with_history(self) -> None:
+        """rolling_mean_reward returns mean of reward history."""
+        from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
+
+        mock_venv = _make_mock_venv()
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+        wrapper._reward_history.extend([1.0, 2.0, 3.0, 4.0])
+        assert wrapper.rolling_mean_reward() == pytest.approx(2.5)
+
     def test_rolling_sharpe_positive_rewards(self) -> None:
         """rolling_sharpe is positive when all rewards are positive."""
         from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
