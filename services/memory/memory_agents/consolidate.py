@@ -1644,9 +1644,14 @@ class ConsolidateAgent:
         Returns:
             Row ID of new/merged pattern, or None if merged into existing.
         """
-        category = pattern.get("category", "")
+        category = str(pattern.get("category", ""))
         affected_algos = pattern.get("affected_algos", [])
         affected_envs = pattern.get("affected_envs", [])
+        # Coerce LLM outputs to DB-safe types — LLMs sometimes return dicts
+        if isinstance(affected_algos, dict):
+            affected_algos = list(affected_algos.values()) if affected_algos else []
+        if isinstance(affected_envs, dict):
+            affected_envs = list(affected_envs.values()) if affected_envs else []
 
         # Check for existing active patterns with same category + env
         existing = await get_active_consolidations_async(env_name=env_name, stage=stage)
@@ -1674,16 +1679,31 @@ class ConsolidateAgent:
             new_category=category,
         )
 
+        # Coerce LLM fields to DB-safe scalar types
+        evidence_raw = pattern.get("evidence")
+        evidence_str = (
+            json.dumps(evidence_raw) if isinstance(evidence_raw, (dict, list)) else evidence_raw
+        )
+        implication_raw = pattern.get("actionable_implication")
+        implication_str = (
+            json.dumps(implication_raw)
+            if isinstance(implication_raw, (dict, list))
+            else implication_raw
+        )
+        confidence_val = pattern.get("confidence")
+        if isinstance(confidence_val, dict):
+            confidence_val = confidence_val.get("score", confidence_val.get("value", 0.5))
+
         row_id = await insert_consolidation_async(
-            pattern_text=pattern["pattern_text"],
+            pattern_text=str(pattern.get("pattern_text", "")),
             source_count=source_count,
             conflicting_with=conflict_id,
             category=category,
             affected_algos=affected_algos,
             affected_envs=affected_envs,
-            actionable_implication=pattern.get("actionable_implication"),
-            confidence=pattern.get("confidence"),
-            evidence=pattern.get("evidence"),
+            actionable_implication=implication_str,
+            confidence=float(confidence_val) if confidence_val is not None else None,
+            evidence=evidence_str,
             stage=stage,
             env_name=env_name,
             status="active",
