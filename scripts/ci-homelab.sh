@@ -17,6 +17,10 @@
 #   ssh homelab "cd ~/swingrl && bash scripts/ci-homelab.sh"
 #   ssh homelab "cd ~/swingrl && bash scripts/ci-homelab.sh --no-cache"
 #
+# Compose files:
+#   docker-compose.yml      — production (default, used for memory service + deployment)
+#   docker-compose-dev.yml  — dev/CI (ci target with pytest, ruff, mypy)
+#
 # Environment variables:
 #   REPO_DIR — path to repo on homelab (default: $HOME/swingrl)
 #
@@ -24,6 +28,7 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$HOME/swingrl}"
 NO_CACHE="${1:-}"
+DEV_COMPOSE="docker compose -f docker-compose-dev.yml"
 
 cd "$REPO_DIR"
 
@@ -32,28 +37,28 @@ git pull --ff-only
 
 echo "=== [2/6] Docker build ==="
 if [[ "$NO_CACHE" == "--no-cache" ]]; then
-    docker compose build --no-cache
-    docker compose -f docker-compose.prod.yml build --no-cache swingrl-memory
+    $DEV_COMPOSE build --no-cache
+    docker compose build --no-cache swingrl-memory
 else
-    docker compose build
-    docker compose -f docker-compose.prod.yml build swingrl-memory
+    $DEV_COMPOSE build
+    docker compose build swingrl-memory
 fi
 
 echo "=== [3/6] Run tests ==="
-docker compose run --rm --entrypoint "" swingrl uv run pytest tests/ -v
+$DEV_COMPOSE run --rm --entrypoint "" swingrl uv run pytest tests/ -v
 
 echo "=== [4/6] Lint + type check ==="
-docker compose run --rm --entrypoint "" swingrl uv run sh -c \
+$DEV_COMPOSE run --rm --entrypoint "" swingrl uv run sh -c \
     'ruff check . && ruff format --check . && mypy src/'
 
 echo "=== [4a/6] Memory service lint ==="
 # Lint services/memory/ inside the swingrl-memory container
-docker compose -f docker-compose.prod.yml run --rm --no-deps --entrypoint "" swingrl-memory sh -c \
+docker compose run --rm --no-deps --entrypoint "" swingrl-memory sh -c \
     'pip install ruff==0.15.5 mypy==1.19.1 -q && ruff check /app && ruff format --check /app && mypy /app --ignore-missing-imports'
 
 echo "=== [5/6] Cleanup ==="
+$DEV_COMPOSE down
 docker compose down
-docker compose -f docker-compose.prod.yml down
 docker image prune -f
 
 echo "=== CI PASSED ==="

@@ -240,7 +240,7 @@ uv run python scripts/init_db.py --config config/swingrl.yaml
 uv run python scripts/seed_production.py --config config/swingrl.yaml
 
 # Start production daemon + dashboard
-docker compose -f docker-compose.prod.yml up -d
+docker compose up -d
 
 # Monitor logs
 docker logs -f swingrl

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # setup_ollama.sh — Pull Qwen models into the swingrl-ollama Docker volume.
 #
-# Usage (from repo root, after starting docker-compose.prod.yml):
+# Usage (from repo root, after starting docker-compose.yml):
 #   bash scripts/setup_ollama.sh
 #
 # The 'ollama pull' command is idempotent: if the model is already present in
@@ -11,12 +11,12 @@
 #   qwen2.5:3b   — sole local model for query agent and Ollama fallback (~2.0 GB)
 #                  Consolidation primary uses NVIDIA kimi-k2.5 cloud API
 #
-# Requires: docker compose -f docker-compose.prod.yml up -d swingrl-ollama
+# Requires: docker compose -f docker-compose.yml up -d swingrl-ollama
 # before running this script.
 
 set -euo pipefail
 
-COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 SERVICE="swingrl-ollama"
 
 echo "[setup_ollama] Pulling models into ${SERVICE} container..."

@@ -1,0 +1,24 @@
+services:
+  swingrl:
+    container_name: swingrl-ci
+    build:
+      context: .
+      target: ci
+    # Resource limits — homelab has 64 GB RAM / 14C-20T; sized for training.
+    mem_limit: 16g
+    cpus: 8.0
+    # Secrets: loaded from .env on the host; never baked into the image.
+    # SECURITY: .env must be chmod 600 (owner read/write only).
+    #   chmod 600 .env  # Run after any .env modification
+    env_file: .env
+    environment:
+      - TZ=America/New_York
+    # Bind mounts: data persists on the host across container restarts.
+    # Paths match trader user's /app working directory inside the container.
+    volumes:
+      - ./data:/app/data
+      - ./db:/app/db
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./status:/app/status
+    restart: unless-stopped
