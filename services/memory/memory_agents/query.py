@@ -581,6 +581,7 @@ _RELEVANT_CATEGORIES: dict[str, list[str]] = {
     "epoch_advice": [
         "drawdown_recovery",
         "trade_quality",
+        "reward_shaping",
         "overfit_diagnosis",
         "iteration_progression",
     ],
