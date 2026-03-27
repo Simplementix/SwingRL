@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,9 @@ from db import (
 
 log = structlog.get_logger(__name__)
 
+# Config path: env var override for non-Docker environments, default for Docker.
+_CONFIG_PATH = Path(os.environ.get("SWINGRL_CONFIG_PATH", "/app/config/swingrl.yaml"))
+
 # ---------------------------------------------------------------------------
 # Cloud provider 429 blocking (calendar-day reset)
 # ---------------------------------------------------------------------------
@@ -46,6 +50,7 @@ log = structlog.get_logger(__name__)
 # Key = provider name, value = UTC date when blocked.
 # Auto-resets: if blocked date < today, the block is removed on next check.
 _CLOUD_BLOCKED: dict[str, date] = {}
+_CLOUD_BLOCKED_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Constants (loaded from mounted config YAML, fallback to hardcoded defaults)
@@ -70,7 +75,7 @@ _FALLBACK_REWARD_BOUNDS: dict[str, tuple[float, float]] = {
 
 def _load_bounds_from_config() -> tuple[dict[str, tuple[Any, Any]], dict[str, tuple[float, float]]]:
     """Load bounds from mounted swingrl.yaml, fallback to hardcoded defaults."""
-    config_path = Path("/app/config/swingrl.yaml")
+    config_path = _CONFIG_PATH
     if config_path.exists():
         # yaml.safe_load OK here: memory service can't import swingrl.config.schema
         cfg = yaml.safe_load(config_path.read_text()) or {}
@@ -126,7 +131,7 @@ def _load_query_cloud_config() -> dict[str, Any]:
     Supports gemini, openrouter, nvidia, and mistral. Falls back to
     openrouter as backup.
     """
-    config_path = Path("/app/config/swingrl.yaml")
+    config_path = _CONFIG_PATH
     if config_path.exists():
         cfg = yaml.safe_load(config_path.read_text()) or {}
         mem = cfg.get("memory_agent", {})
@@ -179,7 +184,7 @@ def _load_ollama_config() -> dict[str, Any]:
     ollama_instances (list of {name, url, model, timeout}).
     Backward compatible: wraps single ollama_url/ollama_model as one-item list.
     """
-    config_path = Path("/app/config/swingrl.yaml")
+    config_path = _CONFIG_PATH
     base: dict[str, Any] = {
         "query_provider": "openrouter",
         "epoch_advice_provider": "cerebras",
@@ -226,7 +231,7 @@ def _load_epoch_provider_configs() -> list[dict[str, Any]]:
     SambaNova Llama-3.3-70B (200K TPD) → Ollama (unlimited, wired in advise_epoch()).
     Combined cloud: ~1.7M TPD. Ollama is safety net in advise_epoch().
     """
-    config_path = Path("/app/config/swingrl.yaml")
+    config_path = _CONFIG_PATH
     configs: list[dict[str, Any]] = []
 
     def _build(name: str, p: dict[str, Any], model_override: str = "") -> dict[str, Any]:
@@ -354,26 +359,28 @@ def _is_provider_blocked(provider: str) -> bool:
     """
     if not _CLOUD_BLOCK_ENABLED:
         return False
-    blocked_date = _CLOUD_BLOCKED.get(provider)
-    if blocked_date is None:
-        return False
-    today_utc = datetime.now(UTC).date()
-    if blocked_date < today_utc:
-        del _CLOUD_BLOCKED[provider]
-        log.info(
-            "cloud_provider_block_expired",
-            provider=provider,
-            blocked_date=str(blocked_date),
-            today=str(today_utc),
-        )
-        return False
-    return True
+    with _CLOUD_BLOCKED_LOCK:
+        blocked_date = _CLOUD_BLOCKED.get(provider)
+        if blocked_date is None:
+            return False
+        today_utc = datetime.now(UTC).date()
+        if blocked_date < today_utc:
+            del _CLOUD_BLOCKED[provider]
+            log.info(
+                "cloud_provider_block_expired",
+                provider=provider,
+                blocked_date=str(blocked_date),
+                today=str(today_utc),
+            )
+            return False
+        return True
 
 
 def _block_provider(provider: str, status_code: int) -> None:
     """Block a cloud provider for the rest of today (UTC) after a rate-limit response."""
     today_utc = datetime.now(UTC).date()
-    _CLOUD_BLOCKED[provider] = today_utc
+    with _CLOUD_BLOCKED_LOCK:
+        _CLOUD_BLOCKED[provider] = today_utc
     log.warning(
         "cloud_provider_blocked",
         provider=provider,
@@ -671,7 +678,7 @@ def _parse_query_context(query: str) -> dict[str, str | int | None]:
 
 def _load_min_confidence() -> float:
     """Load min_confidence_for_advice from config, default 0.4."""
-    config_path = Path("/app/config/swingrl.yaml")
+    config_path = _CONFIG_PATH
     if config_path.exists():
         # yaml.safe_load OK here: memory service can't import swingrl.config.schema
         cfg = yaml.safe_load(config_path.read_text()) or {}

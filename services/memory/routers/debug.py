@@ -7,11 +7,12 @@ not for production use.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import structlog
 from auth import verify_api_key
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from db import (
@@ -71,15 +72,17 @@ async def unarchive_memories_endpoint(
     _key: str = Depends(verify_api_key),
 ) -> dict[str, Any]:
     """Unarchive memories by row IDs or source prefix for re-consolidation."""
+    if not body.row_ids and not body.source_prefix:
+        raise HTTPException(status_code=400, detail="Provide row_ids or source_prefix")
+
     if body.row_ids:
         count = await unarchive_memories_async(body.row_ids)
         return {"unarchived": count, "method": "row_ids"}
-    elif body.source_prefix:
-        archived = get_archived_memories_by_prefix(body.source_prefix)
-        if not archived:
-            return {"unarchived": 0, "method": "source_prefix", "prefix": body.source_prefix}
-        ids = [m["id"] for m in archived]
-        count = await unarchive_memories_async(ids)
-        return {"unarchived": count, "method": "source_prefix", "prefix": body.source_prefix}
-    else:
-        return {"error": "Provide row_ids or source_prefix"}
+
+    # source_prefix path — run sync DB call in thread to avoid blocking event loop
+    archived = await asyncio.to_thread(get_archived_memories_by_prefix, body.source_prefix)
+    if not archived:
+        return {"unarchived": 0, "method": "source_prefix", "prefix": body.source_prefix}
+    ids = [m["id"] for m in archived]
+    count = await unarchive_memories_async(ids)
+    return {"unarchived": count, "method": "source_prefix", "prefix": body.source_prefix}

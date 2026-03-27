@@ -142,11 +142,10 @@ class RiskManager:
                     f"Drawdown {current_dd:.4f} triggered circuit breaker for {env}"
                 )
 
-        # 5. Daily loss check
+        # 5. Daily loss check (use HWM as denominator — consistent with circuit_breaker)
         daily_pnl = self._tracker.get_daily_pnl(env)
-        initial_capital = self._tracker._initial_capital(env)
-        if daily_pnl < 0 and initial_capital > 0:
-            daily_loss_pct = abs(daily_pnl) / initial_capital
+        if daily_pnl < 0 and hwm > 0:
+            daily_loss_pct = abs(daily_pnl) / hwm
             if daily_loss_pct >= env_config.daily_loss_limit_pct:
                 # Trigger CB
                 if cb is not None:

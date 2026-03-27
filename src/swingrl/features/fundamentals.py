@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -128,8 +129,11 @@ class FundamentalFetcher:
         )
         return result
 
+    # Alpha Vantage free tier: 5 requests/minute. Track last call time for rate limiting.
+    _av_last_call: float = 0.0
+
     def _fetch_from_alpha_vantage(self, symbol: str) -> dict[str, float | None]:
-        """Fetch from Alpha Vantage as fallback.
+        """Fetch from Alpha Vantage as fallback (rate-limited to 5 req/min).
 
         Args:
             symbol: Ticker symbol.
@@ -137,6 +141,12 @@ class FundamentalFetcher:
         Returns:
             Fundamental metrics dict.
         """
+        # Enforce 12s gap between AV calls (5 req/min = 1 per 12s)
+        elapsed = time.monotonic() - self._av_last_call
+        if elapsed < 12.0:
+            time.sleep(12.0 - elapsed)
+        self._av_last_call = time.monotonic()
+
         try:
             av = FundamentalData(key=self._av_api_key, output_format="pandas")
             overview_df, _ = av.get_company_overview(symbol)
@@ -266,7 +276,11 @@ class FundamentalFetcher:
             pe = group["pe_ratio"]
             mean = pe.mean()
             std = pe.std()
-            if std == 0 or pd.isna(std):
+            if pd.isna(std) or pd.isna(mean):
+                # All values NaN — propagate NaN (not 0) to distinguish from identical values
+                return pd.Series(float("nan"), index=group.index)
+            if std < 1e-10:
+                # All values identical (non-NaN) — z-score is 0 by definition
                 return pd.Series(0.0, index=group.index)
             return (pe - mean) / std
 

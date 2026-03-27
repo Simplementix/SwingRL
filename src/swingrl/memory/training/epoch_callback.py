@@ -154,26 +154,26 @@ class MemoryEpochCallback(BaseCallback):
 
     @staticmethod
     def _load_cadence(algo: str) -> int:
-        """Read algo-specific cadence from bind-mounted config yaml.
+        """Read algo-specific cadence from validated config.
 
+        Uses load_config() for consistent Pydantic validation and env var overrides.
         Re-reads from disk each time a new callback is created (once per fold),
         so config changes take effect on the next fold without container restart.
-        Falls back to hardcoded ALGO_EPOCH_CADENCE dict if yaml read fails.
+        Falls back to hardcoded ALGO_EPOCH_CADENCE dict if config load fails.
         """
         try:
             from pathlib import Path
 
-            import yaml
+            from swingrl.config.schema import load_config
 
             config_path = Path("/app/config/swingrl.yaml")
             if config_path.exists():
-                cfg = yaml.safe_load(config_path.read_text()) or {}
-                mem = cfg.get("memory_agent", {})
+                config = load_config(config_path)
                 key = f"epoch_cadence_{algo.lower()}"
-                val = mem.get(key, mem.get("epoch_cadence_default", None))
+                val = getattr(config.memory_agent, key, None)
                 if val is not None:
                     return int(val)
-        except Exception:  # nosec B110  # Fail-open: yaml read failure → use hardcoded defaults
+        except Exception:  # nosec B110  # Fail-open: config load failure → use hardcoded defaults
             pass
         return ALGO_EPOCH_CADENCE.get(algo, EPOCH_STORE_CADENCE)
 

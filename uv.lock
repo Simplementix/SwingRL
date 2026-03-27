@@ -489,15 +489,6 @@ wheels = [
 ]
 
 [[package]]
-name = "finrl"
-version = "0.3.7"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/37/08/344006a3ac88293c9fa2a8f3e4ab02c1d9c6f42f39dea7b63cb8b71cf484/FinRL-0.3.7.tar.gz", hash = "sha256:46c12ed377e484beb7617e33db1ced6e2486df73d197c7f1a2833a1c00d9169f", size = 105626, upload-time = "2024-04-12T02:42:14.035Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1f/0a/52729645df1bfb005a0cdb9a4f86f716400fb35035ceec97b002c085396a/FinRL-0.3.7-py3-none-any.whl", hash = "sha256:ef16a51e2fc7d71fa73efdf565c6e91ace5b9a391ff1bdda4ccd82de2e11d8fa", size = 127157, upload-time = "2024-04-12T02:42:11.995Z" },
-]
-
-[[package]]
 name = "fonttools"
 version = "4.61.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1431,6 +1422,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973, upload-time = "2025-05-05T19:44:34.99Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/b6/3127540ecdf1464a00e5a01ee60a1b09175f6913f0644ac748494d9c4b21/pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2", size = 14382, upload-time = "2025-05-05T19:44:33.502Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -1812,12 +1815,10 @@ dependencies = [
     { name = "duckdb" },
     { name = "exchange-calendars" },
     { name = "finnhub-python" },
-    { name = "finrl" },
     { name = "fredapi" },
     { name = "gymnasium" },
     { name = "hmmlearn" },
     { name = "httpx" },
-    { name = "matplotlib" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyarrow" },
@@ -1856,6 +1857,7 @@ dev = [
     { name = "pytest-anyio" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
+    { name = "pytest-timeout" },
     { name = "responses" },
     { name = "ruff" },
     { name = "types-pyyaml" },
@@ -1870,12 +1872,10 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.0,<2" },
     { name = "exchange-calendars", specifier = ">=4.13" },
     { name = "finnhub-python", specifier = ">=2.4.27" },
-    { name = "finrl", specifier = "==0.3.7" },
     { name = "fredapi", specifier = ">=0.5" },
     { name = "gymnasium", specifier = ">=0.29.1" },
     { name = "hmmlearn", specifier = ">=0.3" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "numpy", specifier = ">=1.26,<2" },
     { name = "pandas", specifier = ">=2.0,<3" },
     { name = "pyarrow", specifier = ">=14.0" },
@@ -1909,6 +1909,7 @@ dev = [
     { name = "pytest-anyio", specifier = ">=0.0.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "pytest-mock", specifier = ">=3.12" },
+    { name = "pytest-timeout", specifier = ">=2.1.0" },
     { name = "responses", specifier = ">=0.25" },
     { name = "ruff", specifier = ">=0.4" },
     { name = "types-pyyaml" },

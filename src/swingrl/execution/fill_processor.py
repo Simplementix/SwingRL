@@ -162,6 +162,9 @@ class FillProcessor:
         new_side = sized_order.side if sized_order is not None else fill.side
 
         with self._db.sqlite() as conn:
+            # Use IMMEDIATE transaction to acquire write lock upfront,
+            # preventing stale-read race conditions on concurrent access.
+            conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
                 "SELECT quantity, cost_basis, stop_loss_price, take_profit_price, side "
                 "FROM positions WHERE symbol = ? AND environment = ?",

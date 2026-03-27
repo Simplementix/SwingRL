@@ -54,6 +54,9 @@ from db import (
 
 log = structlog.get_logger(__name__)
 
+# Config path: env var override for non-Docker environments, default for Docker.
+_CONFIG_PATH = Path(os.environ.get("SWINGRL_CONFIG_PATH", "/app/config/swingrl.yaml"))
+
 
 class _RateLimitError(Exception):
     """Internal signal for 429 rate-limit responses to trigger backoff retry."""
@@ -98,7 +101,7 @@ def _load_consolidation_config() -> dict[str, Any]:
     Backup is OpenRouter (fallback). All providers read per-provider
     timeout_sec and max_tokens from config.
     """
-    config_path = Path("/app/config/swingrl.yaml")
+    config_path = _CONFIG_PATH
     if config_path.exists():
         cfg = yaml.safe_load(config_path.read_text()) or {}
         mem = cfg.get("memory_agent", {})
@@ -234,7 +237,7 @@ def _load_aggregation_config() -> dict[str, Any]:
     Same yaml.safe_load pattern as _load_consolidation_config() — memory
     service cannot import src/swingrl/config/schema.py.
     """
-    config_path = Path("/app/config/swingrl.yaml")
+    config_path = _CONFIG_PATH
     result = dict(_DEFAULT_AGGREGATION_CONFIG)
     if config_path.exists():
         try:
@@ -1287,8 +1290,13 @@ class ConsolidateAgent:
     - Stage 2: Cross-environment consolidation (equity + crypto Stage 1 → cross-env patterns)
     """
 
+    _run_lock = asyncio.Lock()
+
     async def run(self, env_name: str | None = None) -> int:
         """Orchestrate consolidation: Stage 1 per env, then Stage 2 if both available.
+
+        Serialized via _run_lock to prevent concurrent consolidation runs
+        from duplicating patterns.
 
         Args:
             env_name: If specified, only consolidate this environment.
@@ -1297,6 +1305,15 @@ class ConsolidateAgent:
         Returns:
             Total number of new consolidation patterns created.
         """
+        if self._run_lock.locked():
+            log.warning("consolidation_already_running_skipped")
+            return 0
+
+        async with self._run_lock:
+            return await self._run_impl(env_name)
+
+    async def _run_impl(self, env_name: str | None = None) -> int:
+        """Internal consolidation implementation (runs under _run_lock)."""
         total = 0
         inter_phase_delay = _PROVIDER_CONFIG.get("inter_phase_delay_sec", 60)
 

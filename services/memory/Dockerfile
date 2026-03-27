@@ -6,16 +6,16 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Non-root user for security
-RUN adduser --disabled-password --gecos "" appuser
+# Non-root user matching main container's trader (UID 1000) for shared volume access
+RUN useradd -m -u 1000 trader
 
 # Create db directory before chown so permissions are correct
-RUN mkdir -p /app/db && chown -R appuser:appuser /app
+RUN mkdir -p /app/db && chown -R trader:trader /app
 
 # Copy service source with correct ownership
-COPY --chown=appuser:appuser . .
+COPY --chown=trader:trader . .
 
-USER appuser
+USER trader
 
 EXPOSE 8889
 

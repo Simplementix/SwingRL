@@ -63,7 +63,13 @@ class PositionTracker:
             ).fetchone()
         if row is not None:
             return float(row["total_value"])
-        return self._initial_capital(env)
+        fallback = self._initial_capital(env)
+        log.warning(
+            "portfolio_value_fallback_to_initial_capital",
+            environment=env,
+            initial_capital=fallback,
+        )
+        return fallback
 
     def get_positions(self, env: str) -> list[dict[str, Any]]:
         """Return list of positions for environment.
@@ -102,7 +108,13 @@ class PositionTracker:
             ).fetchone()
         if row is not None:
             return float(row["high_water_mark"])
-        return self._initial_capital(env)
+        fallback = self._initial_capital(env)
+        log.warning(
+            "high_water_mark_fallback_to_initial_capital",
+            environment=env,
+            initial_capital=fallback,
+        )
+        return fallback
 
     def get_daily_pnl(self, env: str) -> float:
         """Return today's P&L for environment.

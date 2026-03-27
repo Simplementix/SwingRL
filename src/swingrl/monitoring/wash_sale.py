@@ -90,7 +90,7 @@ def scan_wash_sales(
             row = conn.execute(
                 "SELECT sale_date, wash_window_end, loss_amount "
                 "FROM wash_sale_tracker "
-                "WHERE symbol = ? AND wash_window_end > datetime('now') AND triggered = 0 "
+                "WHERE symbol = ? AND date(wash_window_end) > date('now') AND triggered = 0 "
                 "ORDER BY sale_date DESC LIMIT 1",
                 (fill.symbol,),
             ).fetchone()

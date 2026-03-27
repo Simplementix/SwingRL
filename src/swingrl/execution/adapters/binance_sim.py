@@ -238,9 +238,15 @@ class BinanceSimAdapter:
                 response.raise_for_status()
                 data = response.json()
 
+                if not data.get("bids") or not data.get("asks"):
+                    raise BrokerError(f"Empty orderbook for {symbol} — no bids or asks")
+
                 best_bid = float(data["bids"][0][0])
                 best_ask = float(data["asks"][0][0])
                 mid = (best_bid + best_ask) / 2.0
+
+                if mid <= 0:
+                    raise BrokerError(f"Zero or negative mid-price for {symbol}: {mid}")
 
                 # Spread sanity check
                 spread_pct = (best_ask - best_bid) / mid

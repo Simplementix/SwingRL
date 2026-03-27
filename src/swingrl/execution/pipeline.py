@@ -286,7 +286,9 @@ class ExecutionPipeline:
                     )
                     continue
 
-                # Broker submission
+                # Broker submission — idempotency relies on PositionReconciler
+                # running post-cycle to detect and correct any duplicate fills
+                # caused by network timeouts (Alpaca bracket orders are atomic).
                 fill = adapter.submit_order(validated_order)
 
                 # Fill processing

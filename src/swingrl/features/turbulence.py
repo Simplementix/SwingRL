@@ -13,7 +13,7 @@ Computed on-the-fly at each decision step, NOT stored in DuckDB.
 from __future__ import annotations
 
 import abc
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import structlog
@@ -63,11 +63,25 @@ class EquityTurbulenceCalculator(BaseTurbulenceCalculator):
     for numerical stability.
     """
 
+    # Defaults match FeaturesConfig schema — overridden by config when available
     MIN_WARMUP = 252
     HALF_LIFE = 126
 
-    def __init__(self) -> None:
-        """Initialize equity turbulence calculator."""
+    def __init__(
+        self,
+        min_warmup: int | None = None,
+        half_life: int | None = None,
+    ) -> None:
+        """Initialize equity turbulence calculator.
+
+        Args:
+            min_warmup: Override MIN_WARMUP (from config.features.equity_turbulence_warmup).
+            half_life: Override HALF_LIFE (from config.features.equity_turbulence_half_life).
+        """
+        if min_warmup is not None:
+            self.MIN_WARMUP = min_warmup
+        if half_life is not None:
+            self.HALF_LIFE = half_life
         # EWMA decay from half-life: alpha = 1 - exp(-ln2 / half_life)
         self._alpha = 1.0 - np.exp(-np.log(2.0) / self.HALF_LIFE)
 
@@ -190,12 +204,26 @@ class CryptoTurbulenceCalculator(BaseTurbulenceCalculator):
     Both are computed on rolling windows after a 360-bar warmup.
     """
 
+    # Defaults match FeaturesConfig schema — overridden by config when available
     MIN_WARMUP = 360
     ROLLING_WINDOW = 1080
     VOL_WINDOW = 30  # Short-term vol measurement window
 
-    def __init__(self) -> None:
-        """Initialize crypto turbulence calculator."""
+    def __init__(
+        self,
+        min_warmup: int | None = None,
+        rolling_window: int | None = None,
+    ) -> None:
+        """Initialize crypto turbulence calculator.
+
+        Args:
+            min_warmup: Override MIN_WARMUP (from config.features.crypto_turbulence_warmup).
+            rolling_window: Override ROLLING_WINDOW (from config.features.crypto_turbulence_window).
+        """
+        if min_warmup is not None:
+            self.MIN_WARMUP = min_warmup
+        if rolling_window is not None:
+            self.ROLLING_WINDOW = rolling_window
 
     def _vol_zscore(self, returns: np.ndarray, current_idx: int, start: int) -> float:
         """Compute volatility z-score for current bar.
@@ -343,15 +371,24 @@ class CryptoTurbulenceCalculator(BaseTurbulenceCalculator):
 
 def TurbulenceCalculator(  # noqa: N802
     environment: Literal["equity", "crypto"],
+    config: Any | None = None,
 ) -> BaseTurbulenceCalculator:
     """Factory function returning the appropriate turbulence calculator.
 
     Args:
         environment: "equity" or "crypto" — determines which algorithm is used.
+        config: Optional SwingRLConfig for reading turbulence params from yaml.
 
     Returns:
         EquityTurbulenceCalculator for equity, CryptoTurbulenceCalculator for crypto.
     """
+    features = getattr(config, "features", None) if config is not None else None
     if environment == "equity":
-        return EquityTurbulenceCalculator()
-    return CryptoTurbulenceCalculator()
+        return EquityTurbulenceCalculator(
+            min_warmup=getattr(features, "equity_turbulence_warmup", None),
+            half_life=getattr(features, "equity_turbulence_half_life", None),
+        )
+    return CryptoTurbulenceCalculator(
+        min_warmup=getattr(features, "crypto_turbulence_warmup", None),
+        rolling_window=getattr(features, "crypto_turbulence_window", None),
+    )

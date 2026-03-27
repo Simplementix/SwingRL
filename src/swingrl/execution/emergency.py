@@ -267,8 +267,8 @@ def _tier4_verify_and_alert(
     Returns:
         Status dict with tier=4, success flag, and remaining positions.
     """
-    remaining_equity = 0
-    remaining_crypto = 0
+    remaining_equity = -1  # Sentinel: unknown until verified
+    remaining_crypto = -1
 
     # Check Alpaca positions
     if alpaca is not None:
@@ -276,7 +276,9 @@ def _tier4_verify_and_alert(
             equity_positions = alpaca.get_positions()
             remaining_equity = len(equity_positions)
         except Exception:
-            log.warning("tier4_alpaca_position_check_failed", exc_info=True)
+            log.error("tier4_alpaca_position_check_failed", exc_info=True)
+    else:
+        remaining_equity = 0  # No adapter → no positions to check
 
     # Check Binance.US positions
     if binance is not None:
@@ -284,7 +286,9 @@ def _tier4_verify_and_alert(
             crypto_positions = binance.get_positions()
             remaining_crypto = len(crypto_positions)
         except Exception:
-            log.warning("tier4_binance_position_check_failed", exc_info=True)
+            log.error("tier4_binance_position_check_failed", exc_info=True)
+    else:
+        remaining_crypto = 0  # No adapter → no positions to check
 
     # Build status report
     tier_summary = []
@@ -309,15 +313,22 @@ def _tier4_verify_and_alert(
         message=description,
     )
 
+    # -1 means position check failed — we can't confirm positions are closed
+    verification_ok = remaining_equity >= 0 and remaining_crypto >= 0
+    all_closed = verification_ok and remaining_equity == 0 and remaining_crypto == 0
+
     log.info(
         "tier4_complete",
         remaining_equity=remaining_equity,
         remaining_crypto=remaining_crypto,
+        verification_ok=verification_ok,
+        all_closed=all_closed,
     )
 
     return {
         "tier": 4,
-        "success": True,
+        "success": verification_ok,
+        "all_closed": all_closed,
         "remaining_equity": remaining_equity,
         "remaining_crypto": remaining_crypto,
     }

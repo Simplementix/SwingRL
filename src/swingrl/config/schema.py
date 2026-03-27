@@ -174,6 +174,7 @@ class FeaturesConfig(BaseModel):
 
     # Turbulence
     equity_turbulence_warmup: int = Field(default=252, ge=50)
+    equity_turbulence_half_life: int = Field(default=126, ge=10)
     crypto_turbulence_window: int = Field(default=1080, ge=100)
     crypto_turbulence_warmup: int = Field(default=360, ge=50)
 
