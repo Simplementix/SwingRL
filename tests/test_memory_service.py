@@ -2555,3 +2555,349 @@ class TestEpochAggregationHelpers:
         summaries = _aggregate_epoch_summaries(memories)
         assert "trend=" in summaries[0]
         assert "improving" in summaries[0]
+
+
+# ---------------------------------------------------------------------------
+# Fix 1b: Per-dimension effectiveness in reward summary
+# ---------------------------------------------------------------------------
+
+
+class TestRewardSummaryPerDimension:
+    """Tests for per-dimension effectiveness breakdown in _summarize_reward_adjustments."""
+
+    def test_per_dimension_breakdown_present(self) -> None:
+        """Reward summary includes per_dimension_effectiveness section."""
+        from memory_agents.consolidate import _summarize_reward_adjustments
+
+        memories = [
+            {
+                "text": (
+                    "REWARD_ADJUSTMENT_OUTCOME: run_id=crypto_a2c_fold0 algo=a2c env=crypto "
+                    "epoch_triggered=2000 post_adjustment_sharpe_delta=-3.5 "
+                    "post_adjustment_mdd_delta=-1.2 adjustment_effective=False "
+                    'weights_before={"profit": 0.5, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.1} '
+                    'weights_after={"profit": 0.44, "sharpe": 0.19, "drawdown": 0.26, "turnover": 0.11}'
+                ),
+                "source": "reward_adjustment:historical",
+            },
+            {
+                "text": (
+                    "REWARD_ADJUSTMENT_OUTCOME: run_id=crypto_a2c_fold1 algo=a2c env=crypto "
+                    "epoch_triggered=4000 post_adjustment_sharpe_delta=2.5 "
+                    "post_adjustment_mdd_delta=1.8 adjustment_effective=True "
+                    'weights_before={"profit": 0.5, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.1} '
+                    'weights_after={"profit": 0.44, "sharpe": 0.19, "drawdown": 0.26, "turnover": 0.11}'
+                ),
+                "source": "reward_adjustment:historical",
+            },
+        ]
+        summaries = _summarize_reward_adjustments(memories, "crypto")
+        assert len(summaries) == 1
+        summary = summaries[0]
+        assert "per_dimension_effectiveness:" in summary
+        assert "drawdown_increase" in summary
+        assert "profit_decrease" in summary
+
+    def test_no_outcomes_no_dimension_section(self) -> None:
+        """Triggers without outcomes produce no per_dimension section."""
+        from memory_agents.consolidate import _summarize_reward_adjustments
+
+        memories = [
+            {
+                "text": (
+                    "REWARD_ADJUSTMENT_TRIGGER: run_id=crypto_ppo_fold0 algo=ppo env=crypto "
+                    "epoch_triggered=20 trigger_metric=epoch_advice trigger_value=-5.0 "
+                    'weights_before={"profit": 0.5, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.1} '
+                    'weights_after={"profit": 0.4, "sharpe": 0.35, "drawdown": 0.2, "turnover": 0.05}'
+                ),
+                "source": "reward_adjustment:historical",
+            },
+        ]
+        summaries = _summarize_reward_adjustments(memories, "crypto")
+        assert len(summaries) == 1
+        assert "per_dimension_effectiveness:" not in summaries[0]
+
+
+# ---------------------------------------------------------------------------
+# Fix 1a: Fold-level effectiveness with outcome_lookup
+# ---------------------------------------------------------------------------
+
+
+class TestFoldLevelEffectiveness:
+    """Tests for outcome_lookup enrichment in _aggregate_epoch_summaries."""
+
+    def test_outcome_lookup_enriches_weight_changes(self) -> None:
+        """When outcome_lookup is provided, weight changes show dimension labels and effectiveness."""
+        from memory_agents.consolidate import _aggregate_epoch_summaries
+
+        # Create epoch memories with a weight change at epoch 100
+        memories = []
+        for i in range(20):
+            weights = (
+                '{"profit": 0.5, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.1}'
+                if i < 10
+                else '{"profit": 0.44, "sharpe": 0.19, "drawdown": 0.26, "turnover": 0.11}'
+            )
+            memories.append(
+                {
+                    "text": (
+                        f"EPOCH SNAPSHOT: run_id=crypto_a2c_fold0 algo=a2c env=crypto "
+                        f"epoch={i * 100} mean_reward=0.01 rolling_sharpe_500=1.5 "
+                        f"rolling_mdd_500=-0.05 approx_kl=0.0 "
+                        f"reward_weights={weights}"
+                    ),
+                }
+            )
+
+        outcome_lookup = {
+            ("crypto_a2c_fold0", 1000): {
+                "sharpe_delta": 2.5,
+                "mdd_delta": 1.2,
+                "effective": True,
+                "weights_before": '{"profit": 0.5, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.1}',
+                "weights_after": '{"profit": 0.44, "sharpe": 0.19, "drawdown": 0.26, "turnover": 0.11}',
+            },
+        }
+
+        summaries = _aggregate_epoch_summaries(memories, outcome_lookup)
+        assert len(summaries) == 1
+        summary = summaries[0]
+        assert "sharpe_delta=+2.5000" in summary
+        assert "effective" in summary
+        assert "drawdown" in summary
+
+    def test_no_outcome_lookup_uses_fallback(self) -> None:
+        """Without outcome_lookup, weight changes use original sharpe pre/post format."""
+        from memory_agents.consolidate import _aggregate_epoch_summaries
+
+        memories = []
+        for i in range(20):
+            weights = (
+                '{"profit": 0.5, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.1}'
+                if i < 10
+                else '{"profit": 0.44, "sharpe": 0.19, "drawdown": 0.26, "turnover": 0.11}'
+            )
+            memories.append(
+                {
+                    "text": (
+                        f"EPOCH SNAPSHOT: run_id=crypto_a2c_fold0 algo=a2c env=crypto "
+                        f"epoch={i * 100} mean_reward=0.01 rolling_sharpe_500=1.5 "
+                        f"rolling_mdd_500=-0.05 approx_kl=0.0 "
+                        f"reward_weights={weights}"
+                    ),
+                }
+            )
+
+        summaries = _aggregate_epoch_summaries(memories)
+        assert len(summaries) == 1
+        # Fallback: shows old->new dict format with sharpe pre->post
+        assert "change@epoch=" in summaries[0]
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: Within-fold adjustment history in epoch advice
+# ---------------------------------------------------------------------------
+
+
+class TestFoldAdjustmentHistory:
+    """Tests for get_recent_outcomes_for_run_id and _parse_query_context run_id extraction."""
+
+    def test_parse_query_context_extracts_run_id(self) -> None:
+        """_parse_query_context extracts run_id from epoch advice query."""
+        from memory_agents.query import _parse_query_context
+
+        query = "EPOCH ADVICE: run_id=crypto_a2c_fold5 algo=a2c env=crypto epoch=8000 rolling_sharpe=-16.45"
+        parsed = _parse_query_context(query)
+        assert parsed["run_id"] == "crypto_a2c_fold5"
+        assert parsed["algo_name"] == "a2c"
+        assert parsed["env_name"] == "crypto"
+
+    def test_parse_query_context_no_run_id(self) -> None:
+        """_parse_query_context returns None for run_id when not present."""
+        from memory_agents.query import _parse_query_context
+
+        query = "TRAINING RUN CONFIG ADVICE: env=equity algo=ppo"
+        parsed = _parse_query_context(query)
+        assert parsed["run_id"] is None
+
+    def test_get_recent_outcomes_returns_matching(self, memory_db_env: Path) -> None:
+        """get_recent_outcomes_for_run_id returns only matching fold outcomes."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        # Insert outcomes for two different folds
+        for fold in ("fold0", "fold1"):
+            memory_db_module.insert_memory(
+                text=(
+                    f"REWARD_ADJUSTMENT_OUTCOME: run_id=crypto_a2c_{fold} algo=a2c env=crypto "
+                    f"epoch_triggered=2000 post_adjustment_sharpe_delta=1.5 "
+                    f"post_adjustment_mdd_delta=0.8 adjustment_effective=True "
+                    f'weights_before={{"profit": 0.5}} weights_after={{"profit": 0.4}}'
+                ),
+                source="reward_adjustment:historical",
+            )
+
+        results = memory_db_module.get_recent_outcomes_for_run_id("crypto_a2c_fold0", limit=5)
+        assert len(results) == 1
+        assert "crypto_a2c_fold0" in results[0]["text"]
+
+    def test_get_recent_outcomes_respects_limit(self, memory_db_env: Path) -> None:
+        """get_recent_outcomes_for_run_id respects the limit parameter."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+
+        for epoch in (2000, 4000, 6000, 8000, 10000):
+            memory_db_module.insert_memory(
+                text=(
+                    f"REWARD_ADJUSTMENT_OUTCOME: run_id=crypto_sac_fold0 algo=sac env=crypto "
+                    f"epoch_triggered={epoch} post_adjustment_sharpe_delta=0.5 "
+                    f"post_adjustment_mdd_delta=0.3 adjustment_effective=True "
+                    f'weights_before={{"profit": 0.5}} weights_after={{"profit": 0.4}}'
+                ),
+                source="reward_adjustment:historical",
+            )
+
+        results = memory_db_module.get_recent_outcomes_for_run_id("crypto_sac_fold0", limit=3)
+        assert len(results) == 3
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: New categories in prompts and _RELEVANT_CATEGORIES
+# ---------------------------------------------------------------------------
+
+
+class TestNewCategories:
+    """Tests for hp_effectiveness and iteration_regression category wiring."""
+
+    def test_phase_a_prompt_has_both_categories(self) -> None:
+        """Phase A system prompt includes hp_effectiveness and iteration_regression."""
+        from memory_agents.consolidate import _PHASE_A_SYSTEM_PROMPT
+
+        assert "hp_effectiveness" in _PHASE_A_SYSTEM_PROMPT
+        assert "iteration_regression" in _PHASE_A_SYSTEM_PROMPT
+
+    def test_phase_b_prompt_has_both_categories(self) -> None:
+        """Phase B system prompt includes hp_effectiveness and iteration_regression."""
+        from memory_agents.consolidate import _PHASE_B_SYSTEM_PROMPT
+
+        assert "hp_effectiveness" in _PHASE_B_SYSTEM_PROMPT
+        assert "iteration_regression" in _PHASE_B_SYSTEM_PROMPT
+
+    def test_phase_a_few_shot_has_iteration_regression(self) -> None:
+        """Phase A few-shot examples include iteration_regression."""
+        from memory_agents.consolidate import _PHASE_A_FEW_SHOT_EXAMPLES
+
+        examples = json.loads(_PHASE_A_FEW_SHOT_EXAMPLES)
+        categories = [p["category"] for p in examples["patterns"]]
+        assert "iteration_regression" in categories
+
+    def test_phase_b_few_shot_has_both_categories(self) -> None:
+        """Phase B few-shot examples include hp_effectiveness and iteration_regression."""
+        from memory_agents.consolidate import _PHASE_B_FEW_SHOT_EXAMPLES
+
+        examples = json.loads(_PHASE_B_FEW_SHOT_EXAMPLES)
+        categories = [p["category"] for p in examples["patterns"]]
+        assert "hp_effectiveness" in categories
+        assert "iteration_regression" in categories
+
+    def test_relevant_categories_run_config_has_both(self) -> None:
+        """run_config relevant categories include both new categories."""
+        from memory_agents.query import _RELEVANT_CATEGORIES
+
+        assert "hp_effectiveness" in _RELEVANT_CATEGORIES["run_config"]
+        assert "iteration_regression" in _RELEVANT_CATEGORIES["run_config"]
+
+    def test_relevant_categories_epoch_advice_has_both(self) -> None:
+        """epoch_advice relevant categories include both new categories."""
+        from memory_agents.query import _RELEVANT_CATEGORIES
+
+        assert "hp_effectiveness" in _RELEVANT_CATEGORIES["epoch_advice"]
+        assert "iteration_regression" in _RELEVANT_CATEGORIES["epoch_advice"]
+
+    def test_relevant_categories_live_trading_unchanged(self) -> None:
+        """live_trading categories do NOT include new categories."""
+        from memory_agents.query import _RELEVANT_CATEGORIES
+
+        assert "hp_effectiveness" not in _RELEVANT_CATEGORIES["live_trading"]
+        assert "iteration_regression" not in _RELEVANT_CATEGORIES["live_trading"]
+
+    def test_phase_b_prompt_has_attribution_guidance(self) -> None:
+        """Phase B prompt includes attribution guidance section."""
+        from memory_agents.consolidate import _PHASE_B_SYSTEM_PROMPT
+
+        assert "ATTRIBUTION GUIDANCE" in _PHASE_B_SYSTEM_PROMPT
+        assert "Ng et al." in _PHASE_B_SYSTEM_PROMPT
+        assert "Blom et al." in _PHASE_B_SYSTEM_PROMPT
+        assert "Goodhart" in _PHASE_B_SYSTEM_PROMPT
+
+    def test_reward_weight_guide_has_cautions(self) -> None:
+        """Enhanced reward weight guide includes failure mode cautions."""
+        from memory_agents.query import _REWARD_WEIGHT_GUIDE
+
+        assert "CAUTION" in _REWARD_WEIGHT_GUIDE
+        assert "Goodhart" in _REWARD_WEIGHT_GUIDE
+        assert "CRITICAL INTERACTIONS" in _REWARD_WEIGHT_GUIDE
+        assert "ent_coef" in _REWARD_WEIGHT_GUIDE
+        assert "oscillate" in _REWARD_WEIGHT_GUIDE
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: Cross-iteration source prefix in consolidation
+# ---------------------------------------------------------------------------
+
+
+class TestCrossIterationSourcePrefix:
+    """Tests for cross_iteration source prefix in Phase A and Phase B."""
+
+    def test_consolidation_fetches_cross_iteration_memories(
+        self, api_client: Any, auth_headers: dict[str, str]
+    ) -> None:
+        """Consolidation Phase A picks up cross_iteration memories."""
+        import db as memory_db_module
+
+        # Insert a cross-iteration memory + a WF memory
+        memory_db_module.insert_memory(
+            text="ITERATION HP COMPARISON: iteration=1 env=equity VS BASELINE ...",
+            source="cross_iteration:equity",
+        )
+        memory_db_module.insert_memory(
+            text="WF RESULTS: equity ppo fold0 sharpe=2.5 ...",
+            source="walk_forward:equity:ppo",
+        )
+
+        mock_response = {
+            "patterns": [
+                {
+                    "pattern_text": "Iter 1 equity HP changes improved PPO",
+                    "category": "hp_effectiveness",
+                    "affected_algos": ["ppo"],
+                    "affected_envs": ["equity"],
+                    "actionable_implication": "Keep current HP configuration",
+                    "confidence": 0.65,
+                    "evidence": "sharpe 2.68->2.71 (+1.0%)",
+                },
+            ],
+        }
+
+        async def _mock_llm(self: Any, text: str, **kwargs: Any) -> dict[str, Any]:
+            # Verify cross-iteration memory text is in the LLM input
+            assert "ITERATION HP COMPARISON" in text
+            return mock_response
+
+        with patch(
+            "memory_agents.consolidate.ConsolidateAgent._call_llm_with_retry",
+            _mock_llm,
+        ):
+            response = api_client.post(
+                "/consolidate",
+                json={"env_name": "equity"},
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
