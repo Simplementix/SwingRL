@@ -472,6 +472,32 @@ def run_all_iterations(
             elapsed_hours=round(iter_elapsed / 3600, 2),
         )
 
+        # Ingest cross-iteration HP comparison memory (iter 1+ only).
+        # Queries DuckDB iteration_results (all env connections closed at this point)
+        # and ingests to memory service SQLite for consolidation to pick up.
+        if i > 0:
+            try:
+                api_key_ci = getattr(cfg.memory_agent, "api_key", "")
+                if api_key_ci:
+                    ci_client = MemoryClient(
+                        base_url=cfg.memory_agent.base_url,
+                        default_timeout=cfg.memory_agent.timeout_sec,
+                        api_key=api_key_ci,
+                    )
+                    db_path = Path(cfg.system.duckdb_path)
+                    _ingest_cross_iteration_comparison(
+                        db_path=db_path,
+                        iteration=i,
+                        state=state,
+                        memory_client=ci_client,
+                    )
+            except Exception as exc:
+                log.warning(
+                    "cross_iteration_comparison_failed",
+                    iteration=i,
+                    error=str(exc),
+                )
+
         # Consolidate memories + record outcomes after EVERY iteration (including
         # baseline iteration 0). Baseline WF data must be consolidated into patterns
         # before iteration 1 starts so the meta-trainer has context to work with.
@@ -678,6 +704,230 @@ def _evaluate_gate_and_decide(
         "mdd": mdd,
         "tuning_triggered": baseline_sharpe < _TUNING_SHARPE_THRESHOLD,
     }
+
+
+def _ingest_cross_iteration_comparison(
+    db_path: Path,
+    iteration: int,
+    state: dict[str, Any],
+    memory_client: Any,
+) -> None:
+    """Generate and ingest cross-iteration HP comparison memories.
+
+    Queries DuckDB ``iteration_results`` for the baseline (iter 0), current, previous,
+    and best-per-env iterations.  Builds a rolling-window comparison text per env and
+    ingests to the memory service with source ``cross_iteration:{env_name}``.
+
+    The comparison includes ensemble-level deltas, per-algo sharpe/mdd deltas, HP
+    change details, and zero-adjustment fold counts for HP attribution.
+
+    Args:
+        db_path: Path to DuckDB database.
+        iteration: Current iteration number (must be >0).
+        state: Training state dict with ``iteration_N_result`` entries.
+        memory_client: MemoryClient instance for ingestion.
+    """
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        for env_name in ("equity", "crypto"):
+            # Fetch baseline (iter 0) and current iteration
+            baseline = conn.execute(
+                "SELECT * FROM iteration_results WHERE iteration_number = 0 AND environment = ?",
+                [env_name],
+            ).fetchdf()
+            current = conn.execute(
+                "SELECT * FROM iteration_results WHERE iteration_number = ? AND environment = ?",
+                [iteration, env_name],
+            ).fetchdf()
+
+            if baseline.empty or current.empty:
+                log.info(
+                    "cross_iteration_skip_missing_data",
+                    iteration=iteration,
+                    env=env_name,
+                )
+                continue
+
+            b = baseline.iloc[0]
+            c = current.iloc[0]
+
+            # Build comparison text
+            b_sharpe = float(b["ensemble_sharpe"])
+            c_sharpe = float(c["ensemble_sharpe"])
+            sharpe_delta = c_sharpe - b_sharpe
+            pct = sharpe_delta / b_sharpe * 100 if b_sharpe else 0
+
+            lines = [
+                f"ITERATION HP COMPARISON: iteration={iteration} env={env_name}",
+                "",
+                f"VS BASELINE (iteration 0, hp_source={b.get('hp_source', 'baseline')}):",
+                f"  ensemble: sharpe {b_sharpe:.4f}->{c_sharpe:.4f} ({pct:+.1f}%), "
+                f"mdd {float(b['ensemble_mdd']):.4f}->{float(c['ensemble_mdd']):.4f}, "
+                f"gate {'PASS' if b.get('gate_passed') else 'FAIL'}"
+                f"->{'PASS' if c.get('gate_passed') else 'FAIL'}",
+            ]
+
+            for algo in ("ppo", "a2c", "sac"):
+                b_s = float(b.get(f"{algo}_mean_sharpe", 0))
+                c_s = float(c.get(f"{algo}_mean_sharpe", 0))
+                b_m = float(b.get(f"{algo}_mean_mdd", 0))
+                c_m = float(c.get(f"{algo}_mean_mdd", 0))
+                sd = c_s - b_s
+                sp = sd / b_s * 100 if b_s else 0
+                hp_json = c.get(f"{algo}_hyperparams") or ""
+                hp_str = f"hp_changes: {hp_json}" if hp_json else "hp_changes: baseline (none)"
+
+                # Count zero-adjustment folds from state result
+                iter_result = state.get(f"iteration_{iteration}_result", {})
+                env_result = iter_result.get(env_name, {})
+                wf_folds = env_result.get("walk_forward", {}).get(algo, [])
+                total_folds = len(wf_folds)
+
+                lines.append(
+                    f"  {algo.upper()}: sharpe {b_s:.4f}->{c_s:.4f} ({sp:+.1f}%), "
+                    f"mdd {b_m:.4f}->{c_m:.4f}, "
+                    f"weight {float(b.get(f'{algo}_weight', 0)):.1%}"
+                    f"->{float(c.get(f'{algo}_weight', 0)):.1%}"
+                )
+                lines.append(f"    {hp_str}")
+                if total_folds:
+                    lines.append(f"    total_folds={total_folds}")
+
+            # Fetch all iterations for dynamic comparisons
+            all_iters = conn.execute(
+                "SELECT * FROM iteration_results WHERE environment = ? ORDER BY iteration_number",
+                [env_name],
+            ).fetchdf()
+
+            if len(all_iters) > 1:
+                best_iter = int(
+                    all_iters.loc[all_iters["ensemble_sharpe"].idxmax(), "iteration_number"]
+                )
+                worst_iter = int(
+                    all_iters.loc[all_iters["ensemble_sharpe"].idxmin(), "iteration_number"]
+                )
+                best_sharpe = float(
+                    all_iters.loc[all_iters["ensemble_sharpe"].idxmax(), "ensemble_sharpe"]
+                )
+                worst_sharpe = float(
+                    all_iters.loc[all_iters["ensemble_sharpe"].idxmin(), "ensemble_sharpe"]
+                )
+
+                # --- VS PREVIOUS: only if there is a non-baseline previous ---
+                if iteration >= 2:
+                    prev_df = all_iters[all_iters["iteration_number"] == iteration - 1]
+                    if not prev_df.empty:
+                        p = prev_df.iloc[0]
+                        p_sharpe = float(p["ensemble_sharpe"])
+                        pd = c_sharpe - p_sharpe
+                        pp = pd / p_sharpe * 100 if p_sharpe else 0
+                        lines.append("")
+                        lines.append(f"VS PREVIOUS (iteration {iteration - 1}):")
+                        lines.append(
+                            f"  ensemble: sharpe {p_sharpe:.4f}->{c_sharpe:.4f} ({pp:+.1f}%)"
+                        )
+                        for algo in ("ppo", "a2c", "sac"):
+                            col = f"{algo}_mean_sharpe"
+                            ps = float(p.get(col, 0))
+                            cs = float(c.get(col, 0))
+                            if ps:
+                                ad = cs - ps
+                                ap = ad / ps * 100
+                                lines.append(
+                                    f"  {algo.upper()}: sharpe {ps:.4f}->{cs:.4f} ({ap:+.1f}%)"
+                                )
+
+                # --- VS BEST ENSEMBLE: only if best is not current, baseline, or previous ---
+                prev_iter = iteration - 1 if iteration >= 2 else None
+                best_already_shown = (
+                    best_iter == iteration or best_iter == 0 or best_iter == prev_iter
+                )
+                if not best_already_shown:
+                    bd = c_sharpe - best_sharpe
+                    bp = bd / best_sharpe * 100 if best_sharpe else 0
+                    best_hp_source = all_iters.loc[
+                        all_iters["iteration_number"] == best_iter, "hp_source"
+                    ].iloc[0]
+                    lines.append("")
+                    lines.append(
+                        f"VS BEST ENSEMBLE (iteration {best_iter}, hp_source={best_hp_source}):"
+                    )
+                    lines.append(
+                        f"  ensemble: sharpe {best_sharpe:.4f}->{c_sharpe:.4f} ({bp:+.1f}%)"
+                    )
+
+                # --- VS WORST ENSEMBLE: only if worst is not current, baseline, previous, or best ---
+                worst_already_shown = (
+                    worst_iter == iteration
+                    or worst_iter == 0
+                    or worst_iter == prev_iter
+                    or worst_iter == best_iter
+                )
+                if not worst_already_shown:
+                    wd = c_sharpe - worst_sharpe
+                    wp = wd / worst_sharpe * 100 if worst_sharpe else 0
+                    worst_hp_source = all_iters.loc[
+                        all_iters["iteration_number"] == worst_iter, "hp_source"
+                    ].iloc[0]
+                    lines.append("")
+                    lines.append(
+                        f"VS WORST ENSEMBLE (iteration {worst_iter}, hp_source={worst_hp_source}):"
+                    )
+                    lines.append(
+                        f"  ensemble: sharpe {worst_sharpe:.4f}->{c_sharpe:.4f} ({wp:+.1f}%)"
+                    )
+
+                # --- VS BEST/WORST PER-ALGO: show non-current best and worst per algo ---
+                algo_comparison_lines: list[str] = []
+                for algo in ("ppo", "a2c", "sac"):
+                    col = f"{algo}_mean_sharpe"
+                    hp_col = f"{algo}_hyperparams"
+                    if col not in all_iters.columns:
+                        continue
+
+                    best_algo_iter = int(all_iters.loc[all_iters[col].idxmax(), "iteration_number"])
+                    best_algo_s = float(all_iters[col].max())
+                    best_algo_hp = all_iters.loc[all_iters[col].idxmax()].get(hp_col) or "baseline"
+
+                    worst_algo_iter = int(
+                        all_iters.loc[all_iters[col].idxmin(), "iteration_number"]
+                    )
+                    worst_algo_s = float(all_iters[col].min())
+                    worst_algo_hp = all_iters.loc[all_iters[col].idxmin()].get(hp_col) or "baseline"
+
+                    # Only show best if current is NOT the best for this algo
+                    if best_algo_iter != iteration:
+                        algo_comparison_lines.append(
+                            f"  {algo.upper()} best: iter {best_algo_iter} "
+                            f"sharpe={best_algo_s:.4f} hp={best_algo_hp}"
+                        )
+                    # Only show worst if current is NOT the worst and different from best
+                    if worst_algo_iter != iteration and worst_algo_iter != best_algo_iter:
+                        algo_comparison_lines.append(
+                            f"  {algo.upper()} worst: iter {worst_algo_iter} "
+                            f"sharpe={worst_algo_s:.4f} hp={worst_algo_hp}"
+                        )
+
+                if algo_comparison_lines:
+                    lines.append("")
+                    lines.append("VS BEST/WORST PER-ALGO:")
+                    lines.extend(algo_comparison_lines)
+
+            text = "\n".join(lines)
+            ok = memory_client.ingest_training(
+                text=text,
+                source=f"cross_iteration:{env_name}",
+                timeout=10.0,
+            )
+            log.info(
+                "cross_iteration_comparison_ingested",
+                iteration=iteration,
+                env=env_name,
+                chars=len(text),
+                ok=ok,
+            )
+    finally:
+        conn.close()
 
 
 def _ingest_wf_results_to_memory(

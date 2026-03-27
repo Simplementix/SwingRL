@@ -868,6 +868,39 @@ async def unarchive_memories_async(row_ids: list[int]) -> int:
     return await _run_background(unarchive_memories, row_ids)
 
 
+def get_recent_outcomes_for_run_id(run_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Fetch recent REWARD_ADJUSTMENT_OUTCOME memories for a specific fold.
+
+    Used by epoch advice to provide within-fold adjustment history so the LLM
+    can avoid repeating ineffective adjustments.
+
+    Args:
+        run_id: Fold identifier (e.g. 'crypto_a2c_fold5').
+        limit: Maximum outcomes to return (most recent first).
+
+    Returns:
+        List of row dicts with id and text fields.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, text FROM memories "
+            "WHERE source LIKE 'reward_adjustment%' AND archived = 0 "
+            "AND text LIKE '%REWARD_ADJUSTMENT_OUTCOME%' "
+            "AND text LIKE ? "
+            "ORDER BY id DESC LIMIT ?",
+            (f"%run_id={run_id} %", limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+async def get_recent_outcomes_for_run_id_async(run_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Async wrapper for get_recent_outcomes_for_run_id (background pool)."""
+    return await _run_background(get_recent_outcomes_for_run_id, run_id, limit)
+
+
 async def insert_consolidation_async(
     pattern_text: str,
     source_count: int,

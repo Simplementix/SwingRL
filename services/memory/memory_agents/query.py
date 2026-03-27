@@ -522,13 +522,23 @@ _ALGO_HP_GUIDES: dict[str, str] = {
 _REWARD_WEIGHT_GUIDE = (
     "Reward Weight Adjustment Guide:\n"
     "- High MDD / frequent large losses: Increase drawdown weight (0.2 -> 0.35)\n"
+    "  CAUTION: Excessive drawdown penalty can cause inactivity or position concentration,\n"
+    "  paradoxically increasing tail risk (Goodhart's Law). If MDD does not improve after\n"
+    "  increasing drawdown weight, the HP configuration may be the root cause.\n"
     "- Too many trades / high turnover: Increase turnover weight (0.05 -> 0.15)\n"
+    "  CAUTION: High turnover penalty can cause the agent to hold losing positions.\n"
     "- Good Sharpe but low total return: Increase profit weight\n"
     "- Volatile returns: Increase sharpe weight (smooths returns)\n"
-    "- Agent holds through drawdowns: Increase drawdown weight\n\n"
+    "- Agent holds through drawdowns: Increase drawdown weight + check gamma isn't too low\n\n"
+    "CRITICAL INTERACTIONS:\n"
+    "- High ent_coef (>0.02) can wash out reward weight signals — entropy bonus dominates\n"
+    "  small financial reward components. Consider ent_coef before adjusting weights.\n"
+    "- SAC auto-temperature lags behind reward scale changes — transient mismatch expected.\n"
+    "- PPO value function clipping interacts with reward scale — avoid large weight jumps.\n\n"
     "ONLY adjust reward weights when the current epoch metrics show a clear problem. "
     "If rolling_sharpe > 0 and rolling_mdd > -0.05, the current weights are working — keep them. "
-    "Prefer small adjustments (delta < 0.1) over large swings."
+    "Prefer small adjustments (delta < 0.1) over large swings. "
+    "Gradual adaptation outperforms abrupt changes. Do NOT oscillate weights back and forth."
 )
 
 _RUN_CONFIG_INSTRUCTIONS = (
@@ -639,6 +649,8 @@ _RELEVANT_CATEGORIES: dict[str, list[str]] = {
         "macro_transition",
         "cross_env",
         "cross_env_correlation",
+        "hp_effectiveness",
+        "iteration_regression",
     ],
     "epoch_advice": [
         "drawdown_recovery",
@@ -646,6 +658,8 @@ _RELEVANT_CATEGORIES: dict[str, list[str]] = {
         "reward_shaping",
         "overfit_diagnosis",
         "iteration_progression",
+        "hp_effectiveness",
+        "iteration_regression",
     ],
     "live_trading": [
         "live_cycle_gate",
@@ -659,10 +673,11 @@ _RELEVANT_CATEGORIES: dict[str, list[str]] = {
 
 
 def _parse_query_context(query: str) -> dict[str, str | int | None]:
-    """Parse env_name, algo_name, and iteration from query string."""
+    """Parse env_name, algo_name, iteration, and run_id from query string."""
     env_name: str | None = None
     algo_name: str | None = None
     iteration: int | None = None
+    run_id: str | None = None
     for part in query.split():
         if part.startswith("env="):
             env_name = part.split("=", 1)[1].lower()
@@ -673,7 +688,14 @@ def _parse_query_context(query: str) -> dict[str, str | int | None]:
                 iteration = int(part.split("=", 1)[1])
             except (ValueError, IndexError):
                 pass
-    return {"env_name": env_name, "algo_name": algo_name, "iteration": iteration}
+        elif part.startswith("run_id="):
+            run_id = part.split("=", 1)[1]
+    return {
+        "env_name": env_name,
+        "algo_name": algo_name,
+        "iteration": iteration,
+        "run_id": run_id,
+    }
 
 
 def _load_min_confidence() -> float:
@@ -937,8 +959,61 @@ class QueryAgent:
             algo_name=algo,
             request_type="epoch_advice",
         )
+
+        # Build within-fold adjustment history from recent OUTCOMEs
+        fold_history = ""
+        run_id = parsed.get("run_id")
+        if run_id:
+            from db import get_recent_outcomes_for_run_id_async  # noqa: PLC0415
+
+            recent_outcomes = await get_recent_outcomes_for_run_id_async(run_id, limit=5)
+            if recent_outcomes:
+                import json as _json  # noqa: PLC0415
+                import re as _re  # noqa: PLC0415
+
+                lines = ["Recent adjustments in this fold (most recent first):"]
+                for outcome in recent_outcomes:
+                    txt = outcome.get("text", "")
+                    ep_m = _re.search(r"epoch_triggered=(\d+)", txt)
+                    sd_m = _re.search(r"post_adjustment_sharpe_delta=([0-9.e+-]+)", txt)
+                    md_m = _re.search(r"post_adjustment_mdd_delta=([0-9.e+-]+)", txt)
+                    eff_m = _re.search(r"adjustment_effective=(True|False)", txt)
+                    bw_m = _re.search(r"weights_before=(\{[^}]+\})", txt)
+                    aw_m = _re.search(r"weights_after=(\{[^}]+\})", txt)
+
+                    # Build per-dimension change labels
+                    dim_parts: list[str] = []
+                    if bw_m and aw_m:
+                        try:
+                            bw = _json.loads(bw_m.group(1).replace("'", '"'))
+                            aw = _json.loads(aw_m.group(1).replace("'", '"'))
+                            for dim in ("profit", "sharpe", "drawdown", "turnover"):
+                                d = aw.get(dim, 0.0) - bw.get(dim, 0.0)
+                                if abs(d) > 0.001:
+                                    dim_parts.append(f"{dim} {d:+.3f}")
+                        except (ValueError, TypeError):
+                            pass
+
+                    ep = ep_m.group(1) if ep_m else "?"
+                    sd = float(sd_m.group(1)) if sd_m else 0.0
+                    md = float(md_m.group(1)) if md_m else 0.0
+                    eff = "effective" if (eff_m and eff_m.group(1) == "True") else "ineffective"
+                    dim_label = f"[{', '.join(dim_parts)}]" if dim_parts else ""
+
+                    lines.append(
+                        f"- epoch {ep}: {dim_label} "
+                        f"sharpe_delta={sd:+.4f} mdd_delta={md:+.4f} ({eff})"
+                    )
+                lines.append(
+                    "Use this history to avoid repeating ineffective adjustments. "
+                    "If previous adjustments in the same dimension were ineffective, "
+                    "try a different dimension or keep current weights."
+                )
+                fold_history = "\n".join(lines) + "\n\n"
+
         user_content = (
             f"Current epoch state: {query}\n\n"
+            f"{fold_history}"
             f"Memory patterns:\n{context}\n\n"
             "Should I adjust reward weights or stop training early?"
         )

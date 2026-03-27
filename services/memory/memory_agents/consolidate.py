@@ -360,7 +360,18 @@ Most patterns from noisy financial data should fall in the 0.4-0.7 range. A conf
 above 0.85 requires overwhelming, exception-free evidence. In our experience, only ~10% \
 of detected patterns have confidence above 0.8. Calibrate accordingly.
 
-category MUST be one of these 11 values. Use the closest match. Do NOT create new categories.
+CROSS-ITERATION COMPARISON (when ITERATION HP COMPARISON memories are present):
+1. ZERO-ADJUSTMENT FOLDS are the strongest signal for HP effectiveness — they isolate \
+the HP effect with no reward confound. If zero-adj folds regressed, the HP change is the \
+primary cause regardless of other fold results.
+2. HP BOUNDS VIOLATIONS predict regressions — flag any HP exceeding documented safe ranges \
+(PPO: lr [5e-5, 3e-4], n_epochs [3, 6]; A2C: lr [1e-4, 5e-4], ent_coef [0.005, 0.02]; \
+SAC: lr [1e-5, 1e-4]).
+3. If ALL folds regressed regardless of adjustment count, HPs are the dominant factor.
+4. Compare regime_performance patterns across iterations — if a pattern was strong in \
+iter 0 but disappeared in iter 1, the HP change disrupted regime sensitivity.
+
+category MUST be one of these 13 values. Use the closest match. Do NOT create new categories.
 
 Training patterns:
 - regime_performance: Algo Sharpe/Sortino divergence across bull vs bear regime folds
@@ -369,6 +380,13 @@ Training patterns:
 - overfit_diagnosis: IS vs OOS gap patterns, especially regime-dependent overfitting
 - drawdown_recovery: max_dd_duration and avg_drawdown comparison across algos/regimes
 - data_size_impact: Gate pass rate correlation with train_bars (data volume effects)
+- iteration_regression: Cross-iteration performance decline — identifies which HP changes, \
+reward adjustment patterns, or their interaction caused regression from baseline or previous \
+iteration. Includes ensemble-level and per-algo sharpe/mdd deltas, zero-adjustment fold \
+evidence for HP attribution, and recovery recommendations.
+- hp_effectiveness: Cross-iteration HP change impact — which specific HP changes improved \
+or degraded OOS performance, citing zero-adjustment folds (no reward confound) and HP \
+bounds violations as evidence. Include per-algo sharpe delta and folds improved/regressed.
 
 Live trading patterns (Phase 20):
 - live_cycle_gate: Conditions suggesting an environment should skip a training/trading cycle
@@ -406,6 +424,44 @@ The data shows per-fold TRAINING statistics, not OOS test results. Look for patt
 via weight change deltas, (3) algo-specific instability via IQR outliers, (4) early vs late \
 fold comparison for data window effects.
 
+ATTRIBUTION GUIDANCE — Distinguishing HP-caused vs reward-caused effects:
+
+Changing reward weights redefines the optimization objective (Ng et al. 1999) — NOT \
+potential-based reward shaping. The optimal policy changes when weights change.
+
+HP changes and reward weights are MUTUALLY DEPENDENT (Blom et al. 2024). Use these \
+heuristics to attribute performance changes:
+
+1. PURE HP SIGNAL (highest confidence): Zero-adjustment folds that regressed isolate the \
+HP effect with no reward confound. Cite these as primary evidence.
+2. CROSS-FOLD WEIGHT UNIFORMITY: If all folds end with similar final weights but OOS \
+outcomes diverge widely, HPs are the dominant factor.
+3. DIRECTIONALITY CHECK: If drawdown weight increased but MDD worsened, suspect HP \
+interaction or Goodhart's Law (excessive penalty → inactivity or position concentration).
+4. ADJUSTMENT CORRELATION: If folds with MORE adjustment have BETTER outcomes (positive \
+correlation), adjustments are compensating for bad HPs, not causing harm.
+5. HP BOUNDS VIOLATION: Out-of-range HPs strongly predict regression. Safe ranges: \
+PPO lr [5e-5, 3e-4], n_epochs [3, 6], batch [64, 256], ent_coef [0.005, 0.02]; \
+A2C lr [1e-4, 5e-4], ent_coef [0.005, 0.02], gamma [0.95, 0.98]; \
+SAC lr [1e-5, 1e-4], gamma [0.95, 0.97].
+
+REWARD WEIGHT FAILURE MODES (from RL literature):
+- Excessive drawdown penalty → inactivity or position concentration (Goodhart's Law)
+- High turnover penalty → holding losing positions (closing incurs "turnover")
+- High ent_coef (>0.02) washes out reward signals — entropy dominates (Zhang et al. 2023)
+- PPO most brittle to mid-training reward changes (value clipping interacts with scale)
+- SAC entropy/exploit balance shifts with reward changes; auto-temperature lags
+
+RATE OF CHANGE: Gradual adaptation outperforms abrupt changes. Random weight oscillation \
+performs WORSE than static weights (DynaOpt 2024, RTW 2025). Check whether fold weight \
+trajectories follow a principled direction or oscillate.
+
+When generating reward_shaping patterns: state whether evidence comes from zero-adj folds \
+(high confidence for HP attribution) or mixed HP+adjustment folds (lower confidence). \
+Include per-dimension effectiveness, not just aggregate rates.
+When generating hp_effectiveness patterns: cite zero-adjustment folds as primary evidence \
+and flag HP values exceeding documented safe ranges.
+
 You MUST only reference metrics, values, and facts that appear explicitly in the input \
 data between <training_data> tags. Do NOT reference any ticker symbols, dates, or metric \
 values that do not appear in the input data.
@@ -430,16 +486,23 @@ Most patterns from noisy financial data should fall in the 0.4-0.7 range. A conf
 above 0.85 requires overwhelming, exception-free evidence. In our experience, only ~10% \
 of detected patterns have confidence above 0.8. Calibrate accordingly.
 
-category MUST be one of these 4 values. Use the closest match. Do NOT create new categories.
+category MUST be one of these 6 values. Use the closest match. Do NOT create new categories.
 
 - iteration_progression: Mean metric improvement or degradation across training iterations
 - overfit_diagnosis: IS vs OOS gap patterns, especially regime-dependent overfitting
 - drawdown_recovery: max_dd_duration and avg_drawdown comparison across algos/regimes
-- reward_shaping: Reward weight adjustment effectiveness — which adjustments improved or degraded performance
+- reward_shaping: Reward weight adjustment effectiveness — which adjustments improved or \
+degraded performance, with per-dimension breakdown
+- hp_effectiveness: Cross-iteration HP change impact — which specific HP changes improved \
+or degraded performance, citing zero-adjustment folds (no reward confound) and HP bounds \
+violations as evidence. Include per-algo sharpe delta and folds improved/regressed counts.
+- iteration_regression: Cross-iteration performance decline — identifies which HP changes, \
+reward adjustment patterns, or their interaction caused regression from baseline or previous \
+iteration, using training dynamics evidence (trajectory degradation, outlier rates).
 
 Return a JSON object with a "patterns" array. Each pattern has: pattern_text, category, \
 affected_algos, affected_envs, actionable_implication, confidence, evidence. \
-Identify between 0 and 5 patterns. Prefer fewer well-supported patterns over many weak \
+Identify between 0 and 7 patterns. Prefer fewer well-supported patterns over many weak \
 ones. An empty patterns array is acceptable if the data does not support clear patterns."""
 
 _STAGE_2_SYSTEM_PROMPT = """You are analyzing CONSOLIDATED PATTERNS already extracted from \
@@ -548,6 +611,19 @@ _PHASE_A_FEW_SHOT_EXAMPLES = json.dumps(
                 "confidence": 0.57,
                 "evidence": "PLACEHOLDER: fold 2 vix_mean=X.XX max_single_loss=Y.YY%; fold 4 vix_mean=Z.ZZ max_single_loss=W.WW%",
             },
+            {
+                "pattern_text": "PLACEHOLDER: Iteration N ENV regressed X.X% from baseline. ALGO_A sharpe dropped Y→Z with lr change, N/M zero-adj folds regressed (pure HP). ALGO_B lr=0.0003 exceeded safe range [1e-5, 1e-4] causing trade collapse.",
+                "category": "iteration_regression",
+                "affected_algos": [
+                    "PLACEHOLDER_ALGO_A",
+                    "PLACEHOLDER_ALGO_B",
+                    "PLACEHOLDER_ALGO_C",
+                ],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: revert ALGO_B lr to within range, increase ALGO_A n_epochs, do not reduce gamma below 0.97 for crypto",
+                "confidence": 0.82,
+                "evidence": "PLACEHOLDER: ensemble sharpe 4.20→3.55 (-15.5%); ALGO_A fold1 (0 adj) -2.05, fold3 (0 adj) -0.31; ALGO_B trades 612→45",
+            },
         ],
     },
     indent=2,
@@ -600,6 +676,28 @@ _PHASE_B_FEW_SHOT_EXAMPLES = json.dumps(
                 "actionable_implication": "PLACEHOLDER: reduce PPO learning rate or clip range during bear regime folds to prevent KL instability",
                 "confidence": 0.51,
                 "evidence": "PLACEHOLDER: PPO fold X kl outlier=V.VV (fence=W.WW); fold Y kl outlier=U.UU; A2C/SAC fold X mdd outlier=S.SS (N=17, high confidence)",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: reducing ALGO_A n_epochs 10→5 with lr 3e-4→1e-4 caused regression in N/M zero-adjustment folds (avg sharpe delta -X.XX), confirming HP change as primary factor. ALGO_B lr=3e-4 exceeds documented range [1e-5, 1e-4].",
+                "category": "hp_effectiveness",
+                "affected_algos": ["PLACEHOLDER_ALGO_A", "PLACEHOLDER_ALGO_B"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: revert n_epochs to 8-10, keep ALGO_B lr within [1e-5, 1e-4] range",
+                "confidence": 0.78,
+                "evidence": "PLACEHOLDER: fold1 (0 adj) delta=-2.05; fold3 (0 adj) delta=-0.31; ALGO_B lr=3e-4 exceeds [1e-5, 1e-4]; reward weights uniform across folds (~profit=0.39, drawdown=0.33) confirming HPs as dominant factor",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: Iteration N training dynamics show degradation across all folds — ALGO_A rolling_sharpe trend negative in M/N folds, ALGO_B reward adjustment effectiveness dropped from X% to Y%, consistent with cross-iteration regression from HP changes.",
+                "category": "iteration_regression",
+                "affected_algos": [
+                    "PLACEHOLDER_ALGO_A",
+                    "PLACEHOLDER_ALGO_B",
+                    "PLACEHOLDER_ALGO_C",
+                ],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: revert HP changes that caused training instability, particularly ALGO_B lr and ALGO_A gamma",
+                "confidence": 0.72,
+                "evidence": "PLACEHOLDER: ALGO_A trend negative in 10/14 folds (avg slope -0.002); ALGO_B adjustment effectiveness 88%→43%; ensemble sharpe 4.20→3.55",
             },
         ],
     },
@@ -885,13 +983,23 @@ def _format_outlier_events(
     return result
 
 
-def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
+def _aggregate_epoch_summaries(
+    memories: list[dict[str, Any]],
+    outcome_lookup: dict[tuple[str, int], dict[str, Any]] | None = None,
+) -> list[str]:
     """Aggregate raw epoch memories into per-fold statistical summaries.
 
     Groups memories by run_id (algo_fold), computes robust statistics for each
     fold (5-number summary, IQM, trend slopes, temporal windows, IQR-based
     outlier detection, skewness), and returns human-readable summary strings
     suitable for a single LLM consolidation call.
+
+    Args:
+        memories: List of epoch snapshot memory dicts.
+        outcome_lookup: Optional mapping of ``(run_id, epoch_triggered)`` to
+            REWARD_ADJUSTMENT_OUTCOME data (sharpe_delta, mdd_delta, effective,
+            weights_before, weights_after).  When provided, each detected weight
+            change is enriched with per-dimension labels and measured effectiveness.
 
     Each summary includes:
     - Fold metadata with N, cadence, and confidence label
@@ -1133,23 +1241,46 @@ def _aggregate_epoch_summaries(memories: list[dict[str, Any]]) -> list[str]:
             weight_lines.append("  REWARD WEIGHTS:")
             weight_lines.append(f"    initial={first_w}")
             for change_epoch, old_w, new_w in changes:
-                # Find nearest sharpe before and after the change
-                pre_sharpe = None
-                post_sharpe = None
-                for e in epochs:
-                    ep = e.get("epoch", -1)
-                    if ep <= change_epoch and "rolling_sharpe_500" in e:
-                        pre_sharpe = e["rolling_sharpe_500"]
-                    if ep >= change_epoch and "rolling_sharpe_500" in e:
-                        post_sharpe = e["rolling_sharpe_500"]
-                        break
-                delta_str = ""
-                if pre_sharpe is not None and post_sharpe is not None:
-                    delta = post_sharpe - pre_sharpe
-                    delta_str = f" sharpe {pre_sharpe:.4f}->{post_sharpe:.4f} ({delta:+.4f})"
-                weight_lines.append(
-                    f"    change@epoch={change_epoch:.0f}: {old_w}->{new_w}{delta_str}"
-                )
+                # Check outcome_lookup for measured effectiveness
+                outcome = (outcome_lookup or {}).get((run_id, int(change_epoch)))
+                if outcome is not None:
+                    # Build per-dimension change labels
+                    dim_parts = []
+                    try:
+                        bw = json.loads(old_w.replace("'", '"'))
+                        aw = json.loads(new_w.replace("'", '"'))
+                        for dim in ("profit", "sharpe", "drawdown", "turnover"):
+                            d = aw.get(dim, 0.0) - bw.get(dim, 0.0)
+                            if abs(d) > 0.001:
+                                dim_parts.append(f"{dim} {d:+.3f}")
+                    except (json.JSONDecodeError, TypeError, AttributeError):
+                        pass
+                    dim_label = f"[{', '.join(dim_parts)}]" if dim_parts else ""
+                    sd = outcome.get("sharpe_delta", 0.0)
+                    md = outcome.get("mdd_delta", 0.0)
+                    eff = "effective" if outcome.get("effective") else "ineffective"
+                    weight_lines.append(
+                        f"    change@epoch={change_epoch:.0f}: {dim_label}"
+                        f" sharpe_delta={sd:+.4f} mdd_delta={md:+.4f} ({eff})"
+                    )
+                else:
+                    # Fallback: nearest sharpe before and after (original behavior)
+                    pre_sharpe = None
+                    post_sharpe = None
+                    for e in epochs:
+                        ep = e.get("epoch", -1)
+                        if ep <= change_epoch and "rolling_sharpe_500" in e:
+                            pre_sharpe = e["rolling_sharpe_500"]
+                        if ep >= change_epoch and "rolling_sharpe_500" in e:
+                            post_sharpe = e["rolling_sharpe_500"]
+                            break
+                    delta_str = ""
+                    if pre_sharpe is not None and post_sharpe is not None:
+                        delta = post_sharpe - pre_sharpe
+                        delta_str = f" sharpe {pre_sharpe:.4f}->{post_sharpe:.4f} ({delta:+.4f})"
+                    weight_lines.append(
+                        f"    change@epoch={change_epoch:.0f}: {old_w}->{new_w}{delta_str}"
+                    )
             weight_lines.append(f"    final={last_w} total_changes={len(changes)}")
         else:
             weight_lines.append("  REWARD WEIGHTS: none tracked")
@@ -1249,23 +1380,71 @@ def _summarize_reward_adjustments(memories: list[dict[str, Any]], env_name: str)
             triggers[a.get("trigger_metric", "unknown")] += 1
         trigger_str = ", ".join(f"{k}={v}" for k, v in sorted(triggers.items()))
 
-        # Effectiveness
-        effective_count = sum(1 for a in adjs if a.get("effective", False))
+        # Effectiveness (overall)
+        outcomes = [a for a in adjs if "effective" in a]
+        n_outcomes = len(outcomes)
+        effective_count = sum(1 for a in outcomes if a.get("effective", False))
         deltas = [a["sharpe_delta"] for a in adjs if "sharpe_delta" in a]
         avg_delta = sum(deltas) / len(deltas) if deltas else 0.0
+
+        # Per-dimension effectiveness breakdown
+        dim_stats: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {"count": 0, "effective": 0, "sharpe_deltas": []}
+        )
+        for a in outcomes:
+            before_str = a.get("weights_before", "")
+            after_str = a.get("weights_after", "")
+            if not before_str or not after_str:
+                continue
+            try:
+                before_w = json.loads(before_str.replace("'", '"'))
+                after_w = json.loads(after_str.replace("'", '"'))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            sd = a.get("sharpe_delta", 0.0)
+            eff = a.get("effective", False)
+            for dim in ("profit", "sharpe", "drawdown", "turnover"):
+                delta = after_w.get(dim, 0.0) - before_w.get(dim, 0.0)
+                if abs(delta) > 0.001:
+                    direction = "increase" if delta > 0 else "decrease"
+                    key = f"{dim}_{direction}"
+                    dim_stats[key]["count"] += 1
+                    if eff:
+                        dim_stats[key]["effective"] += 1
+                    dim_stats[key]["sharpe_deltas"].append(sd)
+
+        dim_lines = []
+        for key in sorted(
+            dim_stats.keys(),
+            key=lambda k: -(dim_stats[k]["effective"] / max(dim_stats[k]["count"], 1)),
+        ):
+            d = dim_stats[key]
+            if d["count"] == 0:
+                continue
+            pct = d["effective"] / d["count"] * 100
+            avg_sd = (
+                sum(d["sharpe_deltas"]) / len(d["sharpe_deltas"]) if d["sharpe_deltas"] else 0.0
+            )
+            dim_lines.append(
+                f"    {key}: {d['count']} adj, {d['effective']} effective "
+                f"({pct:.0f}%), avg_sharpe_delta={avg_sd:+.4f}"
+            )
 
         # Weight trend (first and last)
         first_after = adjs[0].get("weights_after", "unknown")
         last_after = adjs[-1].get("weights_after", "unknown")
 
         summary = (
-            f"REWARD ADJUSTMENTS: {algo} env={env_name} count={n}\n"
+            f"REWARD ADJUSTMENTS: {algo} env={env_name} count={n}"
+            f" ({n - n_outcomes} triggers, {n_outcomes} outcomes)\n"
             f"  triggers: {trigger_str}\n"
-            f"  effectiveness: {effective_count}/{n} positive "
-            f"({effective_count / n * 100:.0f}%), avg_sharpe_delta={avg_delta:.4f}\n"
-            f"  weight_trend: first_adjustment={first_after} "
-            f"last_adjustment={last_after}"
+            f"  effectiveness: {effective_count}/{n_outcomes} positive "
+            f"({effective_count / n_outcomes * 100 if n_outcomes else 0:.0f}%), "
+            f"avg_sharpe_delta={avg_delta:.4f}\n"
         )
+        if dim_lines:
+            summary += "  per_dimension_effectiveness:\n" + "\n".join(dim_lines) + "\n"
+        summary += f"  weight_trend: first_adjustment={first_after} last_adjustment={last_after}"
         summaries.append(summary)
 
     log.info(
@@ -1358,7 +1537,7 @@ class ConsolidateAgent:
         """
         total_created = 0
 
-        # --- Phase A: WF + trading patterns (cross-algo analysis) ---
+        # --- Phase A: WF + trading patterns + cross-iteration comparison ---
         wf_memories = await get_memories_by_source_prefix_async(
             prefix=f"walk_forward:{env_name}",
             limit=_MEMORY_BATCH_SIZE,
@@ -1369,7 +1548,14 @@ class ConsolidateAgent:
             limit=_MEMORY_BATCH_SIZE,
             archived=False,
         )
-        phase_a: list[dict[str, Any]] = (wf_memories or []) + (trading_memories or [])
+        cross_iter_memories = await get_memories_by_source_prefix_async(
+            prefix=f"cross_iteration:{env_name}",
+            limit=_MEMORY_BATCH_SIZE,
+            archived=False,
+        )
+        phase_a: list[dict[str, Any]] = (
+            (wf_memories or []) + (trading_memories or []) + (cross_iter_memories or [])
+        )
 
         if not phase_a:
             # Fallback: old-style tags for backward compat
@@ -1439,7 +1625,7 @@ class ConsolidateAgent:
         # Uses OFFSET-based pagination — no archiving during fetch so memories
         # are preserved if the LLM call fails.
         all_phase_b: list[dict[str, Any]] = []
-        for prefix in ("training_epoch", "reward_adjustment"):
+        for prefix in ("training_epoch", "reward_adjustment", "cross_iteration"):
             offset = 0
             _FETCH_CHUNK = 10_000
             while True:
@@ -1494,7 +1680,33 @@ class ConsolidateAgent:
                 m for m in all_phase_b if "REWARD_ADJUSTMENT" in m.get("text", "").upper()
             ]
 
-        fold_summaries = _aggregate_epoch_summaries(epoch_memories)
+        # Build outcome lookup for fold-level effectiveness enrichment
+        # Maps (run_id, epoch_triggered) → {sharpe_delta, mdd_delta, effective, ...}
+        import re  # noqa: PLC0415 — local import matches existing pattern in this file
+
+        outcome_lookup: dict[tuple[str, int], dict[str, Any]] = {}
+        for rm in reward_memories:
+            txt = rm.get("text", "")
+            if "REWARD_ADJUSTMENT_OUTCOME" not in txt:
+                continue
+            rid_m = re.search(r"run_id=(\S+)", txt)
+            ep_m = re.search(r"epoch_triggered=(\d+)", txt)
+            if not rid_m or not ep_m:
+                continue
+            sd_m = re.search(r"post_adjustment_sharpe_delta=([0-9.e+-]+)", txt)
+            md_m = re.search(r"post_adjustment_mdd_delta=([0-9.e+-]+)", txt)
+            eff_m = re.search(r"adjustment_effective=(True|False)", txt)
+            bw_m = re.search(r"weights_before=(\{[^}]+\})", txt)
+            aw_m = re.search(r"weights_after=(\{[^}]+\})", txt)
+            outcome_lookup[(rid_m.group(1), int(ep_m.group(1)))] = {
+                "sharpe_delta": float(sd_m.group(1)) if sd_m else 0.0,
+                "mdd_delta": float(md_m.group(1)) if md_m else 0.0,
+                "effective": eff_m.group(1) == "True" if eff_m else False,
+                "weights_before": bw_m.group(1) if bw_m else "",
+                "weights_after": aw_m.group(1) if aw_m else "",
+            }
+
+        fold_summaries = _aggregate_epoch_summaries(epoch_memories, outcome_lookup)
         reward_summaries = _summarize_reward_adjustments(reward_memories, env_name)
 
         # Combine into single prompt with global preamble
