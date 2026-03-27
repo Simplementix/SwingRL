@@ -328,7 +328,9 @@ class MemoryCurriculumSampler:
                 }
             )
 
-        bars_per_year = 252 if env_name == "equity" else 2191
+        from swingrl.agents.backtest import ENV_PARAMS  # noqa: PLC0415
+
+        bars_per_year = int(ENV_PARAMS[env_name]["periods_per_year"])
         return MemoryCurriculumSampler(
             windows=windows,
             total_bars=len(date_index),

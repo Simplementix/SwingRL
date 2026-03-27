@@ -175,7 +175,16 @@ class MemoryEpochCallback(BaseCallback):
                     return int(val)
         except Exception:  # nosec B110  # Fail-open: config load failure → use hardcoded defaults
             pass
-        return ALGO_EPOCH_CADENCE.get(algo, EPOCH_STORE_CADENCE)
+        cadence = ALGO_EPOCH_CADENCE.get(algo)
+        if cadence is None:
+            log.warning(
+                "unknown_algo_epoch_cadence_using_fallback",
+                algo=algo,
+                fallback=EPOCH_STORE_CADENCE,
+                known_algos=list(ALGO_EPOCH_CADENCE.keys()),
+            )
+            return EPOCH_STORE_CADENCE
+        return cadence
 
     def _on_step(self) -> bool:
         """Check if training should continue.

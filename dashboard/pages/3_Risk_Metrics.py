@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+# Streamlit pages need parent dir on path to import app.py helpers
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # ---------------------------------------------------------------------------
 # Helper functions (pure logic, no st.* calls)
@@ -89,10 +94,6 @@ def fetch_risk_decisions(conn: sqlite3.Connection, limit: int = 20) -> pd.DataFr
 st.header("Risk Metrics")
 
 try:
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from app import get_sqlite_conn
 
     conn = get_sqlite_conn()

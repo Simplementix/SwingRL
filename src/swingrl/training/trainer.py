@@ -194,11 +194,13 @@ class TrainingOrchestrator:
                     prices,
                     skip_vec_normalize=True,
                 )
-                periods = 2191 if env_name == "crypto" else 252
+                from swingrl.agents.backtest import ENV_PARAMS  # noqa: PLC0415
+
+                periods = ENV_PARAMS[env_name]["periods_per_year"]
                 memory_wrapper = MemoryVecRewardWrapper(
                     vec_env,
                     initial_weights=initial_reward_weights,
-                    periods_per_year=periods,
+                    periods_per_year=int(periods),
                 )
                 vec_env = VecNormalize(
                     memory_wrapper,
@@ -228,11 +230,11 @@ class TrainingOrchestrator:
             )
             from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
 
-            periods = 2191 if env_name == "crypto" else 252
+            periods = ENV_PARAMS[env_name]["periods_per_year"]
             eval_memory_wrapper = MemoryVecRewardWrapper(
                 eval_base,
                 initial_weights=initial_reward_weights,
-                periods_per_year=periods,
+                periods_per_year=int(periods),
             )
             eval_vec_env = VecNormalize(
                 eval_memory_wrapper,

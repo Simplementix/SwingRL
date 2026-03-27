@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 import streamlit as st
+
+# Streamlit pages need parent dir on path to import app.py helpers
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # ---------------------------------------------------------------------------
 # Helper functions (pure logic, no st.* calls -- testable without Streamlit)
@@ -78,10 +83,6 @@ def get_latest_trades(conn: sqlite3.Connection, limit: int = 5) -> list[dict]:
 st.header("System Health")
 
 try:
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from app import get_sqlite_conn
 
     conn = get_sqlite_conn()

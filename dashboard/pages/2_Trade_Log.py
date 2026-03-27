@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+# Streamlit pages need parent dir on path to import app.py helpers
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # ---------------------------------------------------------------------------
 # Helper functions (pure logic, no st.* calls)
@@ -59,10 +64,6 @@ def compute_trade_stats(df: pd.DataFrame) -> dict[str, object]:
 st.header("Trade Log")
 
 try:
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from app import get_sqlite_conn
 
     conn = get_sqlite_conn()
