@@ -133,7 +133,6 @@ class MetaTrainingOrchestrator:
             TrainingResult from trainer.train().
         """
         run_id = self._generate_run_id(env_name, algo_name)
-        start_time = datetime.now(tz=UTC)
         wall_start = time.monotonic()
 
         log.info(
@@ -189,26 +188,11 @@ class MetaTrainingOrchestrator:
             initial_reward_weights=reward_weights,
         )
 
-        # Ingest run summary
-        end_time = datetime.now(tz=UTC)
+        # NOTE: Run summary ingestion with final metrics is now done in
+        # train_pipeline.py after walk-forward evaluation completes, where
+        # real Sharpe/MDD/Sortino values are available. The meta orchestrator
+        # only handles training; WF metrics aren't available here.
         wall_elapsed = time.monotonic() - wall_start
-
-        regime_vector = self._current_regime_vector(env_name)
-        final_metrics = self._compute_final_metrics(result)
-        summary_text = self._build_run_summary_text(
-            run_id=run_id,
-            algo_name=algo_name,
-            env_name=env_name,
-            start_time=start_time,
-            end_time=end_time,
-            result=result,
-            final_metrics=final_metrics,
-            merged_hp=merged_hp,
-            reward_weights=reward_weights,
-            regime_vector=regime_vector,
-            rationale=advised_config.get("rationale", "cold_start"),
-        )
-        self._client.ingest_training(summary_text, source="training_run:historical")
 
         log.info(
             "meta_training_complete",

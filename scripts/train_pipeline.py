@@ -1608,6 +1608,98 @@ def _run_wf_for_algo(
     return (algo_name, folds)
 
 
+def _ingest_run_summaries_to_memory(
+    config: SwingRLConfig,
+    env_name: str,
+    all_wf_results: dict[str, list[Any]],
+    ensemble_weights: dict[str, float],
+    gate_result: dict[str, Any],
+    iteration_number: int = 0,
+    hp_overrides: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    """Ingest per-algo training run summaries with real WF metrics to memory.
+
+    Called after walk-forward evaluation completes so that final Sharpe, MDD,
+    and Sortino values are available (unlike the meta orchestrator which only
+    has convergence info at training time).
+
+    Args:
+        config: Validated SwingRLConfig.
+        env_name: Environment name.
+        all_wf_results: Per-algo walk-forward fold results.
+        ensemble_weights: Per-algo ensemble weights.
+        gate_result: Ensemble gate result dict.
+        iteration_number: Training iteration number.
+        hp_overrides: Per-algo HP overrides used (None for baseline).
+    """
+    mem_cfg = getattr(config, "memory_agent", None)
+    if not mem_cfg or not getattr(mem_cfg, "api_key", ""):
+        return
+
+    try:
+        from swingrl.memory.client import MemoryClient  # noqa: PLC0415
+
+        client = MemoryClient(
+            base_url=mem_cfg.base_url,
+            default_timeout=mem_cfg.timeout_sec,
+            api_key=mem_cfg.api_key,
+        )
+
+        hp_source = "memory_advised" if iteration_number > 0 and hp_overrides else "baseline"
+
+        for algo_name in ALGO_NAMES:
+            folds = all_wf_results.get(algo_name, [])
+            if not folds:
+                continue
+
+            # Compute per-algo mean OOS metrics from fold results
+            sharpe_vals = [f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds]
+            mdd_vals = [f.out_of_sample_metrics.get("mdd", 0.0) for f in folds]
+            sortino_vals = [f.out_of_sample_metrics.get("sortino", 0.0) for f in folds]
+            return_vals = [f.out_of_sample_metrics.get("total_return", 0.0) for f in folds]
+            n = len(folds)
+
+            mean_sharpe = sum(sharpe_vals) / n if n else 0.0
+            mean_mdd = sum(mdd_vals) / n if n else 0.0
+            mean_sortino = sum(sortino_vals) / n if n else 0.0
+            mean_return = sum(return_vals) / n if n else 0.0
+
+            # HP details
+            algo_hp = (hp_overrides or {}).get(algo_name, {})
+            hp_str = json.dumps(algo_hp) if algo_hp else "baseline"
+
+            # Gate pass rate for this algo
+            gate_passed = sum(1 for f in folds if f.gate_result.passed)
+
+            # Convergence info
+            early_stopped = sum(1 for f in folds if f.converged_at_step is not None)
+
+            summary = (
+                f"TRAINING RUN SUMMARY: algo={algo_name.upper()} env={env_name} "
+                f"iteration={iteration_number} hp_source={hp_source}\n"
+                f"  final_sharpe={mean_sharpe:.4f} final_mdd={mean_mdd:.4f} "
+                f"final_sortino={mean_sortino:.4f} final_return={mean_return:.4f}\n"
+                f"  folds={n} gate_passed={gate_passed}/{n} "
+                f"early_stopped={early_stopped}/{n}\n"
+                f"  ensemble_weight={ensemble_weights.get(algo_name, 0.0):.4f} "
+                f"ensemble_sharpe={gate_result.get('sharpe', 0.0):.4f} "
+                f"ensemble_mdd={gate_result.get('mdd', 0.0):.4f} "
+                f"ensemble_gate={'PASS' if gate_result.get('passed') else 'FAIL'}\n"
+                f"  hyperparams={hp_str}"
+            )
+
+            client.ingest_training(summary, source="training_run:historical")
+            log.info(
+                "run_summary_ingested",
+                algo=algo_name,
+                env=env_name,
+                iteration=iteration_number,
+                mean_sharpe=round(mean_sharpe, 4),
+            )
+    except Exception as exc:
+        log.warning("run_summary_ingestion_failed", env=env_name, error=str(exc))
+
+
 def _train_final_algo(
     env_name: str,
     algo_name: str,
@@ -2053,6 +2145,15 @@ def run_environment(
         env_name,
         all_wf_results,
         features=features_full,
+        iteration_number=iteration_number,
+        hp_overrides=wf_hp_overrides if iteration_number > 0 else None,
+    )
+    _ingest_run_summaries_to_memory(
+        config,
+        env_name,
+        all_wf_results,
+        ensemble_weights,
+        gate_result,
         iteration_number=iteration_number,
         hp_overrides=wf_hp_overrides if iteration_number > 0 else None,
     )
