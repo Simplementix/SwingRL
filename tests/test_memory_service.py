@@ -2797,6 +2797,14 @@ class TestNewCategories:
         categories = [p["category"] for p in examples["patterns"]]
         assert "iteration_regression" in categories
 
+    def test_phase_a_few_shot_has_hp_effectiveness(self) -> None:
+        """Phase A few-shot examples include hp_effectiveness."""
+        from memory_agents.consolidate import _PHASE_A_FEW_SHOT_EXAMPLES
+
+        examples = json.loads(_PHASE_A_FEW_SHOT_EXAMPLES)
+        categories = [p["category"] for p in examples["patterns"]]
+        assert "hp_effectiveness" in categories
+
     def test_phase_b_few_shot_has_both_categories(self) -> None:
         """Phase B few-shot examples include hp_effectiveness and iteration_regression."""
         from memory_agents.consolidate import _PHASE_B_FEW_SHOT_EXAMPLES
@@ -2835,6 +2843,13 @@ class TestNewCategories:
         assert "Ng et al." in _PHASE_B_SYSTEM_PROMPT
         assert "Blom et al." in _PHASE_B_SYSTEM_PROMPT
         assert "Goodhart" in _PHASE_B_SYSTEM_PROMPT
+
+    def test_run_config_instructions_prioritize_new_categories(self) -> None:
+        """Run config instructions mention hp_effectiveness and iteration_regression."""
+        from memory_agents.query import _RUN_CONFIG_INSTRUCTIONS
+
+        assert "hp_effectiveness" in _RUN_CONFIG_INSTRUCTIONS
+        assert "iteration_regression" in _RUN_CONFIG_INSTRUCTIONS
 
     def test_reward_weight_guide_has_cautions(self) -> None:
         """Enhanced reward weight guide includes failure mode cautions."""

@@ -397,7 +397,7 @@ Live trading patterns (Phase 20):
 
 Return a JSON object with a "patterns" array. Each pattern has: pattern_text, category, \
 affected_algos, affected_envs, actionable_implication, confidence, evidence. \
-Identify between 0 and 5 patterns. Prefer fewer well-supported patterns over many weak \
+Identify between 0 and 7 patterns. Prefer fewer well-supported patterns over many weak \
 ones. An empty patterns array is acceptable if the data does not support clear patterns."""
 
 _PHASE_B_SYSTEM_PROMPT = """You are analyzing TRAINING DYNAMICS data — per-fold training \
@@ -415,7 +415,9 @@ and skewness (for large-N folds). IQM is MORE reliable than mean — prefer it f
 Use this to detect convergence, divergence, or overfitting (mid better than late).
 - OUTLIERS: IQR-based detection (Tukey fences), reported as rate (count/N). Only PPO has \
 approx_kl metrics — A2C and SAC do not produce KL divergence.
-- REWARD WEIGHTS: Weight changes with pre/post sharpe deltas showing impact of adjustments.
+- REWARD WEIGHTS: Weight changes with per-dimension labels (e.g., [drawdown +0.109, profit -0.056]), \
+measured sharpe_delta/mdd_delta from 10-epoch-later outcome, and effective/ineffective classification. \
+When outcome data is unavailable, falls back to nearest pre/post sharpe values.
 - METADATA: N=sample_count, cadence=epochs_between_snapshots, confidence=low/moderate/high. \
 Low-confidence folds (N<=5, typically PPO) have less reliable statistics.
 
@@ -623,6 +625,15 @@ _PHASE_A_FEW_SHOT_EXAMPLES = json.dumps(
                 "actionable_implication": "PLACEHOLDER: revert ALGO_B lr to within range, increase ALGO_A n_epochs, do not reduce gamma below 0.97 for crypto",
                 "confidence": 0.82,
                 "evidence": "PLACEHOLDER: ensemble sharpe 4.20→3.55 (-15.5%); ALGO_A fold1 (0 adj) -2.05, fold3 (0 adj) -0.31; ALGO_B trades 612→45",
+            },
+            {
+                "pattern_text": "PLACEHOLDER: ALGO_A lr reduced 3e-4→1e-4 with n_epochs 10→5 improved OOS sharpe by X.XX% in N/M folds. ALGO_B ent_coef=0.025 exceeded safe range [0.005, 0.02], causing sharpe regression in P/Q folds.",
+                "category": "hp_effectiveness",
+                "affected_algos": ["PLACEHOLDER_ALGO_A", "PLACEHOLDER_ALGO_B"],
+                "affected_envs": ["PLACEHOLDER_ENV"],
+                "actionable_implication": "PLACEHOLDER: keep ALGO_A lr and n_epochs changes, revert ALGO_B ent_coef to within [0.005, 0.02]",
+                "confidence": 0.72,
+                "evidence": "PLACEHOLDER: ALGO_A fold1 sharpe +0.31 fold3 sharpe +0.45; ALGO_B ent_coef=0.025 exceeds [0.005, 0.02], fold2 sharpe -1.12 fold5 sharpe -0.89",
             },
         ],
     },
