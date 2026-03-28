@@ -100,14 +100,19 @@ memory_agent:
   cloud_block_on_429: true            # skip cloud providers that returned 429 today (resets daily UTC)
   cloud_block_codes: [429]            # HTTP status codes that trigger calendar-day blocking
   ollama_instances:
+    - name: homelab
+      url: "http://swingrl-ollama:11434"
+      model: "qwen2.5:14b"
+      timeout: 300
     - name: clawbot
       url: "http://172.184.70.2:11434"
       model: "qwen2.5:1.5b"
       timeout: 60
-    - name: homelab
-      url: "http://swingrl-ollama:11434"
-      model: "qwen2.5:1.5b"
-      timeout: 60
+  # Epoch advice call frequency (fewer calls with smarter model = better than many garbage calls)
+  epoch_cadence_ppo: 60                        # was 20 → 3x fewer calls (~1.4 calls/fold)
+  epoch_cadence_a2c: 8000                      # was 2000 → 4x fewer calls (~4 calls/fold)
+  epoch_cadence_sac: 40000                     # was 10000 → 4x fewer calls (~4 calls/fold)
+  epoch_cadence_default: 500                   # was 100
   # Epoch aggregation parameters (used by consolidation to summarize epoch memories)
   outlier_iqr_mild: 1.5                     # Tukey mild fence multiplier for IQR outlier detection
   outlier_iqr_extreme: 3.0                  # Tukey extreme fence multiplier

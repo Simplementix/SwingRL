@@ -32,17 +32,17 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-# Per-algo epoch store cadence. Normalized so each algo makes ~4-17 calls per fold,
-# regardless of n_steps (which determines rollouts per fold).
-# PPO: n_steps=2048, n_envs=6 → ~82 rollouts/fold → cadence 20 → ~4 calls
-# A2C: n_steps=5, n_envs=6 → ~33,334 rollouts/fold → cadence 2000 → ~17 calls
-# SAC: n_steps=1, n_envs=6 → ~166,667 rollouts/fold → cadence 10000 → ~17 calls
+# Per-algo epoch store cadence. Reduced frequency for smarter 14b model (fewer calls,
+# each one higher quality). YAML config takes precedence; these are fallback defaults.
+# PPO: n_steps=2048, n_envs=6 → ~82 rollouts/fold → cadence 60 → ~1.4 calls
+# A2C: n_steps=5, n_envs=6 → ~33,334 rollouts/fold → cadence 8000 → ~4 calls
+# SAC: n_steps=1, n_envs=6 → ~166,667 rollouts/fold → cadence 40000 → ~4 calls
 ALGO_EPOCH_CADENCE: dict[str, int] = {
-    "PPO": 20,
-    "A2C": 2000,
-    "SAC": 10000,
+    "PPO": 60,
+    "A2C": 8000,
+    "SAC": 40000,
 }
-EPOCH_STORE_CADENCE: int = 20  # Fallback for unknown algos
+EPOCH_STORE_CADENCE: int = 500  # Fallback for unknown algos
 
 # Per-algo SB3 logger key mappings. PPO/A2C/SAC use different internal names
 # for the same conceptual metrics. None means the metric does not exist for that algo.
