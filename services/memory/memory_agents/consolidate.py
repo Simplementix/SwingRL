@@ -1566,8 +1566,16 @@ class ConsolidateAgent:
             limit=_MEMORY_BATCH_SIZE,
             archived=False,
         )
+        run_summary_memories = await get_memories_by_source_prefix_async(
+            prefix=f"training_run:{env_name}",
+            limit=_MEMORY_BATCH_SIZE,
+            archived=False,
+        )
         phase_a: list[dict[str, Any]] = (
-            (wf_memories or []) + (trading_memories or []) + (cross_iter_memories or [])
+            (wf_memories or [])
+            + (trading_memories or [])
+            + (cross_iter_memories or [])
+            + (run_summary_memories or [])
         )
 
         if not phase_a:

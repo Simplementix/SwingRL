@@ -1688,7 +1688,7 @@ def _ingest_run_summaries_to_memory(
                 f"  hyperparams={hp_str}"
             )
 
-            client.ingest_training(summary, source="training_run:historical")
+            client.ingest_training(summary, source=f"training_run:{env_name}")
             log.info(
                 "run_summary_ingested",
                 algo=algo_name,
