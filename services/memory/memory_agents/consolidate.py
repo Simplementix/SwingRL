@@ -275,6 +275,8 @@ _VALID_CATEGORIES = [
     "live_position",
     "live_trade_veto",
     "cross_env_correlation",
+    "hp_effectiveness",
+    "iteration_regression",
 ]
 
 # ---------------------------------------------------------------------------
