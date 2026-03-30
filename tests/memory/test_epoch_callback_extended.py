@@ -10,7 +10,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from swingrl.memory.training.epoch_callback import (
-    EPOCH_STORE_CADENCE,
     NOTABLE_KL_THRESHOLD,
     NOTABLE_MDD_THRESHOLD,
     MemoryEpochCallback,
@@ -85,9 +84,10 @@ class TestEpochCallbackShouldStore:
     """TRAIN-10: _should_store() returns correct (should_store, event_label) tuples."""
 
     def test_should_store_every_5th_epoch(self) -> None:
-        """TRAIN-10: Cadence epoch (multiple of EPOCH_STORE_CADENCE) returns (True, None)."""
+        """TRAIN-10: Cadence epoch (multiple of callback cadence) returns (True, None)."""
         cb = _make_callback()
-        should, event = cb._should_store(EPOCH_STORE_CADENCE, 0.0, -0.01)
+        # Use the callback's actual cadence (loaded from config, e.g. 60 for PPO)
+        should, event = cb._should_store(cb._cadence, 0.0, -0.01)
         assert should is True
         assert event is None
 

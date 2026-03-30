@@ -1091,8 +1091,9 @@ def _ingest_wf_results_to_memory(
                 if hasattr(f.gate_result, "failures") and f.gate_result.failures:
                     gate_failures = f"gate_failures={','.join(f.gate_result.failures)} "
 
+                _ctrl_tag = "[CTRL] " if f.is_control_fold else "[TREATMENT] "
                 fold_lines.append(
-                    f"fold={f.fold_number} {train_ctx}{date_ctx}{regime_ctx}"
+                    f"fold={f.fold_number} {_ctrl_tag}{train_ctx}{date_ctx}{regime_ctx}"
                     f"sharpe={oos.get('sharpe', 0.0):.4f} "
                     f"mdd={oos.get('mdd', 0.0):.4f} "
                     f"sortino={oos.get('sortino', 0.0):.4f} "
@@ -1128,6 +1129,33 @@ def _ingest_wf_results_to_memory(
             hp_str = " ".join(hp_parts)
             hp_source = "memory_advised" if algo_hp_override else "baseline"
 
+            # Control vs Treatment summary (if both groups exist)
+            ctrl_sharpes = [
+                f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds if f.is_control_fold
+            ]
+            treat_sharpes = [
+                f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds if not f.is_control_fold
+            ]
+            ctrl_mdds = [
+                f.out_of_sample_metrics.get("mdd", 0.0) for f in folds if f.is_control_fold
+            ]
+            treat_mdds = [
+                f.out_of_sample_metrics.get("mdd", 0.0) for f in folds if not f.is_control_fold
+            ]
+            ctrl_summary = ""
+            if ctrl_sharpes and treat_sharpes:
+                ctrl_folds_list = sorted(f.fold_number for f in folds if f.is_control_fold)
+                c_s = float(np.mean(ctrl_sharpes))
+                t_s = float(np.mean(treat_sharpes))
+                c_m = float(np.mean(ctrl_mdds))
+                t_m = float(np.mean(treat_mdds))
+                ctrl_summary = (
+                    f"\nCONTROL vs TREATMENT: ctrl_folds={ctrl_folds_list} "
+                    f"ctrl_mean_sharpe={c_s:.4f} treatment_mean_sharpe={t_s:.4f} "
+                    f"delta={t_s - c_s:+.4f} "
+                    f"ctrl_mean_mdd={c_m:.4f} treatment_mean_mdd={t_m:.4f}"
+                )
+
             # Category 4: iteration_number and total_timesteps in header
             algo_text = (
                 f"WALK-FORWARD ALGO RESULTS: env={env_name} algo={algo_name.upper()} "
@@ -1144,7 +1172,9 @@ def _ingest_wf_results_to_memory(
                 f"ensemble_weight={ensemble_weights.get(algo_name, 0.0):.4f} "
                 # Category 6: per-trade extremes
                 f"max_single_loss={max_single_loss:.4f} "
-                f"best_single_trade={best_single_trade:.4f}\n" + "\n".join(fold_lines)
+                f"best_single_trade={best_single_trade:.4f}\n"
+                + "\n".join(fold_lines)
+                + ctrl_summary
             )
 
             # Updated source tag: walk_forward:{env_name}:{algo}
@@ -1424,6 +1454,25 @@ def _ingest_trading_patterns_to_memory(
             parts.append("Macro-conditioned trades:")
             parts.extend(macro_lines)
 
+        # Per-fold trade summary with [CTRL]/[TREATMENT] tags
+        fold_trade_lines: list[str] = []
+        for fold in folds:
+            fold_trades = getattr(fold, "trades", None) or []
+            n = len(fold_trades)
+            if n == 0:
+                continue
+            pnls = [float(t["pnl"]) for t in fold_trades]
+            wins = sum(1 for p in pnls if p > 0)
+            wr = wins / n if n > 0 else 0.0
+            avg = sum(pnls) / n if n > 0 else 0.0
+            tag = "[CTRL]" if fold.is_control_fold else "[TREATMENT]"
+            fold_trade_lines.append(
+                f"  fold={fold.fold_number} {tag} trades={n} win={wr:.3f} avg_pnl={avg:.4f}"
+            )
+        if fold_trade_lines:
+            parts.append("Per-fold trade stats:")
+            parts.extend(fold_trade_lines)
+
         pattern_text = "\n".join(parts)
 
         try:
@@ -1540,6 +1589,7 @@ def _run_wf_for_algo(
     memory_enabled: bool = False,
     fold_queue: multiprocessing.Queue | None = None,
     advice_enabled: bool = True,
+    control_fold_indices: set[int] | None = None,
 ) -> tuple[str, list[Any]]:
     """Run walk-forward validation for one algo. Top-level for serialization.
 
@@ -1602,6 +1652,7 @@ def _run_wf_for_algo(
         memory_client=memory_client,
         fold_queue=fold_queue,
         advice_enabled=advice_enabled,
+        control_fold_indices=control_fold_indices,
     )
 
     log.info("pipeline_wf_complete", env_name=env_name, algo=algo_name, fold_count=len(folds))
@@ -2043,6 +2094,14 @@ def run_environment(
         )
         writer_thread.start()
 
+        # Read control fold indices from config for scientific measurement
+        _ctrl_raw = (
+            config.memory_agent.control_folds_equity
+            if env_name == "equity"
+            else config.memory_agent.control_folds_crypto
+        )
+        _ctrl_indices: set[int] | None = set(_ctrl_raw) if _ctrl_raw else None
+
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
@@ -2058,6 +2117,7 @@ def run_environment(
                     wf_memory_capture,
                     fold_queue,
                     wf_memory_advice,
+                    _ctrl_indices,
                 ): algo
                 for algo in algos_to_run
             }

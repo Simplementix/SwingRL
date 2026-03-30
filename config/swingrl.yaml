@@ -113,6 +113,10 @@ memory_agent:
   epoch_cadence_a2c: 8000                      # was 2000 → 4x fewer calls (~4 calls/fold)
   epoch_cadence_sac: 40000                     # was 10000 → 4x fewer calls (~4 calls/fold)
   epoch_cadence_default: 500                   # was 100
+  # Control folds: fold indices that skip reward adjustments (scientific control group)
+  # Empty list = all folds are treatment (backward compatible)
+  control_folds_equity: [0, 5, 10, 15, 20]    # 5 control, ~18 treatment (spread across market regimes)
+  control_folds_crypto: [0, 4, 9, 13]          # 4 control, ~10 treatment
   # Epoch aggregation parameters (used by consolidation to summarize epoch memories)
   outlier_iqr_mild: 1.5                     # Tukey mild fence multiplier for IQR outlier detection
   outlier_iqr_extreme: 3.0                  # Tukey extreme fence multiplier

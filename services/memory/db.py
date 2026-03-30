@@ -165,6 +165,29 @@ CREATE TABLE IF NOT EXISTS pattern_outcomes (
 );
 """
 
+_CREATE_LLM_AUDIT_LOG = """
+CREATE TABLE IF NOT EXISTS llm_audit_log (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp         TEXT NOT NULL DEFAULT (datetime('now')),
+    call_type         TEXT NOT NULL,
+    algo              TEXT,
+    env               TEXT,
+    fold_number       INTEGER,
+    iteration_number  INTEGER,
+    is_control_fold   INTEGER,
+    provider          TEXT NOT NULL,
+    model_name        TEXT NOT NULL,
+    prompt_text       TEXT NOT NULL,
+    response_text     TEXT,
+    response_parsed   TEXT,
+    latency_ms        INTEGER,
+    success           INTEGER NOT NULL DEFAULT 1,
+    error_text        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_call_type ON llm_audit_log(call_type);
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON llm_audit_log(timestamp);
+"""
+
 # ---------------------------------------------------------------------------
 # Migration helpers
 # ---------------------------------------------------------------------------
@@ -228,6 +251,7 @@ def init_db() -> None:
         conn.executescript(_CREATE_CONSOLIDATION_SOURCES)
         conn.executescript(_CREATE_PATTERN_PRESENTATIONS)
         conn.executescript(_CREATE_PATTERN_OUTCOMES)
+        conn.executescript(_CREATE_LLM_AUDIT_LOG)
         # Migrate existing consolidations table with new columns
         _migrate_consolidations(conn)
         # Create indexes that may not exist on older DBs
@@ -276,6 +300,57 @@ def insert_memory(text: str, source: str) -> int:
         return int(row_id)
     finally:
         conn.close()
+
+
+def insert_audit_log(
+    *,
+    call_type: str,
+    provider: str,
+    model_name: str,
+    prompt_text: str,
+    response_text: str | None = None,
+    response_parsed: str | None = None,
+    latency_ms: int | None = None,
+    success: bool = True,
+    error_text: str | None = None,
+    algo: str | None = None,
+    env: str | None = None,
+    fold_number: int | None = None,
+    iteration_number: int | None = None,
+    is_control_fold: bool | None = None,
+) -> None:
+    """Insert an LLM audit log entry.  Fire-and-forget: never raises."""
+    try:
+        conn = get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO llm_audit_log
+                   (call_type, algo, env, fold_number, iteration_number,
+                    is_control_fold, provider, model_name, prompt_text,
+                    response_text, response_parsed, latency_ms, success, error_text)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    call_type,
+                    algo,
+                    env,
+                    fold_number,
+                    iteration_number,
+                    int(is_control_fold) if is_control_fold is not None else None,
+                    provider,
+                    model_name,
+                    prompt_text,
+                    response_text,
+                    response_parsed,
+                    latency_ms,
+                    int(success),
+                    error_text,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        log.warning("audit_log_write_failed", call_type=call_type, exc_info=True)
 
 
 def get_memories(

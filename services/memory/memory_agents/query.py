@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
+import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,7 @@ from db import (
     get_active_consolidations_async,
     get_memories,
     get_memories_async,
+    insert_audit_log,
     insert_pattern_presentation,
     insert_pattern_presentation_async,
 )
@@ -893,6 +896,41 @@ def _clamp_reward_weights(weights: dict[str, Any]) -> dict[str, float]:
 class QueryAgent:
     """Advises RL training configuration using memory patterns + cloud LLM."""
 
+    _last_provider: str = "unknown"
+    _last_model: str = "unknown"
+
+    def _audit_log(
+        self,
+        call_type: str,
+        prompt_text: str,
+        response_text: str | None,
+        response_parsed: str | None,
+        latency_ms: int,
+        success: bool,
+        error_text: str | None = None,
+        **context: Any,
+    ) -> None:
+        """Fire-and-forget audit log entry for LLM calls."""
+        try:
+            insert_audit_log(
+                call_type=call_type,
+                provider=self._last_provider,
+                model_name=self._last_model,
+                prompt_text=prompt_text[:50000],
+                response_text=response_text,
+                response_parsed=response_parsed,
+                latency_ms=latency_ms,
+                success=success,
+                error_text=error_text,
+                algo=context.get("algo"),
+                env=context.get("env"),
+                fold_number=context.get("fold_number"),
+                iteration_number=context.get("iteration_number"),
+                is_control_fold=context.get("is_control_fold"),
+            )
+        except Exception:
+            log.warning("query_audit_log_failed", call_type=call_type)
+
     async def advise_run_config(self, query: str) -> dict[str, Any]:
         """Return LLM-advised run configuration hyperparameters.
 
@@ -932,7 +970,19 @@ class QueryAgent:
         system_prompt = _build_algo_system_prompt(_HYPERPARAM_BOUNDS, _REWARD_BOUNDS, algo)
 
         # HP tuning uses cloud (OpenRouter nemotron) — smart model, 6 calls/run
+        _t0 = time.monotonic()
         result = await self._call_lm(user_content, schema, system_prompt=system_prompt)
+        _latency = int((time.monotonic() - _t0) * 1000)
+        self._audit_log(
+            call_type="run_config",
+            prompt_text=user_content,
+            response_text=json.dumps(result) if result else None,
+            response_parsed=json.dumps(result) if result else None,
+            latency_ms=_latency,
+            success=result is not None,
+            algo=parsed.get("algo_name"),
+            env=parsed.get("env_name"),
+        )
         if result is None:
             log.warning("run_config_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_DEFAULTS)
@@ -1028,6 +1078,16 @@ class QueryAgent:
         )
 
         epoch_prompt = _build_epoch_system_prompt(_HYPERPARAM_BOUNDS, _REWARD_BOUNDS, algo)
+
+        # Parse fold_number and control status from query for audit
+        _fold_num: int | None = None
+        _is_ctrl: bool | None = None
+        _run_match = re.search(r"run_id=\S+_fold(\d+)(_CTRL)?", query)
+        if _run_match:
+            _fold_num = int(_run_match.group(1))
+            _is_ctrl = _run_match.group(2) is not None
+
+        _t0 = time.monotonic()
         # Route based on epoch_advice_provider config
         if _EPOCH_ADVICE_PROVIDER == "ollama":
             result = await self._call_ollama(
@@ -1055,6 +1115,19 @@ class QueryAgent:
                 )
                 if result is not None:
                     log.info("epoch_advice_ollama_fallback_succeeded")
+        _latency = int((time.monotonic() - _t0) * 1000)
+        self._audit_log(
+            call_type="epoch_advice",
+            prompt_text=user_content,
+            response_text=json.dumps(result) if result else None,
+            response_parsed=json.dumps(result) if result else None,
+            latency_ms=_latency,
+            success=result is not None,
+            algo=algo,
+            env=parsed.get("env_name"),
+            fold_number=_fold_num,
+            is_control_fold=_is_ctrl,
+        )
         if result is None:
             log.warning("epoch_advice_fallback_to_defaults", query=query[:100])
             return dict(_SAFE_EPOCH_DEFAULTS)
@@ -1355,6 +1428,8 @@ class QueryAgent:
         Returns:
             Parsed dict from LLM response, or None on failure.
         """
+        self._last_provider = provider
+        self._last_model = model
         effective_max_tokens = max_tokens
         effective_system_prompt = system_prompt if system_prompt is not None else _SYSTEM_PROMPT
         try:
@@ -1538,6 +1613,8 @@ class QueryAgent:
             inst_url = instance["url"]
             inst_model = instance["model"]
             inst_name = instance["name"]
+            self._last_provider = f"ollama:{inst_name}"
+            self._last_model = inst_model
             inst_timeout = instance.get("timeout", 30.0)
 
             if idx > 0:

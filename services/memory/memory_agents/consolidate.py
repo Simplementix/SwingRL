@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,7 @@ from db import (
     get_active_consolidations_async,
     get_memories_by_source_prefix_async,
     increment_confirmation_async,
+    insert_audit_log,
     insert_consolidation_async,
     insert_consolidation_sources_async,
     log_consolidation_quality_async,
@@ -362,15 +364,23 @@ Most patterns from noisy financial data should fall in the 0.4-0.7 range. A conf
 above 0.85 requires overwhelming, exception-free evidence. In our experience, only ~10% \
 of detected patterns have confidence above 0.8. Calibrate accordingly.
 
-CROSS-ITERATION COMPARISON (when ITERATION HP COMPARISON memories are present):
-1. ZERO-ADJUSTMENT FOLDS are the strongest signal for HP effectiveness — they isolate \
-the HP effect with no reward confound. If zero-adj folds regressed, the HP change is the \
-primary cause regardless of other fold results.
-2. HP BOUNDS VIOLATIONS predict regressions — flag any HP exceeding documented safe ranges \
+CONTROL FOLD ANALYSIS (highest-confidence attribution):
+Folds tagged [CTRL] received NO reward weight adjustments — they are intentional \
+scientific control groups. Folds tagged [TREATMENT] received LLM-driven reward adjustments.
+1. [CTRL] folds isolate the pure HP effect with zero reward confound. If [CTRL] folds \
+regressed, HPs are the dominant cause regardless of [TREATMENT] fold results.
+2. Compare [CTRL] vs [TREATMENT] mean Sharpe/MDD (reported in "CONTROL vs TREATMENT:" \
+summary line) to measure reward shaping lift. A positive TREATMENT - CTRL delta indicates \
+reward adjustments are beneficial.
+3. If [CTRL] and [TREATMENT] show similar performance, reward adjustments had no \
+measurable effect.
+4. Always report ctrl_mean_sharpe vs treatment_mean_sharpe when the summary line is present.
+
+HP BOUNDS VIOLATIONS predict regressions — flag any HP exceeding documented safe ranges \
 (PPO: lr [5e-5, 3e-4], n_epochs [3, 6]; A2C: lr [1e-4, 5e-4], ent_coef [0.005, 0.02]; \
 SAC: lr [1e-5, 1e-4]).
-3. If ALL folds regressed regardless of adjustment count, HPs are the dominant factor.
-4. Compare regime_performance patterns across iterations — if a pattern was strong in \
+If ALL folds (both [CTRL] and [TREATMENT]) regressed, HPs are the dominant factor.
+Compare regime_performance patterns across iterations — if a pattern was strong in \
 iter 0 but disappeared in iter 1, the HP change disrupted regime sensitivity.
 
 category MUST be one of these 13 values. Use the closest match. Do NOT create new categories.
@@ -384,10 +394,10 @@ Training patterns:
 - data_size_impact: Gate pass rate correlation with train_bars (data volume effects)
 - iteration_regression: Cross-iteration performance decline — identifies which HP changes, \
 reward adjustment patterns, or their interaction caused regression from baseline or previous \
-iteration. Includes ensemble-level and per-algo sharpe/mdd deltas, zero-adjustment fold \
+iteration. Includes ensemble-level and per-algo sharpe/mdd deltas, control fold ([CTRL]) \
 evidence for HP attribution, and recovery recommendations.
 - hp_effectiveness: Cross-iteration HP change impact — which specific HP changes improved \
-or degraded OOS performance, citing zero-adjustment folds (no reward confound) and HP \
+or degraded OOS performance, citing [CTRL] folds (no reward confound) and HP \
 bounds violations as evidence. Include per-algo sharpe delta and folds improved/regressed.
 
 Live trading patterns (Phase 20):
@@ -436,8 +446,10 @@ potential-based reward shaping. The optimal policy changes when weights change.
 HP changes and reward weights are MUTUALLY DEPENDENT (Blom et al. 2024). Use these \
 heuristics to attribute performance changes:
 
-1. PURE HP SIGNAL (highest confidence): Zero-adjustment folds that regressed isolate the \
-HP effect with no reward confound. Cite these as primary evidence.
+1. PURE HP SIGNAL (highest confidence): Control folds tagged [CTRL] (is_control_fold=True) \
+received NO reward adjustments by design. They isolate the pure HP effect. If [CTRL] folds \
+regressed, HPs are the cause. Compare [CTRL] vs [TREATMENT] epoch training dynamics to \
+isolate reward shaping effects on convergence.
 2. CROSS-FOLD WEIGHT UNIFORMITY: If all folds end with similar final weights but OOS \
 outcomes diverge widely, HPs are the dominant factor.
 3. DIRECTIONALITY CHECK: If drawdown weight increased but MDD worsened, suspect HP \
@@ -460,10 +472,10 @@ RATE OF CHANGE: Gradual adaptation outperforms abrupt changes. Random weight osc
 performs WORSE than static weights (DynaOpt 2024, RTW 2025). Check whether fold weight \
 trajectories follow a principled direction or oscillate.
 
-When generating reward_shaping patterns: state whether evidence comes from zero-adj folds \
+When generating reward_shaping patterns: state whether evidence comes from [CTRL] folds \
 (high confidence for HP attribution) or mixed HP+adjustment folds (lower confidence). \
 Include per-dimension effectiveness, not just aggregate rates.
-When generating hp_effectiveness patterns: cite zero-adjustment folds as primary evidence \
+When generating hp_effectiveness patterns: cite [CTRL] folds as primary evidence \
 and flag HP values exceeding documented safe ranges.
 
 You MUST only reference metrics, values, and facts that appear explicitly in the input \
@@ -498,7 +510,7 @@ category MUST be one of these 6 values. Use the closest match. Do NOT create new
 - reward_shaping: Reward weight adjustment effectiveness — which adjustments improved or \
 degraded performance, with per-dimension breakdown
 - hp_effectiveness: Cross-iteration HP change impact — which specific HP changes improved \
-or degraded performance, citing zero-adjustment folds (no reward confound) and HP bounds \
+or degraded performance, citing [CTRL] folds (no reward confound) and HP bounds \
 violations as evidence. Include per-algo sharpe delta and folds improved/regressed counts.
 - iteration_regression: Cross-iteration performance decline — identifies which HP changes, \
 reward adjustment patterns, or their interaction caused regression from baseline or previous \
@@ -519,6 +531,10 @@ their category, confidence, and evidence from both equity (8 ETFs, daily) and cr
 Look for patterns that appear in BOTH environments (convergent evidence). Look for patterns \
 that DIFFER between environments (divergent behavior). Cross-env patterns are especially \
 valuable for ensemble weight decisions.
+
+If Stage 1 patterns reference control fold ([CTRL] vs [TREATMENT]) evidence, check whether \
+the control fold findings are consistent across both environments. Consistent [CTRL] vs \
+[TREATMENT] results across equity and crypto increase confidence in causal attribution.
 
 You MUST only reference metrics, values, and facts that appear explicitly in the input \
 data between <training_data> tags. Do NOT reference any ticker symbols, dates, or metric \
@@ -616,7 +632,7 @@ _PHASE_A_FEW_SHOT_EXAMPLES = json.dumps(
                 "evidence": "PLACEHOLDER: fold 2 vix_mean=X.XX max_single_loss=Y.YY%; fold 4 vix_mean=Z.ZZ max_single_loss=W.WW%",
             },
             {
-                "pattern_text": "PLACEHOLDER: Iteration N ENV regressed X.X% from baseline. ALGO_A sharpe dropped Y→Z with lr change, N/M zero-adj folds regressed (pure HP). ALGO_B lr=0.0003 exceeded safe range [1e-5, 1e-4] causing trade collapse.",
+                "pattern_text": "PLACEHOLDER: Iteration N ENV regressed X.X% from baseline. ALGO_A sharpe dropped Y→Z with lr change, N/M [CTRL] folds regressed (pure HP). ALGO_B lr=0.0003 exceeded safe range [1e-5, 1e-4] causing trade collapse.",
                 "category": "iteration_regression",
                 "affected_algos": [
                     "PLACEHOLDER_ALGO_A",
@@ -691,7 +707,7 @@ _PHASE_B_FEW_SHOT_EXAMPLES = json.dumps(
                 "evidence": "PLACEHOLDER: PPO fold X kl outlier=V.VV (fence=W.WW); fold Y kl outlier=U.UU; A2C/SAC fold X mdd outlier=S.SS (N=17, high confidence)",
             },
             {
-                "pattern_text": "PLACEHOLDER: reducing ALGO_A n_epochs 10→5 with lr 3e-4→1e-4 caused regression in N/M zero-adjustment folds (avg sharpe delta -X.XX), confirming HP change as primary factor. ALGO_B lr=3e-4 exceeds documented range [1e-5, 1e-4].",
+                "pattern_text": "PLACEHOLDER: reducing ALGO_A n_epochs 10→5 with lr 3e-4→1e-4 caused regression in N/M [CTRL] folds (avg sharpe delta -X.XX), confirming HP change as primary factor. ALGO_B lr=3e-4 exceeds documented range [1e-5, 1e-4].",
                 "category": "hp_effectiveness",
                 "affected_algos": ["PLACEHOLDER_ALGO_A", "PLACEHOLDER_ALGO_B"],
                 "affected_envs": ["PLACEHOLDER_ENV"],
@@ -1483,6 +1499,8 @@ class ConsolidateAgent:
     """
 
     _run_lock = asyncio.Lock()
+    _last_provider: str = "unknown"
+    _last_model: str = "unknown"
 
     async def run(self, env_name: str | None = None) -> int:
         """Orchestrate consolidation: Stage 1 per env, then Stage 2 if both available.
@@ -1598,10 +1616,22 @@ class ConsolidateAgent:
             texts_a = "\n\n".join(f"- {m['text']}" for m in phase_a)
             ids_a = [m["id"] for m in phase_a]
 
+            _t0 = time.monotonic()
             result = await self._call_llm_with_retry(
                 texts_a,
                 system_prompt=_PHASE_A_SYSTEM_PROMPT,
                 few_shot_examples=_PHASE_A_FEW_SHOT_EXAMPLES,
+            )
+            insert_audit_log(
+                call_type="consolidation_phase_a",
+                provider=self._last_provider,
+                model_name=self._last_model,
+                prompt_text=texts_a[:50000],
+                response_text=json.dumps(result) if result else None,
+                response_parsed=json.dumps(result) if result else None,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+                success=result is not None,
+                env=env_name,
             )
             if result is not None:
                 for pattern in result.get("patterns", []):
@@ -1758,10 +1788,22 @@ class ConsolidateAgent:
         )
 
         # Tier 2: Single LLM call with aggregated summaries + reward adjustments
+        _t0 = time.monotonic()
         result = await self._call_llm_with_retry(
             summary_text,
             system_prompt=_PHASE_B_SYSTEM_PROMPT,
             few_shot_examples=_PHASE_B_FEW_SHOT_EXAMPLES,
+        )
+        insert_audit_log(
+            call_type="consolidation_phase_b",
+            provider=self._last_provider,
+            model_name=self._last_model,
+            prompt_text=summary_text[:50000],
+            response_text=json.dumps(result) if result else None,
+            response_parsed=json.dumps(result) if result else None,
+            latency_ms=int((time.monotonic() - _t0) * 1000),
+            success=result is not None,
+            env=env_name,
         )
         if result is not None:
             for pattern in result.get("patterns", []):
@@ -1847,10 +1889,21 @@ class ConsolidateAgent:
             "object matching the schema. 0-3 patterns. Empty array is acceptable."
         )
 
+        _t0 = time.monotonic()
         result = await self._call_llm(
             system_prompt=_STAGE_2_SYSTEM_PROMPT,
             user_prompt=stage2_user_prompt,
             schema=_CONSOLIDATION_SCHEMA,
+        )
+        insert_audit_log(
+            call_type="consolidation_stage_2",
+            provider=self._last_provider,
+            model_name=self._last_model,
+            prompt_text=stage2_user_prompt[:50000],
+            response_text=json.dumps(result) if result else None,
+            response_parsed=json.dumps(result) if result else None,
+            latency_ms=int((time.monotonic() - _t0) * 1000),
+            success=result is not None,
         )
 
         if result is None:
@@ -2050,6 +2103,8 @@ class ConsolidateAgent:
             # provider's expected response time (e.g., OpenRouter free = 1800s).
             call_total_timeout = cfg["timeout"]
 
+            self._last_provider = cfg["provider"]
+            self._last_model = cfg["model"]
             result = await self._call_cloud_api(
                 system_prompt,
                 user_prompt,

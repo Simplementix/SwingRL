@@ -240,7 +240,8 @@ def _create_backtest_schema(conn: duckdb.DuckDBPyConnection) -> None:
             train_start_date TEXT,
             train_end_date TEXT,
             test_start_date TEXT,
-            test_end_date TEXT
+            test_end_date TEXT,
+            is_control_fold BOOLEAN DEFAULT FALSE
         )
     """)
     conn.execute("""

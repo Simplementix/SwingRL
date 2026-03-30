@@ -407,6 +407,12 @@ class MemoryAgentConfig(BaseModel):
     live_endpoints: MemoryLiveEndpointsConfig = Field(default_factory=MemoryLiveEndpointsConfig)
     consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
 
+    # Control folds: fold indices that skip reward adjustments (epoch advice disabled)
+    # to serve as a scientific baseline for measuring reward shaping impact.
+    # Empty list = all folds are treatment (backward compatible).
+    control_folds_equity: list[int] = Field(default_factory=list)
+    control_folds_crypto: list[int] = Field(default_factory=list)
+
 
 class HyperparamBoundsConfig(BaseModel):
     """Hyperparameter bounds for LLM-suggested training config clamping."""

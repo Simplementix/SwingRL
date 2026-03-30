@@ -107,6 +107,7 @@ class MemoryEpochCallback(BaseCallback):
         env: str,
         verbose: int = 0,
         advice_enabled: bool = True,
+        is_control_fold: bool = False,
     ) -> None:
         """Initialize the epoch callback.
 
@@ -118,6 +119,8 @@ class MemoryEpochCallback(BaseCallback):
             env: Environment name.
             verbose: Verbosity level.
             advice_enabled: If False, epoch snapshots are stored but LLM advice is skipped.
+            is_control_fold: If True, this fold is a scientific control group
+                (no reward adjustments). Tagged in epoch snapshot text.
         """
         super().__init__(verbose=verbose)
         self._client = memory_client
@@ -125,6 +128,7 @@ class MemoryEpochCallback(BaseCallback):
         self._run_id = run_id
         self._env = env
         self._advice_enabled = advice_enabled
+        self._is_control_fold = is_control_fold
 
         # Parse algo from run_id (format: {env}_{algo}_fold{N}), fallback to algo param.
         try:
@@ -313,7 +317,8 @@ class MemoryEpochCallback(BaseCallback):
             f"rolling_win_rate_500={metrics['rolling_win_rate_500']:.4f} "
             f"reward_weights={json.dumps(metrics['reward_weights'])} "
             f"curriculum_window={metrics['curriculum_window_active']} "
-            f"notable_event={metrics['notable_event']}"
+            f"notable_event={metrics['notable_event']} "
+            f"is_control_fold={self._is_control_fold}"
         )
         ok = self._client.ingest_training(text, source="training_epoch:historical")
         log.debug(

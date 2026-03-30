@@ -86,6 +86,7 @@ class FoldResult:
     overfitting: dict[str, Any]
     converged_at_step: int | None = None
     total_timesteps: int | None = None
+    is_control_fold: bool = False
 
 
 def _reconstruct_round_trips(
@@ -268,6 +269,7 @@ class WalkForwardBacktester:
         memory_client: MemoryClient | None = None,
         fold_queue: Any | None = None,
         advice_enabled: bool = True,
+        control_fold_indices: set[int] | None = None,
     ) -> list[FoldResult]:
         """Run walk-forward backtest for one algorithm on one environment.
 
@@ -289,6 +291,9 @@ class WalkForwardBacktester:
             advice_enabled: When True, enable LLM epoch advice and reward weight
                 adjustments during training. When False, only capture epoch
                 memories without querying for advice (used for iteration 0).
+            control_fold_indices: Fold indices that skip reward adjustments
+                (epoch snapshots still captured). Used as scientific control
+                group for measuring reward shaping impact.
 
         Returns:
             List of FoldResult for each fold.
@@ -305,6 +310,18 @@ class WalkForwardBacktester:
             embargo_bars=int(params["embargo_bars"]),
         )
 
+        # Validate control fold indices against actual fold count
+        valid_control: set[int] = set()
+        if control_fold_indices:
+            valid_control = {i for i in control_fold_indices if 0 <= i < len(folds)}
+            invalid = control_fold_indices - valid_control
+            if invalid:
+                log.warning(
+                    "control_fold_indices_out_of_range",
+                    invalid=sorted(invalid),
+                    max_fold=len(folds) - 1,
+                )
+
         log.info(
             "walk_forward_started",
             env_name=env_name,
@@ -312,6 +329,7 @@ class WalkForwardBacktester:
             fold_count=len(folds),
             total_bars=total_bars,
             hp_override=bool(hyperparams_override),
+            control_folds=sorted(valid_control) if valid_control else None,
         )
 
         orchestrator = TrainingOrchestrator(
@@ -323,11 +341,14 @@ class WalkForwardBacktester:
         results: list[FoldResult] = []
 
         for fold_idx, (train_range, test_range) in enumerate(folds):
+            is_control = fold_idx in valid_control
+
             log.info(
                 "fold_started",
                 fold=fold_idx,
                 train_bars=len(train_range),
                 test_bars=len(test_range),
+                is_control=is_control,
             )
 
             # Slice data for this fold
@@ -335,6 +356,10 @@ class WalkForwardBacktester:
             train_prices = prices[train_range.start : train_range.stop]
             test_features = features[test_range.start : test_range.stop]
             test_prices = prices[test_range.start : test_range.stop]
+
+            # Control folds: train normally but skip reward adjustments
+            fold_advice = advice_enabled and not is_control
+            ctrl_suffix = "_CTRL" if is_control else ""
 
             # Train on training window
             training_result = orchestrator.train(
@@ -345,8 +370,9 @@ class WalkForwardBacktester:
                 total_timesteps=total_timesteps,
                 hyperparams_override=hyperparams_override,
                 memory_client=memory_client,
-                run_id=f"{env_name}_{algo_name}_fold{fold_idx}",
-                advice_enabled=advice_enabled,
+                run_id=f"{env_name}_{algo_name}_fold{fold_idx}{ctrl_suffix}",
+                advice_enabled=fold_advice,
+                is_control_fold=is_control,
             )
 
             # Evaluate on train data (in-sample)
@@ -396,6 +422,7 @@ class WalkForwardBacktester:
                 overfitting=overfit,
                 converged_at_step=training_result.converged_at_step,
                 total_timesteps=total_timesteps,
+                is_control_fold=is_control,
             )
 
             results.append(fold_result)
@@ -586,8 +613,8 @@ class WalkForwardBacktester:
                     test_start_idx, test_end_idx,
                     sharpe, sortino, calmar, mdd, profit_factor,
                     win_rate, total_trades, avg_drawdown, max_dd_duration,
-                    final_portfolio_value, total_return
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    final_portfolio_value, total_return, is_control_fold
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     result_id,
@@ -611,6 +638,7 @@ class WalkForwardBacktester:
                     int(oos.get("max_dd_duration", 0)),
                     oos.get("final_portfolio_value"),
                     oos.get("total_return"),
+                    fold_result.is_control_fold,
                 ],
             )
 
@@ -779,12 +807,14 @@ def store_fold_results_to_duckdb(
                 hmm_p_bull, hmm_p_bear, vix_mean, yield_spread_mean,
                 converged_at_step, total_timesteps_configured,
                 max_single_loss, best_single_trade,
-                train_start_date, train_end_date, test_start_date, test_end_date
+                train_start_date, train_end_date, test_start_date, test_end_date,
+                is_control_fold
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?
             )
             """,
             [
@@ -829,6 +859,7 @@ def store_fold_results_to_duckdb(
                 train_end_date,
                 test_start_date,
                 test_end_date,
+                fold.is_control_fold,
             ],
         )
         rows_written += 1
