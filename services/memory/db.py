@@ -706,6 +706,7 @@ def update_consolidation_status(
     row_id: int,
     status: str,
     superseded_by: int | None = None,
+    conflict_group_id: str | None = None,
 ) -> None:
     """Update a consolidation's lifecycle status.
 
@@ -713,13 +714,21 @@ def update_consolidation_status(
         row_id: Consolidation row ID.
         status: New status ('active', 'superseded', 'retired').
         superseded_by: ID of the pattern that supersedes this one.
+        conflict_group_id: Shared UUID linking conflicting patterns.
     """
     conn = get_connection()
     try:
-        conn.execute(
-            "UPDATE consolidations SET status = ?, superseded_by = ? WHERE id = ?",
-            (status, superseded_by, row_id),
-        )
+        if conflict_group_id is not None:
+            conn.execute(
+                "UPDATE consolidations SET status = ?, superseded_by = ?, "
+                "conflict_group_id = ? WHERE id = ?",
+                (status, superseded_by, conflict_group_id, row_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE consolidations SET status = ?, superseded_by = ? WHERE id = ?",
+                (status, superseded_by, row_id),
+            )
         conn.commit()
         log.info("consolidation_status_updated", row_id=row_id, status=status)
     finally:
@@ -1047,9 +1056,12 @@ async def update_consolidation_status_async(
     row_id: int,
     status: str,
     superseded_by: int | None = None,
+    conflict_group_id: str | None = None,
 ) -> None:
     """Async wrapper for update_consolidation_status (background pool)."""
-    return await _run_background(update_consolidation_status, row_id, status, superseded_by)
+    return await _run_background(
+        update_consolidation_status, row_id, status, superseded_by, conflict_group_id
+    )
 
 
 async def increment_confirmation_async(row_id: int) -> None:

@@ -109,6 +109,7 @@ class MetaTrainingOrchestrator:
         prices: np.ndarray,
         total_timesteps: int | None = None,
         hyperparams_override: dict[str, Any] | None = None,
+        iteration: int | None = None,
     ) -> TrainingResult:
         """Run a single training iteration with LLM-guided meta-training.
 
@@ -128,6 +129,7 @@ class MetaTrainingOrchestrator:
             prices: Price array aligned with features.
             total_timesteps: Training timesteps (overrides config default).
             hyperparams_override: Optional baseline hyperparams to merge with LLM advice.
+            iteration: Training iteration number for pattern presentation tracking.
 
         Returns:
             TrainingResult from trainer.train().
@@ -143,7 +145,7 @@ class MetaTrainingOrchestrator:
         )
 
         # Query full run config (HP + reward weights + rationale) — single call
-        advised_config = self._query_run_config(env_name, algo_name)
+        advised_config = self._query_run_config(env_name, algo_name, iteration=iteration)
         safe_config = clamp_run_config(advised_config) if advised_config else {}
 
         # Extract SB3-compatible HP keys (algo-filtered)
@@ -186,6 +188,7 @@ class MetaTrainingOrchestrator:
             memory_client=self._client,
             run_id=run_id,
             initial_reward_weights=reward_weights,
+            iteration=iteration,
         )
 
         # NOTE: Run summary ingestion with final metrics is now done in
@@ -202,14 +205,19 @@ class MetaTrainingOrchestrator:
 
         return result
 
-    def query_hyperparams(self, env_name: str, algo_name: str) -> dict[str, Any]:
+    def query_hyperparams(
+        self,
+        env_name: str,
+        algo_name: str,
+        iteration: int | None = None,
+    ) -> dict[str, Any]:
         """Query memory agent for walk-forward hyperparameter advice.
 
         Returns SB3-compatible HP keys (learning_rate, ent_coef, clip_range,
         n_epochs, batch_size, gamma). Returns empty dict on cold-start or
         any failure (fail-open).
         """
-        advised = self._query_run_config(env_name, algo_name)
+        advised = self._query_run_config(env_name, algo_name, iteration=iteration)
         if not advised:
             return {}
 
@@ -230,7 +238,12 @@ class MetaTrainingOrchestrator:
         )
         return result
 
-    def _query_run_config(self, env_name: str, algo_name: str) -> dict[str, Any]:
+    def _query_run_config(
+        self,
+        env_name: str,
+        algo_name: str,
+        iteration: int | None = None,
+    ) -> dict[str, Any]:
         """Query memory agent for run configuration advice.
 
         Cold-start guard: returns empty dict (passthrough) until
@@ -239,6 +252,7 @@ class MetaTrainingOrchestrator:
         Args:
             env_name: Environment name.
             algo_name: Algorithm name.
+            iteration: Training iteration number for pattern presentation tracking.
 
         Returns:
             Dict with optional keys: learning_rate, entropy_coeff, clip_range,
@@ -260,9 +274,10 @@ class MetaTrainingOrchestrator:
         try:
             regime = self._current_regime_vector(env_name)
 
+            iter_part = f" iteration={iteration}" if iteration is not None else ""
             payload = {
                 "query": (
-                    f"TRAINING RUN CONFIG ADVICE: env={env_name} algo={algo_name} "
+                    f"TRAINING RUN CONFIG ADVICE: env={env_name} algo={algo_name}{iter_part} "
                     f"current_regime={json.dumps(regime)}"
                 )
             }

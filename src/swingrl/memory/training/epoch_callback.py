@@ -108,6 +108,7 @@ class MemoryEpochCallback(BaseCallback):
         verbose: int = 0,
         advice_enabled: bool = True,
         is_control_fold: bool = False,
+        iteration: int | None = None,
     ) -> None:
         """Initialize the epoch callback.
 
@@ -121,6 +122,7 @@ class MemoryEpochCallback(BaseCallback):
             advice_enabled: If False, epoch snapshots are stored but LLM advice is skipped.
             is_control_fold: If True, this fold is a scientific control group
                 (no reward adjustments). Tagged in epoch snapshot text.
+            iteration: Training iteration number for pattern presentation tracking.
         """
         super().__init__(verbose=verbose)
         self._client = memory_client
@@ -129,6 +131,7 @@ class MemoryEpochCallback(BaseCallback):
         self._env = env
         self._advice_enabled = advice_enabled
         self._is_control_fold = is_control_fold
+        self._iteration = iteration
 
         # Parse algo from run_id (format: {env}_{algo}_fold{N}), fallback to algo param.
         try:
@@ -429,10 +432,11 @@ class MemoryEpochCallback(BaseCallback):
         try:
             import json as _json
 
+            iter_part = f" iteration={self._iteration}" if self._iteration is not None else ""
             payload = {
                 "query": (
                     f"EPOCH ADVICE: run_id={self._run_id} algo={self._algo} "
-                    f"env={self._env} epoch={self._epoch} "
+                    f"env={self._env} epoch={self._epoch}{iter_part} "
                     f"rolling_sharpe={self._wrapper.rolling_sharpe():.4f} "
                     f"rolling_mdd={self._wrapper.rolling_mdd():.4f} "
                     f"current_weights={_json.dumps(self._wrapper.weights)}"

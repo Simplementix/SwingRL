@@ -138,6 +138,7 @@ class TrainingOrchestrator:
         initial_reward_weights: dict[str, float] | None = None,
         advice_enabled: bool = True,
         is_control_fold: bool = False,
+        iteration: int | None = None,
     ) -> TrainingResult:
         """Train an SB3 algorithm on the specified environment.
 
@@ -167,6 +168,7 @@ class TrainingOrchestrator:
                 Defaults to True. Set to False for iteration 0 (baseline).
             is_control_fold: When True, tags epoch snapshots with control fold
                 status for scientific measurement of reward shaping impact.
+            iteration: Training iteration number for pattern presentation tracking.
 
         Returns:
             TrainingResult with paths and metadata.
@@ -306,6 +308,7 @@ class TrainingOrchestrator:
                     verbose=0,
                     advice_enabled=advice_enabled,
                     is_control_fold=is_control_fold,
+                    iteration=iteration,
                 )
                 callbacks.append(memory_cb)
                 log.info(

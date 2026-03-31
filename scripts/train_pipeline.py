@@ -1762,6 +1762,7 @@ def _train_final_algo(
     timesteps: int,
     hp_override: dict[str, Any] | None,
     use_meta: bool,
+    iteration_number: int = 0,
 ) -> tuple[str, dict[str, Any]]:
     """Train final deployment model for one algo. Top-level for picklability.
 
@@ -1776,6 +1777,7 @@ def _train_final_algo(
         timesteps: Training timesteps.
         hp_override: Optional hyperparameter overrides from tuning.
         use_meta: Whether to use MetaTrainingOrchestrator.
+        iteration_number: Current training iteration (0=baseline).
 
     Returns:
         Tuple of (algo_name, result_dict) with training metadata.
@@ -1809,6 +1811,7 @@ def _train_final_algo(
             prices=prices,
             total_timesteps=timesteps,
             hyperparams_override=hp_override,
+            iteration=iteration_number,
         )
     else:
         train_result = orchestrator.train(
@@ -1818,6 +1821,7 @@ def _train_final_algo(
             prices=prices,
             total_timesteps=timesteps,
             hyperparams_override=hp_override,
+            iteration=iteration_number,
         )
 
     wall_algo = time.monotonic() - t_start
@@ -2035,7 +2039,7 @@ def run_environment(
                     memory_client=wf_client,
                 )
                 for algo in algos_to_run:
-                    hp = wf_meta.query_hyperparams(env_name, algo)
+                    hp = wf_meta.query_hyperparams(env_name, algo, iteration=iteration_number)
                     if hp:
                         wf_hp_overrides[algo] = hp
             except Exception as exc:

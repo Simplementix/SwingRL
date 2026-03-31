@@ -489,11 +489,15 @@ class TestConsolidation:
     def test_consolidate_detects_conflicting_consolidations(
         self, api_client: Any, auth_headers: dict[str, str]
     ) -> None:
-        """TRAIN-06: ConsolidateAgent flags contradicting patterns."""
+        """TRAIN-06: ConsolidateAgent flags contradicting patterns.
+
+        Conflict requires: same category + shared env + opposite sentiment on
+        the same metric (adjacency-aware matching).
+        """
         import db as memory_db_module
 
         memory_db_module.insert_consolidation(
-            pattern_text="PPO equity improved significantly in bull momentum regime",
+            pattern_text="PPO equity improved sharpe significantly in bull regime",
             source_count=5,
             category="regime_performance",
             affected_algos=["ppo"],
@@ -504,17 +508,17 @@ class TestConsolidation:
         for i in range(2):
             api_client.post(
                 "/ingest",
-                json={"text": f"Crypto observation {i}", "source": "walk_forward:equity:sac"},
+                json={"text": f"Equity observation {i}", "source": "walk_forward:equity:ppo"},
                 headers=auth_headers,
             )
 
         mock_response = {
             "patterns": [
                 {
-                    "pattern_text": "SAC crypto degraded and decreased returns in bear crash regime",
+                    "pattern_text": "PPO equity degraded sharpe and decreased returns in bear regime",
                     "category": "regime_performance",
-                    "affected_algos": ["sac"],
-                    "affected_envs": ["crypto"],
+                    "affected_algos": ["ppo"],
+                    "affected_envs": ["equity"],
                     "actionable_implication": "Reduce position sizing in bear regime",
                     "confidence": 0.6,
                     "evidence": "fold 2 bear sharpe=-0.3; fold 4 bear sharpe=-0.5",
@@ -1125,6 +1129,135 @@ class TestDBFunctions:
             assert row["superseded_by"] == new_id
         finally:
             conn.close()
+
+    def test_update_consolidation_status_with_conflict_group_id(self, memory_db_env: Path) -> None:
+        """Fix 2: update_consolidation_status propagates conflict_group_id."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        old_id = memory_db_module.insert_consolidation(
+            pattern_text="Old pattern",
+            source_count=2,
+        )
+        new_id = memory_db_module.insert_consolidation(
+            pattern_text="New pattern",
+            source_count=3,
+        )
+
+        group_id = "test-group-uuid-123"
+        memory_db_module.update_consolidation_status(
+            old_id, "superseded", superseded_by=new_id, conflict_group_id=group_id
+        )
+
+        conn = memory_db_module.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT status, superseded_by, conflict_group_id FROM consolidations WHERE id = ?",
+                (old_id,),
+            ).fetchone()
+            assert row["status"] == "superseded"
+            assert row["superseded_by"] == new_id
+            assert row["conflict_group_id"] == group_id
+        finally:
+            conn.close()
+
+    def test_check_conflicts_same_metric_opposite_sentiment(self, memory_db_env: Path) -> None:
+        """Fix 1: Same metric + opposite sentiment + same category + same env = conflict."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        from memory_agents.consolidate import ConsolidateAgent
+
+        agent = ConsolidateAgent()
+        existing = [
+            {
+                "id": 1,
+                "pattern_text": "PPO improved sharpe in equity bull regime",
+                "category": "regime_performance",
+                "affected_algos": ["ppo"],
+                "affected_envs": ["equity"],
+            }
+        ]
+        result = agent._check_conflicts(
+            existing,
+            "PPO degraded sharpe in equity bear regime",
+            new_category="regime_performance",
+            new_envs=["equity"],
+        )
+        assert result == 1, "Expected conflict on same metric (sharpe) with opposite sentiment"
+
+    def test_check_conflicts_different_metrics_no_conflict(self, memory_db_env: Path) -> None:
+        """Fix 1: Different metrics should not conflict even with opposite sentiment words."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        from memory_agents.consolidate import ConsolidateAgent
+
+        agent = ConsolidateAgent()
+        existing = [
+            {
+                "id": 1,
+                "pattern_text": "PPO shows higher win rates in XLF asset",
+                "category": "trade_quality",
+                "affected_algos": ["ppo"],
+                "affected_envs": ["equity"],
+            }
+        ]
+        result = agent._check_conflicts(
+            existing,
+            "PPO shows degraded performance during high VIX periods",
+            new_category="trade_quality",
+            new_envs=["equity"],
+        )
+        assert result is None, "Different metrics (win vs performance) should not conflict"
+
+    def test_check_conflicts_different_env_no_conflict(self, memory_db_env: Path) -> None:
+        """Fix 1: Different envs should not conflict even with same category."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        from memory_agents.consolidate import ConsolidateAgent
+
+        agent = ConsolidateAgent()
+        existing = [
+            {
+                "id": 1,
+                "pattern_text": "PPO improved sharpe in equity",
+                "category": "regime_performance",
+                "affected_algos": ["ppo"],
+                "affected_envs": ["equity"],
+            }
+        ]
+        result = agent._check_conflicts(
+            existing,
+            "SAC degraded sharpe in crypto",
+            new_category="regime_performance",
+            new_envs=["crypto"],
+        )
+        assert result is None, "Different envs + different algos should not conflict"
+
+    def test_check_conflicts_different_category_no_conflict(self, memory_db_env: Path) -> None:
+        """Fix 1: Different categories should never conflict."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        from memory_agents.consolidate import ConsolidateAgent
+
+        agent = ConsolidateAgent()
+        existing = [
+            {
+                "id": 1,
+                "pattern_text": "PPO improved sharpe in equity",
+                "category": "regime_performance",
+                "affected_algos": ["ppo"],
+                "affected_envs": ["equity"],
+            }
+        ]
+        result = agent._check_conflicts(
+            existing,
+            "PPO degraded sharpe in equity",
+            new_category="overfit_diagnosis",
+            new_envs=["equity"],
+        )
+        assert result is None, "Different categories should never conflict"
 
     def test_increment_confirmation(self, memory_db_env: Path) -> None:
         """19.1: increment_confirmation updates count and timestamp."""

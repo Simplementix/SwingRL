@@ -282,6 +282,68 @@ _VALID_CATEGORIES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Conflict detection — sentiment-metric adjacency matching
+# ---------------------------------------------------------------------------
+
+_POS_WORDS = {"improved", "better", "higher", "increased"}
+_NEG_WORDS = {"degraded", "worse", "lower", "decreased"}
+_METRIC_WORDS = {
+    "sharpe",
+    "pnl",
+    "return",
+    "returns",
+    "mdd",
+    "drawdown",
+    "win",
+    "loss",
+    "performance",
+    "reward",
+    "sortino",
+    "profit",
+    "rate",
+    "rates",
+    "ratio",
+}
+# Words that can appear between a sentiment word and its metric
+_SKIP_WORDS = {"was", "is", "significantly", "also", "much", "a", "the", "and", "in", "of"}
+
+
+def _extract_sentiment_metric_pairs(tokens: list[str]) -> set[tuple[str, str]]:
+    """Extract (sentiment_direction, metric_word) pairs using adjacency window.
+
+    Scans for sentiment words (higher/lower/improved/degraded/etc.) and looks
+    within a 3-token window for a metric word (sharpe/mdd/pnl/etc.),
+    skipping common filler words.
+
+    Returns:
+        Set of (direction, metric) tuples. direction is "pos" or "neg".
+    """
+    pairs: set[tuple[str, str]] = set()
+    for i, token in enumerate(tokens):
+        if token in _POS_WORDS:
+            direction = "pos"
+        elif token in _NEG_WORDS:
+            direction = "neg"
+        else:
+            continue
+
+        # Search within a window of [-2, +3] for a metric word
+        for offset in range(-2, 4):
+            if offset == 0:
+                continue
+            adj_idx = i + offset
+            if 0 <= adj_idx < len(tokens):
+                candidate = tokens[adj_idx]
+                if candidate in _METRIC_WORDS:
+                    pairs.add((direction, candidate))
+                elif candidate not in _SKIP_WORDS:
+                    # Non-skip, non-metric word breaks adjacency in that direction
+                    if offset > 0:
+                        break  # stop searching forward
+    return pairs
+
+
+# ---------------------------------------------------------------------------
 # JSON Schema (Research §1C, §3C)
 # ---------------------------------------------------------------------------
 
@@ -1980,6 +2042,7 @@ class ConsolidateAgent:
         conflict_id = await self._detect_conflict_async(
             pattern.get("pattern_text", ""),
             new_category=category,
+            new_envs=affected_envs,
         )
 
         # Coerce LLM fields to DB-safe scalar types
@@ -1997,6 +2060,9 @@ class ConsolidateAgent:
         if isinstance(confidence_val, dict):
             confidence_val = confidence_val.get("score", confidence_val.get("value", 0.5))
 
+        # Generate conflict group ID before insertion so both sides share it
+        group_id = str(uuid.uuid4()) if conflict_id else None
+
         row_id = await insert_consolidation_async(
             pattern_text=str(pattern.get("pattern_text", "")),
             source_count=source_count,
@@ -2010,7 +2076,7 @@ class ConsolidateAgent:
             stage=stage,
             env_name=env_name,
             status="active",
-            conflict_group_id=str(uuid.uuid4()) if conflict_id else None,
+            conflict_group_id=group_id,
         )
 
         # Link source memories (batch insert in single connection)
@@ -2022,11 +2088,13 @@ class ConsolidateAgent:
                 conflict_id,
                 "superseded",
                 superseded_by=row_id,
+                conflict_group_id=group_id,
             )
             log.warning(
                 "consolidation_conflict_detected",
                 new_id=row_id,
                 conflicts_with=conflict_id,
+                conflict_group_id=group_id,
             )
 
         return row_id
@@ -2397,73 +2465,91 @@ class ConsolidateAgent:
 
         return True
 
-    async def _detect_conflict_async(self, new_pattern: str, new_category: str = "") -> int | None:
+    async def _detect_conflict_async(
+        self,
+        new_pattern: str,
+        new_category: str = "",
+        new_envs: list[str] | None = None,
+    ) -> int | None:
         """Check whether the new pattern contradicts existing consolidations (async).
 
         Args:
             new_pattern: The new pattern text to check.
             new_category: Category of the new pattern (for same-category check).
+            new_envs: Affected environments for the new pattern.
 
         Returns:
             Row ID of conflicting consolidation, or None if no conflict.
         """
         existing = await get_active_consolidations_async()
-        return self._check_conflicts(existing, new_pattern, new_category)
+        return self._check_conflicts(existing, new_pattern, new_category, new_envs)
 
     def _check_conflicts(
         self,
         existing: list[dict[str, Any]],
         new_pattern: str,
         new_category: str = "",
+        new_envs: list[str] | None = None,
     ) -> int | None:
         """Pure logic for conflict detection against a list of existing patterns.
+
+        Uses adjacency-aware sentiment matching: only flags a conflict when
+        both patterns discuss the same metric with opposite sentiment (e.g.
+        "higher sharpe" vs "lower sharpe"), not just any positive/negative
+        word appearing anywhere in the text.
+
+        Requires same category AND (shared algo OR shared env) before checking
+        sentiment — prevents false positives across unrelated dimensions.
 
         Args:
             existing: List of active consolidation dicts.
             new_pattern: The new pattern text to check.
             new_category: Category of the new pattern.
+            new_envs: Affected environments for the new pattern.
 
         Returns:
             Row ID of conflicting consolidation, or None if no conflict.
         """
-        new_tokens = set(new_pattern.lower().split())
-
-        contradiction_pairs = [
-            (
-                {"improved", "better", "higher", "increased"},
-                {"degraded", "worse", "lower", "decreased"},
-            ),
-            ({"bull", "growth", "momentum"}, {"bear", "crisis", "crash"}),
-        ]
+        new_token_list = new_pattern.lower().split()
+        new_tokens = set(new_token_list)
 
         algo_names = {"ppo", "a2c", "sac"}
         new_algos = new_tokens & algo_names
+        new_env_set = set(new_envs or [])
 
         for row in existing:
-            existing_tokens = set((row.get("pattern_text") or "").lower().split())
+            existing_text = (row.get("pattern_text") or "").lower()
+            existing_token_list = existing_text.split()
+            existing_tokens = set(existing_token_list)
 
-            # Require shared algorithm or same category before flagging conflict
-            existing_algos = existing_tokens & algo_names
-            shared_algo = bool(new_algos & existing_algos)
+            # Gate 1: require same category (mandatory)
             same_category = bool(
                 new_category and row.get("category") and new_category == row["category"]
             )
-
-            if not shared_algo and not same_category:
+            if not same_category:
                 continue
 
-            for pos_words, neg_words in contradiction_pairs:
-                new_has_pos = bool(new_tokens & pos_words)
-                new_has_neg = bool(new_tokens & neg_words)
-                existing_has_pos = bool(existing_tokens & pos_words)
-                existing_has_neg = bool(existing_tokens & neg_words)
+            # Gate 2: require shared algo OR shared env
+            existing_algos = existing_tokens & algo_names
+            shared_algo = bool(new_algos & existing_algos)
+            existing_envs = set(row.get("affected_envs") or [])
+            shared_env = bool(new_env_set & existing_envs)
+            if not shared_algo and not shared_env:
+                continue
 
-                if (new_has_pos and existing_has_neg) or (new_has_neg and existing_has_pos):
-                    log.info(
-                        "consolidation_conflict_candidate",
-                        new_pattern_snippet=new_pattern[:80],
-                        existing_id=row["id"],
-                    )
-                    return int(row["id"])
+            # Adjacency-aware sentiment matching
+            new_pairs = _extract_sentiment_metric_pairs(new_token_list)
+            existing_pairs = _extract_sentiment_metric_pairs(existing_token_list)
+
+            for n_dir, n_metric in new_pairs:
+                for e_dir, e_metric in existing_pairs:
+                    if n_metric == e_metric and n_dir != e_dir:
+                        log.info(
+                            "consolidation_conflict_candidate",
+                            new_pattern_snippet=new_pattern[:80],
+                            existing_id=row["id"],
+                            conflict_metric=n_metric,
+                        )
+                        return int(row["id"])
 
         return None
