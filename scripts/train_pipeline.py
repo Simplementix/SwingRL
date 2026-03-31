@@ -1590,6 +1590,7 @@ def _run_wf_for_algo(
     fold_queue: multiprocessing.Queue | None = None,
     advice_enabled: bool = True,
     control_fold_indices: set[int] | None = None,
+    iteration: int | None = None,
 ) -> tuple[str, list[Any]]:
     """Run walk-forward validation for one algo. Top-level for serialization.
 
@@ -1608,6 +1609,7 @@ def _run_wf_for_algo(
             writes. Each completed fold is enqueued as (algo_name, FoldResult).
         advice_enabled: When True, enable LLM epoch advice and reward weight
             adjustments. When False, only capture epoch memories (no advice).
+        iteration: Training iteration number for pattern presentation tracking.
 
     Returns:
         Tuple of (algo_name, fold_results_list).
@@ -1653,6 +1655,7 @@ def _run_wf_for_algo(
         fold_queue=fold_queue,
         advice_enabled=advice_enabled,
         control_fold_indices=control_fold_indices,
+        iteration=iteration,
     )
 
     log.info("pipeline_wf_complete", env_name=env_name, algo=algo_name, fold_count=len(folds))
@@ -2126,6 +2129,7 @@ def run_environment(
                     fold_queue,
                     wf_memory_advice,
                     _ctrl_indices,
+                    iteration_number,
                 ): algo
                 for algo in algos_to_run
             }

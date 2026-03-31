@@ -216,7 +216,8 @@ def make_signal_handler(
     def handler(signum: int, frame: FrameType | None) -> None:
         sig_name = signal.Signals(signum).name
         log.info("shutdown_signal_received", signal=sig_name)
-        scheduler.shutdown(wait=False)
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
         stop_event.set()
 
     return handler
@@ -265,6 +266,16 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
         models_dir=Path(config.paths.models_dir),
     )
 
+    stop_event = threading.Event()
+
+    if not config.scheduler.enabled:
+        log.info("scheduler_disabled", reason="config.scheduler.enabled=false")
+        return {
+            "scheduler": None,
+            "stop_event": stop_event,
+            "config": config,
+        }
+
     init_job_context(config=config, db=db, pipeline=pipeline, alerter=alerter)
 
     jobstores = {
@@ -286,8 +297,6 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
     )
 
     create_scheduler_and_register_jobs(scheduler, config)
-
-    stop_event = threading.Event()
 
     start_stop_polling_thread(config, db)
 
@@ -322,8 +331,11 @@ def main() -> None:
     signal.signal(signal.SIGTERM, handler)
     signal.signal(signal.SIGINT, handler)
 
-    scheduler.start()
-    log.info("scheduler_started")
+    if scheduler is not None:
+        scheduler.start()
+        log.info("scheduler_started")
+    else:
+        log.info("scheduler_skipped_idle_mode")
 
     stop_event.wait()
     log.info("swingrl_exiting")

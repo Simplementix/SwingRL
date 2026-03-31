@@ -213,6 +213,7 @@ class AlertingConfig(BaseModel):
 class SchedulerConfig(BaseModel):
     """APScheduler configuration."""
 
+    enabled: bool = Field(default=True)
     apscheduler_db_path: str = Field(default="db/apscheduler_jobs.sqlite")
     misfire_grace_time: int = Field(default=300, ge=60)
     max_workers: int = Field(default=4, ge=1)

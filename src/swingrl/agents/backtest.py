@@ -270,6 +270,7 @@ class WalkForwardBacktester:
         fold_queue: Any | None = None,
         advice_enabled: bool = True,
         control_fold_indices: set[int] | None = None,
+        iteration: int | None = None,
     ) -> list[FoldResult]:
         """Run walk-forward backtest for one algorithm on one environment.
 
@@ -373,6 +374,7 @@ class WalkForwardBacktester:
                 run_id=f"{env_name}_{algo_name}_fold{fold_idx}{ctrl_suffix}",
                 advice_enabled=fold_advice,
                 is_control_fold=is_control,
+                iteration=iteration,
             )
 
             # Evaluate on train data (in-sample)

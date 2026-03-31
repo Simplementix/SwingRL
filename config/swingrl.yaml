@@ -58,6 +58,7 @@ alerting:
   healthchecks_crypto_url: ""              # Healthchecks.io crypto cycle ping URL
 
 scheduler:
+  enabled: false                           # set true for live/paper trading; false during training-only
   apscheduler_db_path: db/apscheduler_jobs.sqlite  # SEPARATE from trading_ops.db
   misfire_grace_time: 300                  # seconds to tolerate late job execution
   max_workers: 4                           # APScheduler thread pool size
