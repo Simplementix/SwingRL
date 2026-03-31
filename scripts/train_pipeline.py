@@ -1869,6 +1869,10 @@ def _fold_writer(
     Exits when sentinel None is received.
     """
     conn = duckdb.connect(str(db_path))
+    # Ensure schema migrations are applied (e.g. is_control_fold column)
+    from swingrl.data.db import _migrate_backtest_results
+
+    _migrate_backtest_results(conn)
     written = 0
     try:
         while True:
