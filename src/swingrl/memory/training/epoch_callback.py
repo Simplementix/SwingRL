@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -109,6 +110,7 @@ class MemoryEpochCallback(BaseCallback):
         advice_enabled: bool = True,
         is_control_fold: bool = False,
         iteration: int | None = None,
+        duckdb_path: str | Path | None = None,
     ) -> None:
         """Initialize the epoch callback.
 
@@ -123,6 +125,7 @@ class MemoryEpochCallback(BaseCallback):
             is_control_fold: If True, this fold is a scientific control group
                 (no reward adjustments). Tagged in epoch snapshot text.
             iteration: Training iteration number for pattern presentation tracking.
+            duckdb_path: Optional path to DuckDB database for direct epoch/adjustment writes.
         """
         super().__init__(verbose=verbose)
         self._client = memory_client
@@ -132,6 +135,13 @@ class MemoryEpochCallback(BaseCallback):
         self._advice_enabled = advice_enabled
         self._is_control_fold = is_control_fold
         self._iteration = iteration
+        self._duckdb_path = Path(duckdb_path) if duckdb_path else None
+
+        # LLM advice call counters
+        self._advice_calls: int = 0
+        self._advice_succeeded: int = 0
+        self._advice_timed_out: int = 0
+        self._advice_provider_used: str = ""
 
         # Parse algo from run_id (format: {env}_{algo}_fold{N}), fallback to algo param.
         try:
@@ -192,6 +202,16 @@ class MemoryEpochCallback(BaseCallback):
             )
             return EPOCH_STORE_CADENCE
         return cadence
+
+    @property
+    def advice_stats(self) -> dict[str, Any]:
+        """Return summary of LLM advice call statistics."""
+        return {
+            "advice_calls": self._advice_calls,
+            "advice_succeeded": self._advice_succeeded,
+            "advice_timed_out": self._advice_timed_out,
+            "advice_provider_used": self._advice_provider_used,
+        }
 
     def _on_step(self) -> bool:
         """Check if training should continue.
@@ -331,6 +351,45 @@ class MemoryEpochCallback(BaseCallback):
             notable=metrics["notable_event"],
         )
 
+        # DuckDB direct write — schema matches features/schema.py training_epochs
+        # Table created at startup by init_feature_schema(); never fail training.
+        if self._duckdb_path is not None:
+            try:
+                import duckdb
+
+                con = duckdb.connect(str(self._duckdb_path))
+                con.execute(
+                    """INSERT INTO training_epochs (
+                        run_id, epoch, algo, env, timestep, mean_reward,
+                        policy_loss, value_loss, entropy_loss, approx_kl,
+                        clip_fraction, rolling_sharpe, rolling_mdd,
+                        rolling_win_rate, reward_weights, notable_event,
+                        is_control_fold
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        metrics["run_id"],
+                        metrics["epoch"],
+                        metrics["algo"],
+                        metrics["env"],
+                        metrics["timestep"],
+                        metrics["mean_reward"],
+                        metrics["policy_loss"],
+                        metrics["value_loss"],
+                        metrics["entropy_loss"],
+                        metrics["approx_kl"],
+                        metrics["clip_fraction"],
+                        metrics["rolling_sharpe_500"],
+                        metrics["rolling_mdd_500"],
+                        metrics["rolling_win_rate_500"],
+                        json.dumps(metrics["reward_weights"]),
+                        metrics["notable_event"],
+                        self._is_control_fold,
+                    ],
+                )
+                con.close()
+            except Exception as exc:
+                log.debug("duckdb_epoch_write_failed", error=str(exc))
+
     def _ingest_adjustment_trigger(
         self,
         new_weights: dict[str, float],
@@ -378,6 +437,36 @@ class MemoryEpochCallback(BaseCallback):
             ok=ok,
         )
 
+        # DuckDB direct write — schema matches features/schema.py reward_adjustments
+        if self._duckdb_path is not None:
+            try:
+                import duckdb
+
+                con = duckdb.connect(str(self._duckdb_path))
+                con.execute(
+                    """INSERT INTO reward_adjustments (
+                        run_id, epoch_trigger, algo, env, trigger_metric,
+                        trigger_value, trigger_reason, weight_before,
+                        weight_after, sharpe_at_trigger, mdd_at_trigger
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        self._run_id,
+                        self._epoch,
+                        self._algo,
+                        self._env,
+                        trigger_metric,
+                        trigger_value,
+                        trigger_reason,
+                        json.dumps(old_weights),
+                        json.dumps(new_weights),
+                        self._sharpe_at_trigger,
+                        self._mdd_at_trigger,
+                    ],
+                )
+                con.close()
+            except Exception as exc:
+                log.debug("duckdb_adjustment_trigger_write_failed", error=str(exc))
+
     def _resolve_pending_adjustment(self) -> None:
         """Ingest Pass 2 of a reward adjustment event (10-epoch outcome).
 
@@ -414,6 +503,33 @@ class MemoryEpochCallback(BaseCallback):
             effective=effective,
             ok=ok,
         )
+
+        # DuckDB UPDATE with outcome — schema matches features/schema.py
+        if self._duckdb_path is not None:
+            try:
+                import duckdb
+
+                con = duckdb.connect(str(self._duckdb_path))
+                con.execute(
+                    """UPDATE reward_adjustments
+                    SET epoch_outcome = ?, outcome_sharpe = ?,
+                        sharpe_delta = ?, mdd_delta = ?, effective = ?
+                    WHERE run_id = ? AND epoch_trigger = ?
+                      AND epoch_outcome IS NULL""",
+                    [
+                        self._epoch,
+                        sharpe_delta,
+                        sharpe_delta,
+                        mdd_delta,
+                        effective,
+                        self._run_id,
+                        adj["epoch_triggered"],
+                    ],
+                )
+                con.close()
+            except Exception as exc:
+                log.debug("duckdb_adjustment_resolve_write_failed", error=str(exc))
+
         self._pending_adjustment = None
 
     def _query_epoch_advice(self) -> None:
@@ -442,8 +558,10 @@ class MemoryEpochCallback(BaseCallback):
                     f"current_weights={_json.dumps(self._wrapper.weights)}"
                 )
             }
+            self._advice_calls += 1
             body = self._client.epoch_advice(payload)
             if not body:
+                self._advice_timed_out += 1
                 return
 
             reason = body.get("rationale", "")
@@ -507,7 +625,10 @@ class MemoryEpochCallback(BaseCallback):
                     trigger_value=self._wrapper.rolling_mdd(),
                     trigger_reason=reason,
                 )
+                self._advice_succeeded += 1
+                self._advice_provider_used = body.get("provider", "unknown")
         except Exception as exc:
+            self._advice_timed_out += 1
             # Log first failure at info so it's visible in production; subsequent
             # failures at debug to avoid log spam during prolonged unavailability.
             if not self._advice_failed_once:

@@ -1643,12 +1643,19 @@ class TestTrainingTelemetryDDL:
                 "epoch",
                 "algo",
                 "env",
-                "sharpe",
-                "mdd",
-                "reward_weight_profit",
-                "reward_weight_sharpe",
-                "reward_weight_drawdown",
-                "reward_weight_turnover",
+                "timestep",
+                "mean_reward",
+                "policy_loss",
+                "value_loss",
+                "entropy_loss",
+                "approx_kl",
+                "clip_fraction",
+                "rolling_sharpe",
+                "rolling_mdd",
+                "rolling_win_rate",
+                "reward_weights",
+                "notable_event",
+                "is_control_fold",
                 "stop_training",
                 "rationale",
                 "created_at",
@@ -1742,8 +1749,16 @@ class TestTrainingTelemetryDDL:
                 "epoch_outcome",
                 "algo",
                 "env",
+                "trigger_metric",
+                "trigger_value",
+                "trigger_reason",
                 "weight_before",
                 "weight_after",
+                "sharpe_at_trigger",
+                "mdd_at_trigger",
+                "sharpe_delta",
+                "mdd_delta",
+                "effective",
                 "outcome_sharpe",
                 "created_at",
             }
@@ -1886,7 +1901,7 @@ class TestTrainingTelemetryDDL:
             apply_training_telemetry_ddl(conn)
             # Insert into training_epochs
             conn.execute(
-                "INSERT INTO training_epochs (run_id, epoch, algo, env, sharpe, mdd) "
+                "INSERT INTO training_epochs (run_id, epoch, algo, env, rolling_sharpe, rolling_mdd) "
                 "VALUES ('run-001', 1, 'ppo', 'equity', 1.5, -0.05)"
             )
             # Insert into meta_decisions

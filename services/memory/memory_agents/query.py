@@ -18,12 +18,13 @@ to avoid importing from src/swingrl/ (cross-container boundary, Pitfall 4).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import threading
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -49,11 +50,14 @@ _CONFIG_PATH = Path(os.environ.get("SWINGRL_CONFIG_PATH", "/app/config/swingrl.y
 # ---------------------------------------------------------------------------
 # Cloud provider 429 blocking (calendar-day reset)
 # ---------------------------------------------------------------------------
-# Tracks providers that returned a blocking HTTP code (e.g. 429) today.
-# Key = provider name, value = UTC date when blocked.
-# Auto-resets: if blocked date < today, the block is removed on next check.
-_CLOUD_BLOCKED: dict[str, date] = {}
+# Tracks providers that returned a blocking HTTP code (e.g. 429).
+# Key = provider name, value = {"count": int, "blocked_until": datetime}.
+# Uses exponential backoff: 5min → 15min → 60min → rest-of-UTC-day.
+_CLOUD_BLOCKED: dict[str, dict[str, Any]] = {}
 _CLOUD_BLOCKED_LOCK = threading.Lock()
+
+# Serialize Ollama calls to prevent concurrent requests overwhelming the instance
+_OLLAMA_SEMAPHORE: asyncio.Semaphore = asyncio.Semaphore(1)
 
 # ---------------------------------------------------------------------------
 # Constants (loaded from mounted config YAML, fallback to hardcoded defaults)
@@ -65,7 +69,13 @@ _FALLBACK_HYPERPARAM_BOUNDS: dict[str, tuple[Any, Any]] = {
     "clip_range": (0.1, 0.4),
     "n_epochs": (3, 20),
     "batch_size": (32, 512),
-    "gamma": (0.90, 0.9999),
+    "gamma": (0.95, 0.995),
+}
+
+_ALGO_GAMMA_BOUNDS: dict[str, tuple[float, float]] = {
+    "ppo": (0.95, 0.995),
+    "a2c": (0.95, 0.985),
+    "sac": (0.95, 0.995),
 }
 
 _FALLBACK_REWARD_BOUNDS: dict[str, tuple[float, float]] = {
@@ -120,6 +130,8 @@ _SAFE_EPOCH_DEFAULTS: dict[str, Any] = {
     "reward_weights": {"profit": 0.4, "sharpe": 0.35, "drawdown": 0.20, "turnover": 0.05},
     "stop_training": False,
     "rationale": "cold_start_defaults",
+    "provider": "none",
+    "model": "none",
 }
 
 # ---------------------------------------------------------------------------
@@ -222,17 +234,17 @@ def _load_ollama_config() -> dict[str, Any]:
 
     # Backward compat: single ollama_url/ollama_model → one-item list
     url = mem.get("ollama_url", "http://swingrl-ollama:11434")
-    model = mem.get("ollama_model", "qwen2.5:1.5b")
+    model = mem.get("ollama_model", "qwen2.5:14b")
     base["ollama_instances"] = [{"name": "default", "url": url, "model": model, "timeout": 30.0}]
     return base
 
 
 def _load_epoch_provider_configs() -> list[dict[str, Any]]:
-    """Load cloud provider configs for epoch advice with 4-provider fallback chain.
+    """Load cloud provider configs for epoch advice with fallback chain.
 
-    Chain: Cerebras qwen3-235b (1M TPD) → Groq llama-3.1-8b (500K TPD) →
-    SambaNova Llama-3.3-70B (200K TPD) → Ollama (unlimited, wired in advise_epoch()).
-    Combined cloud: ~1.7M TPD. Ollama is safety net in advise_epoch().
+    Chain: Cerebras qwen3-235b (1M TPD) → Groq llama-4-scout (500K TPD) →
+    Ollama (unlimited, wired in advise_epoch()).
+    Ollama is safety net in advise_epoch().
     """
     config_path = _CONFIG_PATH
     configs: list[dict[str, Any]] = []
@@ -258,13 +270,9 @@ def _load_epoch_provider_configs() -> list[dict[str, Any]]:
         cerebras_cfg = providers.get("cerebras", {})
         configs.append(_build("cerebras", cerebras_cfg))
 
-        # 2. Groq llama-3.1-8b-instant (fast, different provider, 500K TPD)
+        # 2. Groq llama-4-scout (fast, different provider, 500K TPD)
         groq_cfg = providers.get("groq", {})
         configs.append(_build("groq", groq_cfg))
-
-        # 3. SambaNova Llama-3.3-70B (different provider, 200K TPD free tier, 1-3s)
-        sambanova_cfg = providers.get("sambanova", {})
-        configs.append(_build("sambanova", sambanova_cfg))
 
         return configs
 
@@ -281,18 +289,10 @@ def _load_epoch_provider_configs() -> list[dict[str, Any]]:
         {
             "base_url": "https://api.groq.com/openai/v1",
             "api_key": os.environ.get("GROQ_API_KEY", ""),
-            "model": "llama-3.1-8b-instant",
+            "model": "meta-llama/llama-4-scout-17b-16e-instruct",
             "timeout": 30.0,
-            "max_tokens": 8192,
+            "max_tokens": 30000,
             "provider": "groq",
-        },
-        {
-            "base_url": "https://api.sambanova.ai/v1",
-            "api_key": os.environ.get("SAMBANOVA_API_KEY", ""),
-            "model": "Meta-Llama-3.3-70B-Instruct",
-            "timeout": 30.0,
-            "max_tokens": 8192,
-            "provider": "sambanova",
         },
     ]
 
@@ -355,40 +355,51 @@ log.info(
 
 
 def _is_provider_blocked(provider: str) -> bool:
-    """Check if a cloud provider is blocked for the rest of today (UTC).
+    """Check if a cloud provider is currently blocked (exponential backoff).
 
-    Auto-resets: if the block was set on a previous calendar day, removes it
-    and returns False so the provider gets retried.
+    Auto-resets: if the current time is past the blocked_until timestamp,
+    removes the block and returns False so the provider gets retried.
     """
     if not _CLOUD_BLOCK_ENABLED:
         return False
     with _CLOUD_BLOCKED_LOCK:
-        blocked_date = _CLOUD_BLOCKED.get(provider)
-        if blocked_date is None:
+        entry = _CLOUD_BLOCKED.get(provider)
+        if entry is None:
             return False
-        today_utc = datetime.now(UTC).date()
-        if blocked_date < today_utc:
+        now = datetime.now(tz=UTC)
+        if now >= entry["blocked_until"]:
             del _CLOUD_BLOCKED[provider]
-            log.info(
-                "cloud_provider_block_expired",
-                provider=provider,
-                blocked_date=str(blocked_date),
-                today=str(today_utc),
-            )
+            log.info("cloud_provider_unblocked", provider=provider)
             return False
         return True
 
 
 def _block_provider(provider: str, status_code: int) -> None:
-    """Block a cloud provider for the rest of today (UTC) after a rate-limit response."""
-    today_utc = datetime.now(UTC).date()
+    """Block a cloud provider with exponential backoff after a rate-limit response.
+
+    Backoff schedule: 5min → 15min → 60min → rest-of-UTC-day.
+    """
+    now = datetime.now(tz=UTC)
     with _CLOUD_BLOCKED_LOCK:
-        _CLOUD_BLOCKED[provider] = today_utc
+        entry = _CLOUD_BLOCKED.get(provider, {"count": 0, "blocked_until": now})
+        count = entry["count"] + 1
+        if count == 1:
+            blocked_until = now + timedelta(minutes=5)
+        elif count == 2:
+            blocked_until = now + timedelta(minutes=15)
+        elif count == 3:
+            blocked_until = now + timedelta(minutes=60)
+        else:
+            # Calendar-day block (rest of UTC day)
+            tomorrow = now.date() + timedelta(days=1)
+            blocked_until = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=UTC)
+        _CLOUD_BLOCKED[provider] = {"count": count, "blocked_until": blocked_until}
     log.warning(
         "cloud_provider_blocked",
         provider=provider,
         status_code=status_code,
-        blocked_until=f"end of {today_utc} UTC",
+        block_count=count,
+        blocked_until=blocked_until.isoformat(),
         total_blocked=len(_CLOUD_BLOCKED),
     )
 
@@ -483,21 +494,26 @@ _ALGO_HP_GUIDES: dict[str, str] = {
     ),
     "a2c": (
         "A2C Hyperparameter Guide:\n"
-        "CRITICAL: A2C has NO clipping protection (unlike PPO). Learning rate is the ONLY "
-        "lever controlling update magnitude. A2C is fundamentally more sensitive to all HPs.\n\n"
-        "- learning_rate: THE most sensitive A2C parameter. Without clipping, LR directly "
-        "controls how far the policy moves per update. For overfitting: reduce learning_rate "
-        "FIRST (this is A2C's primary lever, unlike PPO where n_epochs comes first). "
-        "Reduce to 1e-4 to 3e-4 range for noisy financial data.\n"
-        "- gamma: Lower to 0.95-0.97 to reduce the critic's prediction burden. "
-        "Higher gamma needs lower LR for stability.\n"
+        "CRITICAL: A2C has NO clipping protection (unlike PPO). It is fundamentally more "
+        "sensitive to ALL HPs. learning_rate is the primary lever; gamma is a HIGH-RISK parameter.\n\n"
+        "- learning_rate: Without clipping, LR directly controls how far the policy moves "
+        "per update. For overfitting: reduce learning_rate FIRST. "
+        "Safe range for financial data: 1e-4 to 3e-4.\n"
+        "- gamma: HIGH-RISK parameter for A2C. With n_steps=5 (default), "
+        "gamma=0.99 means the critic must predict a 100-step horizon from only 5 real "
+        "reward steps — enormous prediction burden. gamma > 0.985 causes critic/n_steps "
+        "mismatch and training instability. SAFE RANGE: 0.95-0.985. "
+        "NEVER set gamma above 0.985 without also increasing n_steps proportionally. "
+        "Higher gamma absolutely requires lower LR for stability.\n"
         "- ent_coef: Even more important than PPO because A2C has no clipping to limit "
         "policy changes. Entropy bonus is the main regularizer. Keep at 0.01-0.02.\n\n"
         "A2C Symptom → Fix mapping:\n"
-        "- High overfit_gap: Reduce learning_rate FIRST (A2C's only real lever)\n"
+        "- High overfit_gap: Reduce learning_rate FIRST, then check gamma\n"
         "- Erratic policy (whipsawing trades): Reduce learning_rate\n"
         "- Policy collapse: Increase ent_coef\n"
-        "- Myopic trading: Increase gamma (carefully — higher gamma needs lower LR)"
+        "- Training degradation across folds: CHECK GAMMA FIRST — if gamma > 0.985, "
+        "reduce it to 0.97-0.98\n"
+        "- Myopic trading: Increase gamma (max 0.985) or increase n_steps"
     ),
     "sac": (
         "SAC Hyperparameter Guide:\n"
@@ -555,7 +571,15 @@ _RUN_CONFIG_INSTRUCTIONS = (
     "that change. If an iteration_regression pattern flags HP bounds violations, ensure\n"
     "your recommendations stay within documented safe ranges.\n\n"
     "If fewer than 2 patterns support HP changes, return mostly baseline values.\n"
-    "It is better to return safe defaults with honest rationale than to over-tune."
+    "It is better to return safe defaults with honest rationale than to over-tune.\n\n"
+    "BEST-KNOWN CONFIG ANCHORING:\n"
+    "The user message includes 'VS BEST PER-ALGO' and 'VS BEST ENSEMBLE' comparisons.\n"
+    "When the best iteration is NOT the current iteration, ANCHOR your recommendations\n"
+    "near the best-known HP config. Stay within ±20% of the best-known values for\n"
+    "learning_rate and within ±0.02 of the best-known gamma, UNLESS you have strong\n"
+    "pattern-based evidence (cited from >=3 folds or 2 environments) that diverging\n"
+    "from the best config will improve performance. State explicitly when you are\n"
+    "diverging from the best-known config and why."
 )
 
 
@@ -576,6 +600,9 @@ def _build_algo_system_prompt(
     """
     valid_hp = set(_ALGO_HP_FIELDS.get(algo_name, {}).keys())
     filtered_bounds = {k: v for k, v in hp_bounds.items() if k in valid_hp}
+    # Override gamma bounds with algo-specific values when available
+    if "gamma" in filtered_bounds and algo_name.lower() in _ALGO_GAMMA_BOUNDS:
+        filtered_bounds["gamma"] = _ALGO_GAMMA_BOUNDS[algo_name.lower()]
     hp_lines = "\n".join(f"- {k}: [{lo}, {hi}]" for k, (lo, hi) in filtered_bounds.items())
     rw_lines = "\n".join(f"- {k}: [{lo}, {hi}]" for k, (lo, hi) in rw_bounds.items())
     algo_upper = algo_name.upper()
@@ -836,11 +863,12 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
-def _clamp_run_config(raw: dict[str, Any]) -> dict[str, Any]:
+def _clamp_run_config(raw: dict[str, Any], *, algo: str | None = None) -> dict[str, Any]:
     """Clamp hyperparameters from LLM response to safe ranges.
 
     Args:
         raw: Dict from LLM response.
+        algo: Optional algorithm name for algo-specific gamma bounds.
 
     Returns:
         New dict with clamped values.
@@ -850,7 +878,10 @@ def _clamp_run_config(raw: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, (lo, hi) in _HYPERPARAM_BOUNDS.items():
         if key in raw:
-            clamped = _clamp(float(raw[key]), float(lo), float(hi))
+            eff_lo, eff_hi = lo, hi
+            if key == "gamma" and algo and algo.lower() in _ALGO_GAMMA_BOUNDS:
+                eff_lo, eff_hi = _ALGO_GAMMA_BOUNDS[algo.lower()]
+            clamped = _clamp(float(raw[key]), float(eff_lo), float(eff_hi))
             if key == "batch_size":
                 # Force to nearest power of 2
                 clamped = int(2 ** round(math.log2(max(1, clamped))))
@@ -993,7 +1024,7 @@ class QueryAgent:
         # Merge with defaults for any missing fields
         merged = dict(_SAFE_DEFAULTS)
         merged.update(result)
-        clamped = _clamp_run_config(merged)
+        clamped = _clamp_run_config(merged, algo=algo)
 
         # Ensure reward_weights always present
         if "reward_weights" not in clamped:
@@ -1139,11 +1170,20 @@ class QueryAgent:
             result.get("reward_weights", _SAFE_EPOCH_DEFAULTS["reward_weights"])
         )
 
-        return {
+        result_out = {
             "reward_weights": clamped_weights,
             "stop_training": bool(result.get("stop_training", False)),
             "rationale": str(result.get("rationale", "llm_advised")),
         }
+        result_out["provider"] = self._last_provider
+        result_out["model"] = self._last_model
+        log.info(
+            "epoch_advice_response",
+            provider=self._last_provider,
+            model=self._last_model,
+            response_preview=json.dumps(result_out)[:500],
+        )
+        return result_out
 
     @staticmethod
     def _filter_and_format_context(
@@ -1592,7 +1632,7 @@ class QueryAgent:
     ) -> dict[str, Any] | None:
         """Call Ollama API with structured JSON output, trying instances sequentially.
 
-        Iterates ``_OLLAMA_INSTANCES`` in order (clawbot GPU first, homelab CPU second).
+        Iterates ``_OLLAMA_INSTANCES`` in order (serialized via semaphore).
         Returns the first successful result or None if all instances fail.
 
         Args:
@@ -1639,13 +1679,15 @@ class QueryAgent:
             }
 
             try:
-                async with httpx.AsyncClient(timeout=inst_timeout) as client:
-                    resp = await client.post(
-                        f"{inst_url}/api/chat",
-                        json=payload,
-                    )
-                    resp.raise_for_status()
-                    body = resp.json()
+                log.debug("ollama_semaphore_waiting", instance=inst_name)
+                async with _OLLAMA_SEMAPHORE:
+                    async with httpx.AsyncClient(timeout=inst_timeout) as client:
+                        resp = await client.post(
+                            f"{inst_url}/api/chat",
+                            json=payload,
+                        )
+                        resp.raise_for_status()
+                        body = resp.json()
 
                 raw_content = body.get("message", {}).get("content")
                 if not raw_content:

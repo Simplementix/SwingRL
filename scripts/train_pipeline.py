@@ -1024,6 +1024,12 @@ def _ingest_wf_results_to_memory(
             max_single_loss = min(all_trade_pnls) if all_trade_pnls else 0.0
             best_single_trade = max(all_trade_pnls) if all_trade_pnls else 0.0
 
+            # Collect per-fold advice stats
+            fold_advice_stats: dict[int, dict[str, Any]] = {}
+            for f in folds:
+                if f.advice_stats is not None:
+                    fold_advice_stats[f.fold_number] = f.advice_stats
+
             # Build fold detail lines with date range and regime context
             fold_lines: list[str] = []
             for f in folds:
@@ -1091,6 +1097,17 @@ def _ingest_wf_results_to_memory(
                 if hasattr(f.gate_result, "failures") and f.gate_result.failures:
                     gate_failures = f"gate_failures={','.join(f.gate_result.failures)} "
 
+                # Advice stats for this fold
+                advice_ctx = ""
+                fa = fold_advice_stats.get(f.fold_number)
+                if fa:
+                    advice_ctx = (
+                        f"advice_calls={fa.get('advice_calls', 0)} "
+                        f"advice_succeeded={fa.get('advice_succeeded', 0)} "
+                        f"advice_timed_out={fa.get('advice_timed_out', 0)} "
+                        f"advice_provider={fa.get('advice_provider_used', 'none')} "
+                    )
+
                 _ctrl_tag = "[CTRL] " if f.is_control_fold else "[TREATMENT] "
                 fold_lines.append(
                     f"fold={f.fold_number} {_ctrl_tag}{train_ctx}{date_ctx}{regime_ctx}"
@@ -1113,7 +1130,8 @@ def _ingest_wf_results_to_memory(
                     f"gate={'PASS' if f.gate_result.passed else 'FAIL'} "
                     f"{gate_failures}"
                     f"overfit_class={ovf.get('classification', 'unknown')} "
-                    f"overfit_gap={ovf.get('gap', 0.0):.4f}"
+                    f"overfit_gap={ovf.get('gap', 0.0):.4f} "
+                    f"{advice_ctx}"
                 )
 
             # Hyperparameters actually used (baseline merged with any override)
@@ -1155,6 +1173,32 @@ def _ingest_wf_results_to_memory(
                     f"delta={t_s - c_s:+.4f} "
                     f"ctrl_mean_mdd={c_m:.4f} treatment_mean_mdd={t_m:.4f}"
                 )
+
+            # Advice success rate warning for treatment folds
+            treatment_folds_stats = [
+                fold_advice_stats[f.fold_number]
+                for f in folds
+                if not f.is_control_fold and f.fold_number in fold_advice_stats
+            ]
+            if treatment_folds_stats:
+                total_calls = sum(s.get("advice_calls", 0) for s in treatment_folds_stats)
+                total_succeeded = sum(s.get("advice_succeeded", 0) for s in treatment_folds_stats)
+                if total_calls > 0:
+                    success_rate = total_succeeded / total_calls
+                    if success_rate < 0.5:
+                        log.warning(
+                            "low_treatment_advice_success_rate",
+                            algo=algo_name,
+                            env=env_name,
+                            success_rate=f"{success_rate:.1%}",
+                            total_calls=total_calls,
+                            total_succeeded=total_succeeded,
+                        )
+                        ctrl_summary += (
+                            f"\nWARNING: treatment advice success rate "
+                            f"{success_rate:.1%} < 50% "
+                            f"(calls={total_calls} succeeded={total_succeeded})"
+                        )
 
             # Category 4: iteration_number and total_timesteps in header
             algo_text = (

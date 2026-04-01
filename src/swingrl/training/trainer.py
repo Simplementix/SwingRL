@@ -92,6 +92,7 @@ class TrainingResult:
     algo_name: str
     converged_at_step: int | None
     total_timesteps: int
+    advice_stats: dict[str, Any] | None = None
 
 
 class TrainingOrchestrator:
@@ -309,6 +310,7 @@ class TrainingOrchestrator:
                     advice_enabled=advice_enabled,
                     is_control_fold=is_control_fold,
                     iteration=iteration,
+                    duckdb_path=self._config.system.duckdb_path,
                 )
                 callbacks.append(memory_cb)
                 log.info(
@@ -327,6 +329,15 @@ class TrainingOrchestrator:
                 total_timesteps=total_timesteps,
                 callback=callbacks,
             )
+
+            # Extract advice stats from MemoryEpochCallback if present
+            _advice_stats: dict[str, Any] | None = None
+            for cb in callbacks:
+                from swingrl.memory.training.epoch_callback import MemoryEpochCallback
+
+                if isinstance(cb, MemoryEpochCallback):
+                    _advice_stats = cb.advice_stats
+                    break
 
             # Save model and VecNormalize — vec_env is always VecNormalize here
             # (either from _create_env or from explicit VecNormalize() wrapping above)
@@ -356,6 +367,7 @@ class TrainingOrchestrator:
                 algo_name=algo_name,
                 converged_at_step=converged_at,
                 total_timesteps=total_timesteps,
+                advice_stats=_advice_stats,
             )
         finally:
             vec_env.close()

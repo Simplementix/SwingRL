@@ -308,9 +308,9 @@ class ConsolidationConfig(BaseModel):
             ),
             "groq": ConsolidationProviderConfig(
                 base_url="https://api.groq.com/openai/v1",
-                default_model="llama-3.1-8b-instant",
+                default_model="meta-llama/llama-4-scout-17b-16e-instruct",
                 timeout_sec=30,
-                max_tokens=8192,
+                max_tokens=30000,
             ),
             "gemini": ConsolidationProviderConfig(
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -366,7 +366,7 @@ class MemoryAgentConfig(BaseModel):
     timeout_sec: float = 3.0
     blend_strength: float = 0.30
     meta_training: bool = False
-    meta_training_timeout_sec: float = 120.0
+    meta_training_timeout_sec: float = 300.0
     min_run_history_for_meta: int = 3
     llm_backend: str = "openrouter"
     openai_model: str = "gpt-4o-mini"
@@ -423,7 +423,7 @@ class HyperparamBoundsConfig(BaseModel):
     clip_range: tuple[float, float] = (0.1, 0.4)
     n_epochs: tuple[int, int] = (3, 20)
     batch_size: tuple[int, int] = (32, 512)
-    gamma: tuple[float, float] = (0.90, 0.9999)
+    gamma: tuple[float, float] = (0.95, 0.995)
 
 
 class RewardBoundsConfig(BaseModel):

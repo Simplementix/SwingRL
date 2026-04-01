@@ -65,6 +65,8 @@ class EpochAdviceResponse(BaseModel):
     reward_weights: dict[str, float] = {}
     stop_training: bool = False
     rationale: str = "cold_start"
+    provider: str = "none"
+    model: str = "none"
 
 
 class RecordOutcomeRequest(BaseModel):
@@ -128,7 +130,7 @@ async def get_epoch_advice(
 ) -> EpochAdviceResponse:
     """Return LLM-advised reward weight adjustments for the current epoch.
 
-    Routes to local Ollama (qwen2.5:1.5b) for fast, unlimited inference (~4s warm).
+    Routes through cloud provider chain (Cerebras -> Groq) with Ollama fallback.
     Returns clamped safe defaults on cold start or LLM failure.
     Requires X-API-Key header.
     """
@@ -138,6 +140,8 @@ async def get_epoch_advice(
         reward_weights=result.get("reward_weights", {}),
         stop_training=bool(result.get("stop_training", False)),
         rationale=result.get("rationale", "cold_start"),
+        provider=result.get("provider", "none"),
+        model=result.get("model", "none"),
     )
 
 

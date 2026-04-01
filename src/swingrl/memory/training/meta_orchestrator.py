@@ -146,7 +146,17 @@ class MetaTrainingOrchestrator:
 
         # Query full run config (HP + reward weights + rationale) — single call
         advised_config = self._query_run_config(env_name, algo_name, iteration=iteration)
-        safe_config = clamp_run_config(advised_config) if advised_config else {}
+        safe_config = clamp_run_config(advised_config, algo=algo_name) if advised_config else {}
+
+        # Write HP tuning decision to DuckDB meta_decisions table
+        if advised_config:
+            self._write_meta_decision(
+                run_id=run_id,
+                algo=algo_name,
+                env=env_name,
+                decision_json=json.dumps(safe_config),
+                rationale=advised_config.get("rationale", ""),
+            )
 
         # Extract SB3-compatible HP keys (algo-filtered)
         valid_keys = _VALID_HP_KEYS.get(algo_name, set())
@@ -221,7 +231,7 @@ class MetaTrainingOrchestrator:
         if not advised:
             return {}
 
-        safe = clamp_run_config(advised)
+        safe = clamp_run_config(advised, algo=algo_name)
 
         valid_keys = _VALID_HP_KEYS.get(algo_name, set())
         result: dict[str, Any] = {}
@@ -499,6 +509,27 @@ class MetaTrainingOrchestrator:
             f"regime_sideways={regime_vector.get('sideways', 0.17):.4f} "
             f"meta_rationale={rationale}"
         )
+
+    def _write_meta_decision(
+        self,
+        run_id: str,
+        algo: str,
+        env: str,
+        decision_json: str,
+        rationale: str,
+    ) -> None:
+        """Write HP tuning decision to DuckDB meta_decisions table."""
+        try:
+            conn = duckdb.connect(str(self._db_path))
+            conn.execute(
+                """INSERT INTO meta_decisions
+                   (run_id, algo, env, decision_type, decision_json, rationale)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [run_id, algo, env, "hp_tuning", decision_json, rationale],
+            )
+            conn.close()
+        except Exception as exc:
+            log.debug("meta_decision_write_failed", error=str(exc))
 
     @staticmethod
     def _generate_run_id(env_name: str, algo_name: str) -> str:

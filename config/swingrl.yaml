@@ -105,10 +105,6 @@ memory_agent:
       url: "http://swingrl-ollama:11434"
       model: "qwen2.5:14b"
       timeout: 300
-    - name: clawbot
-      url: "http://172.184.70.2:11434"
-      model: "qwen2.5:1.5b"
-      timeout: 60
   # Epoch advice call frequency (fewer calls with smarter model = better than many garbage calls)
   epoch_cadence_ppo: 60                        # was 20 → 3x fewer calls (~1.4 calls/fold)
   epoch_cadence_a2c: 8000                      # was 2000 → 4x fewer calls (~4 calls/fold)
@@ -161,19 +157,13 @@ memory_agent:
       groq:
         base_url: "https://api.groq.com/openai/v1"
         api_key: ""                         # OVERRIDE via GROQ_API_KEY in .env
-        default_model: "llama-3.1-8b-instant"
+        default_model: "meta-llama/llama-4-scout-17b-16e-instruct"
         timeout_sec: 30
-        max_tokens: 8192
+        max_tokens: 30000
       nvidia:
         base_url: "https://integrate.api.nvidia.com/v1"
         api_key: ""                         # OVERRIDE via NVIDIA_API_KEY in .env
         default_model: "moonshotai/kimi-k2.5"
-      sambanova:
-        base_url: "https://api.sambanova.ai/v1"
-        api_key: ""                         # OVERRIDE via SAMBANOVA_API_KEY in .env
-        default_model: "Meta-Llama-3.3-70B-Instruct"
-        timeout_sec: 30
-        max_tokens: 8192
 
 training:
   bounds:
@@ -183,7 +173,7 @@ training:
       clip_range: [0.1, 0.4]
       n_epochs: [3, 20]
       batch_size: [32, 512]
-      gamma: [0.90, 0.9999]
+      gamma: [0.95, 0.995]
     reward_bounds:
       profit: [0.10, 0.70]
       sharpe: [0.10, 0.60]

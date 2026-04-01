@@ -34,7 +34,13 @@ _FALLBACK_HYPERPARAM_BOUNDS: dict[str, tuple[Any, Any]] = {
     "clip_range": (0.1, 0.4),
     "n_epochs": (3, 20),
     "batch_size": (32, 512),
-    "gamma": (0.90, 0.9999),
+    "gamma": (0.95, 0.995),
+}
+
+_ALGO_GAMMA_BOUNDS: dict[str, tuple[float, float]] = {
+    "ppo": (0.95, 0.995),
+    "a2c": (0.95, 0.985),
+    "sac": (0.95, 0.995),
 }
 
 _FALLBACK_REWARD_BOUNDS: dict[str, tuple[float, float]] = {
@@ -107,7 +113,7 @@ def _nearest_power_of_two(n: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-def clamp_run_config(config: dict[str, Any]) -> dict[str, Any]:
+def clamp_run_config(config: dict[str, Any], *, algo: str | None = None) -> dict[str, Any]:
     """Clamp all hyperparameters to HYPERPARAM_BOUNDS. Does not mutate input.
 
     Enforces:
@@ -115,9 +121,11 @@ def clamp_run_config(config: dict[str, Any]) -> dict[str, Any]:
     - batch_size clamped to [32, 512] and then forced to nearest power of 2
     - clip_range, n_epochs, gamma, entropy_coeff within their ranges
     - Unknown keys are passed through unchanged
+    - gamma uses algo-specific bounds when algo is provided
 
     Args:
         config: Dict of hyperparameter name -> value from LLM suggestion.
+        algo: Optional algorithm name for algo-specific gamma bounds.
 
     Returns:
         New dict with all known hyperparameters clamped.
@@ -127,16 +135,19 @@ def clamp_run_config(config: dict[str, Any]) -> dict[str, Any]:
     for key, (lo, hi) in HYPERPARAM_BOUNDS.items():
         if key not in out:
             continue
+        eff_lo, eff_hi = lo, hi
+        if key == "gamma" and algo and algo.lower() in _ALGO_GAMMA_BOUNDS:
+            eff_lo, eff_hi = _ALGO_GAMMA_BOUNDS[algo.lower()]
         raw = out[key]
-        clamped = max(lo, min(hi, raw))
+        clamped = max(eff_lo, min(eff_hi, raw))
         if clamped != raw:
             log.warning(
                 "hyperparam_clamped",
                 key=key,
                 raw=raw,
                 clamped=clamped,
-                lo=lo,
-                hi=hi,
+                lo=eff_lo,
+                hi=eff_hi,
             )
         out[key] = clamped
 

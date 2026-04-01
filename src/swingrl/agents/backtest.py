@@ -87,6 +87,7 @@ class FoldResult:
     converged_at_step: int | None = None
     total_timesteps: int | None = None
     is_control_fold: bool = False
+    advice_stats: dict[str, Any] | None = None
 
 
 def _reconstruct_round_trips(
@@ -425,6 +426,7 @@ class WalkForwardBacktester:
                 converged_at_step=training_result.converged_at_step,
                 total_timesteps=total_timesteps,
                 is_control_fold=is_control,
+                advice_stats=training_result.advice_stats,
             )
 
             results.append(fold_result)
