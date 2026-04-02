@@ -54,7 +54,7 @@ $DEV_COMPOSE run --rm --entrypoint "" swingrl uv run sh -c \
 echo "=== [4a/6] Memory service lint ==="
 # Lint services/memory/ inside the swingrl-memory container
 docker compose run --rm --no-deps --entrypoint "" swingrl-memory sh -c \
-    'pip install ruff==0.15.5 mypy==1.19.1 -q && PATH="$HOME/.local/bin:$PATH" && ruff check /app && ruff format --check /app && mypy /app --ignore-missing-imports'
+    'pip install ruff==0.15.5 mypy==1.19.1 types-PyYAML -q && PATH="$HOME/.local/bin:$PATH" && ruff check /app && ruff format --check /app && mypy /app --ignore-missing-imports --explicit-package-bases'
 
 echo "=== [5/6] Cleanup ==="
 $DEV_COMPOSE down
