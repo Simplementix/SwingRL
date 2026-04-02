@@ -310,7 +310,10 @@ class TrainingOrchestrator:
                     advice_enabled=advice_enabled,
                     is_control_fold=is_control_fold,
                     iteration=iteration,
-                    duckdb_path=self._config.system.duckdb_path,
+                    # duckdb_path disabled: DuckDB is single-writer and the WF
+                    # backtester holds the connection during training, causing
+                    # deadlock. Telemetry writes deferred to post-fold ingestion.
+                    # duckdb_path=self._config.system.duckdb_path,
                 )
                 callbacks.append(memory_cb)
                 log.info(
