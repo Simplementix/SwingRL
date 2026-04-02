@@ -2524,7 +2524,7 @@ class TestEpochAggregationHelpers:
         summaries = _aggregate_epoch_summaries(memories)
         summary = summaries[0]
         assert "N=4" in summary
-        assert "cadence=20" in summary
+        assert "cadence=" in summary  # value depends on config (20 default, 60 in yaml)
         assert "confidence=low" in summary  # N=4 <= 5
 
     def test_aggregate_iqr_outliers_format(self) -> None:

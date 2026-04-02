@@ -210,10 +210,18 @@ class TestMemoryAgentConfigDefaults:
         assert cfg.cycle_gate is False
         assert cfg.risk_thresholds is False
 
-    def test_swingrlconfig_loads_with_memory_agent(self, tmp_path: pytest.TempPathFactory) -> None:
+    def test_swingrlconfig_loads_with_memory_agent(
+        self,
+        tmp_path: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """TRAIN-01: SwingRLConfig loads without error from existing config with memory_agent section."""
         from swingrl.config.schema import load_config
 
+        # Clear env vars that override defaults (set on homelab for production)
+        monkeypatch.delenv("SWINGRL_MEMORY_AGENT__ENABLED", raising=False)
+        monkeypatch.delenv("SWINGRL_MEMORY_AGENT__META_TRAINING", raising=False)
+        monkeypatch.delenv("SWINGRL_MEMORY_AGENT__API_KEY", raising=False)
         cfg = load_config(tmp_path / "nonexistent.yaml")
         assert cfg.memory_agent is not None
         assert cfg.memory_agent.enabled is False
