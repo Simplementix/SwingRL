@@ -63,9 +63,19 @@ _VALID_HP_KEYS: dict[str, set[str]] = {
         "clip_range",
         "ent_coef",
         "vf_coef",
+        "target_kl",
     },
     "a2c": {"learning_rate", "n_steps", "gamma", "gae_lambda", "ent_coef", "vf_coef"},
-    "sac": {"learning_rate", "batch_size", "tau", "gamma", "ent_coef", "learning_starts"},
+    "sac": {
+        "learning_rate",
+        "batch_size",
+        "tau",
+        "gamma",
+        "ent_coef",
+        "learning_starts",
+        "gradient_steps",
+        "target_entropy",
+    },
 }
 
 

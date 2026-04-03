@@ -70,6 +70,10 @@ _FALLBACK_HYPERPARAM_BOUNDS: dict[str, tuple[Any, Any]] = {
     "n_epochs": (3, 20),
     "batch_size": (32, 512),
     "gamma": (0.95, 0.995),
+    "target_kl": (0.01, 0.05),
+    "gae_lambda": (0.85, 1.0),
+    "gradient_steps": (1, 8),
+    "target_entropy": (-9.0, -0.5),
 }
 
 _ALGO_GAMMA_BOUNDS: dict[str, tuple[float, float]] = {
@@ -486,11 +490,17 @@ _ALGO_HP_GUIDES: dict[str, str] = {
         "- batch_size: Smaller = implicit regularization via gradient noise. "
         "Reduce LR proportionally when reducing batch_size.\n"
         "- gamma: Effective planning horizon. Lower (0.95-0.97) for capital preservation.\n\n"
+        "- target_kl: HIGHEST PRIORITY tunable for PPO overfitting. When set (e.g., 0.02),\n"
+        "  PPO early-stops epoch iterations when approx_kl exceeds threshold. This prevents\n"
+        "  the stale importance sampling overfitting that n_epochs alone cannot control.\n"
+        "  Acts as adaptive n_epochs — stops at 2 epochs if KL already too high.\n"
+        "  Range [0.01, 0.05]. Start at 0.02 for capital-preservation.\n\n"
         "PPO Symptom → Fix mapping:\n"
-        "- High overfit_gap (IS >> OOS): Reduce n_epochs (10->5), then reduce learning_rate\n"
-        "- Exploding approx_kl: Reduce learning_rate\n"
+        "- High overfit_gap (IS >> OOS): Set target_kl=0.02 FIRST, then reduce n_epochs\n"
+        "- Exploding approx_kl: Set target_kl=0.015 (hard stop on KL)\n"
         "- clip_fraction > 0.3: Reduce n_epochs or narrow clip_range\n"
-        "- Policy collapse (entropy -> 0): Increase ent_coef"
+        "- Policy collapse (entropy -> 0): Increase ent_coef\n"
+        "- Control folds outperform treatment: Reduce reward adjustment frequency/magnitude"
     ),
     "a2c": (
         "A2C Hyperparameter Guide:\n"
@@ -507,12 +517,19 @@ _ALGO_HP_GUIDES: dict[str, str] = {
         "Higher gamma absolutely requires lower LR for stability.\n"
         "- ent_coef: Even more important than PPO because A2C has no clipping to limit "
         "policy changes. Entropy bonus is the main regularizer. Keep at 0.01-0.02.\n\n"
+        "- gae_lambda: Controls bias-variance tradeoff for advantage estimation.\n"
+        "  lambda=1.0 (pure MC) gives maximum variance with n_steps=5 — only 5 real steps.\n"
+        "  lambda=0.92 adds bootstrapping that reduces variance ~40% without significant bias.\n"
+        "  Range [0.85, 1.0]. Lower lambda = more bias, less variance, faster convergence.\n"
+        "  MISMATCH CONSTRAINT: (1/(1-gamma)) / n_steps must be < 8. The system enforces\n"
+        "  this automatically — gamma will be clamped down if mismatch exceeds 8.\n\n"
         "A2C Symptom → Fix mapping:\n"
         "- High overfit_gap: Reduce learning_rate FIRST, then check gamma\n"
-        "- Erratic policy (whipsawing trades): Reduce learning_rate\n"
+        "- Erratic policy (whipsawing trades): Reduce learning_rate, reduce gae_lambda\n"
         "- Policy collapse: Increase ent_coef\n"
         "- Training degradation across folds: CHECK GAMMA FIRST — if gamma > 0.985, "
         "reduce it to 0.97-0.98\n"
+        "- High variance across folds: Reduce gae_lambda from 1.0 toward 0.90-0.95\n"
         "- Myopic trading: Increase gamma (max 0.985) or increase n_steps"
     ),
     "sac": (
@@ -527,14 +544,24 @@ _ALGO_HP_GUIDES: dict[str, str] = {
         "When reducing batch_size, reduce LR proportionally.\n"
         "- gamma: High gamma + large replay buffer = critic learns average across regimes. "
         "Lower (0.95-0.97) helps with regime-specific accuracy.\n"
-        "- ent_coef: 'auto' learns optimal entropy coefficient. Fixed 0.01 is more "
-        "predictable. Default 'auto' starts at alpha=1.0 which can overwhelm small "
-        "financial reward signals.\n\n"
+        "- ent_coef: 'auto_0.1' starts alpha at 0.1 (10× lower than default). Default\n"
+        "  'auto' starts at alpha=1.0 which drowns small financial rewards for ~100K steps.\n"
+        "  ent_coef is mathematically equivalent to the inverse of reward scale (Haarnoja 2019).\n"
+        "- gradient_steps: Controls Update-to-Data ratio. Default 1 = one gradient update\n"
+        "  per env step. Increasing to 4 extracts 4× more learning per transition.\n"
+        "  MUST reduce learning_rate proportionally (halve it) when increasing gradient_steps.\n"
+        "  Also reduce tau proportionally (~1/k for gradient_steps=k) to prevent target\n"
+        "  network instability.\n"
+        "- target_entropy: Default -dim(action_space) = -3 for crypto, -9 for equity.\n"
+        "  Too high for portfolio allocation where the agent should be decisive.\n"
+        "  -1.0 for crypto and -3.0 for equity are better starting points.\n\n"
         "SAC Symptom → Fix mapping:\n"
-        "- High overfit_gap: Reduce learning_rate, consider smaller buffer_size\n"
-        "- Q-values exploding: Reduce learning_rate\n"
-        "- Over-exploration (random trades): Recommend fixed ent_coef=0.01 instead of 'auto'\n"
-        "- Regime confusion: Reduce gamma (shorter horizon = less regime averaging)"
+        "- Flat Sharpe across iterations: ent_coef drowning reward signal → use 'auto_0.1'\n"
+        "- High overfit_gap: Reduce learning_rate, increase gradient_steps (better extraction)\n"
+        "- Q-values exploding: Reduce learning_rate, reduce gradient_steps\n"
+        "- Over-exploration (random trades): Lower target_entropy (e.g., -1.0 for crypto)\n"
+        "- Regime confusion: Reduce gamma (shorter horizon = less regime averaging)\n"
+        "- Persistent high MDD: Increase gradient_steps to 4 (better Q-value learning)"
     ),
 }
 
@@ -559,6 +586,43 @@ _REWARD_WEIGHT_GUIDE = (
     "Prefer small adjustments (delta < 0.1) over large swings. "
     "Gradual adaptation outperforms abrupt changes. Do NOT oscillate weights back and forth."
 )
+
+_ALGO_EPOCH_GUIDES: dict[str, str] = {
+    "ppo": (
+        "PPO Reward Adjustment Constraints:\n"
+        "- PPO's value function needs 2+ rollout cycles to adapt after reward weight changes.\n"
+        "  Large changes cause stale advantage estimates and degrade policy quality.\n"
+        "- ONLY adjust when rolling_mdd > -10% or rolling_sharpe < -1.0 (severe conditions).\n"
+        "- Maximum per-component weight delta: 0.03. Smaller changes are safer for PPO.\n"
+        "- Crypto PPO: reward adjustments are DISABLED — control folds outperform treatment\n"
+        "  by 29.5% across 4 iterations. If env=crypto, return current weights unchanged.\n"
+        "- If metrics are decent (sharpe > 0, mdd > -5%), keep current weights — PPO benefits\n"
+        "  more from stability than from fine-tuning reward weights mid-training."
+    ),
+    "a2c": (
+        "A2C Reward Adjustment Constraints:\n"
+        "- A2C has no clipping protection — reward changes take effect within 5 steps.\n"
+        "  This makes A2C highly responsive but also fragile to overshooting.\n"
+        "- EQUITY: Max delta 0.02. Equity is lower-variance; same weight change is a larger\n"
+        "  relative perturbation. Only adjust if rolling_sharpe < 0 or rolling_mdd > -5%.\n"
+        "- CRYPTO: Max delta 0.05. Crypto's higher variance makes it more tolerant of\n"
+        "  reward weight changes. Treatment improves A2C crypto by +30.5% vs control.\n"
+        "- With gae_lambda=1.0 and n_steps=5, A2C uses pure Monte Carlo returns on very\n"
+        "  short windows. Reward changes compound quickly — prefer smaller, directional moves."
+    ),
+    "sac": (
+        "SAC Reward Adjustment Constraints:\n"
+        "- SAC's replay buffer contains transitions scored under OLD reward weights.\n"
+        "  After a weight change, the Q-function trains on mixed-weight data until the\n"
+        "  buffer rotates (~20K steps). Allow this lag before measuring effectiveness.\n"
+        "- SAC's entropy coefficient interacts with reward scale. Changing weights effectively\n"
+        "  shifts the entropy-reward balance. auto-alpha adapts but not instantaneously.\n"
+        "- Maximum per-component weight delta: 0.02. SAC is sensitive because both replay\n"
+        "  buffer staleness and entropy coupling amplify the impact of weight changes.\n"
+        "- If drawdown weight was already increased and MDD did not improve after 20K steps,\n"
+        "  the issue is likely HP configuration (ent_coef, gamma), not reward weights."
+    ),
+}
 
 _RUN_CONFIG_INSTRUCTIONS = (
     "For each hyperparameter you recommend changing from baseline:\n"
@@ -651,6 +715,7 @@ def _build_epoch_system_prompt(
     rw_lines = "\n".join(f"- {k}: [{lo}, {hi}]" for k, (lo, hi) in rw_bounds.items())
     algo_upper = algo_name.upper()
     hp_guide = _ALGO_HP_GUIDES.get(algo_name, "")
+    epoch_guide = _ALGO_EPOCH_GUIDES.get(algo_name, "")
     return (
         "You are the training advisor agent for SwingRL, an RL-based "
         "swing trading system.\n\n"
@@ -670,6 +735,7 @@ def _build_epoch_system_prompt(
         "change was ineffective, try a different dimension or keep current weights.\n\n"
         f"{_HALLUCINATION_GUARD}\n\n"
         f"{hp_guide}\n\n"
+        f"{epoch_guide}\n\n"
         f"{_REWARD_WEIGHT_GUIDE}\n\n"
         "You MUST respond with a valid JSON object matching the schema."
     )
@@ -788,17 +854,21 @@ _ALGO_HP_FIELDS: dict[str, dict[str, dict[str, str]]] = {
         "n_epochs": {"type": "integer"},
         "batch_size": {"type": "integer"},
         "gamma": {"type": "number"},
+        "target_kl": {"type": "number"},
     },
     "a2c": {
         "learning_rate": {"type": "number"},
         "entropy_coeff": {"type": "number"},
         "gamma": {"type": "number"},
+        "gae_lambda": {"type": "number"},
     },
     "sac": {
         "learning_rate": {"type": "number"},
         "entropy_coeff": {"type": "number"},
         "batch_size": {"type": "integer"},
         "gamma": {"type": "number"},
+        "gradient_steps": {"type": "integer"},
+        "target_entropy": {"type": "number"},
     },
 }
 
@@ -885,7 +955,7 @@ def _clamp_run_config(raw: dict[str, Any], *, algo: str | None = None) -> dict[s
             if key == "batch_size":
                 # Force to nearest power of 2
                 clamped = int(2 ** round(math.log2(max(1, clamped))))
-            elif key == "n_epochs":
+            elif key in ("n_epochs", "gradient_steps"):
                 clamped = int(clamped)
             out[key] = clamped
 

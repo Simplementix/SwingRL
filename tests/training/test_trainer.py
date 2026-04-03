@@ -130,23 +130,23 @@ class TestHyperparams:
         assert ppo["vf_coef"] == 0.5
 
     def test_a2c_hyperparams_correct(self) -> None:
-        """TRAIN-04: A2C hyperparams match locked values from CONTEXT.md."""
+        """TRAIN-04: A2C hyperparams match locked values."""
         a2c = HYPERPARAMS["a2c"]
         assert a2c["learning_rate"] == 0.0007
         assert a2c["n_steps"] == 5
         assert a2c["gamma"] == 0.99
-        assert a2c["gae_lambda"] == 1.0
+        assert a2c["gae_lambda"] == 0.92  # was 1.0; reduced per a2c-general-tuning.md
         assert a2c["ent_coef"] == 0.01
         assert a2c["vf_coef"] == 0.5
 
     def test_sac_hyperparams_correct(self) -> None:
-        """TRAIN-04: SAC hyperparams match locked values with ent_coef=auto."""
+        """TRAIN-04: SAC hyperparams match locked values."""
         sac = HYPERPARAMS["sac"]
         assert sac["learning_rate"] == 0.0003
         assert sac["batch_size"] == 256
         assert sac["tau"] == 0.005
         assert sac["gamma"] == 0.99
-        assert sac["ent_coef"] == "auto"
+        assert sac["ent_coef"] == "auto_0.1"  # was "auto"; reduced per sac-crypto-tuning.md
         assert sac["learning_starts"] == 10_000
         # buffer_size is injected at runtime from config.training.sac_buffer_size
         assert "buffer_size" not in sac

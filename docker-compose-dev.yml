@@ -4,8 +4,8 @@ services:
     build:
       context: .
       target: ci
-    # Resource limits — homelab has 64 GB RAM / 14C-20T; sized for training.
-    mem_limit: 16g
+    # No mem_limit — swingrl is the primary workload on 64 GB homelab.
+    # Let the OS manage memory; training peaks at ~12-15 GB.
     cpus: 8.0
     # Secrets: loaded from .env on the host; never baked into the image.
     # SECURITY: .env must be chmod 600 (owner read/write only).

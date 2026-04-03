@@ -54,7 +54,7 @@ HYPERPARAMS: dict[str, dict[str, Any]] = {
         "learning_rate": 0.0007,
         "n_steps": 5,
         "gamma": 0.99,
-        "gae_lambda": 1.0,
+        "gae_lambda": 0.92,  # was 1.0 (pure MC); 0.92 balances bias/variance for n_steps=5
         "ent_coef": 0.01,
         "vf_coef": 0.5,
     },
@@ -63,7 +63,7 @@ HYPERPARAMS: dict[str, dict[str, Any]] = {
         "batch_size": 256,
         "tau": 0.005,
         "gamma": 0.99,
-        "ent_coef": "auto",
+        "ent_coef": "auto_0.1",  # was "auto" (alpha=1.0 drowns reward signal); 0.1 start
         "learning_starts": 10_000,
     },
 }
@@ -310,10 +310,7 @@ class TrainingOrchestrator:
                     advice_enabled=advice_enabled,
                     is_control_fold=is_control_fold,
                     iteration=iteration,
-                    # duckdb_path disabled: DuckDB is single-writer and the WF
-                    # backtester holds the connection during training, causing
-                    # deadlock. Telemetry writes deferred to post-fold ingestion.
-                    # duckdb_path=self._config.system.duckdb_path,
+                    duckdb_path=self._config.system.duckdb_path,
                 )
                 callbacks.append(memory_cb)
                 log.info(
@@ -333,13 +330,16 @@ class TrainingOrchestrator:
                 callback=callbacks,
             )
 
-            # Extract advice stats from MemoryEpochCallback if present
+            # Extract advice stats and flush DuckDB telemetry from MemoryEpochCallback
             _advice_stats: dict[str, Any] | None = None
             for cb in callbacks:
                 from swingrl.memory.training.epoch_callback import MemoryEpochCallback
 
                 if isinstance(cb, MemoryEpochCallback):
                     _advice_stats = cb.advice_stats
+                    # Flush buffered epoch/adjustment data to DuckDB now that
+                    # model.learn() is done and the WF backtester isn't holding the lock.
+                    cb.flush_telemetry()
                     break
 
             # Save model and VecNormalize — vec_env is always VecNormalize here
@@ -350,10 +350,19 @@ class TrainingOrchestrator:
             # Run smoke tests
             self._run_smoke_tests(model, vec_env_norm, env_name, algo_name)
 
-            # Check if training converged early
+            # Check if training stopped early (convergence callback OR LLM stop_training)
             converged_at = None
             if convergence_cb._stagnation_count >= convergence_cb._patience:
                 converged_at = model.num_timesteps
+            elif getattr(model, "stop_training", False):
+                converged_at = model.num_timesteps
+                log.info(
+                    "training_stopped_by_llm",
+                    env_name=env_name,
+                    algo_name=algo_name,
+                    stopped_at_step=converged_at,
+                    total_configured=total_timesteps,
+                )
 
             log.info(
                 "training_complete",

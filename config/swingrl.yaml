@@ -106,7 +106,7 @@ memory_agent:
       model: "qwen2.5:14b"
       timeout: 300
   # Epoch advice call frequency (fewer calls with smarter model = better than many garbage calls)
-  epoch_cadence_ppo: 60                        # was 20 → 3x fewer calls (~1.4 calls/fold)
+  epoch_cadence_ppo: 20                        # restored: ~4 calls/fold (was 60 → only 1.4/fold, 48% delivery failure)
   epoch_cadence_a2c: 8000                      # was 2000 → 4x fewer calls (~4 calls/fold)
   epoch_cadence_sac: 40000                     # was 10000 → 4x fewer calls (~4 calls/fold)
   epoch_cadence_default: 500                   # was 100
@@ -159,7 +159,7 @@ memory_agent:
         api_key: ""                         # OVERRIDE via GROQ_API_KEY in .env
         default_model: "meta-llama/llama-4-scout-17b-16e-instruct"
         timeout_sec: 30
-        max_tokens: 30000
+        max_tokens: 8192                        # llama-4-scout hard limit; was 30000 (caused 400 on every call)
       nvidia:
         base_url: "https://integrate.api.nvidia.com/v1"
         api_key: ""                         # OVERRIDE via NVIDIA_API_KEY in .env
@@ -179,7 +179,7 @@ training:
       sharpe: [0.10, 0.60]
       drawdown: [0.05, 0.50]
       turnover: [0.00, 0.20]
-  sac_buffer_size: 500000           # SAC replay buffer size. Default 500K; SWINGRL_TRAINING__SAC_BUFFER_SIZE
+  sac_buffer_size: 200000           # SAC replay buffer. Was 500K; reduced per research (smaller=better for non-stationary)
   n_envs: 6                         # Parallel envs per training (SubprocVecEnv). 6 × 3 algo workers = 18 processes.
   vecenv_backend: subproc            # "subproc" for parallel SubprocVecEnv, "dummy" for sequential DummyVecEnv
 

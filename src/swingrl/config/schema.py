@@ -424,6 +424,10 @@ class HyperparamBoundsConfig(BaseModel):
     n_epochs: tuple[int, int] = (3, 20)
     batch_size: tuple[int, int] = (32, 512)
     gamma: tuple[float, float] = (0.95, 0.995)
+    target_kl: tuple[float, float] = (0.01, 0.05)
+    gae_lambda: tuple[float, float] = (0.85, 1.0)
+    gradient_steps: tuple[int, int] = (1, 8)
+    target_entropy: tuple[float, float] = (-9.0, -0.5)
 
 
 class RewardBoundsConfig(BaseModel):

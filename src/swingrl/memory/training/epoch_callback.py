@@ -137,6 +137,12 @@ class MemoryEpochCallback(BaseCallback):
         self._iteration = iteration
         self._duckdb_path = Path(duckdb_path) if duckdb_path else None
 
+        # Queue-based DuckDB telemetry: buffer writes during training, flush post-fold.
+        # Avoids DuckDB single-writer lock contention with WF backtester.
+        self._epoch_queue: list[list[Any]] = []
+        self._adjustment_trigger_queue: list[list[Any]] = []
+        self._adjustment_outcome_queue: list[tuple[list[Any], str, int]] = []
+
         # LLM advice call counters
         self._advice_calls: int = 0
         self._advice_succeeded: int = 0
@@ -156,6 +162,9 @@ class MemoryEpochCallback(BaseCallback):
 
         # Tracks whether epoch_advice has failed at least once (for log-level escalation)
         self._advice_failed_once: bool = False
+
+        # Per-algo reward adjustment cooldown tracking
+        self._last_adjustment_step: int = 0
 
         log.info(
             "epoch_callback_cadence",
@@ -212,6 +221,84 @@ class MemoryEpochCallback(BaseCallback):
             "advice_timed_out": self._advice_timed_out,
             "advice_provider_used": self._advice_provider_used,
         }
+
+    def flush_telemetry(self) -> None:
+        """Flush buffered epoch/adjustment data to DuckDB.
+
+        Call this AFTER model.learn() completes for each fold, when the WF
+        backtester is not holding the DuckDB write lock. All buffered rows
+        are inserted in a single transaction.
+
+        Safe to call multiple times (idempotent — clears queues after flush).
+        Safe to call when duckdb_path is None (no-op).
+        """
+        if self._duckdb_path is None:
+            return
+        if (
+            not self._epoch_queue
+            and not self._adjustment_trigger_queue
+            and not self._adjustment_outcome_queue
+        ):
+            return
+
+        try:
+            import duckdb
+
+            con = duckdb.connect(str(self._duckdb_path))
+
+            if self._epoch_queue:
+                con.executemany(
+                    """INSERT INTO training_epochs (
+                        run_id, epoch, algo, env, timestep, mean_reward,
+                        policy_loss, value_loss, entropy_loss, approx_kl,
+                        clip_fraction, rolling_sharpe, rolling_mdd,
+                        rolling_win_rate, reward_weights, notable_event,
+                        is_control_fold
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    self._epoch_queue,
+                )
+                log.info(
+                    "duckdb_epoch_telemetry_flushed",
+                    rows=len(self._epoch_queue),
+                    run_id=self._run_id,
+                )
+
+            if self._adjustment_trigger_queue:
+                con.executemany(
+                    """INSERT INTO reward_adjustments (
+                        run_id, epoch_trigger, algo, env, trigger_metric,
+                        trigger_value, trigger_reason, weight_before,
+                        weight_after, sharpe_at_trigger, mdd_at_trigger
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    self._adjustment_trigger_queue,
+                )
+                log.info(
+                    "duckdb_adjustment_triggers_flushed",
+                    rows=len(self._adjustment_trigger_queue),
+                )
+
+            for params, run_id, epoch_trigger in self._adjustment_outcome_queue:
+                con.execute(
+                    """UPDATE reward_adjustments
+                    SET epoch_outcome = ?, outcome_sharpe = ?,
+                        sharpe_delta = ?, mdd_delta = ?, effective = ?
+                    WHERE run_id = ? AND epoch_trigger = ?
+                      AND epoch_outcome IS NULL""",
+                    params + [run_id, epoch_trigger],
+                )
+            if self._adjustment_outcome_queue:
+                log.info(
+                    "duckdb_adjustment_outcomes_flushed",
+                    rows=len(self._adjustment_outcome_queue),
+                )
+
+            con.close()
+        except Exception as exc:
+            log.error("duckdb_telemetry_flush_failed", error=str(exc))
+        finally:
+            self._epoch_queue.clear()
+            self._adjustment_trigger_queue.clear()
+            self._adjustment_outcome_queue.clear()
 
     def _on_step(self) -> bool:
         """Check if training should continue.
@@ -351,44 +438,29 @@ class MemoryEpochCallback(BaseCallback):
             notable=metrics["notable_event"],
         )
 
-        # DuckDB direct write — schema matches features/schema.py training_epochs
-        # Table created at startup by init_feature_schema(); never fail training.
+        # Buffer epoch snapshot for post-fold DuckDB flush (avoids single-writer deadlock)
         if self._duckdb_path is not None:
-            try:
-                import duckdb
-
-                con = duckdb.connect(str(self._duckdb_path))
-                con.execute(
-                    """INSERT INTO training_epochs (
-                        run_id, epoch, algo, env, timestep, mean_reward,
-                        policy_loss, value_loss, entropy_loss, approx_kl,
-                        clip_fraction, rolling_sharpe, rolling_mdd,
-                        rolling_win_rate, reward_weights, notable_event,
-                        is_control_fold
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    [
-                        metrics["run_id"],
-                        metrics["epoch"],
-                        metrics["algo"],
-                        metrics["env"],
-                        metrics["timestep"],
-                        metrics["mean_reward"],
-                        metrics["policy_loss"],
-                        metrics["value_loss"],
-                        metrics["entropy_loss"],
-                        metrics["approx_kl"],
-                        metrics["clip_fraction"],
-                        metrics["rolling_sharpe_500"],
-                        metrics["rolling_mdd_500"],
-                        metrics["rolling_win_rate_500"],
-                        json.dumps(metrics["reward_weights"]),
-                        metrics["notable_event"],
-                        self._is_control_fold,
-                    ],
-                )
-                con.close()
-            except Exception as exc:
-                log.debug("duckdb_epoch_write_failed", error=str(exc))
+            self._epoch_queue.append(
+                [
+                    metrics["run_id"],
+                    metrics["epoch"],
+                    metrics["algo"],
+                    metrics["env"],
+                    metrics["timestep"],
+                    metrics["mean_reward"],
+                    metrics["policy_loss"],
+                    metrics["value_loss"],
+                    metrics["entropy_loss"],
+                    metrics["approx_kl"],
+                    metrics["clip_fraction"],
+                    metrics["rolling_sharpe_500"],
+                    metrics["rolling_mdd_500"],
+                    metrics["rolling_win_rate_500"],
+                    json.dumps(metrics["reward_weights"]),
+                    metrics["notable_event"],
+                    self._is_control_fold,
+                ]
+            )
 
     def _ingest_adjustment_trigger(
         self,
@@ -437,35 +509,23 @@ class MemoryEpochCallback(BaseCallback):
             ok=ok,
         )
 
-        # DuckDB direct write — schema matches features/schema.py reward_adjustments
+        # Buffer adjustment trigger for post-fold DuckDB flush
         if self._duckdb_path is not None:
-            try:
-                import duckdb
-
-                con = duckdb.connect(str(self._duckdb_path))
-                con.execute(
-                    """INSERT INTO reward_adjustments (
-                        run_id, epoch_trigger, algo, env, trigger_metric,
-                        trigger_value, trigger_reason, weight_before,
-                        weight_after, sharpe_at_trigger, mdd_at_trigger
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    [
-                        self._run_id,
-                        self._epoch,
-                        self._algo,
-                        self._env,
-                        trigger_metric,
-                        trigger_value,
-                        trigger_reason,
-                        json.dumps(old_weights),
-                        json.dumps(new_weights),
-                        self._sharpe_at_trigger,
-                        self._mdd_at_trigger,
-                    ],
-                )
-                con.close()
-            except Exception as exc:
-                log.debug("duckdb_adjustment_trigger_write_failed", error=str(exc))
+            self._adjustment_trigger_queue.append(
+                [
+                    self._run_id,
+                    self._epoch,
+                    self._algo,
+                    self._env,
+                    trigger_metric,
+                    trigger_value,
+                    trigger_reason,
+                    json.dumps(old_weights),
+                    json.dumps(new_weights),
+                    self._sharpe_at_trigger,
+                    self._mdd_at_trigger,
+                ]
+            )
 
     def _resolve_pending_adjustment(self) -> None:
         """Ingest Pass 2 of a reward adjustment event (10-epoch outcome).
@@ -504,31 +564,21 @@ class MemoryEpochCallback(BaseCallback):
             ok=ok,
         )
 
-        # DuckDB UPDATE with outcome — schema matches features/schema.py
+        # Buffer adjustment outcome for post-fold DuckDB flush
         if self._duckdb_path is not None:
-            try:
-                import duckdb
-
-                con = duckdb.connect(str(self._duckdb_path))
-                con.execute(
-                    """UPDATE reward_adjustments
-                    SET epoch_outcome = ?, outcome_sharpe = ?,
-                        sharpe_delta = ?, mdd_delta = ?, effective = ?
-                    WHERE run_id = ? AND epoch_trigger = ?
-                      AND epoch_outcome IS NULL""",
+            self._adjustment_outcome_queue.append(
+                (
                     [
                         self._epoch,
                         sharpe_delta,
                         sharpe_delta,
                         mdd_delta,
                         effective,
-                        self._run_id,
-                        adj["epoch_triggered"],
                     ],
+                    self._run_id,
+                    adj["epoch_triggered"],
                 )
-                con.close()
-            except Exception as exc:
-                log.debug("duckdb_adjustment_resolve_write_failed", error=str(exc))
+            )
 
         self._pending_adjustment = None
 
@@ -590,7 +640,35 @@ class MemoryEpochCallback(BaseCallback):
             new_weights = body.get("reward_weights")
 
             if isinstance(new_weights, dict) and new_weights:
-                from swingrl.memory.training.bounds import clamp_reward_weights
+                from swingrl.memory.training.bounds import (
+                    clamp_reward_weights,
+                    get_adjustment_cooldown,
+                    get_max_reward_delta,
+                )
+
+                # Per-algo cooldown: reject if too soon after last adjustment
+                cooldown = get_adjustment_cooldown(self._algo)
+                steps_since = self.num_timesteps - self._last_adjustment_step
+                if self._last_adjustment_step > 0 and steps_since < cooldown:
+                    log.debug(
+                        "epoch_advice_cooldown_active",
+                        epoch=self._epoch,
+                        algo=self._algo,
+                        steps_since=steps_since,
+                        cooldown=cooldown,
+                    )
+                    return
+
+                # Per-algo/env max_delta: cap or disable reward adjustments
+                algo_max_delta = get_max_reward_delta(self._algo, self._env)
+                if algo_max_delta <= 0.0:
+                    log.debug(
+                        "epoch_advice_adjustments_disabled",
+                        epoch=self._epoch,
+                        algo=self._algo,
+                        env=self._env,
+                    )
+                    return
 
                 clamped = clamp_reward_weights(new_weights)
                 old_weights = self._wrapper.weights
@@ -608,6 +686,27 @@ class MemoryEpochCallback(BaseCallback):
                     )
                     return
 
+                # Cap per-component delta to algo/env max_delta
+                if max_delta > algo_max_delta:
+                    scale = algo_max_delta / max_delta
+                    clamped = {
+                        k: old_weights.get(k, 0.0)
+                        + (clamped.get(k, 0.0) - old_weights.get(k, 0.0)) * scale
+                        for k in set(clamped) | set(old_weights)
+                    }
+                    # Renormalize to sum=1.0
+                    total = sum(clamped.values())
+                    if total > 0:
+                        clamped = {k: v / total for k, v in clamped.items()}
+                    log.info(
+                        "epoch_advice_delta_capped",
+                        epoch=self._epoch,
+                        algo=self._algo,
+                        env=self._env,
+                        raw_max_delta=round(max_delta, 4),
+                        capped_to=round(algo_max_delta, 4),
+                    )
+
                 # Resolve existing pending adjustment before overwriting
                 if self._pending_adjustment is not None:
                     log.warning(
@@ -618,6 +717,7 @@ class MemoryEpochCallback(BaseCallback):
                     self._resolve_pending_adjustment()
 
                 self._wrapper.update_weights(clamped)
+                self._last_adjustment_step = self.num_timesteps
                 self._ingest_adjustment_trigger(
                     new_weights=clamped,
                     old_weights=old_weights,

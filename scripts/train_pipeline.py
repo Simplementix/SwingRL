@@ -2211,8 +2211,11 @@ def run_environment(
     # -------------------------------------------------------------------
     # Ensemble gate and weights
     # -------------------------------------------------------------------
-    passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(all_wf_results)
     ensemble_weights = compute_ensemble_weights_from_wf(config, all_wf_results, env_name)
+    passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(
+        all_wf_results,
+        ensemble_weights=ensemble_weights,
+    )
 
     gate_result = {
         "passed": passed,
@@ -2357,7 +2360,11 @@ def run_environment(
         # Recompute gate after tuning round 1
         if best_ppo_folds:
             tuned_wf_results = {**all_wf_results, "ppo": best_ppo_folds}
-            passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(tuned_wf_results)
+            tuned_weights = compute_ensemble_weights_from_wf(config, tuned_wf_results, env_name)
+            passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(
+                tuned_wf_results,
+                ensemble_weights=tuned_weights,
+            )
             gate_result = {
                 "passed": passed,
                 "sharpe": float(ensemble_sharpe),
@@ -2434,8 +2441,12 @@ def run_environment(
                     }
                 )
 
-            # Final gate check after both rounds
-            passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(all_wf_results)
+            # Final gate check after both rounds (weight-proportional)
+            ensemble_weights = compute_ensemble_weights_from_wf(config, all_wf_results, env_name)
+            passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(
+                all_wf_results,
+                ensemble_weights=ensemble_weights,
+            )
             gate_result = {
                 "passed": passed,
                 "sharpe": float(ensemble_sharpe),
@@ -2692,7 +2703,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
-    configure_logging(json_logs=config.logging.json_logs, log_level=config.logging.level)
+    # Persist training logs to file for post-hoc analysis (iter 4 logs were lost)
+    log_dir = Path("logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    iter_log_file = log_dir / f"training_iter{args.iterations}.log"
+    configure_logging(
+        json_logs=config.logging.json_logs,
+        log_level=config.logging.level,
+        log_file=iter_log_file,
+    )
 
     models_dir = Path(args.models_dir)
     report_path = Path(args.report)

@@ -439,8 +439,11 @@ measurable effect.
 4. Always report ctrl_mean_sharpe vs treatment_mean_sharpe when the summary line is present.
 
 HP BOUNDS VIOLATIONS predict regressions — flag any HP exceeding documented safe ranges \
-(PPO: lr [5e-5, 3e-4], n_epochs [3, 6]; A2C: lr [1e-4, 5e-4], ent_coef [0.005, 0.02]; \
-SAC: lr [1e-5, 1e-4]).
+(PPO: lr [5e-5, 3e-4], n_epochs [3, 6], target_kl [0.01, 0.05]; \
+A2C: lr [1e-4, 5e-4], ent_coef [0.005, 0.02], gae_lambda [0.85, 1.0], \
+gamma/n_steps mismatch_factor=(1/(1-gamma))/n_steps must be < 8; \
+SAC: lr [1e-5, 1e-4], gradient_steps [1, 8], target_entropy [-9.0, -0.5], \
+ent_coef "auto_0.1" preferred over "auto" to avoid entropy drowning reward signal).
 If ALL folds (both [CTRL] and [TREATMENT]) regressed, HPs are the dominant factor.
 Compare regime_performance patterns across iterations — if a pattern was strong in \
 iter 0 but disappeared in iter 1, the HP change disrupted regime sensitivity.
@@ -519,9 +522,13 @@ interaction or Goodhart's Law (excessive penalty → inactivity or position conc
 4. ADJUSTMENT CORRELATION: If folds with MORE adjustment have BETTER outcomes (positive \
 correlation), adjustments are compensating for bad HPs, not causing harm.
 5. HP BOUNDS VIOLATION: Out-of-range HPs strongly predict regression. Safe ranges: \
-PPO lr [5e-5, 3e-4], n_epochs [3, 6], batch [64, 256], ent_coef [0.005, 0.02]; \
-A2C lr [1e-4, 5e-4], ent_coef [0.005, 0.02], gamma [0.95, 0.98]; \
-SAC lr [1e-5, 1e-4], gamma [0.95, 0.97].
+PPO lr [5e-5, 3e-4], n_epochs [3, 6], batch [64, 256], ent_coef [0.005, 0.02], \
+target_kl [0.01, 0.05]; \
+A2C lr [1e-4, 5e-4], ent_coef [0.005, 0.02], gamma [0.95, 0.98], \
+gae_lambda [0.85, 1.0], mismatch_factor=(1/(1-gamma))/n_steps must be < 8; \
+SAC lr [1e-5, 1e-4], gamma [0.95, 0.97], gradient_steps [1, 8], \
+target_entropy [-9.0, -0.5], ent_coef "auto_0.1" preferred (default "auto" starts \
+alpha=1.0 which drowns small financial reward signals).
 
 REWARD WEIGHT FAILURE MODES (from RL literature):
 - Excessive drawdown penalty → inactivity or position concentration (Goodhart's Law)

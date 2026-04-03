@@ -132,42 +132,73 @@ def slice_recent(
 
 def check_ensemble_gate(
     all_fold_results: dict[str, list[FoldResult]],
+    ensemble_weights: dict[str, float] | None = None,
 ) -> tuple[bool, float, float]:
     """Check if the ensemble meets minimum quality gates for promotion.
 
-    Computes mean OOS Sharpe and mean OOS MDD across all algos and all folds.
+    Computes weighted mean OOS Sharpe and MDD across all algos and folds.
+    When ensemble_weights are provided, each algo's folds are weighted by its
+    ensemble weight (prevents low-weight algos like SAC at 0.19% from having
+    disproportionate 33% influence on the gate decision).
     Gate: sharpe > 1.0 AND abs(mdd) < 0.15.
 
     Args:
         all_fold_results: Dict mapping algo name to list of FoldResult.
             FoldResult.out_of_sample_metrics must contain "sharpe" and "mdd".
+        ensemble_weights: Optional dict mapping algo name to ensemble weight
+            (e.g., {"ppo": 0.6, "a2c": 0.27, "sac": 0.13}). When provided,
+            gate metrics are weight-proportional. When None, equal weighting
+            (backward compatible).
 
     Returns:
         Tuple of (passed, ensemble_sharpe, ensemble_mdd).
         - passed: True if both thresholds met.
-        - ensemble_sharpe: Mean OOS Sharpe across all folds and algos.
-        - ensemble_mdd: Mean OOS MDD across all folds and algos.
+        - ensemble_sharpe: (Weighted) mean OOS Sharpe across all folds and algos.
+        - ensemble_mdd: (Weighted) mean OOS MDD across all folds and algos.
     """
     if not all_fold_results:
         log.warning("ensemble_gate_empty_results")
         return False, 0.0, 0.0
 
-    all_sharpes: list[float] = []
-    all_mdds: list[float] = []
+    if ensemble_weights:
+        # Weight-proportional gate: each algo's contribution scales by ensemble weight
+        weighted_sharpe_sum = 0.0
+        weighted_mdd_sum = 0.0
+        total_weight = 0.0
 
-    for _algo_name, folds in all_fold_results.items():
-        for fold in folds:
-            oos = fold.out_of_sample_metrics
-            sharpe = oos.get("sharpe", 0.0)
-            mdd = oos.get("mdd", -1.0)
-            all_sharpes.append(float(sharpe))
-            all_mdds.append(float(mdd))
+        for algo_name, folds in all_fold_results.items():
+            if not folds:
+                continue
+            w = ensemble_weights.get(algo_name, 0.0)
+            algo_sharpes = [float(f.out_of_sample_metrics.get("sharpe", 0.0)) for f in folds]
+            algo_mdds = [float(f.out_of_sample_metrics.get("mdd", -1.0)) for f in folds]
+            weighted_sharpe_sum += w * float(np.mean(algo_sharpes))
+            weighted_mdd_sum += w * float(np.mean(algo_mdds))
+            total_weight += w
 
-    if not all_sharpes:
-        return False, 0.0, 0.0
+        if total_weight <= 0:
+            return False, 0.0, 0.0
 
-    ensemble_sharpe = float(np.mean(all_sharpes))
-    ensemble_mdd = float(np.mean(all_mdds))
+        ensemble_sharpe = weighted_sharpe_sum / total_weight
+        ensemble_mdd = weighted_mdd_sum / total_weight
+    else:
+        # Backward compatible: equal weighting across all folds
+        all_sharpes: list[float] = []
+        all_mdds: list[float] = []
+
+        for _algo_name, folds in all_fold_results.items():
+            for fold in folds:
+                oos = fold.out_of_sample_metrics
+                sharpe = oos.get("sharpe", 0.0)
+                mdd = oos.get("mdd", -1.0)
+                all_sharpes.append(float(sharpe))
+                all_mdds.append(float(mdd))
+
+        if not all_sharpes:
+            return False, 0.0, 0.0
+
+        ensemble_sharpe = float(np.mean(all_sharpes))
+        ensemble_mdd = float(np.mean(all_mdds))
 
     # MDD is stored as a negative float (e.g., -0.10 for 10% drawdown)
     # Gate checks the absolute value
@@ -178,7 +209,8 @@ def check_ensemble_gate(
         passed=passed,
         ensemble_sharpe=round(ensemble_sharpe, 4),
         ensemble_mdd=round(ensemble_mdd, 4),
-        fold_count=len(all_sharpes),
+        fold_count=sum(len(f) for f in all_fold_results.values()),
+        weighted=ensemble_weights is not None,
     )
 
     return passed, ensemble_sharpe, ensemble_mdd
