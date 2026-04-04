@@ -424,7 +424,7 @@ CREATE TABLE IF NOT EXISTS corporate_actions (
     effective_date      DATE NOT NULL,
     ratio               DOUBLE PRECISION,
     amount              DOUBLE PRECISION,
-    processed           BOOLEAN DEFAULT FALSE
+    processed           INTEGER DEFAULT 0
 )
 """
 
@@ -434,7 +434,7 @@ CREATE TABLE IF NOT EXISTS wash_sale_tracker (
     sale_date           DATE NOT NULL,
     loss_amount         DOUBLE PRECISION NOT NULL,
     wash_window_end     DATE NOT NULL,
-    triggered           BOOLEAN DEFAULT FALSE,
+    triggered           INTEGER DEFAULT 0,
     PRIMARY KEY (symbol, sale_date)
 )
 """
@@ -491,7 +491,7 @@ CREATE TABLE IF NOT EXISTS alert_log (
     level               TEXT NOT NULL,
     title               TEXT,
     message_hash        TEXT,
-    sent                BOOLEAN DEFAULT FALSE
+    sent                INTEGER DEFAULT 0
 )
 """
 
@@ -500,7 +500,7 @@ CREATE TABLE IF NOT EXISTS inference_outcomes (
     id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     timestamp           TIMESTAMPTZ NOT NULL,
     environment         TEXT NOT NULL,
-    had_nan             BOOLEAN NOT NULL DEFAULT FALSE
+    had_nan             INTEGER NOT NULL DEFAULT 0
 )
 """
 
@@ -518,7 +518,7 @@ CREATE TABLE IF NOT EXISTS api_errors (
 _EMERGENCY_FLAGS_DDL = """\
 CREATE TABLE IF NOT EXISTS emergency_flags (
     flag_name           TEXT PRIMARY KEY,
-    active              BOOLEAN NOT NULL DEFAULT FALSE,
+    active              INTEGER NOT NULL DEFAULT 0,
     set_at              TIMESTAMPTZ,
     set_by              TEXT,
     reason              TEXT
