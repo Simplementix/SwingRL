@@ -181,10 +181,10 @@ class ExecutionPipeline:
         # Step 3c: Track NaN observations in inference_outcomes table
         had_nan = bool(np.isnan(observation).any())
         try:
-            with self._db.sqlite() as conn:
+            with self._db.connection() as conn:
                 conn.execute(
                     "INSERT INTO inference_outcomes (timestamp, environment, had_nan) "
-                    "VALUES (?, ?, ?)",
+                    "VALUES (%s, %s, %s)",
                     (datetime.now(UTC).isoformat(), env_name, int(had_nan)),
                 )
         except Exception:
@@ -417,10 +417,10 @@ class ExecutionPipeline:
             Dict mapping algo name to weight. Defaults to equal weights.
         """
         try:
-            with self._db.duckdb() as conn:
+            with self._db.connection() as conn:
                 rows = conn.execute(
                     "SELECT algorithm, ensemble_weight FROM model_metadata "
-                    "WHERE environment = ? ORDER BY training_end_date DESC",
+                    "WHERE environment = %s ORDER BY training_end_date DESC",
                     [env_name],
                 ).fetchall()
 
@@ -528,9 +528,9 @@ class ExecutionPipeline:
         """
         table = "features_equity" if env_name == "equity" else "features_crypto"
         try:
-            with self._db.duckdb() as conn:
+            with self._db.connection() as conn:
                 row = conn.execute(
-                    f"SELECT QUANTILE(turbulence, 0.9) as p90 FROM {table}",  # nosec B608
+                    f"SELECT PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY turbulence) as p90 FROM {table}",  # nosec B608
                 ).fetchone()
                 if row and row[0] is not None:
                     return float(row[0])

@@ -35,6 +35,7 @@ def db_manager(tmp_path: Path) -> DatabaseManager:
     config_yaml = textwrap.dedent(f"""\
         trading_mode: paper
         system:
+          database_url: postgresql://test:test@localhost:5432/swingrl_test  # pragma: allowlist secret
           duckdb_path: {tmp_path}/market.ddb
           sqlite_path: {tmp_path}/ops.db
     """)
@@ -380,7 +381,7 @@ class TestAlertLog:
 
         alerter_with_db.send_alert("critical", "Log Test", "log msg")
 
-        with db_manager.sqlite() as conn:
+        with db_manager.connection() as conn:
             rows = conn.execute("SELECT * FROM alert_log").fetchall()
             assert len(rows) == 1
             row = dict(rows[0])
@@ -409,7 +410,7 @@ class TestAlertLog:
         alerter_with_db.send_alert("critical", "Cooldown Test", "msg")
         alerter_with_db.send_alert("critical", "Cooldown Test", "msg")
 
-        with db_manager.sqlite() as conn:
+        with db_manager.connection() as conn:
             rows = conn.execute("SELECT * FROM alert_log ORDER BY timestamp").fetchall()
             assert len(rows) == 2
             sent_values = [dict(r)["sent"] for r in rows]

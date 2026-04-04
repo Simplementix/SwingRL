@@ -8,8 +8,11 @@ STORE-02: Iteration results written to DuckDB with ensemble data and hyperparame
 
 from __future__ import annotations
 
-import duckdb
+import os
+from typing import Any
+
 import numpy as np
+import psycopg
 import pytest
 
 from swingrl.agents.backtest import (
@@ -195,8 +198,10 @@ class TestFoldResult:
         assert result.total_timesteps is None
 
 
-def _create_backtest_schema(conn: duckdb.DuckDBPyConnection) -> None:
-    """Create backtest_results and iteration_results tables in an in-memory DuckDB."""
+def _create_backtest_schema(conn: Any) -> None:
+    """Create backtest_results and iteration_results tables in PostgreSQL."""
+    conn.execute("DROP TABLE IF EXISTS backtest_results")
+    conn.execute("DROP TABLE IF EXISTS iteration_results")
     conn.execute("""
         CREATE TABLE backtest_results (
             result_id TEXT PRIMARY KEY,
@@ -209,34 +214,34 @@ def _create_backtest_schema(conn: duckdb.DuckDBPyConnection) -> None:
             train_end_idx INTEGER,
             test_start_idx INTEGER,
             test_end_idx INTEGER,
-            sharpe DOUBLE,
-            sortino DOUBLE,
-            calmar DOUBLE,
-            mdd DOUBLE,
-            profit_factor DOUBLE,
-            win_rate DOUBLE,
+            sharpe DOUBLE PRECISION,
+            sortino DOUBLE PRECISION,
+            calmar DOUBLE PRECISION,
+            mdd DOUBLE PRECISION,
+            profit_factor DOUBLE PRECISION,
+            win_rate DOUBLE PRECISION,
             total_trades INTEGER,
-            avg_drawdown DOUBLE,
+            avg_drawdown DOUBLE PRECISION,
             max_dd_duration INTEGER,
-            final_portfolio_value DOUBLE,
-            total_return DOUBLE,
+            final_portfolio_value DOUBLE PRECISION,
+            total_return DOUBLE PRECISION,
             created_at TIMESTAMP DEFAULT current_timestamp,
             iteration_number INTEGER DEFAULT 0,
             run_type TEXT DEFAULT 'baseline',
-            is_sharpe DOUBLE,
-            is_sortino DOUBLE,
-            is_mdd DOUBLE,
-            is_total_return DOUBLE,
-            overfitting_gap DOUBLE,
+            is_sharpe DOUBLE PRECISION,
+            is_sortino DOUBLE PRECISION,
+            is_mdd DOUBLE PRECISION,
+            is_total_return DOUBLE PRECISION,
+            overfitting_gap DOUBLE PRECISION,
             overfitting_class TEXT,
-            hmm_p_bull DOUBLE,
-            hmm_p_bear DOUBLE,
-            vix_mean DOUBLE,
-            yield_spread_mean DOUBLE,
+            hmm_p_bull DOUBLE PRECISION,
+            hmm_p_bear DOUBLE PRECISION,
+            vix_mean DOUBLE PRECISION,
+            yield_spread_mean DOUBLE PRECISION,
             converged_at_step INTEGER,
             total_timesteps_configured INTEGER,
-            max_single_loss DOUBLE,
-            best_single_trade DOUBLE,
+            max_single_loss DOUBLE PRECISION,
+            best_single_trade DOUBLE PRECISION,
             train_start_date TEXT,
             train_end_date TEXT,
             test_start_date TEXT,
@@ -249,30 +254,31 @@ def _create_backtest_schema(conn: duckdb.DuckDBPyConnection) -> None:
             result_id TEXT PRIMARY KEY,
             iteration_number INTEGER NOT NULL,
             environment TEXT NOT NULL,
-            ensemble_sharpe DOUBLE,
-            ensemble_mdd DOUBLE,
+            ensemble_sharpe DOUBLE PRECISION,
+            ensemble_mdd DOUBLE PRECISION,
             gate_passed BOOLEAN,
-            ppo_weight DOUBLE,
-            a2c_weight DOUBLE,
-            sac_weight DOUBLE,
-            ppo_mean_sharpe DOUBLE,
-            a2c_mean_sharpe DOUBLE,
-            sac_mean_sharpe DOUBLE,
-            ppo_mean_mdd DOUBLE,
-            a2c_mean_mdd DOUBLE,
-            sac_mean_mdd DOUBLE,
+            ppo_weight DOUBLE PRECISION,
+            a2c_weight DOUBLE PRECISION,
+            sac_weight DOUBLE PRECISION,
+            ppo_mean_sharpe DOUBLE PRECISION,
+            a2c_mean_sharpe DOUBLE PRECISION,
+            sac_mean_sharpe DOUBLE PRECISION,
+            ppo_mean_mdd DOUBLE PRECISION,
+            a2c_mean_mdd DOUBLE PRECISION,
+            sac_mean_mdd DOUBLE PRECISION,
             total_folds INTEGER,
             ppo_hyperparams TEXT,
             a2c_hyperparams TEXT,
             sac_hyperparams TEXT,
             hp_source TEXT DEFAULT 'baseline',
             run_type TEXT DEFAULT 'baseline',
-            wall_clock_s DOUBLE,
+            wall_clock_s DOUBLE PRECISION,
             memory_enabled BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT current_timestamp,
             UNIQUE(iteration_number, environment, run_type)
         )
     """)
+    conn.commit()
 
 
 def _make_test_fold(
@@ -326,7 +332,10 @@ class TestStoreFoldResultsToDuckdb:
 
     def test_writes_correct_row_count(self) -> None:
         """STORE-01: Writes one row per fold with correct iteration and run_type."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
         folds = [_make_test_fold(fold_number=i) for i in range(3)]
 
@@ -356,7 +365,10 @@ class TestStoreFoldResultsToDuckdb:
 
     def test_is_metrics_populated(self) -> None:
         """STORE-01: In-sample metrics columns are populated."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
         fold = _make_test_fold(is_sharpe=2.0)
 
@@ -375,7 +387,10 @@ class TestStoreFoldResultsToDuckdb:
 
     def test_overfitting_populated(self) -> None:
         """STORE-01: Overfitting gap and class are stored."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
         fold = _make_test_fold()
 
@@ -395,7 +410,10 @@ class TestStoreFoldResultsToDuckdb:
 
     def test_convergence_data_stored(self) -> None:
         """STORE-01: converged_at_step and total_timesteps stored."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
         fold = _make_test_fold(converged_at_step=75000, total_timesteps=200000)
 
@@ -415,7 +433,10 @@ class TestStoreFoldResultsToDuckdb:
 
     def test_trade_quality_extremes(self) -> None:
         """STORE-01: max_single_loss and best_single_trade computed from trades."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
         fold = _make_test_fold()  # trades: +100, -30, +60
 
@@ -435,7 +456,10 @@ class TestStoreFoldResultsToDuckdb:
 
     def test_regime_context_with_features(self) -> None:
         """STORE-01: HMM and macro means populated when features provided."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
         fold = _make_test_fold(fold_number=0)
 
@@ -472,7 +496,10 @@ class TestStoreFoldResultsToDuckdb:
 
     def test_date_context_with_dates(self) -> None:
         """STORE-01: Date columns populated when dates array provided."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
         fold = _make_test_fold(fold_number=0)
 
@@ -498,7 +525,10 @@ class TestStoreFoldResultsToDuckdb:
 
     def test_empty_fold_list_noop(self) -> None:
         """STORE-01: Empty fold list writes 0 rows."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
 
         rows = store_fold_results_to_duckdb(
@@ -517,7 +547,10 @@ class TestStoreFoldResultsToDuckdb:
         """STORE-01: FoldResult with missing metrics doesn't raise."""
         from swingrl.agents.validation import GateResult
 
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
         fold = FoldResult(
             fold_number=0,
@@ -552,7 +585,10 @@ class TestStoreIterationResultsToDuckdb:
 
     def test_writes_ensemble_metrics(self) -> None:
         """STORE-02: Writes correct ensemble Sharpe/MDD/gate."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
         folds = {"ppo": [_make_test_fold(sharpe=2.0, mdd=-0.05)]}
 
@@ -577,7 +613,10 @@ class TestStoreIterationResultsToDuckdb:
 
     def test_per_algo_weights_stored(self) -> None:
         """STORE-02: Per-algo weights stored correctly."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
 
         store_iteration_results_to_duckdb(
@@ -601,7 +640,10 @@ class TestStoreIterationResultsToDuckdb:
 
     def test_per_algo_mean_metrics_computed(self) -> None:
         """STORE-02: Per-algo mean Sharpe/MDD computed from fold data."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
         ppo_folds = [_make_test_fold(sharpe=2.0, mdd=-0.05), _make_test_fold(sharpe=1.6, mdd=-0.09)]
         a2c_folds = [_make_test_fold(sharpe=1.0, mdd=-0.12)]
@@ -631,7 +673,10 @@ class TestStoreIterationResultsToDuckdb:
         """STORE-02: HP overrides stored as JSON text."""
         import json
 
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
 
         hp = {"ppo": {"learning_rate": 1e-4, "n_epochs": 5}, "a2c": {"ent_coef": 0.015}}
@@ -659,7 +704,10 @@ class TestStoreIterationResultsToDuckdb:
 
     def test_idempotent_on_rerun(self) -> None:
         """STORE-02: Re-running with same iteration/env/run_type updates, not duplicates."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
         folds = {"ppo": [_make_test_fold(sharpe=1.5)], "a2c": [], "sac": []}
 
@@ -694,7 +742,10 @@ class TestStoreIterationResultsToDuckdb:
 
     def test_wall_clock_and_memory_flag(self) -> None:
         """STORE-02: wall_clock_s and memory_enabled stored."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         _create_backtest_schema(conn)
 
         store_iteration_results_to_duckdb(

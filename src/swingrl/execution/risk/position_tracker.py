@@ -55,10 +55,10 @@ class PositionTracker:
         Returns:
             Portfolio value as float.
         """
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT total_value FROM portfolio_snapshots "
-                "WHERE environment = ? ORDER BY timestamp DESC LIMIT 1",
+                "WHERE environment = %s ORDER BY timestamp DESC LIMIT 1",
                 (env,),
             ).fetchone()
         if row is not None:
@@ -81,10 +81,10 @@ class PositionTracker:
             List of position dicts with keys: symbol, quantity, cost_basis,
             last_price, unrealized_pnl, updated_at.
         """
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             rows = conn.execute(
                 "SELECT symbol, quantity, cost_basis, last_price, "
-                "unrealized_pnl, updated_at FROM positions WHERE environment = ?",
+                "unrealized_pnl, updated_at FROM positions WHERE environment = %s",
                 (env,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -100,10 +100,10 @@ class PositionTracker:
         Returns:
             High water mark as float.
         """
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT high_water_mark FROM portfolio_snapshots "
-                "WHERE environment = ? ORDER BY timestamp DESC LIMIT 1",
+                "WHERE environment = %s ORDER BY timestamp DESC LIMIT 1",
                 (env,),
             ).fetchone()
         if row is not None:
@@ -128,10 +128,10 @@ class PositionTracker:
             Daily P&L as float.
         """
         today_prefix = datetime.now(tz=UTC).strftime("%Y-%m-%d")
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT daily_pnl FROM portfolio_snapshots "
-                "WHERE environment = ? AND timestamp LIKE ? "
+                "WHERE environment = %s AND timestamp LIKE %s "
                 "ORDER BY timestamp DESC LIMIT 1",
                 (env, f"{today_prefix}%"),
             ).fetchone()
@@ -179,12 +179,12 @@ class PositionTracker:
         drawdown_pct = 1.0 - portfolio_value / hwm if hwm > 0 else 0.0
         timestamp = datetime.now(tz=UTC).isoformat()
 
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
                 "(timestamp, environment, total_value, cash_balance, "
                 "high_water_mark, daily_pnl, drawdown_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (timestamp, env, portfolio_value, cash, hwm, daily_pnl, drawdown_pct),
             )
         log.info(
@@ -271,10 +271,10 @@ class PositionTracker:
         Returns:
             Number of days since last trade, or 0 if no trades found.
         """
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT timestamp FROM trades "
-                "WHERE symbol = ? AND environment = ? "
+                "WHERE symbol = %s AND environment = %s "
                 "ORDER BY timestamp DESC LIMIT 1",
                 (symbol, env),
             ).fetchone()

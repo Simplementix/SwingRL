@@ -43,6 +43,7 @@ logging:
   level: INFO
   json_logs: false
 system:
+  database_url: "postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
   duckdb_path: data/db/market_data.ddb
   sqlite_path: data/db/trading_ops.db
 alerting:

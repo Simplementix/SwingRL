@@ -310,7 +310,7 @@ class TrainingOrchestrator:
                     advice_enabled=advice_enabled,
                     is_control_fold=is_control_fold,
                     iteration=iteration,
-                    duckdb_path=self._config.system.duckdb_path,
+                    database_url=self._config.system.database_url,
                 )
                 callbacks.append(memory_cb)
                 log.info(
@@ -330,15 +330,15 @@ class TrainingOrchestrator:
                 callback=callbacks,
             )
 
-            # Extract advice stats and flush DuckDB telemetry from MemoryEpochCallback
+            # Extract advice stats and flush telemetry from MemoryEpochCallback
             _advice_stats: dict[str, Any] | None = None
             for cb in callbacks:
                 from swingrl.memory.training.epoch_callback import MemoryEpochCallback
 
                 if isinstance(cb, MemoryEpochCallback):
                     _advice_stats = cb.advice_stats
-                    # Flush buffered epoch/adjustment data to DuckDB now that
-                    # model.learn() is done and the WF backtester isn't holding the lock.
+                    # Flush buffered epoch/adjustment data to PostgreSQL now that
+                    # model.learn() is done.
                     cb.flush_telemetry()
                     break
 

@@ -12,11 +12,17 @@ Gate criteria:
 
 from __future__ import annotations
 
-import sqlite3
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
+
+import psycopg
+import pytest
+from psycopg.rows import dict_row
+
+pytestmark = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
 
 
 @dataclass
@@ -40,19 +46,19 @@ class _FakeConfig:
             self.shadow = _FakeShadow()
 
 
-def _setup_db(db_path: Path) -> None:
+def _setup_db(db_url: str) -> None:
     """Create shadow_trades, trades, portfolio_snapshots, and circuit_breaker_events tables."""
-    conn = sqlite3.connect(str(db_path))
+    conn = psycopg.connect(db_url, autocommit=False)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS shadow_trades (
             trade_id TEXT PRIMARY KEY,
             timestamp TEXT NOT NULL,
             symbol TEXT NOT NULL,
             side TEXT NOT NULL,
-            quantity REAL NOT NULL,
-            price REAL NOT NULL,
-            commission REAL DEFAULT 0.0,
-            slippage REAL DEFAULT 0.0,
+            quantity DOUBLE PRECISION NOT NULL,
+            price DOUBLE PRECISION NOT NULL,
+            commission DOUBLE PRECISION DEFAULT 0.0,
+            slippage DOUBLE PRECISION DEFAULT 0.0,
             environment TEXT NOT NULL,
             broker TEXT,
             order_type TEXT,
@@ -66,10 +72,10 @@ def _setup_db(db_path: Path) -> None:
             timestamp TEXT NOT NULL,
             symbol TEXT NOT NULL,
             side TEXT NOT NULL,
-            quantity REAL NOT NULL,
-            price REAL NOT NULL,
-            commission REAL DEFAULT 0.0,
-            slippage REAL DEFAULT 0.0,
+            quantity DOUBLE PRECISION NOT NULL,
+            price DOUBLE PRECISION NOT NULL,
+            commission DOUBLE PRECISION DEFAULT 0.0,
+            slippage DOUBLE PRECISION DEFAULT 0.0,
             environment TEXT NOT NULL,
             broker TEXT,
             order_type TEXT,
@@ -80,13 +86,13 @@ def _setup_db(db_path: Path) -> None:
         CREATE TABLE IF NOT EXISTS portfolio_snapshots (
             timestamp TEXT NOT NULL,
             environment TEXT NOT NULL,
-            total_value REAL NOT NULL,
-            equity_value REAL,
-            crypto_value REAL,
-            cash_balance REAL,
-            high_water_mark REAL,
-            daily_pnl REAL,
-            drawdown_pct REAL,
+            total_value DOUBLE PRECISION NOT NULL,
+            equity_value DOUBLE PRECISION,
+            crypto_value DOUBLE PRECISION,
+            cash_balance DOUBLE PRECISION,
+            high_water_mark DOUBLE PRECISION,
+            daily_pnl DOUBLE PRECISION,
+            drawdown_pct DOUBLE PRECISION,
             PRIMARY KEY (timestamp, environment)
         )
     """)
@@ -96,35 +102,39 @@ def _setup_db(db_path: Path) -> None:
             environment TEXT NOT NULL,
             triggered_at TEXT NOT NULL,
             resumed_at TEXT,
-            trigger_value REAL,
-            threshold REAL,
+            trigger_value DOUBLE PRECISION,
+            threshold DOUBLE PRECISION,
             reason TEXT
         )
     """)
+    # Clean tables for test isolation
+    conn.execute("DELETE FROM shadow_trades")
+    conn.execute("DELETE FROM trades")
+    conn.execute("DELETE FROM portfolio_snapshots")
+    conn.execute("DELETE FROM circuit_breaker_events")
     conn.commit()
     conn.close()
 
 
-def _make_mock_db(db_path: Path) -> MagicMock:
-    """Create a mock DatabaseManager that uses real SQLite for queries."""
+def _make_mock_db(db_url: str) -> MagicMock:
+    """Create a mock DatabaseManager that uses real PostgreSQL for queries."""
     mock_db = MagicMock()
 
-    class _SqliteCM:
-        def __enter__(self) -> sqlite3.Connection:
-            self._conn = sqlite3.connect(str(db_path))
-            self._conn.row_factory = sqlite3.Row
+    class _PgCM:
+        def __enter__(self) -> Any:
+            self._conn = psycopg.connect(db_url, row_factory=dict_row)
             return self._conn
 
         def __exit__(self, *args: Any) -> None:
             self._conn.commit()
             self._conn.close()
 
-    mock_db.sqlite = _SqliteCM
+    mock_db.sqlite = _PgCM
     return mock_db
 
 
 def _insert_shadow_trades_paired(
-    db_path: Path,
+    db_url: str,
     buy_sell_pairs: list[tuple[float, float]],
     env: str = "equity",
     symbol: str = "SPY",
@@ -134,7 +144,7 @@ def _insert_shadow_trades_paired(
 
     Each pair is (buy_price, sell_price). Creates 2 trades per pair.
     """
-    conn = sqlite3.connect(str(db_path))
+    conn = psycopg.connect(db_url, autocommit=False)
     idx = 0
     for i, (buy_price, sell_price) in enumerate(buy_sell_pairs):
         day_buy = i * 2 + 1
@@ -142,7 +152,7 @@ def _insert_shadow_trades_paired(
         conn.execute(
             "INSERT INTO shadow_trades "
             "(trade_id, timestamp, symbol, side, quantity, price, environment, model_version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
             (
                 f"shadow-{idx}",
                 f"2026-03-{day_buy:02d}T00:00:00Z",
@@ -158,7 +168,7 @@ def _insert_shadow_trades_paired(
         conn.execute(
             "INSERT INTO shadow_trades "
             "(trade_id, timestamp, symbol, side, quantity, price, environment, model_version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
             (
                 f"shadow-{idx}",
                 f"2026-03-{day_sell:02d}T00:00:00Z",
@@ -176,17 +186,18 @@ def _insert_shadow_trades_paired(
 
 
 def _insert_portfolio_snapshots(
-    db_path: Path,
+    db_url: str,
     values: list[float],
     env: str = "equity",
 ) -> None:
     """Insert portfolio_snapshots with total_value series for the active model."""
-    conn = sqlite3.connect(str(db_path))
+    conn = psycopg.connect(db_url, autocommit=False)
     for i, val in enumerate(values):
         conn.execute(
             "INSERT INTO portfolio_snapshots "
             "(timestamp, environment, total_value, cash_balance, high_water_mark, "
-            "daily_pnl, drawdown_pct) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "daily_pnl, drawdown_pct) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT DO NOTHING",
             (
                 f"2026-03-{i + 1:02d}T00:00:00Z",
                 env,
@@ -202,16 +213,16 @@ def _insert_portfolio_snapshots(
 
 
 def _insert_cb_event(
-    db_path: Path,
+    db_url: str,
     env: str = "equity",
     triggered_at: str = "2026-03-05T12:00:00Z",
 ) -> None:
     """Insert a circuit breaker event."""
-    conn = sqlite3.connect(str(db_path))
+    conn = psycopg.connect(db_url, autocommit=False)
     conn.execute(
         "INSERT INTO circuit_breaker_events "
         "(event_id, environment, triggered_at, trigger_value, threshold, reason) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
         ("cb-1", env, triggered_at, -0.08, -0.10, "daily loss"),
     )
     conn.commit()
@@ -317,13 +328,13 @@ class TestInsufficientData:
         """PROD-04: evaluate_shadow_promotion returns False with < 10 equity trades."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
         # Only 3 pairs = 6 trades, less than 10
-        _insert_shadow_trades_paired(db_path, _WINNING_PAIRS[:3], env="equity")
+        _insert_shadow_trades_paired(db_url, _WINNING_PAIRS[:3], env="equity")
 
         config = _FakeConfig()
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -334,13 +345,13 @@ class TestInsufficientData:
         """PROD-04: evaluate_shadow_promotion returns False with < 30 crypto trades."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
         # 10 pairs = 20 trades, less than 30
-        _insert_shadow_trades_paired(db_path, _WINNING_PAIRS, env="crypto")
+        _insert_shadow_trades_paired(db_url, _WINNING_PAIRS, env="crypto")
 
         config = _FakeConfig(shadow=_FakeShadow(crypto_eval_cycles=30))
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -355,15 +366,15 @@ class TestPromotionCriteria:
         """PROD-04: Returns True when all 4 gates pass."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
         # Shadow: 10 winning pairs (20 trades >= 10 min) → high Sharpe, high PF
-        _insert_shadow_trades_paired(db_path, _WINNING_PAIRS, env="equity")
+        _insert_shadow_trades_paired(db_url, _WINNING_PAIRS, env="equity")
         # Active: flat/noisy portfolio → low Sharpe
-        _insert_portfolio_snapshots(db_path, _ACTIVE_FLAT_VALUES, env="equity")
+        _insert_portfolio_snapshots(db_url, _ACTIVE_FLAT_VALUES, env="equity")
 
         config = _FakeConfig()
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -375,15 +386,15 @@ class TestPromotionCriteria:
         """PROD-04: Returns False when Shadow Sharpe <= Active Sharpe."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
         # Shadow: mixed trades → low Sharpe
-        _insert_shadow_trades_paired(db_path, _MIXED_PAIRS, env="equity")
+        _insert_shadow_trades_paired(db_url, _MIXED_PAIRS, env="equity")
         # Active: steady upward portfolio → high Sharpe
-        _insert_portfolio_snapshots(db_path, _ACTIVE_GOOD_VALUES, env="equity")
+        _insert_portfolio_snapshots(db_url, _ACTIVE_GOOD_VALUES, env="equity")
 
         config = _FakeConfig()
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -394,15 +405,15 @@ class TestPromotionCriteria:
         """PROD-04: Returns False when Shadow MDD > tolerance * Active MDD."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
         # Shadow: big drawdown pairs → high MDD
-        _insert_shadow_trades_paired(db_path, _HIGH_MDD_PAIRS, env="equity")
+        _insert_shadow_trades_paired(db_url, _HIGH_MDD_PAIRS, env="equity")
         # Active: steady upward → low MDD
-        _insert_portfolio_snapshots(db_path, _ACTIVE_GOOD_VALUES, env="equity")
+        _insert_portfolio_snapshots(db_url, _ACTIVE_GOOD_VALUES, env="equity")
 
         config = _FakeConfig()
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -413,15 +424,15 @@ class TestPromotionCriteria:
         """PROD-04: Returns False when circuit breaker triggered during shadow period."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
-        _insert_shadow_trades_paired(db_path, _WINNING_PAIRS, env="equity")
-        _insert_portfolio_snapshots(db_path, _ACTIVE_FLAT_VALUES, env="equity")
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
+        _insert_shadow_trades_paired(db_url, _WINNING_PAIRS, env="equity")
+        _insert_portfolio_snapshots(db_url, _ACTIVE_FLAT_VALUES, env="equity")
         # CB event during shadow period
-        _insert_cb_event(db_path, env="equity", triggered_at="2026-03-05T12:00:00Z")
+        _insert_cb_event(db_url, env="equity", triggered_at="2026-03-05T12:00:00Z")
 
         config = _FakeConfig()
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -432,15 +443,15 @@ class TestPromotionCriteria:
         """PROD-04: Returns False when shadow profit factor <= 1.5."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
         # Mixed pairs have low profit factor (close to 1.0)
-        _insert_shadow_trades_paired(db_path, _MIXED_PAIRS, env="equity")
+        _insert_shadow_trades_paired(db_url, _MIXED_PAIRS, env="equity")
         # Active: flat to let Sharpe pass
-        _insert_portfolio_snapshots(db_path, _ACTIVE_FLAT_VALUES, env="equity")
+        _insert_portfolio_snapshots(db_url, _ACTIVE_FLAT_VALUES, env="equity")
 
         config = _FakeConfig()
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -451,16 +462,16 @@ class TestPromotionCriteria:
         """PROD-04: CB events before shadow start date do not block promotion."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
         # Shadow trades start 2026-03-01
-        _insert_shadow_trades_paired(db_path, _WINNING_PAIRS, env="equity")
-        _insert_portfolio_snapshots(db_path, _ACTIVE_FLAT_VALUES, env="equity")
+        _insert_shadow_trades_paired(db_url, _WINNING_PAIRS, env="equity")
+        _insert_portfolio_snapshots(db_url, _ACTIVE_FLAT_VALUES, env="equity")
         # CB event BEFORE shadow period
-        _insert_cb_event(db_path, env="equity", triggered_at="2026-02-15T12:00:00Z")
+        _insert_cb_event(db_url, env="equity", triggered_at="2026-02-15T12:00:00Z")
 
         config = _FakeConfig()
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -476,13 +487,13 @@ class TestPromotionLifecycle:
         """PROD-04: lifecycle.promote() is called on successful evaluation."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
-        _insert_shadow_trades_paired(db_path, _WINNING_PAIRS, env="equity")
-        _insert_portfolio_snapshots(db_path, _ACTIVE_FLAT_VALUES, env="equity")
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
+        _insert_shadow_trades_paired(db_url, _WINNING_PAIRS, env="equity")
+        _insert_portfolio_snapshots(db_url, _ACTIVE_FLAT_VALUES, env="equity")
 
         config = _FakeConfig()
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -493,13 +504,13 @@ class TestPromotionLifecycle:
         """PROD-04: Discord alert sent with comparison stats after promotion."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
-        _insert_shadow_trades_paired(db_path, _WINNING_PAIRS, env="equity")
-        _insert_portfolio_snapshots(db_path, _ACTIVE_FLAT_VALUES, env="equity")
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
+        _insert_shadow_trades_paired(db_url, _WINNING_PAIRS, env="equity")
+        _insert_portfolio_snapshots(db_url, _ACTIVE_FLAT_VALUES, env="equity")
 
         config = _FakeConfig()
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -516,13 +527,13 @@ class TestFailedShadowArchival:
         """PROD-04: On failure after eval period, shadow model moves to archive."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
-        _insert_shadow_trades_paired(db_path, _MIXED_PAIRS, env="equity")
-        _insert_portfolio_snapshots(db_path, _ACTIVE_GOOD_VALUES, env="equity")
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
+        _insert_shadow_trades_paired(db_url, _MIXED_PAIRS, env="equity")
+        _insert_portfolio_snapshots(db_url, _ACTIVE_GOOD_VALUES, env="equity")
 
         config = _FakeConfig()
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -534,13 +545,13 @@ class TestFailedShadowArchival:
         """PROD-04: Discord alert sent with comparison stats on shadow failure."""
         from swingrl.shadow.promoter import evaluate_shadow_promotion
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
-        _insert_shadow_trades_paired(db_path, _MIXED_PAIRS, env="equity")
-        _insert_portfolio_snapshots(db_path, _ACTIVE_GOOD_VALUES, env="equity")
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
+        _insert_shadow_trades_paired(db_url, _MIXED_PAIRS, env="equity")
+        _insert_portfolio_snapshots(db_url, _ACTIVE_GOOD_VALUES, env="equity")
 
         config = _FakeConfig()
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         lifecycle = MagicMock()
         alerter = MagicMock()
 
@@ -585,11 +596,11 @@ class TestProfitFactorGate:
         """PROD-04: All-winning paired trades produce high profit factor."""
         from swingrl.shadow.promoter import _compute_profit_factor
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
-        _insert_shadow_trades_paired(db_path, _WINNING_PAIRS, env="equity")
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
+        _insert_shadow_trades_paired(db_url, _WINNING_PAIRS, env="equity")
 
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         pf = _compute_profit_factor(mock_db, "shadow_trades", "equity")
         assert pf == float("inf"), f"All wins should be inf PF, got {pf}"
 
@@ -597,10 +608,10 @@ class TestProfitFactorGate:
         """PROD-04: Mixed winning/losing trades produce low profit factor."""
         from swingrl.shadow.promoter import _compute_profit_factor
 
-        db_path = tmp_path / "trading_ops.db"
-        _setup_db(db_path)
-        _insert_shadow_trades_paired(db_path, _MIXED_PAIRS, env="equity")
+        db_url = os.environ["DATABASE_URL"]
+        _setup_db(db_url)
+        _insert_shadow_trades_paired(db_url, _MIXED_PAIRS, env="equity")
 
-        mock_db = _make_mock_db(db_path)
+        mock_db = _make_mock_db(db_url)
         pf = _compute_profit_factor(mock_db, "shadow_trades", "equity")
         assert pf < 1.5, f"Mixed trades should have PF < 1.5, got {pf}"

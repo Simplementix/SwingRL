@@ -399,7 +399,9 @@ class TestIterationLoop:
     def _mock_config(self, tmp_path: Path) -> MagicMock:
         """Build a minimal mock SwingRLConfig."""
         cfg = MagicMock()
-        cfg.system = MagicMock(duckdb_path=str(tmp_path / "test.ddb"))
+        cfg.system = MagicMock(
+            database_url="postgresql://test:test@localhost:5432/swingrl_test"
+        )  # pragma: allowlist secret
         cfg.paths = MagicMock(logs_dir=str(tmp_path / "logs"))
         cfg.logging = MagicMock(json_logs=False, level="INFO")
         cfg.memory_agent = MagicMock(
@@ -678,7 +680,9 @@ class TestPerEnvCheckpointing:
     def _mock_config(self, tmp_path: Path) -> MagicMock:
         """Build a minimal mock SwingRLConfig."""
         cfg = MagicMock()
-        cfg.system = MagicMock(duckdb_path=str(tmp_path / "test.ddb"))
+        cfg.system = MagicMock(
+            database_url="postgresql://test:test@localhost:5432/swingrl_test"
+        )  # pragma: allowlist secret
         cfg.paths = MagicMock(logs_dir=str(tmp_path / "logs"))
         cfg.logging = MagicMock(json_logs=False, level="INFO")
         cfg.memory_agent = MagicMock(

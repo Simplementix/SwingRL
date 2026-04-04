@@ -1,12 +1,13 @@
 """Tests for CrossSourceValidator — Alpaca vs yfinance price comparison.
 
-DATA-10: Cross-source validation compares closing prices from DuckDB (Alpaca)
+DATA-10: Cross-source validation compares closing prices from PostgreSQL (Alpaca)
 with yfinance as a reference source. Discrepancies beyond $0.05 tolerance
 are flagged as warnings.
 """
 
 from __future__ import annotations
 
+import os
 import textwrap
 from datetime import date, datetime
 from pathlib import Path
@@ -21,6 +22,15 @@ from swingrl.data.cross_source import CrossSourceResult, CrossSourceValidator
 from swingrl.data.db import DatabaseManager
 
 # ---------------------------------------------------------------------------
+# Skip entire module if no PostgreSQL available
+# ---------------------------------------------------------------------------
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="DATABASE_URL not set — no PostgreSQL available for testing",
+)
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
@@ -30,9 +40,10 @@ _AS_OF = date(2024, 1, 10)
 
 @pytest.fixture
 def cs_config_yaml(tmp_path: Path) -> str:
-    """Config YAML with system paths pointing to tmp_path."""
-    duckdb_path = str(tmp_path / "market_data.ddb")
-    sqlite_path = str(tmp_path / "trading_ops.db")
+    """Config YAML with system section pointing to DATABASE_URL."""
+    db_url = os.environ.get(
+        "DATABASE_URL", "postgresql://test:test@localhost:5432/swingrl_test"
+    )  # pragma: allowlist secret
     return textwrap.dedent(f"""\
         trading_mode: paper
         equity:
@@ -58,8 +69,9 @@ def cs_config_yaml(tmp_path: Path) -> str:
           level: INFO
           json_logs: false
         system:
-          duckdb_path: "{duckdb_path}"
-          sqlite_path: "{sqlite_path}"
+          database_url: "{db_url}"
+          duckdb_path: data/db/market_data.ddb
+          sqlite_path: data/db/trading_ops.db
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3
@@ -68,7 +80,7 @@ def cs_config_yaml(tmp_path: Path) -> str:
 
 @pytest.fixture
 def cs_config(tmp_path: Path, cs_config_yaml: str) -> Any:
-    """Load config with tmp_path DB paths."""
+    """Load config with DATABASE_URL."""
     config_file = tmp_path / "swingrl.yaml"
     config_file.write_text(cs_config_yaml)
     return load_config(config_file)
@@ -77,9 +89,18 @@ def cs_config(tmp_path: Path, cs_config_yaml: str) -> Any:
 @pytest.fixture
 def cs_db(cs_config: Any) -> DatabaseManager:
     """Create a DatabaseManager and ensure cleanup after test."""
+    DatabaseManager.reset()
     mgr = DatabaseManager(cs_config)
     mgr.init_schema()
     yield mgr  # type: ignore[misc]
+    # Truncate all tables for test isolation
+    with mgr.connection() as conn:
+        conn.execute(
+            "DO $$ DECLARE r RECORD; BEGIN "
+            "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
+            "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
+            "END LOOP; END $$"
+        )
     DatabaseManager.reset()
 
 
@@ -90,11 +111,11 @@ def _insert_ohlcv_daily(
     closes: list[float],
 ) -> None:
     """Insert test rows into ohlcv_daily."""
-    with db.duckdb() as cursor:
+    with db.connection() as conn:
         for d, c in zip(dates, closes, strict=True):
-            cursor.execute(
+            conn.execute(
                 "INSERT INTO ohlcv_daily (symbol, date, open, high, low, close, volume) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 [symbol, d, c - 1.0, c + 1.0, c - 2.0, c, 50_000_000],
             )
 

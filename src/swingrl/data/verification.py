@@ -1,6 +1,6 @@
-"""Data verification module — DuckDB quality gates after ingestion.
+"""Data verification module — PostgreSQL quality gates after ingestion.
 
-Queries DuckDB to confirm all quality gates pass: row counts per symbol,
+Queries PostgreSQL to confirm all quality gates pass: row counts per symbol,
 date coverage, crypto timestamp gap detection, NaN checks in observation
 vectors, and FRED macro series presence. Produces a machine-readable JSON
 report and a human-readable console summary.
@@ -71,20 +71,20 @@ class VerificationResult:
 # ---------------------------------------------------------------------------
 
 
-def _check_equity_rows(cursor: Any, config: SwingRLConfig) -> CheckResult:
+def _check_equity_rows(conn: Any, config: SwingRLConfig) -> CheckResult:
     """Check that all configured equity symbols have sufficient rows in ohlcv_daily.
 
     Args:
-        cursor: Active DuckDB cursor.
+        conn: Active PostgreSQL connection.
         config: Validated SwingRLConfig with equity.symbols.
 
     Returns:
         CheckResult with passed=True if all symbols have >100 rows.
     """
-    rows = cursor.execute(
+    rows = conn.execute(
         "SELECT symbol, COUNT(*) AS cnt FROM ohlcv_daily GROUP BY symbol"
     ).fetchall()
-    counts: dict[str, int] = {str(sym): int(cnt) for sym, cnt in rows}
+    counts: dict[str, int] = {str(r["symbol"]): int(r["cnt"]) for r in rows}
 
     missing: list[str] = []
     insufficient: list[str] = []
@@ -105,18 +105,18 @@ def _check_equity_rows(cursor: Any, config: SwingRLConfig) -> CheckResult:
     return CheckResult(name="equity_rows", passed=True, detail=detail)
 
 
-def _check_crypto_rows(cursor: Any, config: SwingRLConfig) -> CheckResult:
+def _check_crypto_rows(conn: Any, config: SwingRLConfig) -> CheckResult:
     """Check that all configured crypto symbols have sufficient rows in ohlcv_4h.
 
     Args:
-        cursor: Active DuckDB cursor.
+        conn: Active PostgreSQL connection.
         config: Validated SwingRLConfig with crypto.symbols.
 
     Returns:
         CheckResult with passed=True if all symbols have >100 rows.
     """
-    rows = cursor.execute("SELECT symbol, COUNT(*) AS cnt FROM ohlcv_4h GROUP BY symbol").fetchall()
-    counts: dict[str, int] = {str(sym): int(cnt) for sym, cnt in rows}
+    rows = conn.execute("SELECT symbol, COUNT(*) AS cnt FROM ohlcv_4h GROUP BY symbol").fetchall()
+    counts: dict[str, int] = {str(r["symbol"]): int(r["cnt"]) for r in rows}
 
     missing: list[str] = []
     insufficient: list[str] = []
@@ -137,18 +137,18 @@ def _check_crypto_rows(cursor: Any, config: SwingRLConfig) -> CheckResult:
     return CheckResult(name="crypto_rows", passed=True, detail=detail)
 
 
-def _check_macro_series(cursor: Any, config: SwingRLConfig) -> CheckResult:  # noqa: ARG001
+def _check_macro_series(conn: Any, config: SwingRLConfig) -> CheckResult:  # noqa: ARG001
     """Check that all expected FRED macro series are present in macro_features.
 
     Args:
-        cursor: Active DuckDB cursor.
+        conn: Active PostgreSQL connection.
         config: Validated SwingRLConfig (unused — series list comes from ALL_SERIES).
 
     Returns:
         CheckResult with passed=True if all expected series are found.
     """
-    rows = cursor.execute("SELECT DISTINCT series_id FROM macro_features").fetchall()
-    found: set[str] = {str(r[0]) for r in rows}
+    rows = conn.execute("SELECT DISTINCT series_id FROM macro_features").fetchall()
+    found: set[str] = {str(r["series_id"]) for r in rows}
 
     missing: list[str] = [s for s in ALL_SERIES if s not in found]
     if missing:
@@ -161,19 +161,21 @@ def _check_macro_series(cursor: Any, config: SwingRLConfig) -> CheckResult:  # n
     return CheckResult(name="macro_series", passed=True, detail=detail)
 
 
-def _check_equity_date_range(cursor: Any, config: SwingRLConfig) -> CheckResult:  # noqa: ARG001
+def _check_equity_date_range(conn: Any, config: SwingRLConfig) -> CheckResult:  # noqa: ARG001
     """Log equity date coverage — informational, always passes.
 
     Args:
-        cursor: Active DuckDB cursor.
+        conn: Active PostgreSQL connection.
         config: Validated SwingRLConfig.
 
     Returns:
         CheckResult always passed=True with date coverage detail.
     """
-    rows = cursor.execute("SELECT MIN(date), MAX(date) FROM ohlcv_daily").fetchall()
-    if rows and rows[0][0] is not None:
-        min_date, max_date = rows[0]
+    row = conn.execute(
+        "SELECT MIN(date) AS min_date, MAX(date) AS max_date FROM ohlcv_daily"
+    ).fetchone()
+    if row and row["min_date"] is not None:
+        min_date, max_date = row["min_date"], row["max_date"]
         detail = f"Equity date coverage: {min_date} to {max_date}"
     else:
         detail = "No equity data found"
@@ -181,19 +183,21 @@ def _check_equity_date_range(cursor: Any, config: SwingRLConfig) -> CheckResult:
     return CheckResult(name="equity_date_range", passed=True, detail=detail)
 
 
-def _check_crypto_date_range(cursor: Any, config: SwingRLConfig) -> CheckResult:  # noqa: ARG001
+def _check_crypto_date_range(conn: Any, config: SwingRLConfig) -> CheckResult:  # noqa: ARG001
     """Log crypto 4H date coverage — informational, always passes.
 
     Args:
-        cursor: Active DuckDB cursor.
+        conn: Active PostgreSQL connection.
         config: Validated SwingRLConfig.
 
     Returns:
         CheckResult always passed=True with date coverage detail.
     """
-    rows = cursor.execute("SELECT MIN(datetime), MAX(datetime) FROM ohlcv_4h").fetchall()
-    if rows and rows[0][0] is not None:
-        min_dt, max_dt = rows[0]
+    row = conn.execute(
+        "SELECT MIN(datetime) AS min_dt, MAX(datetime) AS max_dt FROM ohlcv_4h"
+    ).fetchone()
+    if row and row["min_dt"] is not None:
+        min_dt, max_dt = row["min_dt"], row["max_dt"]
         detail = f"Crypto 4H datetime coverage: {min_dt} to {max_dt}"
     else:
         detail = "No crypto 4H data found"
@@ -201,7 +205,7 @@ def _check_crypto_date_range(cursor: Any, config: SwingRLConfig) -> CheckResult:
     return CheckResult(name="crypto_date_range", passed=True, detail=detail)
 
 
-def _check_crypto_gaps(cursor: Any, config: SwingRLConfig) -> CheckResult:
+def _check_crypto_gaps(conn: Any, config: SwingRLConfig) -> CheckResult:
     """Detect gaps >24h in consecutive ohlcv_4h timestamps for each symbol.
 
     Gap filling from alternate sources should run before this check.
@@ -209,7 +213,7 @@ def _check_crypto_gaps(cursor: Any, config: SwingRLConfig) -> CheckResult:
     for the training layer to handle (episode boundary splitting).
 
     Args:
-        cursor: Active DuckDB cursor.
+        conn: Active PostgreSQL connection.
         config: Validated SwingRLConfig with crypto.symbols.
 
     Returns:
@@ -220,8 +224,8 @@ def _check_crypto_gaps(cursor: Any, config: SwingRLConfig) -> CheckResult:
     gap_reports: list[str] = []
 
     for symbol in config.crypto.symbols:
-        rows = cursor.execute(
-            "SELECT datetime FROM ohlcv_4h WHERE symbol = ? ORDER BY datetime",
+        rows = conn.execute(
+            "SELECT datetime FROM ohlcv_4h WHERE symbol = %s ORDER BY datetime",
             [symbol],
         ).fetchall()
 
@@ -229,7 +233,7 @@ def _check_crypto_gaps(cursor: Any, config: SwingRLConfig) -> CheckResult:
             log.debug("crypto_gap_check_skipped", symbol=symbol, reason="insufficient rows")
             continue
 
-        timestamps = [r[0] for r in rows]
+        timestamps = [r["datetime"] for r in rows]
         for i in range(1, len(timestamps)):
             prev_ts = timestamps[i - 1]
             curr_ts = timestamps[i]
@@ -324,27 +328,27 @@ def run_verification(config: SwingRLConfig) -> VerificationResult:
     db = DatabaseManager(config)
     checks: list[CheckResult] = []
 
-    with db.duckdb() as cursor:
+    with db.connection() as conn:
         # Row count checks
-        checks.append(_check_equity_rows(cursor, config))
-        checks.append(_check_crypto_rows(cursor, config))
+        checks.append(_check_equity_rows(conn, config))
+        checks.append(_check_crypto_rows(conn, config))
 
         # Macro series check
-        checks.append(_check_macro_series(cursor, config))
+        checks.append(_check_macro_series(conn, config))
 
         # Date range coverage (informational)
-        checks.append(_check_equity_date_range(cursor, config))
-        checks.append(_check_crypto_date_range(cursor, config))
+        checks.append(_check_equity_date_range(conn, config))
+        checks.append(_check_crypto_date_range(conn, config))
 
         # Crypto gap detection
-        checks.append(_check_crypto_gaps(cursor, config))
+        checks.append(_check_crypto_gaps(conn, config))
 
         # Observation vector checks — determine latest available date
-        equity_date_str = _latest_date(cursor, "equity")
-        crypto_date_str = _latest_date(cursor, "crypto")
+        equity_date_str = _latest_date(conn, "equity")
+        crypto_date_str = _latest_date(conn, "crypto")
 
-        # Build pipeline using current DuckDB connection
-        pipeline = FeaturePipeline(config, cursor)
+        # Build pipeline using DatabaseManager
+        pipeline = FeaturePipeline(config, db)
 
         checks.append(_check_obs_vector(pipeline, "equity", equity_date_str))
         checks.append(_check_obs_vector(pipeline, "crypto", crypto_date_str))
@@ -359,13 +363,13 @@ def run_verification(config: SwingRLConfig) -> VerificationResult:
     return VerificationResult(passed=overall_passed, checks=checks)
 
 
-def _latest_date(cursor: Any, environment: str) -> str:
+def _latest_date(conn: Any, environment: str) -> str:
     """Query the most recent date/datetime from the relevant feature table.
 
     Falls back to a fixed reference date if no data is found.
 
     Args:
-        cursor: Active DuckDB cursor.
+        conn: Active PostgreSQL connection.
         environment: "equity" or "crypto".
 
     Returns:
@@ -374,11 +378,11 @@ def _latest_date(cursor: Any, environment: str) -> str:
     _FALLBACK = "2024-01-15"
     try:
         if environment == "equity":
-            row = cursor.execute("SELECT MAX(date) FROM ohlcv_daily").fetchone()
+            row = conn.execute("SELECT MAX(date) AS max_val FROM ohlcv_daily").fetchone()
         else:
-            row = cursor.execute("SELECT MAX(datetime) FROM ohlcv_4h").fetchone()
-        if row and row[0] is not None:
-            return str(row[0])
+            row = conn.execute("SELECT MAX(datetime) AS max_val FROM ohlcv_4h").fetchone()
+        if row and row["max_val"] is not None:
+            return str(row["max_val"])
     except Exception:
         log.warning("latest_date_query_failed", environment=environment)
     return _FALLBACK

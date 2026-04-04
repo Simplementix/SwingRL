@@ -6,14 +6,15 @@ error handling, and post-cycle callbacks.
 
 from __future__ import annotations
 
-import sqlite3
+import os
 from collections.abc import Generator
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import psycopg
 import pytest
+from psycopg.rows import dict_row
 
 from swingrl.scheduler.halt_check import init_emergency_flags, set_halt
 from swingrl.scheduler.jobs import (
@@ -29,18 +30,19 @@ from swingrl.scheduler.jobs import (
 
 
 @pytest.fixture
-def mock_db(tmp_path: Path) -> MagicMock:
-    """Create a mock DatabaseManager backed by a real SQLite file."""
-    db_path = tmp_path / "test_ops.db"
+def mock_db() -> MagicMock:
+    """Create a mock DatabaseManager backed by a real PostgreSQL connection."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        pytest.skip("DATABASE_URL not set")
     db = MagicMock()
 
-    def _sqlite_ctx() -> Any:
-        """Context manager yielding a real SQLite connection."""
+    def _pg_ctx() -> Any:
+        """Context manager yielding a real PostgreSQL connection."""
 
         @contextmanager
-        def _ctx() -> Generator[sqlite3.Connection, None, None]:
-            conn = sqlite3.connect(str(db_path))
-            conn.row_factory = sqlite3.Row
+        def _ctx() -> Generator[Any, None, None]:
+            conn = psycopg.connect(db_url, row_factory=dict_row)
             try:
                 yield conn
                 conn.commit()
@@ -52,7 +54,7 @@ def mock_db(tmp_path: Path) -> MagicMock:
 
         return _ctx()
 
-    db.sqlite = _sqlite_ctx
+    db.sqlite = _pg_ctx
     return db
 
 
@@ -159,19 +161,22 @@ class TestDailySummaryJob:
         """daily_summary_job queries DB and calls alerter."""
         # Seed portfolio_snapshots table
         init_emergency_flags(mock_db)
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
                     timestamp TEXT NOT NULL,
                     environment TEXT NOT NULL,
-                    total_value REAL NOT NULL,
-                    equity_value REAL, crypto_value REAL, cash_balance REAL,
-                    high_water_mark REAL, daily_pnl REAL, drawdown_pct REAL,
+                    total_value DOUBLE PRECISION NOT NULL,
+                    equity_value DOUBLE PRECISION, crypto_value DOUBLE PRECISION,
+                    cash_balance DOUBLE PRECISION,
+                    high_water_mark DOUBLE PRECISION, daily_pnl DOUBLE PRECISION,
+                    drawdown_pct DOUBLE PRECISION,
                     PRIMARY KEY (timestamp, environment)
                 )
             """)
             conn.execute(
-                "INSERT INTO portfolio_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO portfolio_snapshots VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT DO NOTHING",
                 ("2026-03-09T12:00:00Z", "equity", 400.0, 300.0, 0.0, 100.0, 400.0, -5.0, 0.01),
             )
         daily_summary_job()
@@ -192,21 +197,24 @@ class TestStuckAgentCheckJob:
     ) -> None:
         """stuck_agent_check sends alert when all-cash for 10 equity cycles."""
         init_emergency_flags(mock_db)
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
                     timestamp TEXT NOT NULL,
                     environment TEXT NOT NULL,
-                    total_value REAL NOT NULL,
-                    equity_value REAL, crypto_value REAL, cash_balance REAL,
-                    high_water_mark REAL, daily_pnl REAL, drawdown_pct REAL,
+                    total_value DOUBLE PRECISION NOT NULL,
+                    equity_value DOUBLE PRECISION, crypto_value DOUBLE PRECISION,
+                    cash_balance DOUBLE PRECISION,
+                    high_water_mark DOUBLE PRECISION, daily_pnl DOUBLE PRECISION,
+                    drawdown_pct DOUBLE PRECISION,
                     PRIMARY KEY (timestamp, environment)
                 )
             """)
             # Insert 10 all-cash equity snapshots
             for i in range(10):
                 conn.execute(
-                    "INSERT INTO portfolio_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO portfolio_snapshots VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    " ON CONFLICT DO NOTHING",
                     (
                         f"2026-03-0{i % 9 + 1}T12:00:0{i}Z",
                         "equity",

@@ -1,4 +1,4 @@
-"""Tests for data verification module — DuckDB quality gates.
+"""Tests for data verification module — PostgreSQL quality gates.
 
 Covers dataclasses, row checks, date range checks, write_report, print_summary,
 crypto gap detection, observation vector validation, and the run_verification aggregator.
@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import duckdb
 import numpy as np
 import pytest
 
@@ -25,23 +25,37 @@ from swingrl.data.verification import (
 )
 
 # ---------------------------------------------------------------------------
+# Skip entire module if no PostgreSQL available
+# ---------------------------------------------------------------------------
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="DATABASE_URL not set — no PostgreSQL available for testing",
+)
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_in_memory_db() -> duckdb.DuckDBPyConnection:
-    """Create an in-memory DuckDB connection with required tables."""
-    conn = duckdb.connect(":memory:")
+def _make_pg_conn() -> MagicMock:
+    """Create a mock PostgreSQL connection with required tables via DatabaseManager."""
+    import psycopg  # noqa: PLC0415
+    from psycopg.rows import dict_row  # noqa: PLC0415
+
+    db_url = os.environ.get("DATABASE_URL")
+    conn = psycopg.connect(db_url, row_factory=dict_row, autocommit=True)
+    # Create tables if they don't exist
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ohlcv_daily (
             symbol TEXT NOT NULL,
             date DATE NOT NULL,
-            open DOUBLE,
-            high DOUBLE,
-            low DOUBLE,
-            close DOUBLE,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
             volume BIGINT,
-            adjusted_close DOUBLE,
+            adjusted_close DOUBLE PRECISION,
             PRIMARY KEY (symbol, date)
         )
     """)
@@ -49,11 +63,11 @@ def _make_in_memory_db() -> duckdb.DuckDBPyConnection:
         CREATE TABLE IF NOT EXISTS ohlcv_4h (
             symbol TEXT NOT NULL,
             datetime TIMESTAMP NOT NULL,
-            open DOUBLE,
-            high DOUBLE,
-            low DOUBLE,
-            close DOUBLE,
-            volume DOUBLE,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
             PRIMARY KEY (symbol, datetime)
         )
     """)
@@ -61,14 +75,20 @@ def _make_in_memory_db() -> duckdb.DuckDBPyConnection:
         CREATE TABLE IF NOT EXISTS macro_features (
             date DATE NOT NULL,
             series_id TEXT NOT NULL,
-            value DOUBLE,
+            value DOUBLE PRECISION,
             PRIMARY KEY (date, series_id)
         )
     """)
     return conn
 
 
-def _insert_equity_rows(conn: duckdb.DuckDBPyConnection, symbol: str, count: int) -> None:
+def _cleanup_pg_conn(conn: object) -> None:
+    """Truncate test tables and close connection."""
+    conn.execute("TRUNCATE TABLE ohlcv_daily, ohlcv_4h, macro_features CASCADE")
+    conn.close()
+
+
+def _insert_equity_rows(conn: object, symbol: str, count: int) -> None:
     """Insert `count` rows for `symbol` into ohlcv_daily."""
     from datetime import date, timedelta
 
@@ -76,13 +96,14 @@ def _insert_equity_rows(conn: duckdb.DuckDBPyConnection, symbol: str, count: int
     for i in range(count):
         d = (base + timedelta(days=i)).isoformat()
         conn.execute(
-            "INSERT INTO ohlcv_daily (symbol, date, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO ohlcv_daily (symbol, date, open, high, low, close, volume) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             [symbol, d, 100.0, 101.0, 99.0, 100.5, 1000000],
         )
 
 
 def _insert_crypto_rows(
-    conn: duckdb.DuckDBPyConnection,
+    conn: object,
     symbol: str,
     start: datetime,
     interval_hours: int,
@@ -94,7 +115,8 @@ def _insert_crypto_rows(
     ts = start
     for _ in range(count):
         conn.execute(
-            "INSERT INTO ohlcv_4h (symbol, datetime, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO ohlcv_4h (symbol, datetime, open, high, low, close, volume) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             [symbol, ts.strftime("%Y-%m-%d %H:%M:%S"), 42000.0, 42100.0, 41900.0, 42050.0, 1.5],
         )
         ts += timedelta(hours=interval_hours)
@@ -148,29 +170,28 @@ class TestCheckEquityRows:
         """DATA-04: Returns passed=False when configured symbol has no rows."""
         from swingrl.data.verification import _check_equity_rows
 
-        conn = _make_in_memory_db()
-        cursor = conn.cursor()
-        # Insert rows for only one symbol (SPY), QQQ is missing
-        _insert_equity_rows(conn, "SPY", 150)
-        result = _check_equity_rows(cursor, loaded_config)  # type: ignore[arg-type]
-        assert result.passed is False
-        assert "QQQ" in result.detail or "missing" in result.detail.lower()
-        cursor.close()
-        conn.close()
+        conn = _make_pg_conn()
+        try:
+            # Insert rows for only one symbol (SPY), QQQ is missing
+            _insert_equity_rows(conn, "SPY", 150)
+            result = _check_equity_rows(conn, loaded_config)  # type: ignore[arg-type]
+            assert result.passed is False
+            assert "QQQ" in result.detail or "missing" in result.detail.lower()
+        finally:
+            _cleanup_pg_conn(conn)
 
     def test_all_equity_symbols_present_passes(self, loaded_config: object) -> None:
         """DATA-04: Returns passed=True when all configured equity symbols have >100 rows."""
         from swingrl.data.verification import _check_equity_rows
 
-        conn = _make_in_memory_db()
-        cursor = conn.cursor()
-        # loaded_config has symbols: [SPY, QQQ]
-        _insert_equity_rows(conn, "SPY", 150)
-        _insert_equity_rows(conn, "QQQ", 150)
-        result = _check_equity_rows(cursor, loaded_config)  # type: ignore[arg-type]
-        assert result.passed is True
-        cursor.close()
-        conn.close()
+        conn = _make_pg_conn()
+        try:
+            _insert_equity_rows(conn, "SPY", 150)
+            _insert_equity_rows(conn, "QQQ", 150)
+            result = _check_equity_rows(conn, loaded_config)  # type: ignore[arg-type]
+            assert result.passed is True
+        finally:
+            _cleanup_pg_conn(conn)
 
 
 class TestCheckCryptoRows:
@@ -180,16 +201,15 @@ class TestCheckCryptoRows:
         """DATA-04: Returns passed=False when ohlcv_4h is missing a configured crypto symbol."""
         from swingrl.data.verification import _check_crypto_rows
 
-        conn = _make_in_memory_db()
-        cursor = conn.cursor()
-        start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
-        # Insert BTCUSDT only — ETHUSDT missing
-        _insert_crypto_rows(conn, "BTCUSDT", start, 4, 150)
-        result = _check_crypto_rows(cursor, loaded_config)  # type: ignore[arg-type]
-        assert result.passed is False
-        assert "ETHUSDT" in result.detail or "missing" in result.detail.lower()
-        cursor.close()
-        conn.close()
+        conn = _make_pg_conn()
+        try:
+            start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+            _insert_crypto_rows(conn, "BTCUSDT", start, 4, 150)
+            result = _check_crypto_rows(conn, loaded_config)  # type: ignore[arg-type]
+            assert result.passed is False
+            assert "ETHUSDT" in result.detail or "missing" in result.detail.lower()
+        finally:
+            _cleanup_pg_conn(conn)
 
 
 class TestCheckMacroSeries:
@@ -199,16 +219,16 @@ class TestCheckMacroSeries:
         """DATA-04: Returns passed=False when a configured FRED series is absent."""
         from swingrl.data.verification import _check_macro_series
 
-        conn = _make_in_memory_db()
-        cursor = conn.cursor()
-        # Insert only one series, others missing
-        conn.execute(
-            "INSERT INTO macro_features (date, series_id, value) VALUES ('2024-01-01', 'VIXCLS', 20.5)"
-        )
-        result = _check_macro_series(cursor, loaded_config)  # type: ignore[arg-type]
-        assert result.passed is False
-        cursor.close()
-        conn.close()
+        conn = _make_pg_conn()
+        try:
+            conn.execute(
+                "INSERT INTO macro_features (date, series_id, value) "
+                "VALUES ('2024-01-01', 'VIXCLS', 20.5)"
+            )
+            result = _check_macro_series(conn, loaded_config)  # type: ignore[arg-type]
+            assert result.passed is False
+        finally:
+            _cleanup_pg_conn(conn)
 
 
 class TestWriteReport:
@@ -275,77 +295,76 @@ class TestCheckCryptoGaps:
         """DATA-04: Returns passed=True when all consecutive timestamps are <=24h apart."""
         from swingrl.data.verification import _check_crypto_gaps
 
-        conn = _make_in_memory_db()
-        cursor = conn.cursor()
-        start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
-        for symbol in ["BTCUSDT", "ETHUSDT"]:
-            _insert_crypto_rows(conn, symbol, start, 4, 50)
-        result = _check_crypto_gaps(cursor, loaded_config)  # type: ignore[arg-type]
-        assert result.passed is True
-        assert "no gaps" in result.detail.lower()
-        cursor.close()
-        conn.close()
+        conn = _make_pg_conn()
+        try:
+            start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+            for symbol in ["BTCUSDT", "ETHUSDT"]:
+                _insert_crypto_rows(conn, symbol, start, 4, 50)
+            result = _check_crypto_gaps(conn, loaded_config)  # type: ignore[arg-type]
+            assert result.passed is True
+            assert "no gaps" in result.detail.lower()
+        finally:
+            _cleanup_pg_conn(conn)
 
     def test_large_gap_reported_but_passes(self, loaded_config: object) -> None:
         """DATA-04: Gaps >24h are logged but verification still passes."""
         from swingrl.data.verification import _check_crypto_gaps
 
-        conn = _make_in_memory_db()
-        cursor = conn.cursor()
-        start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
-        _insert_crypto_rows(conn, "BTCUSDT", start, 4, 50)
-        # Insert ETH with a 48h gap at position 10
-        from datetime import timedelta
+        conn = _make_pg_conn()
+        try:
+            start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+            _insert_crypto_rows(conn, "BTCUSDT", start, 4, 50)
+            # Insert ETH with a 48h gap at position 10
+            from datetime import timedelta
 
-        ts = start
-        for i in range(50):
-            gap_hours = 48 if i == 10 else 4
-            conn.execute(
-                "INSERT INTO ohlcv_4h (symbol, datetime, open, high, low, close, volume) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                [
-                    "ETHUSDT",
-                    ts.strftime("%Y-%m-%d %H:%M:%S"),
-                    2500.0,
-                    2510.0,
-                    2490.0,
-                    2505.0,
-                    0.5,
-                ],
-            )
-            ts += timedelta(hours=gap_hours)
-        result = _check_crypto_gaps(cursor, loaded_config)  # type: ignore[arg-type]
-        assert result.passed is True
-        assert "remain" in result.detail.lower()
-        assert "ETHUSDT" in result.detail
-        cursor.close()
-        conn.close()
+            ts = start
+            for i in range(50):
+                gap_hours = 48 if i == 10 else 4
+                conn.execute(
+                    "INSERT INTO ohlcv_4h (symbol, datetime, open, high, low, close, volume) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    [
+                        "ETHUSDT",
+                        ts.strftime("%Y-%m-%d %H:%M:%S"),
+                        2500.0,
+                        2510.0,
+                        2490.0,
+                        2505.0,
+                        0.5,
+                    ],
+                )
+                ts += timedelta(hours=gap_hours)
+            result = _check_crypto_gaps(conn, loaded_config)  # type: ignore[arg-type]
+            assert result.passed is True
+            assert "remain" in result.detail.lower()
+            assert "ETHUSDT" in result.detail
+        finally:
+            _cleanup_pg_conn(conn)
 
     def test_small_gap_under_threshold_ignored(self, loaded_config: object) -> None:
         """DATA-04: Gaps under 24h (e.g. 12h maintenance) are not reported."""
         from swingrl.data.verification import _check_crypto_gaps
 
-        conn = _make_in_memory_db()
-        cursor = conn.cursor()
-        start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
-        from datetime import timedelta
+        conn = _make_pg_conn()
+        try:
+            start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+            from datetime import timedelta
 
-        # Insert both symbols with 12h gaps — under the 24h threshold
-        for symbol in ["BTCUSDT", "ETHUSDT"]:
-            ts = start
-            for i in range(50):
-                gap_hours = 12 if i == 10 else 4
-                conn.execute(
-                    "INSERT INTO ohlcv_4h (symbol, datetime, open, high, low, close, volume) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [symbol, ts.strftime("%Y-%m-%d %H:%M:%S"), 100.0, 101.0, 99.0, 100.5, 1.0],
-                )
-                ts += timedelta(hours=gap_hours)
-        result = _check_crypto_gaps(cursor, loaded_config)  # type: ignore[arg-type]
-        assert result.passed is True
-        assert "no gaps" in result.detail.lower()
-        cursor.close()
-        conn.close()
+            for symbol in ["BTCUSDT", "ETHUSDT"]:
+                ts = start
+                for i in range(50):
+                    gap_hours = 12 if i == 10 else 4
+                    conn.execute(
+                        "INSERT INTO ohlcv_4h (symbol, datetime, open, high, low, close, volume) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                        [symbol, ts.strftime("%Y-%m-%d %H:%M:%S"), 100.0, 101.0, 99.0, 100.5, 1.0],
+                    )
+                    ts += timedelta(hours=gap_hours)
+            result = _check_crypto_gaps(conn, loaded_config)  # type: ignore[arg-type]
+            assert result.passed is True
+            assert "no gaps" in result.detail.lower()
+        finally:
+            _cleanup_pg_conn(conn)
 
 
 class TestCheckObsVector:
@@ -463,23 +482,23 @@ def _build_passing_cursor_mock(config: object) -> MagicMock:
     crypto_symbols = cfg.crypto.symbols
     fred_series = FRED_ALL_SERIES
 
-    equity_rows = [(sym, 150) for sym in equity_symbols]
-    crypto_rows = [(sym, 150) for sym in crypto_symbols]
-    macro_rows = [(sid,) for sid in fred_series]
+    equity_rows = [{"symbol": sym, "count": 150} for sym in equity_symbols]
+    crypto_rows = [{"symbol": sym, "count": 150} for sym in crypto_symbols]
+    macro_rows = [{"series_id": sid} for sid in fred_series]
 
     # Build timestamp pairs for crypto gaps (all 4h apart — no gaps)
     from datetime import timedelta
 
     base_ts = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
-    ts_rows_btc = [(base_ts + timedelta(hours=4 * i),) for i in range(50)]
-    ts_rows_eth = [(base_ts + timedelta(hours=4 * i),) for i in range(50)]
+    ts_rows_btc = [{"datetime": base_ts + timedelta(hours=4 * i)} for i in range(50)]
+    ts_rows_eth = [{"datetime": base_ts + timedelta(hours=4 * i)} for i in range(50)]
 
     # equity min/max date
-    equity_date_row = [("2020-01-01", "2024-01-01")]
-    crypto_date_row = [("2020-01-01 00:00:00", "2024-01-15 00:00:00")]
+    equity_date_row = [{"min": "2020-01-01", "max": "2024-01-01"}]
+    crypto_date_row = [{"min": "2020-01-01 00:00:00", "max": "2024-01-15 00:00:00"}]
 
     # Craft side_effect based on SQL patterns
-    def execute_side_effect(query: str, params: list | None = None) -> MagicMock:
+    def execute_side_effect(query: str, params: list | tuple | None = None) -> MagicMock:
         result_mock = MagicMock()
         q = query.strip().lower()
 
@@ -491,15 +510,15 @@ def _build_passing_cursor_mock(config: object) -> MagicMock:
             result_mock.fetchall.return_value = macro_rows
         elif "min(date)" in q and "ohlcv_daily" in q:
             result_mock.fetchall.return_value = equity_date_row
-        elif "min(" in q and "ohlcv_4h" in q and "datetime" in q and "symbol" not in (params or []):
+        elif "min(" in q and "ohlcv_4h" in q and "datetime" in q:
             result_mock.fetchall.return_value = crypto_date_row
         elif "from ohlcv_4h where symbol" in q and "order by" in q:
-            symbol = params[0] if params else "BTCUSDT"
-            ts_data = ts_rows_btc if "BTC" in symbol.upper() else ts_rows_eth
+            p = params[0] if params else "BTCUSDT"
+            ts_data = ts_rows_btc if "BTC" in str(p).upper() else ts_rows_eth
             result_mock.fetchall.return_value = ts_data
         elif "max(" in q:
-            result_mock.fetchone.return_value = ("2024-01-15",)
-            result_mock.fetchall.return_value = [("2024-01-15",)]
+            result_mock.fetchone.return_value = {"max": "2024-01-15"}
+            result_mock.fetchall.return_value = [{"max": "2024-01-15"}]
         else:
             result_mock.fetchall.return_value = []
             result_mock.fetchone.return_value = None

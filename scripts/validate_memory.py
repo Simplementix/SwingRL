@@ -1,6 +1,6 @@
 """Pre-live validation script for memory agent data integrity.
 
-Validates DuckDB schema tables and columns required for the memory agent.
+Validates PostgreSQL schema tables and columns required for the memory agent.
 Optionally checks memory agent connectivity when --memory-url is provided.
 
 Schema-only mode (default):
@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 from typing import Any
 
-import duckdb
+import psycopg
 import structlog
+from psycopg.rows import dict_row
 
 from swingrl.config.schema import load_config
 from swingrl.utils.logging import configure_logging
@@ -31,7 +31,7 @@ from swingrl.utils.logging import configure_logging
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Expected DuckDB schema requirements
+# Expected PostgreSQL schema requirements
 # ---------------------------------------------------------------------------
 
 # Tables that must exist in market_data.db
@@ -62,17 +62,17 @@ MIN_TRAINING_RUNS: int = 3
 
 
 def _check_table_exists(conn: Any, table_name: str) -> bool:
-    """Check if a table exists in DuckDB.
+    """Check if a table exists in PostgreSQL.
 
     Args:
-        conn: Active DuckDB connection.
+        conn: Active PostgreSQL connection.
         table_name: Table name to check.
 
     Returns:
         True if table exists.
     """
     result = conn.execute(
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = %s",
         [table_name],
     ).fetchone()
     return bool(result and result[0] > 0)
@@ -82,7 +82,7 @@ def _get_table_columns(conn: Any, table_name: str) -> list[str]:
     """Get column names for a table.
 
     Args:
-        conn: Active DuckDB connection.
+        conn: Active PostgreSQL connection.
         table_name: Table name to inspect.
 
     Returns:
@@ -90,7 +90,7 @@ def _get_table_columns(conn: Any, table_name: str) -> list[str]:
     """
     try:
         result = conn.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+            "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
             [table_name],
         ).fetchall()
         return [row[0] for row in result]
@@ -102,7 +102,7 @@ def _count_rows(conn: Any, table_name: str) -> int:
     """Count rows in a table.
 
     Args:
-        conn: Active DuckDB connection.
+        conn: Active PostgreSQL connection.
         table_name: Table name to count.
 
     Returns:
@@ -120,8 +120,8 @@ def _count_rows(conn: Any, table_name: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def validate_schema(db_path: Path) -> list[str]:
-    """Validate DuckDB schema for memory agent requirements.
+def validate_schema(database_url: str) -> list[str]:
+    """Validate PostgreSQL schema for memory agent requirements.
 
     Checks:
     - Required tables exist (training_epochs, meta_decisions, reward_adjustments,
@@ -132,25 +132,20 @@ def validate_schema(db_path: Path) -> list[str]:
     - At least MIN_TRAINING_RUNS training run summaries exist
 
     Args:
-        db_path: Path to the DuckDB market_data.db file.
+        database_url: PostgreSQL database connection URL.
 
     Returns:
         List of failure messages. Empty list means all checks passed.
     """
     failures: list[str] = []
 
-    if not db_path.exists():
-        failures.append(f"DuckDB file not found: {db_path}")
-        log.error("duckdb_not_found", path=str(db_path))
-        return failures
-
-    log.info("schema_validation_started", db_path=str(db_path))
+    log.info("schema_validation_started", database_url=database_url)
 
     try:
-        conn = duckdb.connect(str(db_path), read_only=True)
+        conn = psycopg.connect(database_url, row_factory=dict_row)
     except Exception as exc:
-        failures.append(f"Cannot open DuckDB: {exc}")
-        log.error("duckdb_open_failed", path=str(db_path), error=str(exc))
+        failures.append(f"Cannot connect to PostgreSQL: {exc}")
+        log.error("pg_connect_failed", database_url=database_url, error=str(exc))
         return failures
 
     try:
@@ -364,7 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Pre-live validation script for SwingRL memory agent data integrity. "
-            "Without --memory-url: schema-only checks against DuckDB. "
+            "Without --memory-url: schema-only checks against PostgreSQL. "
             "With --memory-url: additionally checks memory agent connectivity."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -408,12 +403,12 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(args.config)
     configure_logging(json_logs=config.logging.json_logs, log_level=config.logging.level)
 
-    db_path = Path(config.system.duckdb_path)
+    database_url = config.system.database_url
     all_failures: list[str] = []
 
     # ── Schema validation (always runs) ─────────────────────────────────────
     log.info("validation_started", mode="schema_only" if not args.memory_url else "full")
-    schema_failures = validate_schema(db_path)
+    schema_failures = validate_schema(database_url)
     all_failures.extend(schema_failures)
 
     # ── Memory agent validation (only if --memory-url provided) ─────────────

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # ---------------------------------------------------------------------------
 
 
-def fetch_portfolio_snapshots(conn: sqlite3.Connection) -> pd.DataFrame:
+def fetch_portfolio_snapshots(conn: Any) -> pd.DataFrame:
     """Return all portfolio_snapshots as a DataFrame."""
     df = pd.read_sql_query(
         "SELECT * FROM portfolio_snapshots ORDER BY timestamp ASC",
@@ -51,9 +50,9 @@ def compute_summary_metrics(df: pd.DataFrame) -> dict[str, Any]:
 st.header("Portfolio Overview")
 
 try:
-    from app import get_sqlite_conn
+    from app import get_pg_conn
 
-    conn = get_sqlite_conn()
+    conn = get_pg_conn()
     df = fetch_portfolio_snapshots(conn)
     conn.close()
 

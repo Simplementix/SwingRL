@@ -46,8 +46,9 @@ environment:
   drawdown_penalty_coeff: 5.0            # soft penalty for drawdown threshold breach
 
 system:
-  duckdb_path: data/db/market_data.ddb   # DuckDB: OHLCV, macro, quarantine, ingestion log
-  sqlite_path: data/db/trading_ops.db    # SQLite: trades, positions, risk, events, alerts
+  database_url: ""                       # PostgreSQL — override via DATABASE_URL env var in Docker
+  duckdb_path: data/db/market_data.ddb   # DEPRECATED: kept for migration rollback only
+  sqlite_path: data/db/trading_ops.db    # DEPRECATED: kept for migration rollback only
 
 alerting:
   alert_cooldown_minutes: 30               # minimum minutes between repeat alerts

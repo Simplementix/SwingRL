@@ -4,9 +4,9 @@ Implements the full DR checklist from Doc 14 Section 10.1:
   Step 1: Stop running container
   Step 2: Delete database volumes
   Step 3: Locate latest backups
-  Step 4: Restore SQLite from backup
-  Step 5: Restore DuckDB from backup
-  Step 6: Verify DB integrity
+  Step 4: Restore PostgreSQL from backup (pg_restore)
+  Step 5: (reserved — previously DuckDB restore)
+  Step 6: Verify DB integrity (PostgreSQL connectivity)
   Step 7: Verify model loading
   Step 8: Start container
   Step 9: Verify first cycle (healthcheck)
@@ -20,8 +20,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
-import sqlite3
 import subprocess  # nosec B404
 import sys
 from dataclasses import dataclass
@@ -113,83 +113,58 @@ def restore_duckdb_backup(backup_dir: Path, target: Path) -> StepResult:
     )
 
 
-def verify_sqlite_integrity(db_path: Path) -> StepResult:
-    """Run PRAGMA integrity_check on a SQLite database.
-
-    Args:
-        db_path: Path to SQLite database file.
+def verify_postgres_integrity() -> StepResult:
+    """Verify PostgreSQL database is accessible and has tables.
 
     Returns:
-        StepResult with integrity check result.
+        StepResult with connectivity and table count verification.
     """
-    if not db_path.exists():
-        return StepResult(
-            step=6,
-            name="verify-sqlite-integrity",
-            passed=False,
-            detail=f"SQLite database not found: {db_path}",
-        )
-
-    conn = sqlite3.connect(str(db_path))
     try:
-        result = conn.execute("PRAGMA integrity_check").fetchone()
-        if result and result[0] == "ok":
-            # Count tables
-            tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        import psycopg  # noqa: PLC0415
+
+        database_url = os.environ.get(
+            "DATABASE_URL",
+            "postgresql://swingrl:changeme@localhost:5432/swingrl",  # pragma: allowlist secret
+        )
+        conn = psycopg.connect(database_url, connect_timeout=10)
+        try:
+            result = conn.execute("SELECT 1").fetchone()
+            if result is None or result[0] != 1:
+                return StepResult(
+                    step=6,
+                    name="verify-postgres-integrity",
+                    passed=False,
+                    detail="PostgreSQL connectivity check failed",
+                )
+
+            tables = conn.execute(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+            ).fetchall()
             table_names = [t[0] for t in tables]
+
+            if not table_names:
+                return StepResult(
+                    step=6,
+                    name="verify-postgres-integrity",
+                    passed=False,
+                    detail="PostgreSQL has no tables in public schema",
+                )
+
             return StepResult(
                 step=6,
-                name="verify-sqlite-integrity",
+                name="verify-postgres-integrity",
                 passed=True,
-                detail=f"Integrity OK. Tables: {', '.join(table_names) or 'none'}",
+                detail=f"PostgreSQL OK. {len(table_names)} table(s): {', '.join(table_names)}",
             )
+        finally:
+            conn.close()
+    except Exception as exc:
         return StepResult(
             step=6,
-            name="verify-sqlite-integrity",
+            name="verify-postgres-integrity",
             passed=False,
-            detail=f"Integrity check failed: {result}",
+            detail=f"PostgreSQL verification failed: {exc}",
         )
-    finally:
-        conn.close()
-
-
-def verify_duckdb_integrity(db_path: Path) -> StepResult:
-    """Verify DuckDB backup has tables with data.
-
-    Args:
-        db_path: Path to DuckDB database file.
-
-    Returns:
-        StepResult with table count verification.
-    """
-    if not db_path.exists():
-        return StepResult(
-            step=6,
-            name="verify-duckdb-integrity",
-            passed=False,
-            detail=f"DuckDB database not found: {db_path}",
-        )
-
-    import duckdb
-
-    conn = duckdb.connect(str(db_path), read_only=True)
-    try:
-        tables = [row[0] for row in conn.execute("SHOW TABLES").fetchall()]
-        if not tables:
-            return StepResult(
-                step=6,
-                name="verify-duckdb-integrity",
-                passed=False,
-                detail="DuckDB has no tables",
-            )
-        return StepResult(
-            step=6,
-            name="verify-duckdb-integrity",
-            passed=True,
-            detail=f"DuckDB has {len(tables)} table(s): {', '.join(tables)}",
-        )
-    finally:
-        conn.close()
 
 
 def verify_model_loading(active_dir: Path) -> StepResult:
@@ -375,9 +350,8 @@ def run_dr_checklist(
     duckdb_backup_dir = backup_dir / "duckdb"
     results.append(restore_duckdb_backup(duckdb_backup_dir, duckdb_target))
 
-    # Step 6: Verify DB integrity
-    results.append(verify_sqlite_integrity(sqlite_target))
-    results.append(verify_duckdb_integrity(duckdb_target))
+    # Step 6: Verify DB integrity (PostgreSQL)
+    results.append(verify_postgres_integrity())
 
     # Step 7: Verify model loading
     results.append(verify_model_loading(models_active_dir))

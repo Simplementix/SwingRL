@@ -6,13 +6,16 @@ Shadow failures never crash the active trading cycle.
 
 from __future__ import annotations
 
-import sqlite3
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import psycopg
+import pytest
+from psycopg.rows import dict_row
 
 
 @dataclass
@@ -50,20 +53,19 @@ class _FakeJobContext:
     alerter: Any = None
 
 
-def _create_sqlite_with_shadow_trades(db_path: Path) -> sqlite3.Connection:
-    """Create an in-memory-like SQLite with shadow_trades table for testing."""
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+def _create_pg_with_shadow_trades(db_url: str) -> Any:
+    """Create PostgreSQL shadow_trades table for testing."""
+    conn = psycopg.connect(db_url, row_factory=dict_row, autocommit=False)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS shadow_trades (
             trade_id TEXT PRIMARY KEY,
             timestamp TEXT NOT NULL,
             symbol TEXT NOT NULL,
             side TEXT NOT NULL,
-            quantity REAL NOT NULL,
-            price REAL NOT NULL,
-            commission REAL DEFAULT 0.0,
-            slippage REAL DEFAULT 0.0,
+            quantity DOUBLE PRECISION NOT NULL,
+            price DOUBLE PRECISION NOT NULL,
+            commission DOUBLE PRECISION DEFAULT 0.0,
+            slippage DOUBLE PRECISION DEFAULT 0.0,
             environment TEXT NOT NULL,
             broker TEXT,
             order_type TEXT,
@@ -71,6 +73,7 @@ def _create_sqlite_with_shadow_trades(db_path: Path) -> sqlite3.Connection:
             model_version TEXT NOT NULL
         )
     """)
+    conn.execute("DELETE FROM shadow_trades")
     conn.commit()
     return conn
 
@@ -99,6 +102,7 @@ class TestShadowRunnerNoOp:
 class TestShadowRunnerInference:
     """PROD-03: Shadow runner loads model, runs inference, records trades."""
 
+    @pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
     def test_records_hypothetical_trades(self, tmp_path: Path) -> None:
         """PROD-03: Shadow inference records trades in shadow_trades table."""
         from swingrl.shadow.shadow_runner import run_shadow_inference
@@ -109,24 +113,23 @@ class TestShadowRunnerInference:
         shadow_model = shadow_dir / "ppo_equity_v2.zip"
         shadow_model.write_bytes(b"fake_model")
 
-        db_path = tmp_path / "trading_ops.db"
-        conn = _create_sqlite_with_shadow_trades(db_path)
+        db_url = os.environ["DATABASE_URL"]
+        conn = _create_pg_with_shadow_trades(db_url)
         conn.close()
 
         mock_db = MagicMock()
 
-        # Mock the sqlite context manager to use real SQLite
-        class _SqliteCM:
-            def __enter__(self) -> sqlite3.Connection:
-                self._conn = sqlite3.connect(str(db_path))
-                self._conn.row_factory = sqlite3.Row
+        # Mock the sqlite context manager to use real PostgreSQL
+        class _PgCM:
+            def __enter__(self) -> Any:
+                self._conn = psycopg.connect(db_url, row_factory=dict_row)
                 return self._conn
 
             def __exit__(self, *args: Any) -> None:
                 self._conn.commit()
                 self._conn.close()
 
-        mock_db.sqlite = _SqliteCM
+        mock_db.sqlite = _PgCM
 
         config = _FakeConfig(
             shadow=_FakeShadow(),
@@ -162,8 +165,7 @@ class TestShadowRunnerInference:
             run_shadow_inference(ctx, "equity")
 
         # Verify trade was recorded
-        verify_conn = sqlite3.connect(str(db_path))
-        verify_conn.row_factory = sqlite3.Row
+        verify_conn = psycopg.connect(db_url, row_factory=dict_row)
         rows = verify_conn.execute("SELECT * FROM shadow_trades").fetchall()
         verify_conn.close()
 
@@ -202,13 +204,18 @@ class TestShadowRunnerIsolation:
 class TestShadowTradesSchema:
     """PROD-03: shadow_trades table has correct schema."""
 
+    @pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
     def test_shadow_trades_schema_via_db_init(self, tmp_path: Path) -> None:
         """PROD-03: shadow_trades created by DatabaseManager has correct columns."""
-        conn = _create_sqlite_with_shadow_trades(tmp_path / "test.db")
+        db_url = os.environ["DATABASE_URL"]
+        conn = _create_pg_with_shadow_trades(db_url)
 
         # Verify column names
-        cursor = conn.execute("PRAGMA table_info(shadow_trades)")
-        columns = {row[1] for row in cursor.fetchall()}
+        cursor = conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+            ("shadow_trades",),
+        )
+        columns = {row[0] for row in cursor.fetchall()}
         expected = {
             "trade_id",
             "timestamp",

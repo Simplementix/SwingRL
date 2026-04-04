@@ -2,7 +2,7 @@
 
 Generates non-overlapping folds with purge gaps (embargo), retrains
 per fold via TrainingOrchestrator, evaluates on held-out test data,
-and stores results to DuckDB.
+and stores results to PostgreSQL.
 
 Usage:
     from swingrl.agents.backtest import WalkForwardBacktester, generate_folds
@@ -243,7 +243,7 @@ class WalkForwardBacktester:
     For each fold: trains on growing training window, evaluates on
     held-out test window with VecNormalize in eval mode, computes
     metrics, checks validation gates, and optionally stores results
-    to DuckDB.
+    to PostgreSQL.
 
     Args:
         config: Validated SwingRLConfig instance.
@@ -288,7 +288,7 @@ class WalkForwardBacktester:
                 and LLM-guided reward weight adjustments during training.
                 Fail-open: if None, training proceeds without memory integration.
             fold_queue: Optional multiprocessing.Queue for real-time per-fold
-                DuckDB writes. Each completed fold is enqueued as
+                DB writes. Each completed fold is enqueued as
                 (algo_name, FoldResult) for the background writer thread.
             advice_enabled: When True, enable LLM epoch advice and reward weight
                 adjustments during training. When False, only capture epoch
@@ -431,14 +431,14 @@ class WalkForwardBacktester:
 
             results.append(fold_result)
 
-            # Enqueue fold result for real-time DuckDB write
+            # Enqueue fold result for real-time DB write
             if fold_queue is not None:
                 try:
                     fold_queue.put((algo_name, fold_result))
                 except Exception:
                     log.warning("fold_queue_put_failed", fold=fold_result.fold_number)
 
-            # Store to DuckDB if available
+            # Store to PostgreSQL if available
             if self._db is not None:
                 model_id = f"{env_name}-{algo_name}-fold{fold_idx}"
                 self._store_results(fold_result, model_id)
@@ -596,7 +596,7 @@ class WalkForwardBacktester:
         return metrics, trades
 
     def _store_results(self, fold_result: FoldResult, model_id: str) -> None:
-        """Write fold results to DuckDB backtest_results table.
+        """Write fold results to backtest_results table.
 
         Args:
             fold_result: Completed fold result.
@@ -608,7 +608,7 @@ class WalkForwardBacktester:
         result_id = str(uuid.uuid4())
         oos = fold_result.out_of_sample_metrics
 
-        with self._db.duckdb() as cursor:
+        with self._db.connection() as cursor:
             cursor.execute(
                 """
                 INSERT INTO backtest_results (
@@ -618,7 +618,7 @@ class WalkForwardBacktester:
                     sharpe, sortino, calmar, mdd, profit_factor,
                     win_rate, total_trades, avg_drawdown, max_dd_duration,
                     final_portfolio_value, total_return, is_control_fold
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     result_id,
@@ -655,7 +655,7 @@ class WalkForwardBacktester:
 
 
 # ---------------------------------------------------------------------------
-# Deferred DuckDB storage functions (called from main process after
+# Deferred DB storage functions (called from main process after
 # subprocess workers return FoldResult lists via ProcessPoolExecutor).
 # ---------------------------------------------------------------------------
 
@@ -733,14 +733,14 @@ def store_fold_results_to_duckdb(
     n_symbols: int = 0,
     per_asset: int = 0,
 ) -> int:
-    """Write fold results to DuckDB backtest_results table.
+    """Write fold results to backtest_results table.
 
     Designed for deferred writes from the main process after subprocess
     workers return FoldResult lists via ProcessPoolExecutor. Includes full
     OOS + IS metrics, regime context, convergence, trade quality, and dates.
 
     Args:
-        conn: Active DuckDB connection.
+        conn: Active PostgreSQL connection.
         fold_results: List of completed FoldResult from walk-forward.
         env_name: Environment name ("equity" or "crypto").
         algo_name: Algorithm name ("ppo", "a2c", or "sac").
@@ -814,11 +814,11 @@ def store_fold_results_to_duckdb(
                 train_start_date, train_end_date, test_start_date, test_end_date,
                 is_control_fold
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s
             )
             """,
             [
@@ -869,7 +869,7 @@ def store_fold_results_to_duckdb(
         rows_written += 1
 
     log.info(
-        "fold_results_stored_to_duckdb",
+        "fold_results_stored",
         env_name=env_name,
         algo_name=algo_name,
         iteration=iteration_number,
@@ -893,14 +893,14 @@ def store_iteration_results_to_duckdb(
     memory_enabled: bool = False,
     hp_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> None:
-    """Write ensemble-level iteration results to DuckDB iteration_results table.
+    """Write ensemble-level iteration results to iteration_results table.
 
     Computes per-algo mean Sharpe/MDD from fold data and stores alongside
     ensemble metrics, gate result, weights, and hyperparameters.
     Uses INSERT ... ON CONFLICT to be idempotent on re-runs.
 
     Args:
-        conn: Active DuckDB connection.
+        conn: Active PostgreSQL connection.
         iteration_number: Training iteration (0=baseline, 1+=memory-enhanced).
         env_name: Environment name.
         ensemble_sharpe: Mean OOS Sharpe across all algos/folds.
@@ -952,9 +952,9 @@ def store_iteration_results_to_duckdb(
             ppo_hyperparams, a2c_hyperparams, sac_hyperparams, hp_source,
             run_type, wall_clock_s, memory_enabled
         ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s
         )
         ON CONFLICT (iteration_number, environment, run_type) DO UPDATE SET
             ensemble_sharpe = EXCLUDED.ensemble_sharpe,
@@ -1005,7 +1005,7 @@ def store_iteration_results_to_duckdb(
     )
 
     log.info(
-        "iteration_results_stored_to_duckdb",
+        "iteration_results_stored",
         iteration=iteration_number,
         env_name=env_name,
         ensemble_sharpe=round(ensemble_sharpe, 4),

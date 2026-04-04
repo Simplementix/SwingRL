@@ -5,13 +5,18 @@ PAPER-14: Stuck agent detection uses trading days for equity, cycles for crypto.
 
 from __future__ import annotations
 
-import sqlite3
+import os
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import MagicMock
 
+import psycopg
 import pytest
+from psycopg.rows import dict_row
 
 from swingrl.monitoring.stuck_agent import check_stuck_agents
+
+pytestmark = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -20,23 +25,24 @@ from swingrl.monitoring.stuck_agent import check_stuck_agents
 
 @pytest.fixture
 def mock_db() -> MagicMock:
-    """Provide a mock DatabaseManager backed by in-memory SQLite."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    """Provide a mock DatabaseManager backed by PostgreSQL."""
+    db_url = os.environ["DATABASE_URL"]
+    conn = psycopg.connect(db_url, row_factory=dict_row, autocommit=False)
     conn.execute("""
-        CREATE TABLE portfolio_snapshots (
+        CREATE TABLE IF NOT EXISTS portfolio_snapshots (
             timestamp TEXT NOT NULL,
             environment TEXT NOT NULL,
-            total_value REAL NOT NULL,
-            equity_value REAL,
-            crypto_value REAL,
-            cash_balance REAL,
-            high_water_mark REAL,
-            daily_pnl REAL,
-            drawdown_pct REAL,
+            total_value DOUBLE PRECISION NOT NULL,
+            equity_value DOUBLE PRECISION,
+            crypto_value DOUBLE PRECISION,
+            cash_balance DOUBLE PRECISION,
+            high_water_mark DOUBLE PRECISION,
+            daily_pnl DOUBLE PRECISION,
+            drawdown_pct DOUBLE PRECISION,
             PRIMARY KEY (timestamp, environment)
         )
     """)
+    conn.execute("DELETE FROM portfolio_snapshots")
     conn.commit()
 
     db = MagicMock()
@@ -47,7 +53,7 @@ def mock_db() -> MagicMock:
 
 
 def _insert_snapshots(
-    conn: sqlite3.Connection,
+    conn: Any,
     env: str,
     count: int,
     *,
@@ -69,7 +75,8 @@ def _insert_snapshots(
         cash = total_value if all_cash else total_value * 0.5
         conn.execute(
             "INSERT INTO portfolio_snapshots "
-            "(timestamp, environment, total_value, cash_balance) VALUES (?, ?, ?, ?)",
+            "(timestamp, environment, total_value, cash_balance) VALUES (%s, %s, %s, %s)"
+            " ON CONFLICT DO NOTHING",
             (ts, env, total_value, cash),
         )
     conn.commit()
@@ -163,13 +170,15 @@ class TestNotStuck:
             ts = (base + timedelta(hours=i)).isoformat()
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
-                "(timestamp, environment, total_value, cash_balance) VALUES (?, ?, ?, ?)",
+                "(timestamp, environment, total_value, cash_balance) VALUES (%s, %s, %s, %s)"
+                " ON CONFLICT DO NOTHING",
                 (ts, "equity", 10000.0, 10000.0),
             )
         ts_last = (base + timedelta(hours=9)).isoformat()
         conn.execute(
             "INSERT INTO portfolio_snapshots "
-            "(timestamp, environment, total_value, cash_balance) VALUES (?, ?, ?, ?)",
+            "(timestamp, environment, total_value, cash_balance) VALUES (%s, %s, %s, %s)"
+            " ON CONFLICT DO NOTHING",
             (ts_last, "equity", 10000.0, 5000.0),
         )
         conn.commit()

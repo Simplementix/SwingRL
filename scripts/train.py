@@ -2,7 +2,7 @@
 
 Trains PPO/A2C/SAC agents on equity or crypto environments, computes
 ensemble weights via Sharpe-weighted softmax, and writes model metadata
-to DuckDB.
+to PostgreSQL.
 
 Usage:
     python scripts/train.py --env equity --algo ppo
@@ -20,11 +20,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import numpy as np
+import psycopg
 import structlog
+from psycopg.rows import dict_row
 
 from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.data.pg_helpers import fetchdf
 from swingrl.features.assembler import ObservationAssembler
 from swingrl.features.pipeline import _CRYPTO_FEATURE_COLS, _EQUITY_FEATURE_COLS
 from swingrl.training.ensemble import EnsembleBlender
@@ -109,21 +111,23 @@ def _get_macro_array(conn: Any, date_str: str) -> np.ndarray:
     yield_curve_direction, DFF, CPIAUCSL, UNRATE].
 
     Args:
-        conn: DuckDB connection.
+        conn: PostgreSQL connection.
         date_str: ISO date string (YYYY-MM-DD) used as upper bound for ASOF lookup.
 
     Returns:
         (6,) float64 array.
     """
     try:
-        rows = conn.execute(
-            """
+        rows = fetchdf(
+            conn.execute(
+                """
             SELECT series_id, value FROM macro_features
-            WHERE date <= CAST(? AS DATE)
+            WHERE date <= CAST(%s AS DATE)
             ORDER BY date DESC
             """,
-            [date_str],
-        ).fetchdf()
+                [date_str],
+            )
+        )
 
         if rows.empty:
             return np.zeros(6)
@@ -153,7 +157,7 @@ def _get_hmm_probs(conn: Any, environment: str, date_str: str) -> np.ndarray:
     Returns [0.5, 0.5] when no state history exists yet.
 
     Args:
-        conn: DuckDB connection.
+        conn: PostgreSQL connection.
         environment: "equity" or "crypto".
         date_str: ISO date/datetime string used as upper bound.
 
@@ -161,15 +165,17 @@ def _get_hmm_probs(conn: Any, environment: str, date_str: str) -> np.ndarray:
         (2,) float64 array [p_bull, p_bear].
     """
     try:
-        row = conn.execute(
-            """
+        row = fetchdf(
+            conn.execute(
+                """
             SELECT p_bull, p_bear FROM hmm_state_history
-            WHERE environment = ? AND date <= CAST(? AS DATE)
+            WHERE environment = %s AND date <= CAST(%s AS DATE)
             ORDER BY date DESC
             LIMIT 1
             """,
-            [environment, date_str],
-        ).fetchdf()
+                [environment, date_str],
+            )
+        )
 
         if row.empty:
             return np.array([0.5, 0.5])
@@ -183,12 +189,12 @@ def _load_features_prices(
     env_name: str,
     config: SwingRLConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load features and prices from DuckDB for the given environment.
+    """Load features and prices from PostgreSQL for the given environment.
 
     Delegates to the canonical implementation in swingrl.training.data_loader.
 
     Args:
-        conn: Active DuckDB connection.
+        conn: Active PostgreSQL connection.
         env_name: Environment name ("equity" or "crypto").
         config: Validated SwingRLConfig for symbol lists and sentiment flag.
 
@@ -208,14 +214,14 @@ def _load_equity(
     config: SwingRLConfig,
     assembler: ObservationAssembler,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load equity features and prices from DuckDB.
+    """Load equity features and prices from PostgreSQL.
 
     Groups features_equity rows by date, calls assembler.assemble_equity() per
     timestep with macro/HMM context, and aligns with OHLCV close prices via
     INNER JOIN on date.
 
     Args:
-        conn: DuckDB connection.
+        conn: PostgreSQL connection.
         config: SwingRLConfig with equity symbol list.
         assembler: ObservationAssembler initialized from config.
 
@@ -226,8 +232,9 @@ def _load_equity(
     per_asset_size = 15  # EQUITY_PER_ASSET_BASE
 
     # Load all feature rows INNER JOINed with OHLCV dates to ensure alignment
-    feat_df = conn.execute(
-        """
+    feat_df = fetchdf(
+        conn.execute(
+            """
         SELECT
             f.date,
             f.symbol,
@@ -238,21 +245,24 @@ def _load_equity(
         ) o ON f.date = o.date
         ORDER BY f.date, f.symbol
         """.format(feat_cols=", ".join(f"f.{c}" for c in _EQUITY_FEATURE_COLS))  # nosec B608
-    ).fetchdf()
+        )
+    )
 
     if feat_df.empty:
         msg = "No data found in features_equity table"
         raise RuntimeError(msg)
 
     # Load close prices — pivot to (dates x symbols)
-    prices_df = conn.execute(
-        """
+    prices_df = fetchdf(
+        conn.execute(
+            """
         SELECT date, symbol, close
         FROM ohlcv_daily
         WHERE symbol IN ({sym_list})
         ORDER BY date, symbol
         """.format(sym_list=", ".join(f"'{s}'" for s in equity_symbols))  # nosec B608
-    ).fetchdf()
+        )
+    )
 
     # Build set of dates present in features (already filtered by INNER JOIN)
     feat_dates = sorted(feat_df["date"].unique())
@@ -329,14 +339,14 @@ def _load_crypto(
     config: SwingRLConfig,
     assembler: ObservationAssembler,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load crypto features and prices from DuckDB.
+    """Load crypto features and prices from PostgreSQL.
 
     Groups features_crypto rows by datetime, calls assembler.assemble_crypto() per
     timestep with macro/HMM context, and aligns with ohlcv_4h close prices via
     INNER JOIN on datetime.
 
     Args:
-        conn: DuckDB connection.
+        conn: PostgreSQL connection.
         config: SwingRLConfig with crypto symbol list.
         assembler: ObservationAssembler initialized from config.
 
@@ -347,8 +357,9 @@ def _load_crypto(
     per_asset_size = 13  # CRYPTO_PER_ASSET
 
     # Load all feature rows INNER JOINed with ohlcv_4h datetimes
-    feat_df = conn.execute(
-        """
+    feat_df = fetchdf(
+        conn.execute(
+            """
         SELECT
             f.datetime,
             f.symbol,
@@ -359,21 +370,24 @@ def _load_crypto(
         ) o ON f.datetime = o.datetime
         ORDER BY f.datetime, f.symbol
         """.format(feat_cols=", ".join(f"f.{c}" for c in _CRYPTO_FEATURE_COLS))  # nosec B608
-    ).fetchdf()
+        )
+    )
 
     if feat_df.empty:
         msg = "No data found in features_crypto table"
         raise RuntimeError(msg)
 
     # Load close prices — pivot to (datetimes x symbols)
-    prices_df = conn.execute(
-        """
+    prices_df = fetchdf(
+        conn.execute(
+            """
         SELECT datetime, symbol, close
         FROM ohlcv_4h
         WHERE symbol IN ({sym_list})
         ORDER BY datetime, symbol
         """.format(sym_list=", ".join(f"'{s}'" for s in crypto_symbols))  # nosec B608
-    ).fetchdf()
+        )
+    )
 
     feat_datetimes = sorted(feat_df["datetime"].unique())
 
@@ -452,10 +466,10 @@ def _write_model_metadata(
     validation_sharpe: float | None,
     ensemble_weight: float | None,
 ) -> None:
-    """Write model metadata row to DuckDB.
+    """Write model metadata row to PostgreSQL.
 
     Args:
-        conn: Active DuckDB connection.
+        conn: Active PostgreSQL connection.
         env_name: Environment name.
         algo_name: Algorithm name.
         model_path: Path to saved model.
@@ -471,13 +485,25 @@ def _write_model_metadata(
 
     conn.execute(
         """
-        INSERT OR REPLACE INTO model_metadata (
+        INSERT INTO model_metadata (
             model_id, environment, algorithm, version,
             training_start_date, training_end_date,
             total_timesteps, converged_at_step,
             validation_sharpe, ensemble_weight,
             model_path, vec_normalize_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (model_id) DO UPDATE SET
+            environment = EXCLUDED.environment,
+            algorithm = EXCLUDED.algorithm,
+            version = EXCLUDED.version,
+            training_start_date = EXCLUDED.training_start_date,
+            training_end_date = EXCLUDED.training_end_date,
+            total_timesteps = EXCLUDED.total_timesteps,
+            converged_at_step = EXCLUDED.converged_at_step,
+            validation_sharpe = EXCLUDED.validation_sharpe,
+            ensemble_weight = EXCLUDED.ensemble_weight,
+            model_path = EXCLUDED.model_path,
+            vec_normalize_path = EXCLUDED.vec_normalize_path
         """,
         [
             model_id,
@@ -533,10 +559,9 @@ def main(argv: list[str] | None = None) -> int:
 
     start_time = time.monotonic()
 
-    # Connect to DuckDB for data loading and metadata writes
-    db_path = Path(config.system.duckdb_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = duckdb.connect(str(db_path))
+    # Connect to PostgreSQL for data loading and metadata writes
+    database_url = config.system.database_url
+    conn = psycopg.connect(database_url, row_factory=dict_row)
 
     try:
         # Load features and prices using ObservationAssembler
@@ -600,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
 
         log.info("ensemble_weights", weights=ensemble_weights)
 
-        # Write model metadata to DuckDB
+        # Write model metadata to PostgreSQL
         for algo_name, result in results.items():
             _write_model_metadata(
                 conn=conn,

@@ -22,15 +22,16 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.request
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import duckdb
 import numpy as np
+import psycopg
 import structlog
+from psycopg.rows import dict_row
 
 from swingrl.memory.training.bounds import (
     clamp_reward_weights,
@@ -89,25 +90,25 @@ class MetaTrainingOrchestrator:
     Args:
         config: Validated SwingRLConfig with memory_agent section.
         memory_client: MemoryClient for LLM queries and ingestion.
-        db_path: Optional DuckDB path for run history queries.
+        database_url: Optional PostgreSQL connection URL for run history queries.
     """
 
     def __init__(
         self,
         config: SwingRLConfig,
         memory_client: MemoryClient,
-        db_path: str | Path | None = None,
+        database_url: str | None = None,
     ) -> None:
         """Initialize the meta-training orchestrator.
 
         Args:
             config: Validated SwingRLConfig.
             memory_client: MemoryClient for ingestion and queries.
-            db_path: Optional DuckDB path. Defaults to config.system.duckdb_path.
+            database_url: Optional PostgreSQL URL. Defaults to config.system.database_url.
         """
         self._config = config
         self._client = memory_client
-        self._db_path = Path(db_path) if db_path else Path(config.system.duckdb_path)
+        self._database_url = database_url or config.system.database_url
         self._meta_cfg = config.memory_agent
 
     def run(
@@ -158,7 +159,7 @@ class MetaTrainingOrchestrator:
         advised_config = self._query_run_config(env_name, algo_name, iteration=iteration)
         safe_config = clamp_run_config(advised_config, algo=algo_name) if advised_config else {}
 
-        # Write HP tuning decision to DuckDB meta_decisions table
+        # Write HP tuning decision to PostgreSQL meta_decisions table
         if advised_config:
             self._write_meta_decision(
                 run_id=run_id,
@@ -389,7 +390,7 @@ class MetaTrainingOrchestrator:
             return 0
 
     def _current_regime_vector(self, env_name: str) -> dict[str, float]:
-        """Query latest HMM regime probabilities from DuckDB.
+        """Query latest HMM regime probabilities from PostgreSQL.
 
         Returns:
             Dict with keys: bull, bear, crisis, sideways.
@@ -397,12 +398,13 @@ class MetaTrainingOrchestrator:
             on any error.
         """
         try:
-            with duckdb.connect(str(self._db_path), read_only=True) as conn:
+            db_url = os.environ.get("DATABASE_URL") or self._database_url
+            with psycopg.connect(db_url, row_factory=dict_row) as conn:
                 row = conn.execute(
                     """
                     SELECT p_bull, p_bear, p_crisis
                     FROM hmm_state_history
-                    WHERE environment = ?
+                    WHERE environment = %s
                     ORDER BY date DESC
                     LIMIT 1
                     """,
@@ -412,9 +414,9 @@ class MetaTrainingOrchestrator:
             if row is None:
                 return {"bull": 0.33, "bear": 0.33, "crisis": 0.17, "sideways": 0.17}
 
-            p_bull = float(row[0]) if row[0] is not None else 0.33
-            p_bear = float(row[1]) if row[1] is not None else 0.33
-            p_crisis = float(row[2]) if row[2] is not None else 0.17
+            p_bull = float(row["p_bull"]) if row["p_bull"] is not None else 0.33
+            p_bear = float(row["p_bear"]) if row["p_bear"] is not None else 0.33
+            p_crisis = float(row["p_crisis"]) if row["p_crisis"] is not None else 0.17
             p_sideways = max(0.0, 1.0 - p_bull - p_bear - p_crisis)
 
             return {
@@ -528,15 +530,17 @@ class MetaTrainingOrchestrator:
         decision_json: str,
         rationale: str,
     ) -> None:
-        """Write HP tuning decision to DuckDB meta_decisions table."""
+        """Write HP tuning decision to PostgreSQL meta_decisions table."""
         try:
-            conn = duckdb.connect(str(self._db_path))
+            db_url = os.environ.get("DATABASE_URL") or self._database_url
+            conn = psycopg.connect(db_url, row_factory=dict_row)
             conn.execute(
                 """INSERT INTO meta_decisions
                    (run_id, algo, env, decision_type, decision_json, rationale)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
                 [run_id, algo, env, "hp_tuning", decision_json, rationale],
             )
+            conn.commit()
             conn.close()
         except Exception as exc:
             log.debug("meta_decision_write_failed", error=str(exc))

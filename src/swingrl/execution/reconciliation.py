@@ -160,12 +160,12 @@ class PositionReconciler:
         price = float(broker_pos.get("avg_entry_price", 0))
         now = datetime.now(UTC).isoformat()
 
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
                 "INSERT INTO positions "
                 "(symbol, environment, quantity, cost_basis, last_price, "
                 "unrealized_pnl, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (symbol, env_name, qty, price, price, 0.0, now),
             )
 
@@ -208,10 +208,10 @@ class PositionReconciler:
         price = float(broker_pos.get("avg_entry_price", 0))
         now = datetime.now(UTC).isoformat()
 
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
-                "UPDATE positions SET quantity = ?, updated_at = ? "
-                "WHERE symbol = ? AND environment = ?",
+                "UPDATE positions SET quantity = %s, updated_at = %s "
+                "WHERE symbol = %s AND environment = %s",
                 (broker_qty, now, symbol, env_name),
             )
 
@@ -240,9 +240,9 @@ class PositionReconciler:
             Adjustment record dict.
         """
         # Read current qty before delete for adjustment record
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
-                "SELECT quantity, cost_basis FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT quantity, cost_basis FROM positions WHERE symbol = %s AND environment = %s",
                 (symbol, env_name),
             ).fetchone()
 
@@ -250,7 +250,7 @@ class PositionReconciler:
             price = float(row["cost_basis"]) if row else 0.0
 
             conn.execute(
-                "DELETE FROM positions WHERE symbol = ? AND environment = ?",
+                "DELETE FROM positions WHERE symbol = %s AND environment = %s",
                 (symbol, env_name),
             )
 

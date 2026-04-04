@@ -59,6 +59,7 @@ environment:
   position_penalty_coeff: 10.0
   drawdown_penalty_coeff: 5.0
 system:
+  database_url: "postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
   duckdb_path: data/db/market_data.ddb
   sqlite_path: data/db/trading_ops.db
 alerting:

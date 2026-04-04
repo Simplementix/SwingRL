@@ -6,18 +6,21 @@ compare_features applies Sharpe-based acceptance, and CLI parses arguments.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import numpy as np
 import pandas as pd
+import psycopg
 import pytest
 
 from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.data.postgres_schema import init_postgres_schema
 from swingrl.features.pipeline import FeaturePipeline, compare_features
-from swingrl.features.schema import init_feature_schema
+
+pytestmark = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
 
 
 @pytest.fixture
@@ -48,6 +51,7 @@ logging:
   level: INFO
   json_logs: false
 system:
+  database_url: "{DATABASE_URL}"
   duckdb_path: data/db/market_data.ddb
   sqlite_path: data/db/trading_ops.db
 alerting:
@@ -62,45 +66,51 @@ features:
   hmm_n_inits: 10
   hmm_ridge: 1e-4
 """
+    db_url = os.environ.get(
+        "DATABASE_URL", "postgresql://test:test@localhost:5432/swingrl_test"
+    )  # pragma: allowlist secret
     config_file = tmp_path / "swingrl.yaml"
-    config_file.write_text(yaml_content)
+    config_file.write_text(yaml_content.replace("{DATABASE_URL}", db_url))
     return load_config(config_file)
 
 
 @pytest.fixture
 def seeded_duckdb() -> Any:
-    """In-memory DuckDB with OHLCV, macro data, and feature schema."""
-    conn = duckdb.connect(":memory:")
+    """PostgreSQL connection with OHLCV, macro data, and feature schema."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    conn = psycopg.connect(db_url, autocommit=False)
 
     # Create base tables
     conn.execute("""
-        CREATE TABLE ohlcv_daily (
+        CREATE TABLE IF NOT EXISTS ohlcv_daily (
             symbol TEXT, date DATE,
-            open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
-            volume BIGINT, adjusted_close DOUBLE,
+            open DOUBLE PRECISION, high DOUBLE PRECISION,
+            low DOUBLE PRECISION, close DOUBLE PRECISION,
+            volume BIGINT, adjusted_close DOUBLE PRECISION,
             fetched_at TIMESTAMP DEFAULT current_timestamp,
             PRIMARY KEY (symbol, date)
         )
     """)
     conn.execute("""
-        CREATE TABLE ohlcv_4h (
+        CREATE TABLE IF NOT EXISTS ohlcv_4h (
             symbol TEXT, datetime TIMESTAMP,
-            open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
-            volume DOUBLE, source TEXT,
+            open DOUBLE PRECISION, high DOUBLE PRECISION,
+            low DOUBLE PRECISION, close DOUBLE PRECISION,
+            volume DOUBLE PRECISION, source TEXT,
             fetched_at TIMESTAMP DEFAULT current_timestamp,
             PRIMARY KEY (symbol, datetime)
         )
     """)
     conn.execute("""
-        CREATE TABLE macro_features (
+        CREATE TABLE IF NOT EXISTS macro_features (
             date DATE, series_id TEXT,
-            value DOUBLE, release_date DATE,
+            value DOUBLE PRECISION, release_date DATE,
             PRIMARY KEY (date, series_id)
         )
     """)
 
     # Init feature schema
-    init_feature_schema(conn)
+    init_postgres_schema(conn)
 
     # Seed equity OHLCV data (300 bars per symbol for warmup)
     rng = np.random.default_rng(42)
@@ -118,7 +128,8 @@ def seeded_duckdb() -> Any:
             close = base + rng.normal(0, 2, 300).cumsum()
         for i, dt in enumerate(dates):
             conn.execute(
-                "INSERT INTO ohlcv_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO ohlcv_daily VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT DO NOTHING",
                 [
                     symbol,
                     dt.date(),
@@ -139,7 +150,8 @@ def seeded_duckdb() -> Any:
         close = base + rng.normal(0, 50, 450).cumsum()
         for i, dt in enumerate(crypto_dates):
             conn.execute(
-                "INSERT INTO ohlcv_4h VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO ohlcv_4h VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT DO NOTHING",
                 [
                     symbol,
                     dt.to_pydatetime(),
@@ -166,10 +178,11 @@ def seeded_duckdb() -> Any:
         vals = base_val + rng.normal(0, std, 600).cumsum() * 0.01
         for i, dt in enumerate(macro_dates):
             conn.execute(
-                "INSERT INTO macro_features VALUES (?, ?, ?, ?)",
+                "INSERT INTO macro_features VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
                 [dt.date(), series_id, vals[i], dt.date()],
             )
 
+    conn.commit()
     yield conn
     conn.close()
 

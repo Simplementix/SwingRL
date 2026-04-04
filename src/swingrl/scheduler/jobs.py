@@ -198,7 +198,7 @@ def daily_summary_job() -> None:
         return
 
     try:
-        with ctx.db.sqlite() as conn:
+        with ctx.db.connection() as conn:
             rows = conn.execute(
                 "SELECT environment, total_value, cash_balance, daily_pnl, drawdown_pct "
                 "FROM portfolio_snapshots "
@@ -263,12 +263,12 @@ def stuck_agent_check_job() -> None:
 
     try:
         for env, threshold in thresholds.items():
-            with ctx.db.sqlite() as conn:
+            with ctx.db.connection() as conn:
                 rows = conn.execute(
                     "SELECT total_value, cash_balance FROM portfolio_snapshots "
-                    "WHERE environment = ? "
-                    "ORDER BY timestamp DESC LIMIT ?",
-                    (env, threshold),
+                    "WHERE environment = %s "
+                    "ORDER BY timestamp DESC LIMIT %s",
+                    [env, threshold],
                 ).fetchall()
 
             if len(rows) < threshold:

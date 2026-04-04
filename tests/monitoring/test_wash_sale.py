@@ -5,32 +5,39 @@ PAPER-17: Wash sale scanner flags buys within 30-day window of realized loss.
 
 from __future__ import annotations
 
-import sqlite3
+import os
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
+import psycopg
+import pytest
+from psycopg.rows import dict_row
+
 from swingrl.execution.types import FillResult
 from swingrl.monitoring.wash_sale import record_realized_loss, scan_wash_sales
+
+pytestmark = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_db() -> tuple[MagicMock, sqlite3.Connection]:
-    """Create a mock DatabaseManager backed by in-memory SQLite."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def _make_mock_db() -> tuple[MagicMock, Any]:
+    """Create a mock DatabaseManager backed by PostgreSQL."""
+    db_url = os.environ["DATABASE_URL"]
+    conn = psycopg.connect(db_url, row_factory=dict_row, autocommit=False)
     conn.execute("""
-        CREATE TABLE wash_sale_tracker (
+        CREATE TABLE IF NOT EXISTS wash_sale_tracker (
             symbol TEXT NOT NULL,
             sale_date TEXT NOT NULL,
-            loss_amount REAL NOT NULL,
+            loss_amount DOUBLE PRECISION NOT NULL,
             wash_window_end TEXT NOT NULL,
             triggered INTEGER DEFAULT 0,
             PRIMARY KEY (symbol, sale_date)
         )
     """)
+    conn.execute("DELETE FROM wash_sale_tracker")
     conn.commit()
 
     db = MagicMock()
@@ -38,6 +45,9 @@ def _make_mock_db() -> tuple[MagicMock, sqlite3.Connection]:
     db.sqlite.return_value.__exit__ = MagicMock(return_value=False)
     return db, conn
 
+
+# Need Any for type annotation
+from typing import Any  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Test: record_realized_loss
@@ -87,7 +97,7 @@ class TestScanWashSalesEquity:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         window_end = (datetime.now(UTC) + timedelta(days=10)).strftime("%Y-%m-%d")
         conn.execute(
-            "INSERT INTO wash_sale_tracker VALUES (?, ?, ?, ?, 0)",
+            "INSERT INTO wash_sale_tracker VALUES (%s, %s, %s, %s, 0) ON CONFLICT DO NOTHING",
             ("SPY", today, 150.0, window_end),
         )
         conn.commit()
@@ -113,7 +123,7 @@ class TestScanWashSalesEquity:
         db, conn = _make_mock_db()
         # Window already expired
         conn.execute(
-            "INSERT INTO wash_sale_tracker VALUES (?, ?, ?, ?, 0)",
+            "INSERT INTO wash_sale_tracker VALUES (%s, %s, %s, %s, 0) ON CONFLICT DO NOTHING",
             ("SPY", "2026-01-01", 100.0, "2026-01-31"),
         )
         conn.commit()
@@ -139,7 +149,7 @@ class TestScanWashSalesEquity:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         window_end = (datetime.now(UTC) + timedelta(days=10)).strftime("%Y-%m-%d")
         conn.execute(
-            "INSERT INTO wash_sale_tracker VALUES (?, ?, ?, ?, 0)",
+            "INSERT INTO wash_sale_tracker VALUES (%s, %s, %s, %s, 0) ON CONFLICT DO NOTHING",
             ("QQQ", today, 75.0, window_end),
         )
         conn.commit()
@@ -159,7 +169,7 @@ class TestScanWashSalesEquity:
         scan_wash_sales([fill], db)
 
         row = conn.execute(
-            "SELECT triggered FROM wash_sale_tracker WHERE symbol = ?", ("QQQ",)
+            "SELECT triggered FROM wash_sale_tracker WHERE symbol = %s", ("QQQ",)
         ).fetchone()
         assert dict(row)["triggered"] == 1
 
@@ -178,7 +188,7 @@ class TestScanWashSalesCrypto:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         window_end = (datetime.now(UTC) + timedelta(days=10)).strftime("%Y-%m-%d")
         conn.execute(
-            "INSERT INTO wash_sale_tracker VALUES (?, ?, ?, ?, 0)",
+            "INSERT INTO wash_sale_tracker VALUES (%s, %s, %s, %s, 0) ON CONFLICT DO NOTHING",
             ("BTC", today, 500.0, window_end),
         )
         conn.commit()
@@ -213,7 +223,7 @@ class TestScanWashSalesSellIgnored:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         window_end = (datetime.now(UTC) + timedelta(days=10)).strftime("%Y-%m-%d")
         conn.execute(
-            "INSERT INTO wash_sale_tracker VALUES (?, ?, ?, ?, 0)",
+            "INSERT INTO wash_sale_tracker VALUES (%s, %s, %s, %s, 0) ON CONFLICT DO NOTHING",
             ("SPY", today, 150.0, window_end),
         )
         conn.commit()

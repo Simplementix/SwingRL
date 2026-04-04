@@ -122,10 +122,10 @@ class BinanceSimAdapter:
         Returns:
             List of position dicts for the crypto environment.
         """
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             rows = conn.execute(
                 "SELECT symbol, quantity, cost_basis, last_price, unrealized_pnl "
-                "FROM positions WHERE environment = ?",
+                "FROM positions WHERE environment = %s",
                 ("crypto",),
             ).fetchall()
 
@@ -161,9 +161,9 @@ class BinanceSimAdapter:
 
         # Update position in DB
         try:
-            with self._db.sqlite() as conn:
+            with self._db.connection() as conn:
                 conn.execute(
-                    "UPDATE positions SET quantity = 0 WHERE symbol = ? AND environment = ?",
+                    "UPDATE positions SET quantity = 0 WHERE symbol = %s AND environment = %s",
                     (symbol, "crypto"),
                 )
         except Exception:
@@ -278,10 +278,10 @@ class BinanceSimAdapter:
 
         # Record API error for automated trigger detection
         try:
-            with self._db.sqlite() as conn:
+            with self._db.connection() as conn:
                 conn.execute(
                     "INSERT INTO api_errors (timestamp, broker, status_code, endpoint, "
-                    "error_message) VALUES (?, ?, ?, ?, ?)",
+                    "error_message) VALUES (%s, %s, %s, %s, %s)",
                     (
                         datetime.now(UTC).isoformat(),
                         "binance_us",

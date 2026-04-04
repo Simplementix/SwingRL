@@ -1,0 +1,672 @@
+"""PostgreSQL DDL for all SwingRL tables, views, and indexes.
+
+Consolidates schema from the former dual-database architecture (DuckDB + SQLite)
+into a single PostgreSQL 17 database.  All DDL is idempotent (IF NOT EXISTS / OR REPLACE).
+
+Usage:
+    import psycopg
+    from swingrl.data.postgres_schema import init_postgres_schema
+
+    with psycopg.connect(DATABASE_URL) as conn:
+        init_postgres_schema(conn)
+
+Type mapping applied:
+    DuckDB DOUBLE         → DOUBLE PRECISION
+    DuckDB TIMESTAMP      → TIMESTAMPTZ
+    SQLite TEXT (datetime) → TIMESTAMPTZ
+    SQLite TEXT (date)     → DATE
+    SQLite REAL            → DOUBLE PRECISION
+    SQLite INTEGER (bool)  → BOOLEAN
+    SQLite AUTOINCREMENT   → GENERATED ALWAYS AS IDENTITY
+    DuckDB SEQUENCE+nextval→ GENERATED ALWAYS AS IDENTITY
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import structlog
+
+if TYPE_CHECKING:
+    import psycopg
+
+log = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Market data tables (formerly DuckDB)
+# ---------------------------------------------------------------------------
+
+_OHLCV_DAILY_DDL = """\
+CREATE TABLE IF NOT EXISTS ohlcv_daily (
+    symbol              TEXT NOT NULL,
+    date                DATE NOT NULL,
+    open                DOUBLE PRECISION,
+    high                DOUBLE PRECISION,
+    low                 DOUBLE PRECISION,
+    close               DOUBLE PRECISION,
+    volume              BIGINT,
+    adjusted_close      DOUBLE PRECISION,
+    fetched_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (symbol, date)
+)
+"""
+
+_OHLCV_4H_DDL = """\
+CREATE TABLE IF NOT EXISTS ohlcv_4h (
+    symbol              TEXT NOT NULL,
+    datetime            TIMESTAMPTZ NOT NULL,
+    open                DOUBLE PRECISION,
+    high                DOUBLE PRECISION,
+    low                 DOUBLE PRECISION,
+    close               DOUBLE PRECISION,
+    volume              DOUBLE PRECISION,
+    source              TEXT,
+    fetched_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (symbol, datetime)
+)
+"""
+
+_MACRO_FEATURES_DDL = """\
+CREATE TABLE IF NOT EXISTS macro_features (
+    date                DATE NOT NULL,
+    series_id           TEXT NOT NULL,
+    value               DOUBLE PRECISION,
+    release_date        DATE,
+    PRIMARY KEY (date, series_id)
+)
+"""
+
+_DATA_QUARANTINE_DDL = """\
+CREATE TABLE IF NOT EXISTS data_quarantine (
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    quarantined_at      TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    source              TEXT,
+    symbol              TEXT,
+    raw_data_json       TEXT,
+    failure_reason      TEXT,
+    severity            TEXT
+)
+"""
+
+_DATA_INGESTION_LOG_DDL = """\
+CREATE TABLE IF NOT EXISTS data_ingestion_log (
+    run_id              TEXT PRIMARY KEY,
+    timestamp           TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    environment         TEXT NOT NULL,
+    symbol              TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    rows_inserted       INTEGER DEFAULT 0,
+    errors_count        INTEGER DEFAULT 0,
+    duration_ms         INTEGER,
+    binance_weight_used INTEGER
+)
+"""
+
+_MODEL_METADATA_DDL = """\
+CREATE TABLE IF NOT EXISTS model_metadata (
+    model_id            TEXT PRIMARY KEY,
+    environment         TEXT NOT NULL,
+    algorithm           TEXT NOT NULL,
+    version             TEXT NOT NULL,
+    training_start_date TEXT,
+    training_end_date   TEXT,
+    total_timesteps     INTEGER,
+    converged_at_step   INTEGER,
+    validation_sharpe   DOUBLE PRECISION,
+    ensemble_weight     DOUBLE PRECISION,
+    model_path          TEXT NOT NULL,
+    vec_normalize_path  TEXT NOT NULL,
+    created_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+_BACKTEST_RESULTS_DDL = """\
+CREATE TABLE IF NOT EXISTS backtest_results (
+    result_id                   TEXT PRIMARY KEY,
+    model_id                    TEXT NOT NULL,
+    environment                 TEXT NOT NULL,
+    algorithm                   TEXT NOT NULL,
+    fold_number                 INTEGER NOT NULL,
+    fold_type                   TEXT NOT NULL,
+    train_start_idx             INTEGER,
+    train_end_idx               INTEGER,
+    test_start_idx              INTEGER,
+    test_end_idx                INTEGER,
+    sharpe                      DOUBLE PRECISION,
+    sortino                     DOUBLE PRECISION,
+    calmar                      DOUBLE PRECISION,
+    mdd                         DOUBLE PRECISION,
+    profit_factor               DOUBLE PRECISION,
+    win_rate                    DOUBLE PRECISION,
+    total_trades                INTEGER,
+    avg_drawdown                DOUBLE PRECISION,
+    max_dd_duration             INTEGER,
+    final_portfolio_value       DOUBLE PRECISION,
+    total_return                DOUBLE PRECISION,
+    created_at                  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    iteration_number            INTEGER DEFAULT 0,
+    run_type                    TEXT DEFAULT 'baseline',
+    is_sharpe                   DOUBLE PRECISION,
+    is_sortino                  DOUBLE PRECISION,
+    is_mdd                      DOUBLE PRECISION,
+    is_total_return             DOUBLE PRECISION,
+    overfitting_gap             DOUBLE PRECISION,
+    overfitting_class           TEXT,
+    hmm_p_bull                  DOUBLE PRECISION,
+    hmm_p_bear                  DOUBLE PRECISION,
+    vix_mean                    DOUBLE PRECISION,
+    yield_spread_mean           DOUBLE PRECISION,
+    converged_at_step           INTEGER,
+    total_timesteps_configured  INTEGER,
+    max_single_loss             DOUBLE PRECISION,
+    best_single_trade           DOUBLE PRECISION,
+    train_start_date            TEXT,
+    train_end_date              TEXT,
+    test_start_date             TEXT,
+    test_end_date               TEXT,
+    is_control_fold             BOOLEAN DEFAULT FALSE
+)
+"""
+
+_ITERATION_RESULTS_DDL = """\
+CREATE TABLE IF NOT EXISTS iteration_results (
+    result_id           TEXT PRIMARY KEY,
+    iteration_number    INTEGER NOT NULL,
+    environment         TEXT NOT NULL,
+    ensemble_sharpe     DOUBLE PRECISION,
+    ensemble_mdd        DOUBLE PRECISION,
+    gate_passed         BOOLEAN,
+    ppo_weight          DOUBLE PRECISION,
+    a2c_weight          DOUBLE PRECISION,
+    sac_weight          DOUBLE PRECISION,
+    ppo_mean_sharpe     DOUBLE PRECISION,
+    a2c_mean_sharpe     DOUBLE PRECISION,
+    sac_mean_sharpe     DOUBLE PRECISION,
+    ppo_mean_mdd        DOUBLE PRECISION,
+    a2c_mean_mdd        DOUBLE PRECISION,
+    sac_mean_mdd        DOUBLE PRECISION,
+    total_folds         INTEGER,
+    ppo_hyperparams     TEXT,
+    a2c_hyperparams     TEXT,
+    sac_hyperparams     TEXT,
+    hp_source           TEXT DEFAULT 'baseline',
+    run_type            TEXT DEFAULT 'baseline',
+    wall_clock_s        DOUBLE PRECISION,
+    memory_enabled      BOOLEAN DEFAULT FALSE,
+    created_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (iteration_number, environment, run_type)
+)
+"""
+
+# ---------------------------------------------------------------------------
+# Feature tables (formerly in features/schema.py)
+# ---------------------------------------------------------------------------
+
+_FEATURES_EQUITY_DDL = """\
+CREATE TABLE IF NOT EXISTS features_equity (
+    symbol              TEXT NOT NULL,
+    date                DATE NOT NULL,
+    price_sma50_ratio   DOUBLE PRECISION,
+    price_sma200_ratio  DOUBLE PRECISION,
+    rsi_14              DOUBLE PRECISION,
+    macd_line           DOUBLE PRECISION,
+    macd_histogram      DOUBLE PRECISION,
+    bb_position         DOUBLE PRECISION,
+    atr_14_pct          DOUBLE PRECISION,
+    volume_sma20_ratio  DOUBLE PRECISION,
+    adx_14              DOUBLE PRECISION,
+    weekly_trend_dir    DOUBLE PRECISION,
+    weekly_rsi_14       DOUBLE PRECISION,
+    pe_zscore           DOUBLE PRECISION,
+    earnings_growth     DOUBLE PRECISION,
+    debt_to_equity      DOUBLE PRECISION,
+    dividend_yield      DOUBLE PRECISION,
+    PRIMARY KEY (symbol, date)
+)
+"""
+
+_FEATURES_CRYPTO_DDL = """\
+CREATE TABLE IF NOT EXISTS features_crypto (
+    symbol                  TEXT NOT NULL,
+    datetime                TIMESTAMPTZ NOT NULL,
+    price_sma50_ratio       DOUBLE PRECISION,
+    price_sma200_ratio      DOUBLE PRECISION,
+    rsi_14                  DOUBLE PRECISION,
+    macd_line               DOUBLE PRECISION,
+    macd_histogram          DOUBLE PRECISION,
+    bb_position             DOUBLE PRECISION,
+    atr_14_pct              DOUBLE PRECISION,
+    volume_sma20_ratio      DOUBLE PRECISION,
+    adx_14                  DOUBLE PRECISION,
+    daily_trend_dir         DOUBLE PRECISION,
+    daily_rsi_14            DOUBLE PRECISION,
+    four_h_rsi_14           DOUBLE PRECISION,
+    four_h_price_sma20_ratio DOUBLE PRECISION,
+    PRIMARY KEY (symbol, datetime)
+)
+"""
+
+_FUNDAMENTALS_DDL = """\
+CREATE TABLE IF NOT EXISTS fundamentals (
+    symbol              TEXT NOT NULL,
+    date                DATE NOT NULL,
+    pe_ratio            DOUBLE PRECISION,
+    earnings_growth     DOUBLE PRECISION,
+    debt_to_equity      DOUBLE PRECISION,
+    dividend_yield      DOUBLE PRECISION,
+    sector              TEXT,
+    fetched_at          TIMESTAMPTZ,
+    PRIMARY KEY (symbol, date)
+)
+"""
+
+_HMM_STATE_HISTORY_DDL = """\
+CREATE TABLE IF NOT EXISTS hmm_state_history (
+    environment         TEXT NOT NULL,
+    date                DATE NOT NULL,
+    p_bull              DOUBLE PRECISION,
+    p_bear              DOUBLE PRECISION,
+    p_crisis            DOUBLE PRECISION DEFAULT 0.0,
+    log_likelihood      DOUBLE PRECISION,
+    fitted_at           TIMESTAMPTZ,
+    PRIMARY KEY (environment, date)
+)
+"""
+
+# ---------------------------------------------------------------------------
+# Training telemetry tables (formerly in features/schema.py with sequences)
+# ---------------------------------------------------------------------------
+
+_TRAINING_EPOCHS_DDL = """\
+CREATE TABLE IF NOT EXISTS training_epochs (
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id              TEXT NOT NULL,
+    epoch               INTEGER NOT NULL,
+    algo                TEXT NOT NULL,
+    env                 TEXT NOT NULL,
+    timestep            BIGINT,
+    mean_reward         DOUBLE PRECISION,
+    policy_loss         DOUBLE PRECISION,
+    value_loss          DOUBLE PRECISION,
+    entropy_loss        DOUBLE PRECISION,
+    approx_kl           DOUBLE PRECISION,
+    clip_fraction       DOUBLE PRECISION,
+    rolling_sharpe      DOUBLE PRECISION,
+    rolling_mdd         DOUBLE PRECISION,
+    rolling_win_rate    DOUBLE PRECISION,
+    reward_weights      TEXT,
+    notable_event       TEXT,
+    is_control_fold     BOOLEAN,
+    stop_training       BOOLEAN DEFAULT FALSE,
+    rationale           TEXT,
+    created_at          TIMESTAMPTZ DEFAULT NOW()
+)
+"""
+
+_META_DECISIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS meta_decisions (
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id              TEXT NOT NULL,
+    algo                TEXT NOT NULL,
+    env                 TEXT NOT NULL,
+    decision_type       TEXT NOT NULL,
+    decision_json       TEXT NOT NULL,
+    rationale           TEXT,
+    created_at          TIMESTAMPTZ DEFAULT NOW()
+)
+"""
+
+_REWARD_ADJUSTMENTS_DDL = """\
+CREATE TABLE IF NOT EXISTS reward_adjustments (
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id              TEXT NOT NULL,
+    epoch_trigger       INTEGER,
+    epoch_outcome       INTEGER,
+    algo                TEXT NOT NULL,
+    env                 TEXT NOT NULL,
+    trigger_metric      TEXT,
+    trigger_value       DOUBLE PRECISION,
+    trigger_reason      TEXT,
+    weight_before       TEXT,
+    weight_after        TEXT,
+    sharpe_at_trigger   DOUBLE PRECISION,
+    mdd_at_trigger      DOUBLE PRECISION,
+    sharpe_delta        DOUBLE PRECISION,
+    mdd_delta           DOUBLE PRECISION,
+    effective           BOOLEAN,
+    outcome_sharpe      DOUBLE PRECISION,
+    created_at          TIMESTAMPTZ DEFAULT NOW()
+)
+"""
+
+# ---------------------------------------------------------------------------
+# Trading operations tables (formerly SQLite)
+# ---------------------------------------------------------------------------
+
+_TRADES_DDL = """\
+CREATE TABLE IF NOT EXISTS trades (
+    trade_id            TEXT PRIMARY KEY,
+    timestamp           TIMESTAMPTZ NOT NULL,
+    symbol              TEXT NOT NULL,
+    side                TEXT NOT NULL,
+    quantity            DOUBLE PRECISION NOT NULL,
+    price               DOUBLE PRECISION NOT NULL,
+    commission          DOUBLE PRECISION DEFAULT 0.0,
+    slippage            DOUBLE PRECISION DEFAULT 0.0,
+    environment         TEXT NOT NULL,
+    broker              TEXT,
+    order_type          TEXT,
+    trade_type          TEXT
+)
+"""
+
+_POSITIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS positions (
+    symbol              TEXT NOT NULL,
+    environment         TEXT NOT NULL,
+    quantity            DOUBLE PRECISION NOT NULL,
+    cost_basis          DOUBLE PRECISION NOT NULL,
+    last_price          DOUBLE PRECISION,
+    unrealized_pnl      DOUBLE PRECISION,
+    updated_at          TIMESTAMPTZ,
+    stop_loss_price     DOUBLE PRECISION,
+    take_profit_price   DOUBLE PRECISION,
+    side                TEXT,
+    PRIMARY KEY (symbol, environment)
+)
+"""
+
+_RISK_DECISIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS risk_decisions (
+    decision_id         TEXT PRIMARY KEY,
+    timestamp           TIMESTAMPTZ NOT NULL,
+    environment         TEXT NOT NULL,
+    symbol              TEXT,
+    proposed_action     TEXT,
+    final_action        TEXT,
+    risk_rule_triggered TEXT,
+    reason              TEXT
+)
+"""
+
+_PORTFOLIO_SNAPSHOTS_DDL = """\
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+    timestamp           TIMESTAMPTZ NOT NULL,
+    environment         TEXT NOT NULL,
+    total_value         DOUBLE PRECISION NOT NULL,
+    equity_value        DOUBLE PRECISION,
+    crypto_value        DOUBLE PRECISION,
+    cash_balance        DOUBLE PRECISION,
+    high_water_mark     DOUBLE PRECISION,
+    daily_pnl           DOUBLE PRECISION,
+    drawdown_pct        DOUBLE PRECISION,
+    PRIMARY KEY (timestamp, environment)
+)
+"""
+
+_SYSTEM_EVENTS_DDL = """\
+CREATE TABLE IF NOT EXISTS system_events (
+    event_id            TEXT PRIMARY KEY,
+    timestamp           TIMESTAMPTZ NOT NULL,
+    level               TEXT NOT NULL,
+    module              TEXT,
+    event_type          TEXT,
+    message             TEXT,
+    metadata_json       TEXT
+)
+"""
+
+_CORPORATE_ACTIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS corporate_actions (
+    action_id           TEXT PRIMARY KEY,
+    symbol              TEXT NOT NULL,
+    action_type         TEXT NOT NULL,
+    effective_date      DATE NOT NULL,
+    ratio               DOUBLE PRECISION,
+    amount              DOUBLE PRECISION,
+    processed           BOOLEAN DEFAULT FALSE
+)
+"""
+
+_WASH_SALE_TRACKER_DDL = """\
+CREATE TABLE IF NOT EXISTS wash_sale_tracker (
+    symbol              TEXT NOT NULL,
+    sale_date           DATE NOT NULL,
+    loss_amount         DOUBLE PRECISION NOT NULL,
+    wash_window_end     DATE NOT NULL,
+    triggered           BOOLEAN DEFAULT FALSE,
+    PRIMARY KEY (symbol, sale_date)
+)
+"""
+
+_CIRCUIT_BREAKER_EVENTS_DDL = """\
+CREATE TABLE IF NOT EXISTS circuit_breaker_events (
+    event_id            TEXT PRIMARY KEY,
+    environment         TEXT NOT NULL,
+    triggered_at        TIMESTAMPTZ NOT NULL,
+    resumed_at          TIMESTAMPTZ,
+    trigger_value       DOUBLE PRECISION,
+    threshold           DOUBLE PRECISION,
+    reason              TEXT
+)
+"""
+
+_OPTIONS_POSITIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS options_positions (
+    spread_id           TEXT PRIMARY KEY,
+    underlying          TEXT NOT NULL,
+    strategy            TEXT,
+    expiration          DATE,
+    short_strike        DOUBLE PRECISION,
+    long_strike         DOUBLE PRECISION,
+    premium_received    DOUBLE PRECISION,
+    current_value       DOUBLE PRECISION,
+    delta               DOUBLE PRECISION,
+    theta               DOUBLE PRECISION
+)
+"""
+
+_SHADOW_TRADES_DDL = """\
+CREATE TABLE IF NOT EXISTS shadow_trades (
+    trade_id            TEXT PRIMARY KEY,
+    timestamp           TIMESTAMPTZ NOT NULL,
+    symbol              TEXT NOT NULL,
+    side                TEXT NOT NULL,
+    quantity            DOUBLE PRECISION NOT NULL,
+    price               DOUBLE PRECISION NOT NULL,
+    commission          DOUBLE PRECISION DEFAULT 0.0,
+    slippage            DOUBLE PRECISION DEFAULT 0.0,
+    environment         TEXT NOT NULL,
+    broker              TEXT,
+    order_type          TEXT,
+    trade_type          TEXT,
+    model_version       TEXT NOT NULL
+)
+"""
+
+_ALERT_LOG_DDL = """\
+CREATE TABLE IF NOT EXISTS alert_log (
+    alert_id            TEXT PRIMARY KEY,
+    timestamp           TIMESTAMPTZ NOT NULL,
+    level               TEXT NOT NULL,
+    title               TEXT,
+    message_hash        TEXT,
+    sent                BOOLEAN DEFAULT FALSE
+)
+"""
+
+_INFERENCE_OUTCOMES_DDL = """\
+CREATE TABLE IF NOT EXISTS inference_outcomes (
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    timestamp           TIMESTAMPTZ NOT NULL,
+    environment         TEXT NOT NULL,
+    had_nan             BOOLEAN NOT NULL DEFAULT FALSE
+)
+"""
+
+_API_ERRORS_DDL = """\
+CREATE TABLE IF NOT EXISTS api_errors (
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    timestamp           TIMESTAMPTZ NOT NULL,
+    broker              TEXT NOT NULL,
+    status_code         INTEGER NOT NULL,
+    endpoint            TEXT,
+    error_message       TEXT
+)
+"""
+
+_EMERGENCY_FLAGS_DDL = """\
+CREATE TABLE IF NOT EXISTS emergency_flags (
+    flag_name           TEXT PRIMARY KEY,
+    active              BOOLEAN NOT NULL DEFAULT FALSE,
+    set_at              TIMESTAMPTZ,
+    set_by              TEXT,
+    reason              TEXT
+)
+"""
+
+# ---------------------------------------------------------------------------
+# All table DDL in creation order (respects implicit dependencies)
+# ---------------------------------------------------------------------------
+
+_ALL_TABLE_DDL: list[str] = [
+    # Market data (OLAP)
+    _OHLCV_DAILY_DDL,
+    _OHLCV_4H_DDL,
+    _MACRO_FEATURES_DDL,
+    _DATA_QUARANTINE_DDL,
+    _DATA_INGESTION_LOG_DDL,
+    _MODEL_METADATA_DDL,
+    _BACKTEST_RESULTS_DDL,
+    _ITERATION_RESULTS_DDL,
+    # Features
+    _FEATURES_EQUITY_DDL,
+    _FEATURES_CRYPTO_DDL,
+    _FUNDAMENTALS_DDL,
+    _HMM_STATE_HISTORY_DDL,
+    # Training telemetry
+    _TRAINING_EPOCHS_DDL,
+    _META_DECISIONS_DDL,
+    _REWARD_ADJUSTMENTS_DDL,
+    # Trading operations (OLTP)
+    _TRADES_DDL,
+    _POSITIONS_DDL,
+    _RISK_DECISIONS_DDL,
+    _PORTFOLIO_SNAPSHOTS_DDL,
+    _SYSTEM_EVENTS_DDL,
+    _CORPORATE_ACTIONS_DDL,
+    _WASH_SALE_TRACKER_DDL,
+    _CIRCUIT_BREAKER_EVENTS_DDL,
+    _OPTIONS_POSITIONS_DDL,
+    _SHADOW_TRADES_DDL,
+    _ALERT_LOG_DDL,
+    _INFERENCE_OUTCOMES_DDL,
+    _API_ERRORS_DDL,
+    _EMERGENCY_FLAGS_DDL,
+]
+
+# ---------------------------------------------------------------------------
+# Views — PostgreSQL equivalents of DuckDB FIRST/LAST ordered aggregates
+# ---------------------------------------------------------------------------
+
+_OHLCV_WEEKLY_VIEW = """\
+CREATE OR REPLACE VIEW ohlcv_weekly AS
+SELECT
+    symbol,
+    date_trunc('week', date) AS week,
+    (ARRAY_AGG(open ORDER BY date))[1]                AS open,
+    MAX(high)                                          AS high,
+    MIN(low)                                           AS low,
+    (ARRAY_AGG(close ORDER BY date DESC))[1]           AS close,
+    SUM(volume)                                        AS volume,
+    (ARRAY_AGG(adjusted_close ORDER BY date DESC))[1]  AS adjusted_close
+FROM ohlcv_daily
+GROUP BY symbol, date_trunc('week', date)
+"""
+
+_OHLCV_MONTHLY_VIEW = """\
+CREATE OR REPLACE VIEW ohlcv_monthly AS
+SELECT
+    symbol,
+    date_trunc('month', date) AS month,
+    (ARRAY_AGG(open ORDER BY date))[1]                AS open,
+    MAX(high)                                          AS high,
+    MIN(low)                                           AS low,
+    (ARRAY_AGG(close ORDER BY date DESC))[1]           AS close,
+    SUM(volume)                                        AS volume,
+    (ARRAY_AGG(adjusted_close ORDER BY date DESC))[1]  AS adjusted_close
+FROM ohlcv_daily
+GROUP BY symbol, date_trunc('month', date)
+"""
+
+_ALL_VIEWS: list[str] = [
+    _OHLCV_WEEKLY_VIEW,
+    _OHLCV_MONTHLY_VIEW,
+]
+
+# ---------------------------------------------------------------------------
+# Indexes
+# ---------------------------------------------------------------------------
+
+_ALL_INDEXES: list[str] = [
+    # Carried forward from existing SQLite schema
+    "CREATE INDEX IF NOT EXISTS idx_trades_symbol_env ON trades (symbol, environment)",
+    "CREATE INDEX IF NOT EXISTS idx_positions_symbol_env ON positions (symbol, environment)",
+    "CREATE INDEX IF NOT EXISTS idx_cb_env_resumed "
+    "ON circuit_breaker_events (environment, resumed_at)",
+    # New: optimises LATERAL JOIN in macro feature alignment
+    "CREATE INDEX IF NOT EXISTS idx_macro_series_release "
+    "ON macro_features (series_id, release_date DESC)",
+    # New: frequent query pattern in position_tracker and dashboard
+    "CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_env_ts "
+    "ON portfolio_snapshots (environment, timestamp DESC)",
+]
+
+# ---------------------------------------------------------------------------
+# Conditional ALTER TABLE for training_runs (Phase 22 — may not exist yet)
+# ---------------------------------------------------------------------------
+
+_TRAINING_RUNS_ALTER: list[str] = [
+    "ALTER TABLE training_runs ADD COLUMN IF NOT EXISTS run_type VARCHAR DEFAULT 'completed'",
+    "ALTER TABLE training_runs ADD COLUMN IF NOT EXISTS meta_rationale TEXT",
+    "ALTER TABLE training_runs ADD COLUMN IF NOT EXISTS dominant_regime VARCHAR",
+]
+
+
+def init_postgres_schema(conn: psycopg.Connection) -> None:
+    """Create all tables, views, and indexes in PostgreSQL.
+
+    Fully idempotent — safe to call on every application startup.
+
+    Args:
+        conn: Open psycopg connection (will be committed by the caller).
+    """
+    with conn.cursor() as cur:
+        # Tables
+        for ddl in _ALL_TABLE_DDL:
+            cur.execute(ddl)
+        log.info("postgres_tables_created", count=len(_ALL_TABLE_DDL))
+
+        # Views
+        for view_ddl in _ALL_VIEWS:
+            cur.execute(view_ddl)
+        log.info("postgres_views_created", count=len(_ALL_VIEWS))
+
+        # Indexes
+        for idx_ddl in _ALL_INDEXES:
+            cur.execute(idx_ddl)
+        log.info("postgres_indexes_created", count=len(_ALL_INDEXES))
+
+        # Conditional ALTER TABLE for training_runs (only if table exists)
+        cur.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = 'training_runs'"
+        )
+        row = cur.fetchone()
+        if row and row[0] > 0:
+            for alter_ddl in _TRAINING_RUNS_ALTER:
+                cur.execute(alter_ddl)
+            log.info(
+                "training_runs_migrated",
+                columns=["run_type", "meta_rationale", "dominant_regime"],
+            )

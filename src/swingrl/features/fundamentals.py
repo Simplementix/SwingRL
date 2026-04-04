@@ -309,15 +309,26 @@ class FundamentalFetcher:
         store_df["date"] = today
         store_df["fetched_at"] = now
 
-        with db.duckdb() as cursor:
-            # Use DuckDB replacement scan pattern (Phase 4 established)
-            sync_df = store_df  # noqa: F841
-            cursor.execute("""
-                INSERT OR REPLACE INTO fundamentals
-                SELECT symbol, date, pe_ratio, earnings_growth,
-                       debt_to_equity, dividend_yield, sector, fetched_at
-                FROM sync_df
-            """)
+        from swingrl.data.pg_helpers import executemany_from_df  # noqa: PLC0415
+
+        columns = [
+            "symbol",
+            "date",
+            "pe_ratio",
+            "earnings_growth",
+            "debt_to_equity",
+            "dividend_yield",
+            "sector",
+            "fetched_at",
+        ]
+        on_conflict = (
+            "(symbol, date) DO UPDATE SET "
+            "pe_ratio=EXCLUDED.pe_ratio, earnings_growth=EXCLUDED.earnings_growth, "
+            "debt_to_equity=EXCLUDED.debt_to_equity, dividend_yield=EXCLUDED.dividend_yield, "
+            "sector=EXCLUDED.sector, fetched_at=EXCLUDED.fetched_at"
+        )
+        with db.connection() as conn:
+            executemany_from_df(conn, "fundamentals", store_df, columns, on_conflict=on_conflict)
 
         rows_written = len(store_df)
         log.info("fundamentals_stored", rows=rows_written)

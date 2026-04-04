@@ -1,12 +1,13 @@
 """Tests for CorporateActionDetector — split heuristic and action tracking.
 
 DATA-11: Corporate action detection uses overnight price spike heuristic
-(30% equity, 40% crypto) and integrates with SQLite corporate_actions table
+(30% equity, 40% crypto) and integrates with PostgreSQL corporate_actions table
 to suppress false-positive quarantine.
 """
 
 from __future__ import annotations
 
+import os
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -18,15 +19,25 @@ from swingrl.data.corporate_actions import CorporateActionDetector
 from swingrl.data.db import DatabaseManager
 
 # ---------------------------------------------------------------------------
+# Skip entire module if no PostgreSQL available
+# ---------------------------------------------------------------------------
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="DATABASE_URL not set — no PostgreSQL available for testing",
+)
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def ca_config_yaml(tmp_path: Path) -> str:
-    """Config YAML with system paths pointing to tmp_path."""
-    duckdb_path = str(tmp_path / "market_data.ddb")
-    sqlite_path = str(tmp_path / "trading_ops.db")
+    """Config YAML with system section pointing to DATABASE_URL."""
+    db_url = os.environ.get(
+        "DATABASE_URL", "postgresql://test:test@localhost:5432/swingrl_test"
+    )  # pragma: allowlist secret
     return textwrap.dedent(f"""\
         trading_mode: paper
         equity:
@@ -52,8 +63,9 @@ def ca_config_yaml(tmp_path: Path) -> str:
           level: INFO
           json_logs: false
         system:
-          duckdb_path: "{duckdb_path}"
-          sqlite_path: "{sqlite_path}"
+          database_url: "{db_url}"
+          duckdb_path: data/db/market_data.ddb
+          sqlite_path: data/db/trading_ops.db
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3
@@ -62,7 +74,7 @@ def ca_config_yaml(tmp_path: Path) -> str:
 
 @pytest.fixture
 def ca_config(tmp_path: Path, ca_config_yaml: str) -> Any:
-    """Load config with tmp_path DB paths."""
+    """Load config with DATABASE_URL."""
     config_file = tmp_path / "swingrl.yaml"
     config_file.write_text(ca_config_yaml)
     return load_config(config_file)
@@ -71,9 +83,18 @@ def ca_config(tmp_path: Path, ca_config_yaml: str) -> Any:
 @pytest.fixture
 def ca_db(ca_config: Any) -> DatabaseManager:
     """Create a DatabaseManager with schema and ensure cleanup."""
+    DatabaseManager.reset()
     mgr = DatabaseManager(ca_config)
     mgr.init_schema()
     yield mgr  # type: ignore[misc]
+    # Truncate all tables for test isolation
+    with mgr.connection() as conn:
+        conn.execute(
+            "DO $$ DECLARE r RECORD; BEGIN "
+            "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
+            "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
+            "END LOOP; END $$"
+        )
     DatabaseManager.reset()
 
 
@@ -175,12 +196,12 @@ class TestRecordAndQuery:
             effective_date="2024-06-10",
             ratio=2.0,
         )
-        with ca_db.sqlite() as conn:
+        with ca_db.connection() as conn:
             row = conn.execute("SELECT * FROM corporate_actions WHERE symbol = 'AAPL'").fetchone()
         assert row is not None
         assert row["action_type"] == "split"
         assert row["ratio"] == 2.0
-        assert row["processed"] == 0
+        assert row["processed"] is False or row["processed"] == 0
 
     def test_is_known_action_returns_true(self, ca_db: DatabaseManager) -> None:
         """DATA-11: is_known_action() returns True when action exists."""
@@ -207,7 +228,7 @@ class TestRecordAndQuery:
             effective_date="2024-08-25",
             ratio=2.0,
         )
-        with ca_db.sqlite() as conn:
+        with ca_db.connection() as conn:
             row = conn.execute(
                 "SELECT action_type, ratio FROM corporate_actions WHERE symbol = 'TSLA'"
             ).fetchone()

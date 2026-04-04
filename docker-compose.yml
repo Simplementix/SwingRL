@@ -3,6 +3,9 @@
 # Uses the multi-stage Dockerfile 'production' target (excludes dev deps).
 # Intended for homelab deployment with TRADING_MODE=paper.
 #
+# PostgreSQL: uses existing pg16 container on br0 network.
+# DATABASE_URL set via .env file on the host.
+#
 # Usage:
 #   docker compose up -d
 #   docker compose logs -f
@@ -12,6 +15,7 @@
 #   ALPACA_API_KEY=...
 #   ALPACA_SECRET_KEY=...
 #   DISCORD_WEBHOOK_URL=...
+#   DATABASE_URL=postgresql://swingrl:<password>@pg16:5432/swingrl
 
 services:
   swingrl-ollama:
@@ -83,6 +87,9 @@ services:
       swingrl-memory:
         # Soft dependency: memory agent is optional; app handles unavailability gracefully
         condition: service_started
+    networks:
+      - default
+      - br0
     restart: unless-stopped
 
   swingrl-dashboard:
@@ -92,17 +99,26 @@ services:
       dockerfile: dashboard/Dockerfile.dashboard
     mem_limit: 512m
     cpus: 0.5
+    env_file: .env
     environment:
-      - SWINGRL_DB_DIR=/app/db
       - TZ=America/New_York
     volumes:
-      - ./db:/app/db:ro        # Read-only access to databases
       - ./models:/app/models:ro  # Read-only for model metadata
     ports:
       - "8501:8501"
     restart: unless-stopped
     depends_on:
       - swingrl
+    networks:
+      - default
+      - br0
+
+networks:
+  default:
+    # Internal network for swingrl services to talk to each other
+  br0:
+    external: true
+    # Shared homelab network — gives access to pg16 container
 
 volumes:
   ollama_data:    # Named volume for Ollama model persistence across container restarts

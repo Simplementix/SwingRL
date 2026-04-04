@@ -26,31 +26,35 @@ Usage:
 
 from __future__ import annotations
 
-import sqlite3
+import os
 import sys
-from pathlib import Path
+
+import psycopg
+from psycopg.rows import dict_row
 
 # Pattern IDs to retire — all from iter 3 consolidation (2026-04-01)
 RETIRE_IDS = [155, 147, 142, 146, 148, 154]
 REASON = "iter3_advice_chain_failure"
 
-# Memory service DB path (inside container)
-DB_PATH = Path("/app/db/memory.db")
+# Memory service DB URL (inside container)
+DB_URL = os.environ.get(
+    "MEMORY_DATABASE_URL",
+    "postgresql://swingrl:changeme@localhost:5432/memory",  # pragma: allowlist secret
+)
 
 
 def main() -> int:
-    if not DB_PATH.exists():
-        print(f"ERROR: Database not found at {DB_PATH}")
+    try:
+        conn = psycopg.connect(DB_URL, row_factory=dict_row)
+    except Exception as exc:
+        print(f"ERROR: Cannot connect to database: {exc}")
         return 1
-
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
 
     # Show current state of patterns
     print("=== BEFORE ===")
     for pid in RETIRE_IDS:
         row = conn.execute(
-            "SELECT id, category, confidence, status, pattern_text FROM consolidations WHERE id = ?",
+            "SELECT id, category, confidence, status, pattern_text FROM consolidations WHERE id = %s",
             (pid,),
         ).fetchone()
         if row:
@@ -65,7 +69,7 @@ def main() -> int:
     retired_count = 0
     for pid in RETIRE_IDS:
         cursor = conn.execute(
-            "UPDATE consolidations SET status = 'retired', superseded_by = ? WHERE id = ?",
+            "UPDATE consolidations SET status = 'retired', superseded_by = %s WHERE id = %s",
             [REASON, pid],
         )
         retired_count += cursor.rowcount
@@ -76,7 +80,7 @@ def main() -> int:
     print("\n=== AFTER ===")
     for pid in RETIRE_IDS:
         row = conn.execute(
-            "SELECT id, status, superseded_by FROM consolidations WHERE id = ?",
+            "SELECT id, status, superseded_by FROM consolidations WHERE id = %s",
             (pid,),
         ).fetchone()
         if row:

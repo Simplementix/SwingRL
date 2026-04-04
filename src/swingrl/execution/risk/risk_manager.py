@@ -272,12 +272,12 @@ class RiskManager:
 
     def _record_decision(self, decision: RiskDecision) -> None:
         """Write decision to risk_decisions SQLite table."""
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
                 "INSERT INTO risk_decisions "
                 "(decision_id, timestamp, environment, symbol, proposed_action, "
                 "final_action, risk_rule_triggered, reason) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     decision.decision_id,
                     decision.timestamp,

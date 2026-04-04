@@ -4,7 +4,7 @@ TRAIN-01 through TRAIN-07: train_pipeline.py orchestrates walk-forward validatio
 ensemble weights from OOS Sharpe, ensemble gate, tuning, final training, and deployment.
 
 All tests mock WalkForwardBacktester.run(), TrainingOrchestrator.train(),
-_load_features_prices(), and duckdb.connect() for speed (< 30s total).
+_load_features_prices(), and psycopg.connect() for speed (< 30s total).
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ _PIPELINE_MODULE = "train_pipeline"
 _WF_PATH = "swingrl.agents.backtest.WalkForwardBacktester.run"
 _TRAIN_PATH = "swingrl.training.trainer.TrainingOrchestrator.train"
 _LOAD_PATH = "train_pipeline._load_features_prices"
-_DUCKDB_PATH = "train_pipeline.duckdb"
+_PSYCOPG_PATH = "train_pipeline.psycopg"
 
 
 class TestEquityBaselineTraining:
@@ -119,10 +119,10 @@ class TestEquityBaselineTraining:
                 "swingrl.training.trainer.TrainingOrchestrator.train",
                 side_effect=mock_train_side_effect,
             ),
-            patch("train_pipeline.duckdb") as mock_duckdb,
+            patch("train_pipeline.psycopg") as mock_psycopg,
             patch.object(pipeline, "ProcessPoolExecutor", ThreadPoolExecutor),
         ):
-            mock_duckdb.connect.return_value = mock_conn
+            mock_psycopg.connect.return_value = mock_conn
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
             mock_conn.__exit__ = MagicMock(return_value=False)
 
@@ -130,7 +130,9 @@ class TestEquityBaselineTraining:
                 env_name="equity",
                 config=MagicMock(
                     memory_agent=MagicMock(meta_training=False, enabled=False),
-                    system=MagicMock(duckdb_path=str(tmp_path / "test.ddb")),
+                    system=MagicMock(
+                        database_url="postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
+                    ),
                     paths=MagicMock(logs_dir=str(tmp_path / "logs")),
                 ),
                 models_dir=tmp_path,
@@ -203,11 +205,11 @@ class TestTuningTriggersOnLowSharpe:
                 "swingrl.training.trainer.TrainingOrchestrator.train",
                 return_value=training_result,
             ),
-            patch("train_pipeline.duckdb") as mock_duckdb,
+            patch("train_pipeline.psycopg") as mock_psycopg,
             patch("train_pipeline.Path.exists", return_value=False),
             patch.object(pipeline, "ProcessPoolExecutor", ThreadPoolExecutor),
         ):
-            mock_duckdb.connect.return_value = mock_conn
+            mock_psycopg.connect.return_value = mock_conn
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
             mock_conn.__exit__ = MagicMock(return_value=False)
 
@@ -220,7 +222,9 @@ class TestTuningTriggersOnLowSharpe:
                 env_name="equity",
                 config=MagicMock(
                     memory_agent=MagicMock(meta_training=False, enabled=False),
-                    system=MagicMock(duckdb_path=str(tmp_path / "test.ddb")),
+                    system=MagicMock(
+                        database_url="postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
+                    ),
                     paths=MagicMock(logs_dir=str(tmp_path / "logs")),
                     training=MagicMock(n_envs=6),
                 ),
@@ -380,10 +384,10 @@ class TestJsonReportWritten:
                 "swingrl.training.trainer.TrainingOrchestrator.train",
                 side_effect=mock_train_side_effect,
             ),
-            patch("train_pipeline.duckdb") as mock_duckdb,
+            patch("train_pipeline.psycopg") as mock_psycopg,
             patch.object(pipeline, "ProcessPoolExecutor", ThreadPoolExecutor),
         ):
-            mock_duckdb.connect.return_value = mock_conn
+            mock_psycopg.connect.return_value = mock_conn
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
             mock_conn.__exit__ = MagicMock(return_value=False)
 
@@ -392,7 +396,9 @@ class TestJsonReportWritten:
                 env_name="equity",
                 config=MagicMock(
                     memory_agent=MagicMock(meta_training=False, enabled=False),
-                    system=MagicMock(duckdb_path=str(tmp_path / "test.ddb")),
+                    system=MagicMock(
+                        database_url="postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
+                    ),
                     paths=MagicMock(logs_dir=str(tmp_path / "logs")),
                 ),
                 models_dir=tmp_path,
@@ -440,10 +446,10 @@ class TestCheckpointResume:
                 "swingrl.agents.backtest.WalkForwardBacktester.run", return_value=good_folds
             ) as mock_wf,
             patch("swingrl.training.trainer.TrainingOrchestrator.train"),
-            patch("train_pipeline.duckdb") as mock_duckdb,
+            patch("train_pipeline.psycopg") as mock_psycopg,
             patch.object(pipeline, "ProcessPoolExecutor", ThreadPoolExecutor),
         ):
-            mock_duckdb.connect.return_value = mock_conn
+            mock_psycopg.connect.return_value = mock_conn
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
             mock_conn.__exit__ = MagicMock(return_value=False)
 
@@ -451,7 +457,9 @@ class TestCheckpointResume:
                 env_name="equity",
                 config=MagicMock(
                     memory_agent=MagicMock(meta_training=False, enabled=False),
-                    system=MagicMock(duckdb_path=str(tmp_path / "test.ddb")),
+                    system=MagicMock(
+                        database_url="postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
+                    ),
                     paths=MagicMock(logs_dir=str(tmp_path / "logs")),
                 ),
                 models_dir=tmp_path,
@@ -495,17 +503,19 @@ class TestMainCLI:
                 "swingrl.training.trainer.TrainingOrchestrator.train",
                 side_effect=mock_train_side_effect,
             ),
-            patch("train_pipeline.duckdb") as mock_duckdb,
+            patch("train_pipeline.psycopg") as mock_psycopg,
             patch("train_pipeline.load_config") as mock_cfg,
             patch("train_pipeline.configure_logging"),
         ):
-            mock_duckdb.connect.return_value = mock_conn
+            mock_psycopg.connect.return_value = mock_conn
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
             mock_conn.__exit__ = MagicMock(return_value=False)
 
             mock_config = MagicMock()
             mock_config.memory_agent = MagicMock(meta_training=False, enabled=False)
-            mock_config.system = MagicMock(duckdb_path=str(tmp_path / "test.ddb"))
+            mock_config.system = MagicMock(
+                database_url="postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
+            )
             mock_config.paths = MagicMock(logs_dir=str(tmp_path / "logs"))
             mock_config.logging = MagicMock(json_logs=False, level="INFO")
             mock_cfg.return_value = mock_config

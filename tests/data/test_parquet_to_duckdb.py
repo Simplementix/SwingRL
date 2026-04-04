@@ -1,11 +1,12 @@
-"""Parquet-to-DuckDB bulk migration tests.
+"""Parquet-to-PostgreSQL bulk migration tests.
 
 Tests verify that existing Parquet files from Phase 3 can be loaded into
-DuckDB tables via sync_parquet_to_duckdb() without duplicates.
+PostgreSQL tables via sync_parquet_to_duckdb() without duplicates.
 """
 
 from __future__ import annotations
 
+import os
 import textwrap
 from pathlib import Path
 
@@ -17,15 +18,25 @@ from swingrl.data.base import sync_parquet_to_duckdb
 from swingrl.data.db import DatabaseManager
 
 # ---------------------------------------------------------------------------
+# Skip entire module if no PostgreSQL available
+# ---------------------------------------------------------------------------
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="DATABASE_URL not set — no PostgreSQL available for testing",
+)
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def db_config(tmp_path: Path) -> SwingRLConfig:
-    """Config with tmp_path DB paths for test isolation."""
-    duckdb_path = str(tmp_path / "market_data.ddb")
-    sqlite_path = str(tmp_path / "trading_ops.db")
+    """Config with DATABASE_URL for test isolation."""
+    db_url = os.environ.get(
+        "DATABASE_URL", "postgresql://test:test@localhost:5432/swingrl_test"
+    )  # pragma: allowlist secret
     config_yaml = textwrap.dedent(f"""\
         trading_mode: paper
         equity:
@@ -51,8 +62,9 @@ def db_config(tmp_path: Path) -> SwingRLConfig:
           level: INFO
           json_logs: false
         system:
-          duckdb_path: "{duckdb_path}"
-          sqlite_path: "{sqlite_path}"
+          database_url: "{db_url}"
+          duckdb_path: data/db/market_data.ddb
+          sqlite_path: data/db/trading_ops.db
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3
@@ -65,19 +77,28 @@ def db_config(tmp_path: Path) -> SwingRLConfig:
 @pytest.fixture
 def db_manager(db_config: SwingRLConfig) -> DatabaseManager:
     """Create DatabaseManager with schema initialized, reset after test."""
+    DatabaseManager.reset()
     mgr = DatabaseManager(db_config)
     mgr.init_schema()
     yield mgr  # type: ignore[misc]
+    # Truncate all tables for test isolation
+    with mgr.connection() as conn:
+        conn.execute(
+            "DO $$ DECLARE r RECORD; BEGIN "
+            "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
+            "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
+            "END LOOP; END $$"
+        )
     DatabaseManager.reset()
 
 
 # ---------------------------------------------------------------------------
-# Tests: Bulk Parquet-to-DuckDB migration
+# Tests: Bulk Parquet-to-PostgreSQL migration
 # ---------------------------------------------------------------------------
 
 
-class TestParquetToDuckDBMigration:
-    """sync_parquet_to_duckdb() loads Parquet files into DuckDB."""
+class TestParquetToPostgreSQLMigration:
+    """sync_parquet_to_duckdb() loads Parquet files into PostgreSQL."""
 
     def test_equity_parquet_loads_to_ohlcv_daily(
         self, db_config: SwingRLConfig, db_manager: DatabaseManager, tmp_path: Path
@@ -111,10 +132,10 @@ class TestParquetToDuckDBMigration:
 
         assert count == 10
 
-        with db_manager.duckdb() as cursor:
-            rows = cursor.execute(
-                "SELECT COUNT(*) FROM ohlcv_daily WHERE symbol = 'SPY'"
-            ).fetchone()[0]
+        with db_manager.connection() as conn:
+            rows = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM ohlcv_daily WHERE symbol = 'SPY'"
+            ).fetchone()["cnt"]
         assert rows == 10
 
     def test_crypto_parquet_loads_to_ohlcv_4h(
@@ -149,10 +170,10 @@ class TestParquetToDuckDBMigration:
 
         assert count == 10
 
-        with db_manager.duckdb() as cursor:
-            rows = cursor.execute(
-                "SELECT COUNT(*) FROM ohlcv_4h WHERE symbol = 'BTCUSDT'"
-            ).fetchone()[0]
+        with db_manager.connection() as conn:
+            rows = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM ohlcv_4h WHERE symbol = 'BTCUSDT'"
+            ).fetchone()["cnt"]
         assert rows == 10
 
     def test_migration_idempotent(
@@ -185,8 +206,8 @@ class TestParquetToDuckDBMigration:
             parquet_path=parquet_path, table="ohlcv_daily", symbol="SPY", db=db_manager
         )
 
-        with db_manager.duckdb() as cursor:
-            count = cursor.execute(
-                "SELECT COUNT(*) FROM ohlcv_daily WHERE symbol = 'SPY'"
-            ).fetchone()[0]
+        with db_manager.connection() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM ohlcv_daily WHERE symbol = 'SPY'"
+            ).fetchone()["cnt"]
         assert count == 5

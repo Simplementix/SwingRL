@@ -254,9 +254,7 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
         db=db,
     )
 
-    duckdb_path = Path(config.system.duckdb_path)
-    duckdb_path.parent.mkdir(parents=True, exist_ok=True)
-    feature_pipeline = FeaturePipeline(config, duckdb_path=str(duckdb_path))
+    feature_pipeline = FeaturePipeline(config, db)
 
     pipeline = ExecutionPipeline(
         config=config,

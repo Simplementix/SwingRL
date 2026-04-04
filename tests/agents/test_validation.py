@@ -6,7 +6,10 @@ overfitting detection, and DuckDB DDL for model_metadata and backtest_results.
 
 from __future__ import annotations
 
-import duckdb
+import os
+
+import psycopg
+import pytest
 
 from swingrl.agents.validation import (
     GateResult,
@@ -138,11 +141,14 @@ class TestCheckValidationGates:
 
 
 class TestDuckDBDDL:
-    """TRAIN-12: model_metadata and backtest_results DuckDB tables."""
+    """TRAIN-12: model_metadata and backtest_results PostgreSQL tables."""
 
+    @pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
     def test_model_metadata_table_created(self) -> None:
         """TRAIN-12: model_metadata table exists after schema init."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ["DATABASE_URL"]
+        conn = psycopg.connect(db_url, autocommit=True)
+        conn.execute("DROP TABLE IF EXISTS model_metadata")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS model_metadata (
                 model_id TEXT PRIMARY KEY,
@@ -175,9 +181,12 @@ class TestDuckDBDDL:
         assert result[0][0] == "model-001"
         conn.close()
 
+    @pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
     def test_backtest_results_table_created(self) -> None:
         """TRAIN-12: backtest_results table exists after schema init."""
-        conn = duckdb.connect(":memory:")
+        db_url = os.environ["DATABASE_URL"]
+        conn = psycopg.connect(db_url, autocommit=True)
+        conn.execute("DROP TABLE IF EXISTS backtest_results CASCADE")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS backtest_results (
                 result_id TEXT PRIMARY KEY,
@@ -190,17 +199,17 @@ class TestDuckDBDDL:
                 train_end_idx INTEGER,
                 test_start_idx INTEGER,
                 test_end_idx INTEGER,
-                sharpe DOUBLE,
-                sortino DOUBLE,
-                calmar DOUBLE,
-                mdd DOUBLE,
-                profit_factor DOUBLE,
-                win_rate DOUBLE,
+                sharpe DOUBLE PRECISION,
+                sortino DOUBLE PRECISION,
+                calmar DOUBLE PRECISION,
+                mdd DOUBLE PRECISION,
+                profit_factor DOUBLE PRECISION,
+                win_rate DOUBLE PRECISION,
                 total_trades INTEGER,
-                avg_drawdown DOUBLE,
+                avg_drawdown DOUBLE PRECISION,
                 max_dd_duration INTEGER,
-                final_portfolio_value DOUBLE,
-                total_return DOUBLE,
+                final_portfolio_value DOUBLE PRECISION,
+                total_return DOUBLE PRECISION,
                 created_at TIMESTAMP DEFAULT current_timestamp
             )
         """)
@@ -218,16 +227,17 @@ class TestDuckDBDDL:
         assert result[0][0] == "result-001"
         conn.close()
 
+    @pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
     def test_db_init_schema_creates_tables(self) -> None:
-        """TRAIN-12: DatabaseManager.init_schema creates both tables in DuckDB."""
-        # This test verifies the DDL is in init_schema by checking with raw DuckDB
-        # We import and call the DDL directly since full DatabaseManager needs config
+        """TRAIN-12: DatabaseManager.init_schema creates both tables in PostgreSQL."""
+        db_url = os.environ["DATABASE_URL"]
+        conn = psycopg.connect(db_url, autocommit=True)
 
-        conn = duckdb.connect(":memory:")
-        cursor = conn.cursor()
+        conn.execute("DROP TABLE IF EXISTS model_metadata CASCADE")
+        conn.execute("DROP TABLE IF EXISTS backtest_results CASCADE")
 
         # Execute the same DDL that init_schema would run
-        cursor.execute("""
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS model_metadata (
                 model_id TEXT PRIMARY KEY,
                 environment TEXT NOT NULL,
@@ -237,14 +247,14 @@ class TestDuckDBDDL:
                 training_end_date TEXT,
                 total_timesteps INTEGER,
                 converged_at_step INTEGER,
-                validation_sharpe DOUBLE,
-                ensemble_weight DOUBLE,
+                validation_sharpe DOUBLE PRECISION,
+                ensemble_weight DOUBLE PRECISION,
                 model_path TEXT NOT NULL,
                 vec_normalize_path TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT current_timestamp
             )
         """)
-        cursor.execute("""
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS backtest_results (
                 result_id TEXT PRIMARY KEY,
                 model_id TEXT NOT NULL,
@@ -256,26 +266,25 @@ class TestDuckDBDDL:
                 train_end_idx INTEGER,
                 test_start_idx INTEGER,
                 test_end_idx INTEGER,
-                sharpe DOUBLE,
-                sortino DOUBLE,
-                calmar DOUBLE,
-                mdd DOUBLE,
-                profit_factor DOUBLE,
-                win_rate DOUBLE,
+                sharpe DOUBLE PRECISION,
+                sortino DOUBLE PRECISION,
+                calmar DOUBLE PRECISION,
+                mdd DOUBLE PRECISION,
+                profit_factor DOUBLE PRECISION,
+                win_rate DOUBLE PRECISION,
                 total_trades INTEGER,
-                avg_drawdown DOUBLE,
+                avg_drawdown DOUBLE PRECISION,
                 max_dd_duration INTEGER,
-                final_portfolio_value DOUBLE,
-                total_return DOUBLE,
+                final_portfolio_value DOUBLE PRECISION,
+                total_return DOUBLE PRECISION,
                 created_at TIMESTAMP DEFAULT current_timestamp
             )
         """)
 
-        tables = cursor.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
+        tables = conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
         ).fetchall()
         table_names = [t[0] for t in tables]
         assert "model_metadata" in table_names
         assert "backtest_results" in table_names
-        cursor.close()
         conn.close()

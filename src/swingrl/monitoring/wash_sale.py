@@ -37,18 +37,21 @@ def record_realized_loss(
         symbol: Ticker symbol of the security sold at a loss.
         sale_date: ISO date string of the loss-generating sale.
         loss_amount: Dollar amount of the realized loss (positive).
-        db: DatabaseManager providing SQLite connection.
+        db: DatabaseManager providing PostgreSQL connection.
     """
     wash_window_end = (datetime.strptime(sale_date, "%Y-%m-%d") + timedelta(days=30)).strftime(
         "%Y-%m-%d"
     )
 
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO wash_sale_tracker "
+            "INSERT INTO wash_sale_tracker "
             "(symbol, sale_date, loss_amount, wash_window_end, triggered) "
-            "VALUES (?, ?, ?, ?, 0)",
-            (symbol, sale_date, loss_amount, wash_window_end),
+            "VALUES (%s, %s, %s, %s, 0) "
+            "ON CONFLICT (symbol, sale_date) DO UPDATE SET "
+            "loss_amount=EXCLUDED.loss_amount, wash_window_end=EXCLUDED.wash_window_end, "
+            "triggered=EXCLUDED.triggered",
+            [symbol, sale_date, loss_amount, wash_window_end],
         )
 
     log.info(
@@ -72,7 +75,7 @@ def scan_wash_sales(
 
     Args:
         fills: List of FillResult objects from recent trades.
-        db: DatabaseManager providing SQLite connection.
+        db: DatabaseManager providing PostgreSQL connection.
 
     Returns:
         List of warning dicts with symbol, window_end, loss_amount
@@ -85,14 +88,14 @@ def scan_wash_sales(
 
     warnings: list[dict[str, object]] = []
 
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         for fill in equity_buys:
             row = conn.execute(
                 "SELECT sale_date, wash_window_end, loss_amount "
                 "FROM wash_sale_tracker "
-                "WHERE symbol = ? AND date(wash_window_end) > date('now') AND triggered = 0 "
+                "WHERE symbol = %s AND wash_window_end > CURRENT_DATE AND triggered = 0 "
                 "ORDER BY sale_date DESC LIMIT 1",
-                (fill.symbol,),
+                [fill.symbol],
             ).fetchone()
 
             if row is None:
@@ -105,8 +108,8 @@ def scan_wash_sales(
 
             # Mark as triggered
             conn.execute(
-                "UPDATE wash_sale_tracker SET triggered = 1 WHERE symbol = ? AND sale_date = ?",
-                (fill.symbol, sale_date),
+                "UPDATE wash_sale_tracker SET triggered = 1 WHERE symbol = %s AND sale_date = %s",
+                [fill.symbol, sale_date],
             )
 
             log.warning(

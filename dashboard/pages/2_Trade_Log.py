@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def fetch_trades(
-    conn: sqlite3.Connection,
+    conn: Any,
     environment: str | None = None,
     side: str | None = None,
     start_date: str | None = None,
@@ -29,16 +29,16 @@ def fetch_trades(
     params: list[str] = []
 
     if environment and environment != "All":
-        query += " AND environment = ?"
+        query += " AND environment = %s"
         params.append(environment)
     if side and side != "All":
-        query += " AND side = ?"
+        query += " AND side = %s"
         params.append(side)
     if start_date:
-        query += " AND timestamp >= ?"
+        query += " AND timestamp >= %s"
         params.append(start_date)
     if end_date:
-        query += " AND timestamp <= ?"
+        query += " AND timestamp <= %s"
         params.append(end_date)
 
     query += " ORDER BY timestamp DESC"
@@ -64,9 +64,9 @@ def compute_trade_stats(df: pd.DataFrame) -> dict[str, object]:
 st.header("Trade Log")
 
 try:
-    from app import get_sqlite_conn
+    from app import get_pg_conn
 
-    conn = get_sqlite_conn()
+    conn = get_pg_conn()
 
     # Filters
     col1, col2, col3, col4 = st.columns(4)

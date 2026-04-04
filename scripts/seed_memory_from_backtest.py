@@ -1,8 +1,8 @@
 """Seed memory agent with backtest fill records before live trading.
 
-Queries evaluation fills from SQLite (trading_ops.db), joins HMM regime
-labels from DuckDB (market_data.db), formats each fill as plain text, and
-ingests via MemoryClient.ingest(). Triggers consolidation after all fills.
+Queries evaluation fills from PostgreSQL, joins HMM regime labels,
+formats each fill as plain text, and ingests via MemoryClient.ingest().
+Triggers consolidation after all fills.
 
 Run once before enabling live trading to give the memory agent historical
 trading context.
@@ -22,13 +22,12 @@ Graceful handling:
 from __future__ import annotations
 
 import argparse
-import sqlite3
 import sys
-from pathlib import Path
 from typing import Any
 
-import duckdb
+import psycopg
 import structlog
+from psycopg.rows import dict_row
 
 from swingrl.config.schema import load_config
 from swingrl.memory.client import MemoryClient
@@ -42,38 +41,35 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _load_fills(sqlite_path: Path) -> list[dict[str, Any]]:
-    """Load evaluation fills from SQLite trading_ops.db.
+def _load_fills(database_url: str) -> list[dict[str, Any]]:
+    """Load evaluation fills from PostgreSQL.
 
     Queries fills joined with training_runs to get reward weights.
     Only ingests fills from run_type = 'evaluation' rows.
 
     Args:
-        sqlite_path: Path to the SQLite trading_ops.db file.
+        database_url: PostgreSQL connection URL.
 
     Returns:
         List of fill dicts. Empty list if no evaluation fills exist or
         the fills/training_runs tables are missing.
     """
-    if not sqlite_path.exists():
-        log.info("sqlite_not_found", path=str(sqlite_path), note="No fills to seed")
-        return []
-
     try:
-        with sqlite3.connect(str(sqlite_path)) as conn:
-            cursor = conn.cursor()
-
+        with psycopg.connect(database_url, row_factory=dict_row) as conn:
             # Verify fills table exists
-            cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='fills'")
-            if cursor.fetchone()[0] == 0:
+            result = conn.execute(
+                "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename = 'fills'"
+            ).fetchone()
+            if result[0] == 0:
                 log.info("fills_table_missing", note="No fills to seed (table not yet created)")
                 return []
 
             # Verify training_runs table exists
-            cursor.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='training_runs'"
-            )
-            if cursor.fetchone()[0] == 0:
+            result = conn.execute(
+                "SELECT COUNT(*) FROM pg_tables "
+                "WHERE schemaname = 'public' AND tablename = 'training_runs'"
+            ).fetchone()
+            if result[0] == 0:
                 log.info(
                     "training_runs_table_missing",
                     note="No fills to seed (training_runs table not yet created)",
@@ -81,9 +77,13 @@ def _load_fills(sqlite_path: Path) -> list[dict[str, Any]]:
                 return []
 
             # Verify run_type column exists in training_runs
-            cursor.execute("PRAGMA table_info(training_runs)")
-            columns = [row[1] for row in cursor.fetchall()]
-            if "run_type" not in columns:
+            result = conn.execute(
+                "SELECT COUNT(*) FROM information_schema.columns "
+                "WHERE table_name = 'training_runs' AND column_name = 'run_type'"
+            ).fetchone()
+            has_run_type = result[0] > 0
+
+            if not has_run_type:
                 log.warning(
                     "training_runs_run_type_missing",
                     note=(
@@ -91,7 +91,6 @@ def _load_fills(sqlite_path: Path) -> list[dict[str, Any]]:
                         "seeding all fills (no evaluation filter applied)"
                     ),
                 )
-                # Fall back to no run_type filter if migration not applied
                 rows = conn.execute(
                     """
                     SELECT f.symbol, f.env, f.side, f.algo, f.run_id,
@@ -119,7 +118,7 @@ def _load_fills(sqlite_path: Path) -> list[dict[str, Any]]:
                     """
                 ).fetchall()
 
-    except sqlite3.Error as exc:
+    except Exception as exc:
         log.warning("fills_query_failed", error=str(exc), note="No fills to seed")
         return []
 
@@ -138,7 +137,7 @@ def _load_fills(sqlite_path: Path) -> list[dict[str, Any]]:
         "rw_sharpe",
         "rw_drawdown",
     ]
-    fills = [dict(zip(cols, row, strict=False)) for row in rows]
+    fills = [dict(zip(cols, [row[c] for c in cols], strict=False)) for row in rows]
     log.info("fills_loaded", count=len(fills))
     return fills
 
@@ -160,7 +159,7 @@ def _derive_regime(p_bull: float, p_bear: float, p_crisis: float) -> tuple[str, 
 
 
 def _lookup_regime(
-    duckdb_conn: Any,
+    pg_conn: Any,
     timestamp: str | None,
     env: str,
 ) -> tuple[str, float]:
@@ -171,7 +170,7 @@ def _lookup_regime(
     p_crisis probabilities.
 
     Args:
-        duckdb_conn: Active DuckDB connection.
+        pg_conn: Active PostgreSQL connection.
         timestamp: Fill timestamp string (ISO 8601 or compatible).
         env: Environment name ("equity" or "crypto").
 
@@ -184,18 +183,18 @@ def _lookup_regime(
 
     try:
         # Check if hmm_state_history table exists
-        exists = duckdb_conn.execute(
+        exists = pg_conn.execute(
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'hmm_state_history'"
         ).fetchone()
         if not exists or exists[0] == 0:
             return ("unknown", 0.0)
 
         # Query actual schema columns: environment, date, p_bull, p_bear, p_crisis
-        row = duckdb_conn.execute(
+        row = pg_conn.execute(
             """
             SELECT p_bull, p_bear, p_crisis
             FROM hmm_state_history
-            WHERE environment = ? AND date <= ?
+            WHERE environment = %s AND date <= %s
             ORDER BY date DESC LIMIT 1
             """,
             [env, timestamp],
@@ -205,7 +204,7 @@ def _lookup_regime(
             return _derive_regime(float(row[0]), float(row[1]), float(row[2] or 0.0))
 
         # If no row found for this env/timestamp, try most recent overall
-        row = duckdb_conn.execute(
+        row = pg_conn.execute(
             "SELECT p_bull, p_bear, p_crisis FROM hmm_state_history ORDER BY date DESC LIMIT 1"
         ).fetchone()
         if row:
@@ -273,18 +272,16 @@ def seed(config_path: str, memory_url: str, api_key: str = "") -> int:
     config = load_config(config_path)
     configure_logging(json_logs=config.logging.json_logs, log_level=config.logging.level)
 
-    sqlite_path = Path(config.system.sqlite_path)
-    duckdb_path = Path(config.system.duckdb_path)
+    database_url = config.system.database_url
 
     log.info(
         "seeding_started",
-        sqlite_path=str(sqlite_path),
-        duckdb_path=str(duckdb_path),
+        database_url=database_url,
         memory_url=memory_url,
     )
 
-    # ── Load fills from SQLite ───────────────────────────────────────────────
-    fills = _load_fills(sqlite_path)
+    # ── Load fills from PostgreSQL ───────────────────────────────────────────
+    fills = _load_fills(database_url)
 
     if not fills:
         log.info(
@@ -294,21 +291,14 @@ def seed(config_path: str, memory_url: str, api_key: str = "") -> int:
         print("INFO: No evaluation fills found. Memory seeding skipped.")
         return 0
 
-    # ── Open DuckDB for regime lookups ────────────────────────────────────────
-    duckdb_conn: Any = None
-    if duckdb_path.exists():
-        try:
-            duckdb_conn = duckdb.connect(str(duckdb_path), read_only=True)
-            log.info("duckdb_opened", path=str(duckdb_path))
-        except Exception as exc:
-            log.warning("duckdb_open_failed", path=str(duckdb_path), error=str(exc))
-            duckdb_conn = None
-    else:
-        log.warning(
-            "duckdb_not_found",
-            path=str(duckdb_path),
-            note="Regime labels will be 'unknown' for all fills",
-        )
+    # ── Open PostgreSQL for regime lookups ─────────────────────────────────────
+    pg_conn: Any = None
+    try:
+        pg_conn = psycopg.connect(database_url, row_factory=dict_row)
+        log.info("pg_opened", database_url=database_url)
+    except Exception as exc:
+        log.warning("pg_open_failed", database_url=database_url, error=str(exc))
+        pg_conn = None
 
     # ── Ingest fills via MemoryClient ─────────────────────────────────────────
     client = MemoryClient(base_url=memory_url, api_key=api_key)
@@ -318,8 +308,8 @@ def seed(config_path: str, memory_url: str, api_key: str = "") -> int:
     try:
         for fill in fills:
             dominant_regime, regime_conf = (
-                _lookup_regime(duckdb_conn, fill.get("timestamp"), fill.get("env", "equity"))
-                if duckdb_conn is not None
+                _lookup_regime(pg_conn, fill.get("timestamp"), fill.get("env", "equity"))
+                if pg_conn is not None
                 else ("unknown", 0.0)
             )
 
@@ -343,8 +333,8 @@ def seed(config_path: str, memory_url: str, api_key: str = "") -> int:
                 )
 
     finally:
-        if duckdb_conn is not None:
-            duckdb_conn.close()
+        if pg_conn is not None:
+            pg_conn.close()
 
     log.info("seeding_complete", ingested=ingested, failed=failed, total=len(fills))
 
@@ -380,7 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Seed the memory agent with backtest fill records before live trading. "
-            "Queries evaluation fills from SQLite, joins HMM regime from DuckDB, "
+            "Queries evaluation fills from PostgreSQL, joins HMM regime data, "
             "and ingests as plain text via MemoryClient."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,

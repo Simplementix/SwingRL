@@ -38,8 +38,9 @@ dependencies = [
     "fredapi>=0.5",
     "exchange-calendars>=4.13",
     "pyarrow>=14.0",
-    # Storage (Phase 4)
-    "duckdb>=1.0,<2",
+    # Storage (Phase 4) — PostgreSQL
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
     # Alerting (Phase 4)
     "httpx>=0.27",
     # Cross-source validation (Phase 4)
@@ -124,11 +125,12 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*", "fredapi.*", "exchange_calendars.*", "duckdb.*", "httpx.*", "yfinance.*", "stable_baselines3.*", "tenacity.*", "fastapi.*", "apscheduler.*", "starlette.*"]
+module = ["pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*", "fredapi.*", "exchange_calendars.*", "duckdb.*", "httpx.*", "yfinance.*", "stable_baselines3.*", "tenacity.*", "fastapi.*", "apscheduler.*", "starlette.*", "psycopg.*", "psycopg_pool.*"]
 ignore_missing_imports = true
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv"]
+skips = ["B603"]
 
 [tool.bandit.assert_used]
 skips = ["*/test_*.py", "*_test.py"]

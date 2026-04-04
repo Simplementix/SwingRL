@@ -445,17 +445,17 @@ def check_automated_triggers(
     # Trigger 1: VIX + CB threshold
     # VIX comes from DuckDB macro_features, drawdown from SQLite portfolio_snapshots
     try:
-        with db.duckdb() as cursor:
+        with db.connection() as cursor:
             vix_row = cursor.execute(
                 "SELECT value FROM macro_features "
                 "WHERE series_id = 'VIXCLS' ORDER BY date DESC LIMIT 1"
             ).fetchone()
 
         if vix_row is not None and vix_row[0] > _VIX_TRIGGER:
-            with db.sqlite() as conn:
+            with db.connection() as conn:
                 dd_row = conn.execute(
                     "SELECT MAX(drawdown_pct) as worst_dd FROM portfolio_snapshots "
-                    "WHERE timestamp > datetime('now', '-24 hours')"
+                    "WHERE timestamp > NOW() - INTERVAL '24 hours'"
                 ).fetchone()
 
             if (
@@ -473,10 +473,10 @@ def check_automated_triggers(
 
     # Trigger 2: NaN inference count in last 24h
     try:
-        with db.sqlite() as conn:
+        with db.connection() as conn:
             nan_row = conn.execute(
                 "SELECT COUNT(*) as nan_count FROM inference_outcomes "
-                "WHERE had_nan = 1 AND timestamp > datetime('now', '-24 hours')"
+                "WHERE had_nan = 1 AND timestamp > NOW() - INTERVAL '24 hours'"
             ).fetchone()
 
         if nan_row is not None and nan_row["nan_count"] >= _NAN_INFERENCE_THRESHOLD:
@@ -489,11 +489,11 @@ def check_automated_triggers(
 
     # Trigger 3: Binance.US IP ban (HTTP 418)
     try:
-        with db.sqlite() as conn:
+        with db.connection() as conn:
             ban_row = conn.execute(
                 "SELECT COUNT(*) as ban_count FROM api_errors "
-                "WHERE broker = 'binance_us' AND status_code = ? "
-                "AND timestamp > datetime('now', '-24 hours')",
+                "WHERE broker = 'binance_us' AND status_code = %s "
+                "AND timestamp > NOW() - INTERVAL '24 hours'",
                 (_IP_BAN_STATUS_CODE,),
             ).fetchone()
 

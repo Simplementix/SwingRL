@@ -1,4 +1,4 @@
-"""Training data loader — loads features and prices from DuckDB.
+"""Training data loader — loads features and prices from PostgreSQL.
 
 Assembles observation matrices using ObservationAssembler so the output
 shapes match the SB3 environment observation_space dimensions:
@@ -8,7 +8,7 @@ shapes match the SB3 environment observation_space dimensions:
 Usage:
     from swingrl.training.data_loader import load_features_prices
 
-    with db.duckdb() as conn:
+    with db.connection() as conn:
         features, prices = load_features_prices(conn, "equity", config)
 """
 
@@ -20,6 +20,7 @@ import numpy as np
 import structlog
 
 from swingrl.config.schema import SwingRLConfig
+from swingrl.data.pg_helpers import fetchdf
 from swingrl.features.assembler import ObservationAssembler
 from swingrl.features.pipeline import _CRYPTO_FEATURE_COLS, _EQUITY_FEATURE_COLS
 from swingrl.utils.exceptions import DataError
@@ -34,21 +35,22 @@ def _get_macro_array(conn: Any, date_str: str) -> np.ndarray:
     """Fetch macro features as (6,) array from macro_features table.
 
     Args:
-        conn: DuckDB connection.
+        conn: PostgreSQL connection.
         date_str: ISO date string (YYYY-MM-DD).
 
     Returns:
         (6,) float64 array.
     """
     try:
-        rows = conn.execute(
+        cur = conn.execute(
             """
             SELECT series_id, value FROM macro_features
-            WHERE date <= CAST(? AS DATE)
+            WHERE date <= %s::DATE
             ORDER BY date DESC
             """,
             [date_str],
-        ).fetchdf()
+        )
+        rows = fetchdf(cur)
 
         if rows.empty:
             return np.zeros(6)
@@ -75,7 +77,7 @@ def _get_hmm_probs(conn: Any, environment: str, date_str: str) -> np.ndarray:
     """Fetch HMM regime probabilities as (2,) array from hmm_state_history.
 
     Args:
-        conn: DuckDB connection.
+        conn: PostgreSQL connection.
         environment: "equity" or "crypto".
         date_str: ISO date/datetime string.
 
@@ -83,15 +85,16 @@ def _get_hmm_probs(conn: Any, environment: str, date_str: str) -> np.ndarray:
         (2,) float64 array [p_bull, p_bear].
     """
     try:
-        row = conn.execute(
+        cur = conn.execute(
             """
             SELECT p_bull, p_bear FROM hmm_state_history
-            WHERE environment = ? AND date <= CAST(? AS DATE)
+            WHERE environment = %s AND date <= %s::DATE
             ORDER BY date DESC
             LIMIT 1
             """,
             [environment, date_str],
-        ).fetchdf()
+        )
+        row = fetchdf(cur)
 
         if row.empty:
             return np.array([0.5, 0.5])
@@ -105,13 +108,13 @@ def load_features_prices(
     env_name: str,
     config: SwingRLConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load features and prices from DuckDB for the given environment.
+    """Load features and prices from PostgreSQL for the given environment.
 
     Assembles observation matrices using ObservationAssembler so the output
     shapes match the SB3 environment observation_space dimensions.
 
     Args:
-        conn: Active DuckDB connection.
+        conn: Active PostgreSQL connection.
         env_name: Environment name ("equity" or "crypto").
         config: Validated SwingRLConfig for symbol lists and sentiment flag.
 
@@ -133,10 +136,10 @@ def _load_equity(
     config: SwingRLConfig,
     assembler: ObservationAssembler,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load equity features and prices from DuckDB.
+    """Load equity features and prices from PostgreSQL.
 
     Args:
-        conn: DuckDB connection.
+        conn: PostgreSQL connection.
         config: SwingRLConfig with equity symbol list.
         assembler: ObservationAssembler initialized from config.
 
@@ -149,7 +152,7 @@ def _load_equity(
     equity_symbols = sorted(config.equity.symbols)
     per_asset_size = 15  # EQUITY_PER_ASSET_BASE
 
-    feat_df = conn.execute(
+    cur = conn.execute(
         """
         SELECT
             f.date,
@@ -161,19 +164,21 @@ def _load_equity(
         ) o ON f.date = o.date
         ORDER BY f.date, f.symbol
         """.format(feat_cols=", ".join(f"f.{c}" for c in _EQUITY_FEATURE_COLS))  # nosec B608
-    ).fetchdf()
+    )
+    feat_df = fetchdf(cur)
 
     if feat_df.empty:
         raise DataError("No data found in features_equity table")
 
-    prices_df = conn.execute(
+    cur = conn.execute(
         """
         SELECT date, symbol, close
         FROM ohlcv_daily
         WHERE symbol IN ({sym_list})
         ORDER BY date, symbol
         """.format(sym_list=", ".join(f"'{s}'" for s in equity_symbols))  # nosec B608
-    ).fetchdf()
+    )
+    prices_df = fetchdf(cur)
 
     feat_dates = sorted(feat_df["date"].unique())
 
@@ -243,10 +248,10 @@ def _load_crypto(
     config: SwingRLConfig,
     assembler: ObservationAssembler,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load crypto features and prices from DuckDB.
+    """Load crypto features and prices from PostgreSQL.
 
     Args:
-        conn: DuckDB connection.
+        conn: PostgreSQL connection.
         config: SwingRLConfig with crypto symbol list.
         assembler: ObservationAssembler initialized from config.
 
@@ -259,7 +264,7 @@ def _load_crypto(
     crypto_symbols = sorted(config.crypto.symbols)
     per_asset_size = 13  # CRYPTO_PER_ASSET
 
-    feat_df = conn.execute(
+    cur = conn.execute(
         """
         SELECT
             f.datetime,
@@ -271,19 +276,21 @@ def _load_crypto(
         ) o ON f.datetime = o.datetime
         ORDER BY f.datetime, f.symbol
         """.format(feat_cols=", ".join(f"f.{c}" for c in _CRYPTO_FEATURE_COLS))  # nosec B608
-    ).fetchdf()
+    )
+    feat_df = fetchdf(cur)
 
     if feat_df.empty:
         raise DataError("No data found in features_crypto table")
 
-    prices_df = conn.execute(
+    cur = conn.execute(
         """
         SELECT datetime, symbol, close
         FROM ohlcv_4h
         WHERE symbol IN ({sym_list})
         ORDER BY datetime, symbol
         """.format(sym_list=", ".join(f"'{s}'" for s in crypto_symbols))  # nosec B608
-    ).fetchdf()
+    )
+    prices_df = fetchdf(cur)
 
     feat_datetimes = sorted(feat_df["datetime"].unique())
 

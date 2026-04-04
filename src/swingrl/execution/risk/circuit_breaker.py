@@ -178,10 +178,10 @@ class CircuitBreaker:
     def resume(self) -> None:
         """Mark latest halt event as resumed."""
         now = datetime.now(tz=UTC).isoformat()
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
-                "UPDATE circuit_breaker_events SET resumed_at = ? "
-                "WHERE environment = ? AND resumed_at IS NULL",
+                "UPDATE circuit_breaker_events SET resumed_at = %s "
+                "WHERE environment = %s AND resumed_at IS NULL",
                 (now, self._environment),
             )
         log.info("circuit_breaker_resumed", environment=self._environment)
@@ -191,11 +191,11 @@ class CircuitBreaker:
         event_id = str(uuid4())
         triggered_at = datetime.now(tz=UTC).isoformat()
 
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
                 "INSERT INTO circuit_breaker_events "
                 "(event_id, environment, triggered_at, trigger_value, threshold, reason) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s)",
                 (event_id, self._environment, triggered_at, trigger_value, threshold, reason),
             )
 
@@ -209,10 +209,10 @@ class CircuitBreaker:
 
     def _latest_event(self) -> dict[str, str | float | None] | None:
         """Load the latest circuit breaker event for this environment."""
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT * FROM circuit_breaker_events "
-                "WHERE environment = ? ORDER BY triggered_at DESC LIMIT 1",
+                "WHERE environment = %s ORDER BY triggered_at DESC LIMIT 1",
                 (self._environment,),
             ).fetchone()
         if row is None:

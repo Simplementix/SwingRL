@@ -86,6 +86,7 @@ logging:
   level: INFO
   json_logs: false
 system:
+  database_url: "postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
   duckdb_path: data/db/market_data.ddb
   sqlite_path: data/db/trading_ops.db
 alerting:
@@ -101,10 +102,20 @@ features:
 
 
 @pytest.fixture
-def duckdb_conn() -> Any:
-    """In-memory DuckDB connection for integration tests."""
-    import duckdb
+def pg_conn() -> Any:
+    """PostgreSQL connection for integration tests.
 
-    conn = duckdb.connect(":memory:")
+    Requires DATABASE_URL env var. Skips if not available.
+    """
+    import os  # noqa: PLC0415
+
+    import psycopg  # noqa: PLC0415
+    from psycopg.rows import dict_row  # noqa: PLC0415
+
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        pytest.skip("DATABASE_URL not set — no PostgreSQL available for testing")
+
+    conn = psycopg.connect(db_url, row_factory=dict_row)
     yield conn
     conn.close()

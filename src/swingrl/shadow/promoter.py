@@ -66,11 +66,11 @@ def evaluate_shadow_promotion(
         min_trades = config.shadow.crypto_eval_cycles
 
     # Count shadow trades and find earliest shadow trade timestamp
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         row = conn.execute(
             "SELECT COUNT(*) as cnt, MIN(timestamp) as earliest "
-            "FROM shadow_trades WHERE environment = ?",
-            (env_name,),
+            "FROM shadow_trades WHERE environment = %s",
+            [env_name],
         ).fetchone()
         shadow_count = row["cnt"] if row else 0
         shadow_start = row["earliest"] if row else None
@@ -192,10 +192,10 @@ def _returns_from_portfolio_snapshots(db: Any, env_name: str) -> np.ndarray:
     Returns:
         Numpy array of period returns.
     """
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         rows = conn.execute(
-            "SELECT total_value FROM portfolio_snapshots WHERE environment = ? ORDER BY timestamp",
-            (env_name,),
+            "SELECT total_value FROM portfolio_snapshots WHERE environment = %s ORDER BY timestamp",
+            [env_name],
         ).fetchall()
 
     if len(rows) < 2:
@@ -226,11 +226,11 @@ def _returns_from_shadow_trades(db: Any, env_name: str) -> np.ndarray:
     Returns:
         Numpy array of per-trade returns sorted by timestamp.
     """
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         rows = conn.execute(
             "SELECT symbol, side, price, quantity, timestamp "
-            "FROM shadow_trades WHERE environment = ? ORDER BY timestamp",
-            (env_name,),
+            "FROM shadow_trades WHERE environment = %s ORDER BY timestamp",
+            [env_name],
         ).fetchall()
 
     if len(rows) < 2:
@@ -313,11 +313,11 @@ def _compute_profit_factor(db: Any, table: str, env_name: str) -> float:
     Returns:
         Profit factor (gross wins / gross losses). Returns 0.0 if no completed trades.
     """
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         rows = conn.execute(
             f"SELECT symbol, side, price, quantity FROM {table} "  # noqa: S608
-            f"WHERE environment = ? ORDER BY timestamp",  # nosec B608
-            (env_name,),
+            f"WHERE environment = %s ORDER BY timestamp",  # nosec B608
+            [env_name],
         ).fetchall()
 
     if len(rows) < 2:
@@ -379,11 +379,11 @@ def _check_cb_during_shadow(
     if shadow_start is None:
         return False
 
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         row = conn.execute(
             "SELECT COUNT(*) as cnt FROM circuit_breaker_events "
-            "WHERE environment = ? AND triggered_at >= ?",
-            (env_name, shadow_start),
+            "WHERE environment = %s AND triggered_at >= %s",
+            [env_name, shadow_start],
         ).fetchone()
 
     return (row["cnt"] if row else 0) > 0

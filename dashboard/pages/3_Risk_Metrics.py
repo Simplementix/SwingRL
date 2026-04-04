@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import plotly.express as px
@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # ---------------------------------------------------------------------------
 
 
-def get_current_drawdown(conn: sqlite3.Connection) -> dict[str, float]:
+def get_current_drawdown(conn: Any) -> dict[str, float]:
     """Return latest drawdown_pct per environment."""
     cursor = conn.execute(
         "SELECT environment, drawdown_pct FROM portfolio_snapshots "
@@ -27,7 +27,7 @@ def get_current_drawdown(conn: sqlite3.Connection) -> dict[str, float]:
         "  GROUP BY environment"
         ")"
     )
-    return {row[0]: row[1] or 0.0 for row in cursor.fetchall()}
+    return {row["environment"]: row["drawdown_pct"] or 0.0 for row in cursor.fetchall()}
 
 
 def drawdown_color(pct: float) -> str:
@@ -41,7 +41,7 @@ def drawdown_color(pct: float) -> str:
         return "red"
 
 
-def fetch_drawdown_history(conn: sqlite3.Connection) -> pd.DataFrame:
+def fetch_drawdown_history(conn: Any) -> pd.DataFrame:
     """Return drawdown_pct time series for all environments."""
     return pd.read_sql_query(
         "SELECT timestamp, environment, drawdown_pct "
@@ -52,7 +52,7 @@ def fetch_drawdown_history(conn: sqlite3.Connection) -> pd.DataFrame:
     )
 
 
-def fetch_circuit_breaker_events(conn: sqlite3.Connection) -> pd.DataFrame:
+def fetch_circuit_breaker_events(conn: Any) -> pd.DataFrame:
     """Return circuit breaker events, most recent first."""
     return pd.read_sql_query(
         "SELECT * FROM circuit_breaker_events ORDER BY timestamp DESC",
@@ -60,7 +60,7 @@ def fetch_circuit_breaker_events(conn: sqlite3.Connection) -> pd.DataFrame:
     )
 
 
-def get_cb_status(conn: sqlite3.Connection) -> dict[str, str]:
+def get_cb_status(conn: Any) -> dict[str, str]:
     """Return circuit breaker status per environment (Active with cooldown or All Clear)."""
     cursor = conn.execute(
         "SELECT environment, cooldown_end FROM circuit_breaker_events "
@@ -70,7 +70,9 @@ def get_cb_status(conn: sqlite3.Connection) -> dict[str, str]:
         ")"
     )
     status: dict[str, str] = {}
-    for env, cooldown_end in cursor.fetchall():
+    for row in cursor.fetchall():
+        env = row["environment"]
+        cooldown_end = row["cooldown_end"]
         if cooldown_end:
             status[env] = f"Active (cooldown until {cooldown_end})"
         else:
@@ -78,10 +80,10 @@ def get_cb_status(conn: sqlite3.Connection) -> dict[str, str]:
     return status
 
 
-def fetch_risk_decisions(conn: sqlite3.Connection, limit: int = 20) -> pd.DataFrame:
+def fetch_risk_decisions(conn: Any, limit: int = 20) -> pd.DataFrame:
     """Return most recent risk decisions."""
     return pd.read_sql_query(
-        "SELECT * FROM risk_decisions ORDER BY timestamp DESC LIMIT ?",
+        "SELECT * FROM risk_decisions ORDER BY timestamp DESC LIMIT %s",
         conn,
         params=(limit,),
     )
@@ -94,9 +96,9 @@ def fetch_risk_decisions(conn: sqlite3.Connection, limit: int = 20) -> pd.DataFr
 st.header("Risk Metrics")
 
 try:
-    from app import get_sqlite_conn
+    from app import get_pg_conn
 
-    conn = get_sqlite_conn()
+    conn = get_pg_conn()
 
     # Current drawdown per environment
     st.subheader("Current Drawdown")

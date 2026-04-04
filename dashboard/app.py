@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
-import sqlite3
-from pathlib import Path
 
-import duckdb
+import psycopg
 import streamlit as st
+from psycopg.rows import dict_row
 from streamlit_autorefresh import st_autorefresh
 
 # ---------------------------------------------------------------------------
@@ -23,23 +22,14 @@ st.set_page_config(
 st_autorefresh(interval=300_000, key="dashboard_refresh")  # 5-minute refresh
 
 # ---------------------------------------------------------------------------
-# DB path configuration
+# DB connection
 # ---------------------------------------------------------------------------
 
-DB_DIR: Path = Path(os.environ.get("SWINGRL_DB_DIR", "db"))
 
-
-def get_sqlite_conn() -> sqlite3.Connection:
-    """Return a read-only SQLite connection to trading_ops.db."""
-    db_path = DB_DIR / "trading_ops.db"
-    uri = f"file:{db_path}?mode=ro"
-    return sqlite3.connect(uri, uri=True, check_same_thread=False)
-
-
-def get_duckdb_conn() -> duckdb.DuckDBPyConnection:
-    """Return a read-only DuckDB connection to market_data.ddb."""
-    db_path = DB_DIR / "market_data.ddb"
-    return duckdb.connect(str(db_path), read_only=True)
+def get_pg_conn() -> psycopg.Connection:
+    """Return a PostgreSQL connection to the swingrl database."""
+    url = os.environ.get("DATABASE_URL", "postgresql://swingrl:changeme@localhost:5432/swingrl")
+    return psycopg.connect(url, row_factory=dict_row)
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +53,7 @@ st.sidebar.divider()
 st.sidebar.subheader("System Status")
 
 try:
-    conn = get_sqlite_conn()
+    conn = get_pg_conn()
     cursor = conn.execute(
         "SELECT environment, MAX(timestamp) AS last_ts "
         "FROM portfolio_snapshots GROUP BY environment"
@@ -71,8 +61,8 @@ try:
     rows = cursor.fetchall()
     conn.close()
     if rows:
-        for env, last_ts in rows:
-            st.sidebar.text(f"{env.capitalize()}: {last_ts}")
+        for row in rows:
+            st.sidebar.text(f"{row['environment'].capitalize()}: {row['last_ts']}")
     else:
         st.sidebar.info("No portfolio data yet")
 except Exception:

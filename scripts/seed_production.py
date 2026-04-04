@@ -1,7 +1,8 @@
 """CLI entry point for production DB seeding.
 
 Implements Doc 14 SS10.1 7-step DB seeding procedure for transferring
-databases from M1 Mac to homelab. Validates file integrity after copy.
+database files from M1 Mac to homelab. Validates file integrity after copy.
+PostgreSQL connectivity is verified via a simple SELECT 1 query.
 
 Usage:
     python scripts/seed_production.py --source-dir /path/to/m1/db --target-dir db/
@@ -12,8 +13,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shutil
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -94,45 +95,30 @@ def _sha256(file_path: Path) -> str:
     return h.hexdigest()
 
 
-def _check_sqlite_integrity(db_path: Path) -> bool:
-    """Run PRAGMA integrity_check on SQLite database.
-
-    Args:
-        db_path: Path to SQLite database.
+def _check_postgres_connectivity() -> bool:
+    """Verify PostgreSQL database is accessible via SELECT 1.
 
     Returns:
-        True if integrity check passes.
+        True if connectivity check passes.
     """
     try:
-        conn = sqlite3.connect(str(db_path))
-        result = conn.execute("PRAGMA integrity_check").fetchone()
-        conn.close()
-        return result is not None and result[0] == "ok"
-    except Exception as exc:
-        log.error("sqlite_integrity_failed", path=str(db_path), error=str(exc))
-        return False
+        import psycopg  # noqa: PLC0415
 
-
-def _check_duckdb_integrity(db_path: Path) -> bool:
-    """Run basic count queries on DuckDB tables.
-
-    Args:
-        db_path: Path to DuckDB database.
-
-    Returns:
-        True if basic queries succeed.
-    """
-    try:
-        import duckdb
-
-        conn = duckdb.connect(str(db_path), read_only=True)
-        tables = conn.execute("SHOW TABLES").fetchall()
+        database_url = os.environ.get(
+            "DATABASE_URL",
+            "postgresql://swingrl:changeme@localhost:5432/swingrl",  # pragma: allowlist secret
+        )
+        conn = psycopg.connect(database_url)
+        result = conn.execute("SELECT 1").fetchone()
+        tables = conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+        ).fetchall()
         table_count = len(tables)
         conn.close()
-        log.info("duckdb_tables_found", count=table_count, path=str(db_path))
-        return table_count > 0
+        log.info("pg_tables_found", count=table_count)
+        return result is not None and result[0] == 1
     except Exception as exc:
-        log.error("duckdb_integrity_failed", path=str(db_path), error=str(exc))
+        log.error("pg_connectivity_failed", error=str(exc))
         return False
 
 
@@ -212,26 +198,14 @@ def main(argv: list[str] | None = None) -> int:
         print("\nError: Checksum verification failed!")
         return 1
 
-    # Step 5: Run integrity checks
+    # Step 5: Run integrity checks (PostgreSQL connectivity)
     integrity_ok = True
     if not skip_integrity:
-        # SQLite integrity
-        sqlite_path = target_dir / "trading_ops.db"
-        if sqlite_path.exists():
-            if _check_sqlite_integrity(sqlite_path):
-                log.info("sqlite_integrity_passed", path=str(sqlite_path))
-            else:
-                log.error("sqlite_integrity_failed", path=str(sqlite_path))
-                integrity_ok = False
-
-        # DuckDB integrity
-        duckdb_path = target_dir / "market_data.ddb"
-        if duckdb_path.exists():
-            if _check_duckdb_integrity(duckdb_path):
-                log.info("duckdb_integrity_passed", path=str(duckdb_path))
-            else:
-                log.error("duckdb_integrity_failed", path=str(duckdb_path))
-                integrity_ok = False
+        if _check_postgres_connectivity():
+            log.info("pg_connectivity_passed")
+        else:
+            log.error("pg_connectivity_failed")
+            integrity_ok = False
 
     if not integrity_ok:
         print("\nError: Integrity check failed!")

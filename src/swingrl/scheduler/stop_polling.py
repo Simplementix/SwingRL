@@ -34,7 +34,7 @@ def start_stop_polling_thread(
 
     Args:
         config: Validated SwingRLConfig.
-        db: DatabaseManager providing SQLite connection.
+        db: DatabaseManager providing PostgreSQL connection.
 
     Returns:
         The started daemon thread.
@@ -66,7 +66,7 @@ def _poll_stop_prices(
 
     Args:
         config: Validated SwingRLConfig.
-        db: DatabaseManager providing SQLite connection.
+        db: DatabaseManager providing PostgreSQL connection.
     """
     while True:
         try:
@@ -76,7 +76,7 @@ def _poll_stop_prices(
                 continue
 
             # Query open crypto positions
-            with db.sqlite() as conn:
+            with db.connection() as conn:
                 rows = conn.execute(
                     "SELECT symbol, side, quantity, stop_loss_price, take_profit_price "
                     "FROM positions "

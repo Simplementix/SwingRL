@@ -12,11 +12,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sqlite3
 import ssl
 import time
 import urllib.request
 from typing import Any
+
+import psycopg
 
 # Must run from services/memory context (inside container)
 from memory_agents.consolidate import (
@@ -24,6 +25,7 @@ from memory_agents.consolidate import (
     _PHASE_A_SYSTEM_PROMPT,
     ConsolidateAgent,
 )
+from psycopg.rows import dict_row
 
 from db import (
     archive_memories_async,
@@ -34,7 +36,10 @@ from db import (
 )
 
 API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-DB_PATH = os.environ.get("MEMORY_DB_PATH", "/app/db/memory.db")
+DB_URL = os.environ.get(
+    "MEMORY_DATABASE_URL",
+    "postgresql://swingrl:changeme@localhost:5432/memory",  # pragma: allowlist secret
+)
 MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -88,11 +93,11 @@ async def run() -> None:
     init_db()
     init_capacity_limiters()
     agent = ConsolidateAgent()
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg.connect(DB_URL, row_factory=dict_row)
 
     for env_name in ("equity", "crypto"):
         rows = conn.execute(
-            "SELECT id, text FROM memories WHERE source LIKE ? AND archived=0",
+            "SELECT id, text FROM memories WHERE source LIKE %s AND archived=0",
             (f"walk_forward:{env_name}%",),
         ).fetchall()
 
@@ -100,8 +105,8 @@ async def run() -> None:
             print(f"{env_name}: no unarchived memories, skipping")
             continue
 
-        ids = [r[0] for r in rows]
-        texts = "\n\n".join(f"- {r[1]}" for r in rows)
+        ids = [r["id"] for r in rows]
+        texts = "\n\n".join(f"- {r['text']}" for r in rows)
         print(f"\n{env_name}: {len(rows)} memories, {len(texts)} chars")
 
         user_prompt = (

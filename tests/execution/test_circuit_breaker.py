@@ -132,9 +132,9 @@ class TestCBCooldown:
 
         # Fast-forward triggered_at to ~1 day ago (33% of 3-day cooldown => stage 2 = 0.50)
         triggered_at = (datetime.now(tz=UTC) - timedelta(days=1)).isoformat()
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
-                "UPDATE circuit_breaker_events SET triggered_at = ? WHERE environment = 'crypto'",
+                "UPDATE circuit_breaker_events SET triggered_at = %s WHERE environment = 'crypto'",
                 (triggered_at,),
             )
 
@@ -150,9 +150,9 @@ class TestCBCooldown:
 
         # Fast-forward to ~75% of 3-day cooldown (2.25 days)
         triggered_at = (datetime.now(tz=UTC) - timedelta(days=2, hours=6)).isoformat()
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
-                "UPDATE circuit_breaker_events SET triggered_at = ? WHERE environment = 'crypto'",
+                "UPDATE circuit_breaker_events SET triggered_at = %s WHERE environment = 'crypto'",
                 (triggered_at,),
             )
 
@@ -169,9 +169,9 @@ class TestCBCooldown:
 
         # Fast-forward past 3-day cooldown
         triggered_at = (datetime.now(tz=UTC) - timedelta(days=4)).isoformat()
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
-                "UPDATE circuit_breaker_events SET triggered_at = ? WHERE environment = 'crypto'",
+                "UPDATE circuit_breaker_events SET triggered_at = %s WHERE environment = 'crypto'",
                 (triggered_at,),
             )
 

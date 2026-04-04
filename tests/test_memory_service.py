@@ -1608,14 +1608,19 @@ class TestTrainingTelemetryDDL:
 
     def test_training_epochs_table_created(self, tmp_path: pytest.TempPathFactory) -> None:
         """TRAIN-06: apply_training_telemetry_ddl creates training_epochs table in DuckDB."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             result = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'training_epochs'"
             ).fetchone()
@@ -1625,14 +1630,19 @@ class TestTrainingTelemetryDDL:
 
     def test_training_epochs_has_all_columns(self, tmp_path: pytest.TempPathFactory) -> None:
         """TRAIN-06: training_epochs table has all required columns."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             cols = conn.execute(
                 "SELECT column_name FROM information_schema.columns WHERE table_name = 'training_epochs'"
             ).fetchall()
@@ -1666,14 +1676,19 @@ class TestTrainingTelemetryDDL:
 
     def test_meta_decisions_table_created(self, tmp_path: pytest.TempPathFactory) -> None:
         """TRAIN-06: apply_training_telemetry_ddl creates meta_decisions table."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             result = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'meta_decisions'"
             ).fetchone()
@@ -1683,14 +1698,19 @@ class TestTrainingTelemetryDDL:
 
     def test_meta_decisions_has_all_columns(self, tmp_path: pytest.TempPathFactory) -> None:
         """TRAIN-06: meta_decisions table has all required columns."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             cols = conn.execute(
                 "SELECT column_name FROM information_schema.columns WHERE table_name = 'meta_decisions'"
             ).fetchall()
@@ -1711,14 +1731,19 @@ class TestTrainingTelemetryDDL:
 
     def test_reward_adjustments_table_created(self, tmp_path: pytest.TempPathFactory) -> None:
         """TRAIN-06: apply_training_telemetry_ddl creates reward_adjustments table."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             result = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.tables "
                 "WHERE table_name = 'reward_adjustments'"
@@ -1729,14 +1754,19 @@ class TestTrainingTelemetryDDL:
 
     def test_reward_adjustments_has_all_columns(self, tmp_path: pytest.TempPathFactory) -> None:
         """TRAIN-06: reward_adjustments table has all required columns."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             cols = conn.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'reward_adjustments'"
@@ -1768,16 +1798,21 @@ class TestTrainingTelemetryDDL:
 
     def test_ddl_is_idempotent(self, tmp_path: pytest.TempPathFactory) -> None:
         """TRAIN-06: apply_training_telemetry_ddl is idempotent (run twice, no error)."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             # Second call must not raise
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             # Tables still exist
             result = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.tables "
@@ -1791,12 +1826,17 @@ class TestTrainingTelemetryDDL:
         self, tmp_path: pytest.TempPathFactory
     ) -> None:
         """TRAIN-07: ALTER TABLE migration adds run_type column to training_runs."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
             # Create a minimal training_runs table first (as if from previous phase)
             conn.execute(
@@ -1808,7 +1848,7 @@ class TestTrainingTelemetryDDL:
                 "  created_at TIMESTAMP DEFAULT NOW()"
                 ")"
             )
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             cols = conn.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'training_runs'"
@@ -1822,12 +1862,17 @@ class TestTrainingTelemetryDDL:
         self, tmp_path: pytest.TempPathFactory
     ) -> None:
         """TRAIN-07: ALTER TABLE migration adds meta_rationale column to training_runs."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS training_runs ("
@@ -1835,7 +1880,7 @@ class TestTrainingTelemetryDDL:
                 "  run_id VARCHAR NOT NULL"
                 ")"
             )
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             cols = conn.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'training_runs'"
@@ -1847,15 +1892,20 @@ class TestTrainingTelemetryDDL:
 
     def test_alter_adds_dominant_regime_column(self, tmp_path: pytest.TempPathFactory) -> None:
         """TRAIN-07: ALTER TABLE migration adds dominant_regime column to training_runs."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
             conn.execute("CREATE TABLE IF NOT EXISTS training_runs (id INTEGER PRIMARY KEY)")
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             cols = conn.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'training_runs'"
@@ -1867,12 +1917,17 @@ class TestTrainingTelemetryDDL:
 
     def test_alter_idempotent_when_columns_exist(self, tmp_path: pytest.TempPathFactory) -> None:
         """TRAIN-07: ALTER TABLE is idempotent if columns already exist (no error on re-run)."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
             # Create training_runs with the new columns already present
             conn.execute(
@@ -1884,21 +1939,26 @@ class TestTrainingTelemetryDDL:
                 ")"
             )
             # Running twice must not raise
-            apply_training_telemetry_ddl(conn)
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
+            init_postgres_schema(conn)
         finally:
             conn.close()
 
     def test_telemetry_tables_insertable(self, tmp_path: pytest.TempPathFactory) -> None:
         """TRAIN-06: Can insert rows into training_epochs, meta_decisions, reward_adjustments."""
-        import duckdb
+        import os
 
-        from swingrl.features.schema import apply_training_telemetry_ddl
+        import psycopg
 
-        db_path = str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        conn = duckdb.connect(db_path)
+        from swingrl.data.postgres_schema import init_postgres_schema
+
+        str(tmp_path / "test.ddb")  # type: ignore[arg-type]
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
         try:
-            apply_training_telemetry_ddl(conn)
+            init_postgres_schema(conn)
             # Insert into training_epochs
             conn.execute(
                 "INSERT INTO training_epochs (run_id, epoch, algo, env, rolling_sharpe, rolling_mdd) "

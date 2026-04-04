@@ -6,8 +6,9 @@ _parse_klines_to_df, and the orchestrator detect_and_fill_crypto_gaps.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -20,27 +21,39 @@ from swingrl.data.gap_fill import (
 )
 
 # ---------------------------------------------------------------------------
+# Skip entire module if no PostgreSQL available
+# ---------------------------------------------------------------------------
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="DATABASE_URL not set — no PostgreSQL available for testing",
+)
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_in_memory_db() -> MagicMock:
-    """Create a mock DuckDB connection with ohlcv_4h and ohlcv_daily tables."""
-    import duckdb
+def _make_pg_conn() -> object:
+    """Create a PostgreSQL connection with ohlcv_4h and ohlcv_daily tables."""
+    import psycopg  # noqa: PLC0415
+    from psycopg.rows import dict_row  # noqa: PLC0415
 
-    conn = duckdb.connect(":memory:")
+    db_url = os.environ.get("DATABASE_URL")
+    conn = psycopg.connect(db_url, row_factory=dict_row, autocommit=True)
     conn.execute(
-        "CREATE TABLE ohlcv_4h ("
-        "  symbol TEXT, datetime TIMESTAMP, open DOUBLE, high DOUBLE, "
-        "  low DOUBLE, close DOUBLE, volume DOUBLE, source TEXT, "
+        "CREATE TABLE IF NOT EXISTS ohlcv_4h ("
+        "  symbol TEXT, datetime TIMESTAMP, open DOUBLE PRECISION, high DOUBLE PRECISION, "
+        "  low DOUBLE PRECISION, close DOUBLE PRECISION, volume DOUBLE PRECISION, source TEXT, "
         "  PRIMARY KEY (symbol, datetime))"
     )
     conn.execute(
-        "CREATE TABLE ohlcv_daily ("
-        "  symbol TEXT, date DATE, open DOUBLE, high DOUBLE, "
-        "  low DOUBLE, close DOUBLE, volume DOUBLE, "
+        "CREATE TABLE IF NOT EXISTS ohlcv_daily ("
+        "  symbol TEXT, date DATE, open DOUBLE PRECISION, high DOUBLE PRECISION, "
+        "  low DOUBLE PRECISION, close DOUBLE PRECISION, volume DOUBLE PRECISION, "
         "  PRIMARY KEY (symbol, date))"
     )
+    conn.execute("TRUNCATE TABLE ohlcv_4h, ohlcv_daily CASCADE")
     return conn
 
 
@@ -61,7 +74,7 @@ def _insert_crypto_rows(
             continue
         conn.execute(  # type: ignore[union-attr]
             "INSERT INTO ohlcv_4h (symbol, datetime, open, high, low, close, volume) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             [symbol, ts.strftime("%Y-%m-%d %H:%M:%S"), 100.0, 101.0, 99.0, 100.5, 1.0],
         )
         ts += timedelta(hours=interval_hours)
@@ -83,10 +96,16 @@ def _insert_equity_rows(
             continue
         conn.execute(  # type: ignore[union-attr]
             "INSERT INTO ohlcv_daily (symbol, date, open, high, low, close, volume) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             [symbol, dt.strftime("%Y-%m-%d"), 100.0, 101.0, 99.0, 100.5, 1000.0],
         )
         dt += timedelta(days=1)
+
+
+def _cleanup_pg_conn(conn: object) -> None:
+    """Truncate tables and close connection."""
+    conn.execute("TRUNCATE TABLE ohlcv_4h, ohlcv_daily CASCADE")  # type: ignore[union-attr]
+    conn.close()  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------
@@ -135,50 +154,56 @@ class TestDetectCryptoGaps:
 
     def test_no_gaps(self, loaded_config: object) -> None:
         """No gaps reported when data is continuous."""
-        conn = _make_in_memory_db()
-        start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
-        _insert_crypto_rows(conn, "BTCUSDT", start, 4, 50)
-        _insert_crypto_rows(conn, "ETHUSDT", start, 4, 50)
+        conn = _make_pg_conn()
+        try:
+            start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+            _insert_crypto_rows(conn, "BTCUSDT", start, 4, 50)
+            _insert_crypto_rows(conn, "ETHUSDT", start, 4, 50)
 
-        with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
-            mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn.cursor()
-            mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
-            gaps = detect_crypto_gaps(loaded_config)  # type: ignore[arg-type]
+            with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
+                mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn
+                mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
+                gaps = detect_crypto_gaps(loaded_config)  # type: ignore[arg-type]
 
-        assert len(gaps) == 0
+            assert len(gaps) == 0
+        finally:
+            _cleanup_pg_conn(conn)
 
     def test_detects_large_gap(self, loaded_config: object) -> None:
         """Detects a 48h gap (>24h threshold)."""
-        conn = _make_in_memory_db()
-        start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
-        # Normal BTC
-        _insert_crypto_rows(conn, "BTCUSDT", start, 4, 50)
-        # ETH with gap: skip indices 10-21 (13 intervals * 4h = 52h gap)
-        _insert_crypto_rows(conn, "ETHUSDT", start, 4, 50, skip_indices=set(range(10, 22)))
+        conn = _make_pg_conn()
+        try:
+            start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+            _insert_crypto_rows(conn, "BTCUSDT", start, 4, 50)
+            _insert_crypto_rows(conn, "ETHUSDT", start, 4, 50, skip_indices=set(range(10, 22)))
 
-        with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
-            mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn.cursor()
-            mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
-            gaps = detect_crypto_gaps(loaded_config)  # type: ignore[arg-type]
+            with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
+                mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn
+                mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
+                gaps = detect_crypto_gaps(loaded_config)  # type: ignore[arg-type]
 
-        assert len(gaps) == 1
-        assert gaps[0].symbol == "ETHUSDT"
-        assert gaps[0].gap_hours > 24.0
+            assert len(gaps) == 1
+            assert gaps[0].symbol == "ETHUSDT"
+            assert gaps[0].gap_hours > 24.0
+        finally:
+            _cleanup_pg_conn(conn)
 
     def test_ignores_small_gap(self, loaded_config: object) -> None:
         """Gaps under 24h (e.g. 12h) are not reported."""
-        conn = _make_in_memory_db()
-        start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
-        # Skip 2 bars = 8h gap — under threshold
-        _insert_crypto_rows(conn, "BTCUSDT", start, 4, 50, skip_indices={10, 11})
-        _insert_crypto_rows(conn, "ETHUSDT", start, 4, 50)
+        conn = _make_pg_conn()
+        try:
+            start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+            _insert_crypto_rows(conn, "BTCUSDT", start, 4, 50, skip_indices={10, 11})
+            _insert_crypto_rows(conn, "ETHUSDT", start, 4, 50)
 
-        with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
-            mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn.cursor()
-            mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
-            gaps = detect_crypto_gaps(loaded_config)  # type: ignore[arg-type]
+            with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
+                mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn
+                mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
+                gaps = detect_crypto_gaps(loaded_config)  # type: ignore[arg-type]
 
-        assert len(gaps) == 0
+            assert len(gaps) == 0
+        finally:
+            _cleanup_pg_conn(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -191,35 +216,39 @@ class TestDetectEquityGaps:
 
     def test_no_gaps(self, loaded_config: object) -> None:
         """No gaps when consecutive trading days."""
-        conn = _make_in_memory_db()
-        start = datetime(2024, 1, 1)
-        for symbol in ["SPY", "QQQ", "IWM", "DIA", "TLT", "GLD", "XLE", "VNQ"]:
-            _insert_equity_rows(conn, symbol, start, 30)
+        conn = _make_pg_conn()
+        try:
+            start = datetime(2024, 1, 1)
+            for symbol in ["SPY", "QQQ", "IWM", "DIA", "TLT", "GLD", "XLE", "VNQ"]:
+                _insert_equity_rows(conn, symbol, start, 30)
 
-        with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
-            mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn.cursor()
-            mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
-            gaps = detect_equity_gaps(loaded_config)  # type: ignore[arg-type]
+            with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
+                mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn
+                mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
+                gaps = detect_equity_gaps(loaded_config)  # type: ignore[arg-type]
 
-        assert len(gaps) == 0
+            assert len(gaps) == 0
+        finally:
+            _cleanup_pg_conn(conn)
 
     def test_detects_large_gap(self, loaded_config: object) -> None:
         """Detects a 7-day gap (>5 day threshold)."""
-        conn = _make_in_memory_db()
-        start = datetime(2024, 1, 1)
-        # Skip days 5-11 (7 days gap)
-        _insert_equity_rows(conn, "SPY", start, 30, skip_indices=set(range(5, 12)))
-        # Other symbols normal
-        for symbol in ["QQQ", "IWM", "DIA", "TLT", "GLD", "XLE", "VNQ"]:
-            _insert_equity_rows(conn, symbol, start, 30)
+        conn = _make_pg_conn()
+        try:
+            start = datetime(2024, 1, 1)
+            _insert_equity_rows(conn, "SPY", start, 30, skip_indices=set(range(5, 12)))
+            for symbol in ["QQQ", "IWM", "DIA", "TLT", "GLD", "XLE", "VNQ"]:
+                _insert_equity_rows(conn, symbol, start, 30)
 
-        with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
-            mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn.cursor()
-            mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
-            gaps = detect_equity_gaps(loaded_config)  # type: ignore[arg-type]
+            with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
+                mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn
+                mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
+                gaps = detect_equity_gaps(loaded_config)  # type: ignore[arg-type]
 
-        assert len(gaps) == 1
-        assert gaps[0].symbol == "SPY"
+            assert len(gaps) == 1
+            assert gaps[0].symbol == "SPY"
+        finally:
+            _cleanup_pg_conn(conn)
 
 
 # ---------------------------------------------------------------------------

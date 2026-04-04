@@ -8,11 +8,13 @@ summary text generation are all tested here.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import duckdb
+import psycopg
+import pytest
 
 from swingrl.memory.training.meta_orchestrator import MetaTrainingOrchestrator
 
@@ -29,10 +31,10 @@ def _make_mock_memory_client() -> MagicMock:
     return client
 
 
-def _make_mock_config(db_path: str | Path) -> MagicMock:
+def _make_mock_config(database_url: str | None = None) -> MagicMock:
     """Create a minimal mock SwingRLConfig with memory_agent section."""
     config = MagicMock()
-    config.system.duckdb_path = str(db_path)
+    config.system.database_url = database_url or ""
     config.memory_agent.base_url = "http://localhost:8889"
     config.memory_agent.meta_training_timeout_sec = 5
     return config
@@ -51,13 +53,12 @@ def _make_mock_training_result(
 
 def _make_orchestrator(
     tmp_path: Path,
-    db_path: str | Path | None = None,
+    database_url: str | None = None,
 ) -> MetaTrainingOrchestrator:
     """Create orchestrator with mock config and client."""
-    path = db_path or tmp_path / "test.ddb"
-    config = _make_mock_config(path)
+    config = _make_mock_config(database_url)
     client = _make_mock_memory_client()
-    return MetaTrainingOrchestrator(config=config, memory_client=client, db_path=path)
+    return MetaTrainingOrchestrator(config=config, memory_client=client, database_url=database_url)
 
 
 # ---------------------------------------------------------------------------
@@ -166,33 +167,36 @@ class TestMetaOrchestratorPatternCount:
 class TestMetaOrchestratorRegimeVector:
     """TRAIN-09: _current_regime_vector() queries hmm_state_history table."""
 
-    def _create_hmm_db(self, tmp_path: Path, row: tuple | None = None) -> Path:
-        """Create DuckDB with hmm_state_history table."""
-        db_path = tmp_path / "hmm.ddb"
-        conn = duckdb.connect(str(db_path))
+    def _create_hmm_db(self, tmp_path: Path, row: tuple | None = None) -> str:
+        """Create PostgreSQL hmm_state_history table. Returns DATABASE_URL."""
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
+        conn.execute("DROP TABLE IF EXISTS hmm_state_history CASCADE")
         conn.execute(
             """
             CREATE TABLE hmm_state_history (
                 date DATE,
                 environment VARCHAR,
-                p_bull DOUBLE,
-                p_bear DOUBLE,
-                p_crisis DOUBLE
+                p_bull DOUBLE PRECISION,
+                p_bear DOUBLE PRECISION,
+                p_crisis DOUBLE PRECISION
             )
             """
         )
         if row is not None:
             conn.execute(
-                "INSERT INTO hmm_state_history VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO hmm_state_history VALUES (%s, %s, %s, %s, %s)",
                 list(row),
             )
         conn.close()
-        return db_path
+        return db_url
 
     def test_current_regime_vector_queries_hmm_state_history(self, tmp_path: Path) -> None:
         """TRAIN-09: Returns dict with bull/bear/crisis/sideways keys from DB row."""
         db_path = self._create_hmm_db(tmp_path, row=("2026-01-01", "equity", 0.6, 0.2, 0.1))
-        orch = _make_orchestrator(tmp_path, db_path=db_path)
+        orch = _make_orchestrator(tmp_path, database_url=str(db_path))
         vec = orch._current_regime_vector("equity")
         assert set(vec.keys()) == {"bull", "bear", "crisis", "sideways"}
         assert abs(vec["bull"] - 0.6) < 1e-6
@@ -202,7 +206,7 @@ class TestMetaOrchestratorRegimeVector:
     def test_current_regime_vector_computes_sideways_as_remainder(self, tmp_path: Path) -> None:
         """TRAIN-09: p_sideways = max(0, 1 - bull - bear - crisis)."""
         db_path = self._create_hmm_db(tmp_path, row=("2026-01-01", "equity", 0.4, 0.3, 0.1))
-        orch = _make_orchestrator(tmp_path, db_path=db_path)
+        orch = _make_orchestrator(tmp_path, database_url=str(db_path))
         vec = orch._current_regime_vector("equity")
         expected_sideways = 1.0 - 0.4 - 0.3 - 0.1
         assert abs(vec["sideways"] - expected_sideways) < 1e-6
@@ -210,7 +214,7 @@ class TestMetaOrchestratorRegimeVector:
     def test_current_regime_vector_uses_defaults_on_no_row(self, tmp_path: Path) -> None:
         """TRAIN-09: No matching row → defaults {bull:0.33, bear:0.33, crisis:0.17, sideways:0.17}."""
         db_path = self._create_hmm_db(tmp_path)  # no rows inserted
-        orch = _make_orchestrator(tmp_path, db_path=db_path)
+        orch = _make_orchestrator(tmp_path, database_url=str(db_path))
         vec = orch._current_regime_vector("equity")
         assert abs(vec["bull"] - 0.33) < 1e-6
         assert abs(vec["bear"] - 0.33) < 1e-6
@@ -219,16 +223,19 @@ class TestMetaOrchestratorRegimeVector:
 
     def test_current_regime_vector_handles_null_columns(self, tmp_path: Path) -> None:
         """TRAIN-09: NULL columns treated as 0.33/0.17 defaults."""
-        db_path = tmp_path / "null_hmm.ddb"
-        conn = duckdb.connect(str(db_path))
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, autocommit=True)
+        conn.execute("DROP TABLE IF EXISTS hmm_state_history CASCADE")
         conn.execute(
             """
             CREATE TABLE hmm_state_history (
                 date DATE,
                 environment VARCHAR,
-                p_bull DOUBLE,
-                p_bear DOUBLE,
-                p_crisis DOUBLE
+                p_bull DOUBLE PRECISION,
+                p_bear DOUBLE PRECISION,
+                p_crisis DOUBLE PRECISION
             )
             """
         )
@@ -236,7 +243,7 @@ class TestMetaOrchestratorRegimeVector:
             "INSERT INTO hmm_state_history VALUES ('2026-01-01', 'equity', NULL, NULL, NULL)"
         )
         conn.close()
-        orch = _make_orchestrator(tmp_path, db_path=db_path)
+        orch = _make_orchestrator(tmp_path, database_url=db_url)
         vec = orch._current_regime_vector("equity")
         assert abs(vec["bull"] - 0.33) < 1e-6
         assert abs(vec["bear"] - 0.33) < 1e-6
@@ -244,10 +251,8 @@ class TestMetaOrchestratorRegimeVector:
 
     def test_current_regime_vector_uses_defaults_on_exception(self, tmp_path: Path) -> None:
         """TRAIN-09: Exception (e.g., missing table) returns defaults."""
-        db_path = tmp_path / "no_hmm.ddb"
-        conn = duckdb.connect(str(db_path))
-        conn.close()  # No tables
-        orch = _make_orchestrator(tmp_path, db_path=db_path)
+        # Use a bogus URL to trigger connection failure (defaults)
+        orch = _make_orchestrator(tmp_path, database_url="postgresql://bad:bad@localhost:9999/bad")
         vec = orch._current_regime_vector("equity")
         assert set(vec.keys()) == {"bull", "bear", "crisis", "sideways"}
         assert abs(vec["bull"] - 0.33) < 1e-6

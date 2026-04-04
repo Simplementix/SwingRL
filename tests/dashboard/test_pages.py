@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import ast
 import importlib.util
-import sqlite3
+import os
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -156,36 +157,44 @@ class TestTrafficLightStatus:
 
 
 class TestGetLatestTrades:
-    """Test get_latest_trades helper with in-memory SQLite."""
+    """Test get_latest_trades helper with PostgreSQL."""
 
     @pytest.fixture()
-    def trade_db(self) -> sqlite3.Connection:
-        """Create an in-memory SQLite DB with trade_log table."""
-        conn = sqlite3.connect(":memory:")
+    def trade_db(self) -> Any:
+        """Create a PostgreSQL connection with trade_log table."""
+        import psycopg
+        from psycopg.rows import dict_row
+
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+        conn = psycopg.connect(db_url, row_factory=dict_row, autocommit=False)
         conn.execute(
             """
-            CREATE TABLE trade_log (
+            CREATE TABLE IF NOT EXISTS trade_log (
                 trade_id TEXT PRIMARY KEY,
                 timestamp TEXT NOT NULL,
                 environment TEXT NOT NULL,
                 symbol TEXT NOT NULL,
                 side TEXT NOT NULL,
-                quantity REAL NOT NULL,
-                fill_price REAL NOT NULL,
-                commission REAL,
-                slippage REAL,
+                quantity DOUBLE PRECISION NOT NULL,
+                fill_price DOUBLE PRECISION NOT NULL,
+                commission DOUBLE PRECISION,
+                slippage DOUBLE PRECISION,
                 broker TEXT
             )
             """
         )
+        conn.execute("DELETE FROM trade_log")
+        conn.commit()
         return conn
 
-    def test_get_latest_trades_returns_limit(self, trade_db: sqlite3.Connection) -> None:
+    def test_get_latest_trades_returns_limit(self, trade_db: Any) -> None:
         """PAPER-15: get_latest_trades returns at most `limit` rows ordered by timestamp DESC."""
         for i in range(10):
             trade_db.execute(
                 "INSERT INTO trade_log (trade_id, timestamp, environment, symbol, side, "
-                "quantity, fill_price) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "quantity, fill_price) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (f"t{i:03d}", f"2026-03-0{i % 9 + 1}T12:00:00", "equity", "SPY", "buy", 10, 450.0),
             )
         trade_db.commit()
@@ -196,7 +205,7 @@ class TestGetLatestTrades:
         timestamps = [r["timestamp"] for r in result]
         assert timestamps == sorted(timestamps, reverse=True)
 
-    def test_get_latest_trades_empty_table(self, trade_db: sqlite3.Connection) -> None:
+    def test_get_latest_trades_empty_table(self, trade_db: Any) -> None:
         """PAPER-15: get_latest_trades returns empty list when no trades exist."""
         result = get_latest_trades(trade_db, limit=5)
         assert result == []

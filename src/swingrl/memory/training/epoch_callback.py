@@ -21,7 +21,6 @@ Usage:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -110,7 +109,7 @@ class MemoryEpochCallback(BaseCallback):
         advice_enabled: bool = True,
         is_control_fold: bool = False,
         iteration: int | None = None,
-        duckdb_path: str | Path | None = None,
+        database_url: str | None = None,
     ) -> None:
         """Initialize the epoch callback.
 
@@ -125,7 +124,7 @@ class MemoryEpochCallback(BaseCallback):
             is_control_fold: If True, this fold is a scientific control group
                 (no reward adjustments). Tagged in epoch snapshot text.
             iteration: Training iteration number for pattern presentation tracking.
-            duckdb_path: Optional path to DuckDB database for direct epoch/adjustment writes.
+            database_url: Optional PostgreSQL connection URL for epoch/adjustment writes.
         """
         super().__init__(verbose=verbose)
         self._client = memory_client
@@ -135,10 +134,9 @@ class MemoryEpochCallback(BaseCallback):
         self._advice_enabled = advice_enabled
         self._is_control_fold = is_control_fold
         self._iteration = iteration
-        self._duckdb_path = Path(duckdb_path) if duckdb_path else None
+        self._database_url = database_url
 
-        # Queue-based DuckDB telemetry: buffer writes during training, flush post-fold.
-        # Avoids DuckDB single-writer lock contention with WF backtester.
+        # Queue-based telemetry: buffer writes during training, flush post-fold.
         self._epoch_queue: list[list[Any]] = []
         self._adjustment_trigger_queue: list[list[Any]] = []
         self._adjustment_outcome_queue: list[tuple[list[Any], str, int]] = []
@@ -223,16 +221,15 @@ class MemoryEpochCallback(BaseCallback):
         }
 
     def flush_telemetry(self) -> None:
-        """Flush buffered epoch/adjustment data to DuckDB.
+        """Flush buffered epoch/adjustment data to PostgreSQL.
 
-        Call this AFTER model.learn() completes for each fold, when the WF
-        backtester is not holding the DuckDB write lock. All buffered rows
+        Call this AFTER model.learn() completes for each fold. All buffered rows
         are inserted in a single transaction.
 
         Safe to call multiple times (idempotent — clears queues after flush).
-        Safe to call when duckdb_path is None (no-op).
+        Safe to call when database_url is None (no-op).
         """
-        if self._duckdb_path is None:
+        if self._database_url is None:
             return
         if (
             not self._epoch_queue
@@ -242,59 +239,68 @@ class MemoryEpochCallback(BaseCallback):
             return
 
         try:
-            import duckdb
+            import os
 
-            con = duckdb.connect(str(self._duckdb_path))
+            import psycopg
+            from psycopg.rows import dict_row
+
+            db_url = os.environ.get("DATABASE_URL") or self._database_url
+            con = psycopg.connect(db_url, row_factory=dict_row)
 
             if self._epoch_queue:
-                con.executemany(
-                    """INSERT INTO training_epochs (
-                        run_id, epoch, algo, env, timestep, mean_reward,
-                        policy_loss, value_loss, entropy_loss, approx_kl,
-                        clip_fraction, rolling_sharpe, rolling_mdd,
-                        rolling_win_rate, reward_weights, notable_event,
-                        is_control_fold
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    self._epoch_queue,
-                )
+                with con.cursor() as cur:
+                    cur.executemany(
+                        """INSERT INTO training_epochs (
+                            run_id, epoch, algo, env, timestep, mean_reward,
+                            policy_loss, value_loss, entropy_loss, approx_kl,
+                            clip_fraction, rolling_sharpe, rolling_mdd,
+                            rolling_win_rate, reward_weights, notable_event,
+                            is_control_fold
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        self._epoch_queue,
+                    )
+                con.commit()
                 log.info(
-                    "duckdb_epoch_telemetry_flushed",
+                    "pg_epoch_telemetry_flushed",
                     rows=len(self._epoch_queue),
                     run_id=self._run_id,
                 )
 
             if self._adjustment_trigger_queue:
-                con.executemany(
-                    """INSERT INTO reward_adjustments (
-                        run_id, epoch_trigger, algo, env, trigger_metric,
-                        trigger_value, trigger_reason, weight_before,
-                        weight_after, sharpe_at_trigger, mdd_at_trigger
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    self._adjustment_trigger_queue,
-                )
+                with con.cursor() as cur:
+                    cur.executemany(
+                        """INSERT INTO reward_adjustments (
+                            run_id, epoch_trigger, algo, env, trigger_metric,
+                            trigger_value, trigger_reason, weight_before,
+                            weight_after, sharpe_at_trigger, mdd_at_trigger
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        self._adjustment_trigger_queue,
+                    )
+                con.commit()
                 log.info(
-                    "duckdb_adjustment_triggers_flushed",
+                    "pg_adjustment_triggers_flushed",
                     rows=len(self._adjustment_trigger_queue),
                 )
 
             for params, run_id, epoch_trigger in self._adjustment_outcome_queue:
                 con.execute(
                     """UPDATE reward_adjustments
-                    SET epoch_outcome = ?, outcome_sharpe = ?,
-                        sharpe_delta = ?, mdd_delta = ?, effective = ?
-                    WHERE run_id = ? AND epoch_trigger = ?
+                    SET epoch_outcome = %s, outcome_sharpe = %s,
+                        sharpe_delta = %s, mdd_delta = %s, effective = %s
+                    WHERE run_id = %s AND epoch_trigger = %s
                       AND epoch_outcome IS NULL""",
                     params + [run_id, epoch_trigger],
                 )
             if self._adjustment_outcome_queue:
+                con.commit()
                 log.info(
-                    "duckdb_adjustment_outcomes_flushed",
+                    "pg_adjustment_outcomes_flushed",
                     rows=len(self._adjustment_outcome_queue),
                 )
 
             con.close()
         except Exception as exc:
-            log.error("duckdb_telemetry_flush_failed", error=str(exc))
+            log.error("pg_telemetry_flush_failed", error=str(exc))
         finally:
             self._epoch_queue.clear()
             self._adjustment_trigger_queue.clear()
@@ -438,8 +444,8 @@ class MemoryEpochCallback(BaseCallback):
             notable=metrics["notable_event"],
         )
 
-        # Buffer epoch snapshot for post-fold DuckDB flush (avoids single-writer deadlock)
-        if self._duckdb_path is not None:
+        # Buffer epoch snapshot for post-fold PostgreSQL flush
+        if self._database_url is not None:
             self._epoch_queue.append(
                 [
                     metrics["run_id"],
@@ -509,8 +515,8 @@ class MemoryEpochCallback(BaseCallback):
             ok=ok,
         )
 
-        # Buffer adjustment trigger for post-fold DuckDB flush
-        if self._duckdb_path is not None:
+        # Buffer adjustment trigger for post-fold PostgreSQL flush
+        if self._database_url is not None:
             self._adjustment_trigger_queue.append(
                 [
                     self._run_id,
@@ -564,8 +570,8 @@ class MemoryEpochCallback(BaseCallback):
             ok=ok,
         )
 
-        # Buffer adjustment outcome for post-fold DuckDB flush
-        if self._duckdb_path is not None:
+        # Buffer adjustment outcome for post-fold PostgreSQL flush
+        if self._database_url is not None:
             self._adjustment_outcome_queue.append(
                 (
                     [

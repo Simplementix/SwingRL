@@ -1,6 +1,6 @@
 """Gap detection and filling for crypto OHLCV data from alternate sources.
 
-Detects timestamp gaps in DuckDB ohlcv_4h data and attempts to fill them
+Detects timestamp gaps in PostgreSQL ohlcv_4h data and attempts to fill them
 using Binance Global (api.binance.com) as a fallback source. Remaining
 unfillable gaps are logged and stored as metadata for the training layer
 to use as episode boundaries.
@@ -24,6 +24,7 @@ import requests
 import structlog
 
 from swingrl.data.db import DatabaseManager
+from swingrl.data.pg_helpers import executemany_from_df
 from swingrl.utils.exceptions import DataError
 
 if TYPE_CHECKING:
@@ -87,10 +88,10 @@ def detect_crypto_gaps(
     db = DatabaseManager(config)
     gaps: list[GapRecord] = []
 
-    with db.duckdb() as cursor:
+    with db.connection() as conn:
         for symbol in config.crypto.symbols:
-            rows = cursor.execute(
-                "SELECT datetime FROM ohlcv_4h WHERE symbol = ? ORDER BY datetime",
+            rows = conn.execute(
+                "SELECT datetime FROM ohlcv_4h WHERE symbol = %s ORDER BY datetime",
                 [symbol],
             ).fetchall()
 
@@ -98,8 +99,8 @@ def detect_crypto_gaps(
                 continue
 
             for i in range(1, len(rows)):
-                prev_ts = _ensure_datetime(rows[i - 1][0])
-                curr_ts = _ensure_datetime(rows[i][0])
+                prev_ts = _ensure_datetime(rows[i - 1]["datetime"])
+                curr_ts = _ensure_datetime(rows[i]["datetime"])
                 gap = curr_ts - prev_ts
 
                 if gap > threshold:
@@ -135,10 +136,10 @@ def detect_equity_gaps(
     db = DatabaseManager(config)
     gaps: list[GapRecord] = []
 
-    with db.duckdb() as cursor:
+    with db.connection() as conn:
         for symbol in config.equity.symbols:
-            rows = cursor.execute(
-                "SELECT date FROM ohlcv_daily WHERE symbol = ? ORDER BY date",
+            rows = conn.execute(
+                "SELECT date FROM ohlcv_daily WHERE symbol = %s ORDER BY date",
                 [symbol],
             ).fetchall()
 
@@ -146,8 +147,8 @@ def detect_equity_gaps(
                 continue
 
             for i in range(1, len(rows)):
-                prev_dt = _ensure_date(rows[i - 1][0])
-                curr_dt = _ensure_date(rows[i][0])
+                prev_dt = _ensure_date(rows[i - 1]["date"])
+                curr_dt = _ensure_date(rows[i]["date"])
                 gap = curr_dt - prev_dt
 
                 if gap > threshold:
@@ -305,14 +306,14 @@ def fill_crypto_gap(gap: GapRecord) -> pd.DataFrame:
     return _parse_klines_to_df(all_klines)
 
 
-def _insert_gap_fill_to_duckdb(
+def _insert_gap_fill_to_db(
     config: SwingRLConfig,
     df: pd.DataFrame,
     symbol: str,
 ) -> int:
-    """Insert gap-fill data into DuckDB ohlcv_4h table.
+    """Insert gap-fill data into PostgreSQL ohlcv_4h table.
 
-    Uses INSERT OR IGNORE for idempotency.
+    Uses INSERT ... ON CONFLICT DO NOTHING for idempotency.
 
     Args:
         config: Validated SwingRLConfig.
@@ -320,13 +321,13 @@ def _insert_gap_fill_to_duckdb(
         symbol: Trading pair.
 
     Returns:
-        Number of rows inserted.
+        Number of rows sent to PostgreSQL.
     """
     if df.empty:
         return 0
 
     db = DatabaseManager(config)
-    sync_df = pd.DataFrame(  # noqa: F841 — used by DuckDB replacement scan
+    sync_df = pd.DataFrame(
         {
             "symbol": symbol,
             "datetime": df.index,
@@ -339,15 +340,9 @@ def _insert_gap_fill_to_duckdb(
         }
     )
 
-    with db.duckdb() as cursor:
-        before = cursor.execute("SELECT COUNT(*) FROM ohlcv_4h").fetchone()[0]  # noqa: S608
-        cursor.execute(
-            "INSERT OR IGNORE INTO ohlcv_4h "
-            "(symbol, datetime, open, high, low, close, volume, source) "
-            "SELECT symbol, datetime, open, high, low, close, volume, source FROM sync_df"
-        )
-        after = cursor.execute("SELECT COUNT(*) FROM ohlcv_4h").fetchone()[0]  # noqa: S608
-        inserted = int(after - before)
+    columns = ["symbol", "datetime", "open", "high", "low", "close", "volume", "source"]
+    with db.connection() as conn:
+        inserted = executemany_from_df(conn, "ohlcv_4h", sync_df, columns, on_conflict="DO NOTHING")
 
     log.info("gap_fill_inserted", symbol=symbol, rows=inserted)
     return inserted
@@ -394,7 +389,7 @@ def detect_and_fill_crypto_gaps(config: SwingRLConfig) -> list[GapRecord]:
             results.append(dataclasses.replace(gap, source="unfillable"))
             continue
 
-        inserted = _insert_gap_fill_to_duckdb(config, fill_df, gap.symbol)
+        inserted = _insert_gap_fill_to_db(config, fill_df, gap.symbol)
         total_filled += inserted
 
         if inserted > 0:

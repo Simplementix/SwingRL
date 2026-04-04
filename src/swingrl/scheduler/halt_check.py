@@ -1,6 +1,6 @@
 """Emergency halt flag CRUD for pre-cycle halt checks.
 
-The emergency_flags table in SQLite stores a single 'halt' flag that all
+The emergency_flags table in PostgreSQL stores a single 'halt' flag that all
 scheduled jobs check before executing. When active, all trading cycles skip.
 
 Usage:
@@ -25,21 +25,12 @@ log = structlog.get_logger(__name__)
 
 
 def init_emergency_flags(db: DatabaseManager) -> None:
-    """Create the emergency_flags table if it does not exist.
+    """Ensure the emergency_flags table exists (managed by postgres_schema.py).
 
     Args:
-        db: DatabaseManager providing SQLite connection.
+        db: DatabaseManager providing PostgreSQL connection.
     """
-    with db.sqlite() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS emergency_flags (
-                flag_name TEXT PRIMARY KEY,
-                active INTEGER NOT NULL DEFAULT 0,
-                set_at TEXT,
-                set_by TEXT,
-                reason TEXT
-            )
-        """)
+    log.debug("init_emergency_flags_noop", reason="schema_managed_by_postgres_schema")
 
 
 def is_halted(db: DatabaseManager) -> bool:
@@ -48,12 +39,12 @@ def is_halted(db: DatabaseManager) -> bool:
     If the emergency_flags table does not exist, creates it and returns False.
 
     Args:
-        db: DatabaseManager providing SQLite connection.
+        db: DatabaseManager providing PostgreSQL connection.
 
     Returns:
         True if the halt flag is active, False otherwise.
     """
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         try:
             row = conn.execute(
                 "SELECT active FROM emergency_flags WHERE flag_name = 'halt'"
@@ -75,17 +66,20 @@ def set_halt(db: DatabaseManager, reason: str, set_by: str = "emergency_stop") -
     the provided reason, and who set it.
 
     Args:
-        db: DatabaseManager providing SQLite connection.
+        db: DatabaseManager providing PostgreSQL connection.
         reason: Human-readable reason for the halt.
         set_by: Identifier of who/what triggered the halt.
     """
     init_emergency_flags(db)
     now = datetime.now(UTC).isoformat()
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO emergency_flags (flag_name, active, set_at, set_by, reason) "
-            "VALUES ('halt', 1, ?, ?, ?)",
-            (now, set_by, reason),
+            "INSERT INTO emergency_flags (flag_name, active, set_at, set_by, reason) "
+            "VALUES ('halt', 1, %s, %s, %s) "
+            "ON CONFLICT (flag_name) DO UPDATE SET "
+            "active=EXCLUDED.active, set_at=EXCLUDED.set_at, "
+            "set_by=EXCLUDED.set_by, reason=EXCLUDED.reason",
+            [now, set_by, reason],
         )
     log.warning("halt_flag_set", reason=reason, set_by=set_by, set_at=now)
 
@@ -94,9 +88,9 @@ def clear_halt(db: DatabaseManager) -> None:
     """Clear the emergency halt flag (set active=0).
 
     Args:
-        db: DatabaseManager providing SQLite connection.
+        db: DatabaseManager providing PostgreSQL connection.
     """
     init_emergency_flags(db)
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         conn.execute("UPDATE emergency_flags SET active = 0 WHERE flag_name = 'halt'")
     log.info("halt_flag_cleared")

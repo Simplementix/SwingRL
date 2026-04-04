@@ -7,7 +7,7 @@ Key invariants:
 - Walk-forward uses FULL history. Final training uses RECENT data only.
 - Ensemble gate and weight computation are PER-ENVIRONMENT.
 - Per-fold gate results are informational; only ensemble gate blocks deployment.
-- DuckDB connection opened/closed per-algo unit (not held for entire pipeline).
+- PostgreSQL connection opened/closed per-algo unit (not held for entire pipeline).
 
 Usage:
     python scripts/train_pipeline.py --env all
@@ -31,15 +31,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import numpy as np
+import psycopg
 import structlog
+from psycopg.rows import dict_row
 
 from swingrl.agents.backtest import (
     store_fold_results_to_duckdb,
     store_iteration_results_to_duckdb,
 )
 from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.data.pg_helpers import fetchdf
 from swingrl.memory.client import MemoryClient
 from swingrl.training.pipeline_helpers import (
     DEFAULT_TIMESTEPS,
@@ -473,8 +475,8 @@ def run_all_iterations(
         )
 
         # Ingest cross-iteration HP comparison memory (iter 1+ only).
-        # Queries DuckDB iteration_results (all env connections closed at this point)
-        # and ingests to memory service SQLite for consolidation to pick up.
+        # Queries PostgreSQL iteration_results (all env connections closed at this point)
+        # and ingests to memory service for consolidation to pick up.
         if i > 0:
             try:
                 api_key_ci = getattr(cfg.memory_agent, "api_key", "")
@@ -484,9 +486,8 @@ def run_all_iterations(
                         default_timeout=cfg.memory_agent.timeout_sec,
                         api_key=api_key_ci,
                     )
-                    db_path = Path(cfg.system.duckdb_path)
                     _ingest_cross_iteration_comparison(
-                        db_path=db_path,
+                        db_path=cfg.system.database_url,
                         iteration=i,
                         state=state,
                         memory_client=ci_client,
@@ -566,12 +567,12 @@ def _load_features_prices(
     env_name: str,
     config: SwingRLConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load features and prices from DuckDB.
+    """Load features and prices from PostgreSQL.
 
     Delegates to the canonical implementation in swingrl.training.data_loader.
 
     Args:
-        conn: Active DuckDB connection.
+        conn: Active PostgreSQL connection.
         env_name: Environment name ("equity" or "crypto").
         config: Validated SwingRLConfig.
 
@@ -714,7 +715,7 @@ def _ingest_cross_iteration_comparison(
 ) -> None:
     """Generate and ingest cross-iteration HP comparison memories.
 
-    Queries DuckDB ``iteration_results`` for the baseline (iter 0), current, previous,
+    Queries PostgreSQL ``iteration_results`` for the baseline (iter 0), current, previous,
     and best-per-env iterations.  Builds a rolling-window comparison text per env and
     ingests to the memory service with source ``cross_iteration:{env_name}``.
 
@@ -722,23 +723,28 @@ def _ingest_cross_iteration_comparison(
     change details, and zero-adjustment fold counts for HP attribution.
 
     Args:
-        db_path: Path to DuckDB database.
+        db_path: PostgreSQL database URL.
         iteration: Current iteration number (must be >0).
         state: Training state dict with ``iteration_N_result`` entries.
         memory_client: MemoryClient instance for ingestion.
     """
-    conn = duckdb.connect(str(db_path), read_only=True)
+    database_url = os.environ.get("DATABASE_URL", str(db_path))
+    conn = psycopg.connect(database_url, row_factory=dict_row)
     try:
         for env_name in ("equity", "crypto"):
             # Fetch baseline (iter 0) and current iteration
-            baseline = conn.execute(
-                "SELECT * FROM iteration_results WHERE iteration_number = 0 AND environment = ?",
-                [env_name],
-            ).fetchdf()
-            current = conn.execute(
-                "SELECT * FROM iteration_results WHERE iteration_number = ? AND environment = ?",
-                [iteration, env_name],
-            ).fetchdf()
+            baseline = fetchdf(
+                conn.execute(
+                    "SELECT * FROM iteration_results WHERE iteration_number = 0 AND environment = %s",
+                    [env_name],
+                )
+            )
+            current = fetchdf(
+                conn.execute(
+                    "SELECT * FROM iteration_results WHERE iteration_number = %s AND environment = %s",
+                    [iteration, env_name],
+                )
+            )
 
             if baseline.empty or current.empty:
                 log.info(
@@ -794,10 +800,12 @@ def _ingest_cross_iteration_comparison(
                     lines.append(f"    total_folds={total_folds}")
 
             # Fetch all iterations for dynamic comparisons
-            all_iters = conn.execute(
-                "SELECT * FROM iteration_results WHERE environment = ? ORDER BY iteration_number",
-                [env_name],
-            ).fetchdf()
+            all_iters = fetchdf(
+                conn.execute(
+                    "SELECT * FROM iteration_results WHERE environment = %s ORDER BY iteration_number",
+                    [env_name],
+                )
+            )
 
             if len(all_iters) > 1:
                 best_iter = int(
@@ -1561,10 +1569,10 @@ def _write_model_metadata(
     converged_at: int | None,
     ensemble_weight: float | None,
 ) -> None:
-    """Write model metadata to DuckDB model_metadata table.
+    """Write model metadata to PostgreSQL model_metadata table.
 
     Args:
-        conn: DuckDB connection.
+        conn: PostgreSQL connection.
         env_name: Environment name.
         algo_name: Algorithm name.
         model_path: Path to saved model.zip.
@@ -1579,13 +1587,25 @@ def _write_model_metadata(
     try:
         conn.execute(
             """
-            INSERT OR REPLACE INTO model_metadata (
+            INSERT INTO model_metadata (
                 model_id, environment, algorithm, version,
                 training_start_date, training_end_date,
                 total_timesteps, converged_at_step,
                 validation_sharpe, ensemble_weight,
                 model_path, vec_normalize_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (model_id) DO UPDATE SET
+                environment = EXCLUDED.environment,
+                algorithm = EXCLUDED.algorithm,
+                version = EXCLUDED.version,
+                training_start_date = EXCLUDED.training_start_date,
+                training_end_date = EXCLUDED.training_end_date,
+                total_timesteps = EXCLUDED.total_timesteps,
+                converged_at_step = EXCLUDED.converged_at_step,
+                validation_sharpe = EXCLUDED.validation_sharpe,
+                ensemble_weight = EXCLUDED.ensemble_weight,
+                model_path = EXCLUDED.model_path,
+                vec_normalize_path = EXCLUDED.vec_normalize_path
             """,
             [
                 model_id,
@@ -1649,7 +1669,7 @@ def _run_wf_for_algo(
         hp_override: Memory-advised hyperparameter overrides (iter 1+).
         memory_enabled: When True, construct a MemoryClient inside this subprocess
             and pass it to the backtester for epoch-level memory ingestion.
-        fold_queue: Optional multiprocessing.Queue for real-time per-fold DuckDB
+        fold_queue: Optional multiprocessing.Queue for real-time per-fold PostgreSQL
             writes. Each completed fold is enqueued as (algo_name, FoldResult).
         advice_enabled: When True, enable LLM epoch advice and reward weight
             adjustments. When False, only capture epoch memories (no advice).
@@ -1894,7 +1914,7 @@ def _train_final_algo(
 
 
 # ---------------------------------------------------------------------------
-# Background fold writer (real-time per-fold DuckDB writes)
+# Background fold writer (real-time per-fold PostgreSQL writes)
 # ---------------------------------------------------------------------------
 
 
@@ -1909,17 +1929,13 @@ def _fold_writer(
     n_symbols: int,
     per_asset: int,
 ) -> None:
-    """Background writer thread that reads FoldResults from queue and writes to DuckDB.
+    """Background writer thread that reads FoldResults from queue and writes to PostgreSQL.
 
     Runs in a threading.Thread (not subprocess) in the main process.
-    Single writer = no DuckDB lock conflicts.
     Exits when sentinel None is received.
     """
-    conn = duckdb.connect(str(db_path))
-    # Ensure schema migrations are applied (e.g. is_control_fold column)
-    from swingrl.data.db import _migrate_backtest_results
-
-    _migrate_backtest_results(conn)
+    database_url = os.environ.get("DATABASE_URL", str(db_path))
+    conn = psycopg.connect(database_url, row_factory=dict_row)
     written = 0
     try:
         while True:
@@ -1940,9 +1956,10 @@ def _fold_writer(
                     n_symbols=n_symbols,
                     per_asset=per_asset,
                 )
+                conn.commit()
                 written += 1
                 log.info(
-                    "fold_written_to_duckdb",
+                    "fold_written_to_db",
                     algo=algo_name,
                     fold=fold_result.fold_number,
                     env=env_name,
@@ -1950,6 +1967,7 @@ def _fold_writer(
                     total_written=written,
                 )
             except Exception as exc:
+                conn.rollback()
                 log.error(
                     "fold_write_failed",
                     algo=algo_name,
@@ -1961,11 +1979,11 @@ def _fold_writer(
         try:
             row_count = conn.execute(
                 "SELECT count(1) FROM backtest_results"
-                " WHERE iteration_number = ? AND environment = ?",
+                " WHERE iteration_number = %s AND environment = %s",
                 [iteration_number, env_name],
             ).fetchone()[0]
             log.info(
-                "duckdb_fold_writer_done",
+                "pg_fold_writer_done",
                 env=env_name,
                 iteration=iteration_number,
                 rows_written=written,
@@ -1973,7 +1991,7 @@ def _fold_writer(
             )
         except Exception:
             log.info(
-                "duckdb_fold_writer_done",
+                "pg_fold_writer_done",
                 env=env_name,
                 iteration=iteration_number,
                 rows_written=written,
@@ -1998,14 +2016,14 @@ def run_environment(
     """Run the full training pipeline for one environment.
 
     Flow:
-    1. Load features + prices from DuckDB
+    1. Load features + prices from PostgreSQL
     2. Walk-forward validation for each algo (or skip if checkpointed)
     3. Compute ensemble weights from real OOS Sharpe
     4. Check ensemble gate
     5. Trigger tuning rounds if gate fails AND baseline Sharpe < 0.5
     6. Train final deployment models on RECENT data
     7. Verify deployment files exist
-    8. Write model metadata to DuckDB
+    8. Write model metadata to PostgreSQL
     9. Update report dict and optionally write to disk
 
     Args:
@@ -2023,22 +2041,22 @@ def run_environment(
     from swingrl.training.trainer import TrainingOrchestrator
 
     env_start = time.monotonic()
-    db_path = Path(config.system.duckdb_path)
+    database_url = config.system.database_url
 
     log.info("pipeline_env_started", env_name=env_name)
 
     # Load full features + prices (used for walk-forward) + dates for memory ingestion
-    conn = duckdb.connect(str(db_path))
+    conn = psycopg.connect(database_url, row_factory=dict_row)
     try:
         features_full, prices_full = _load_features_prices(conn, env_name, config)
         # Load dates for memory ingestion context (maps feature indices to calendar dates)
         if env_name == "equity":
-            dates_df = conn.execute("SELECT DISTINCT date FROM ohlcv_daily ORDER BY date").fetchdf()
+            dates_df = fetchdf(conn.execute("SELECT DISTINCT date FROM ohlcv_daily ORDER BY date"))
             dates_array = np.array([str(d)[:10] for d in dates_df["date"].values])
         else:
-            dates_df = conn.execute(
-                "SELECT DISTINCT datetime FROM ohlcv_4h ORDER BY datetime"
-            ).fetchdf()
+            dates_df = fetchdf(
+                conn.execute("SELECT DISTINCT datetime FROM ohlcv_4h ORDER BY datetime")
+            )
             dates_array = np.array([str(d)[:10] for d in dates_df["datetime"].values])
         # Trim to match feature array length (INNER JOIN may reduce rows)
         dates_array = dates_array[: len(features_full)]
@@ -2108,7 +2126,7 @@ def run_environment(
     # Only enable LLM advice (epoch advice + reward adjustments) for iter 1+
     wf_memory_advice = iteration_number > 0 and wf_memory_capture and config.memory_agent.enabled
 
-    # Compute n_symbols and per_asset for DuckDB fold writes
+    # Compute n_symbols and per_asset for PostgreSQL fold writes
     if env_name == "equity":
         _n_symbols = len(config.equity.symbols)
         _per_asset = 15
@@ -2128,7 +2146,7 @@ def run_environment(
             memory_advice=wf_memory_advice,
         )
 
-        # Start background writer thread for real-time per-fold DuckDB writes
+        # Start background writer thread for real-time per-fold PostgreSQL writes
         # Use Manager().Queue() — proxy objects are picklable across ProcessPoolExecutor
         manager = multiprocessing.Manager()
         fold_queue = manager.Queue()
@@ -2136,7 +2154,7 @@ def run_environment(
             target=_fold_writer,
             args=(
                 fold_queue,
-                db_path,
+                database_url,
                 env_name,
                 iteration_number,
                 "baseline",
@@ -2224,8 +2242,8 @@ def run_environment(
     }
     _evaluate_gate_and_decide(gate_result, ensemble_sharpe, env_name)
 
-    # Deferred DuckDB write — ensemble-level iteration results
-    conn_ens = duckdb.connect(str(db_path))
+    # Deferred PostgreSQL write — ensemble-level iteration results
+    conn_ens = psycopg.connect(database_url, row_factory=dict_row)
     try:
         store_iteration_results_to_duckdb(
             conn=conn_ens,
@@ -2242,7 +2260,7 @@ def run_environment(
             hp_overrides=wf_hp_overrides if iteration_number > 0 else None,
         )
     except Exception as exc:
-        log.warning("iteration_results_duckdb_write_failed", env_name=env_name, error=str(exc))
+        log.warning("iteration_results_db_write_failed", env_name=env_name, error=str(exc))
     finally:
         conn_ens.close()
 
@@ -2336,9 +2354,9 @@ def run_environment(
             }
         )
 
-        # Deferred DuckDB write — tuning round 1 fold results
+        # Deferred PostgreSQL write — tuning round 1 fold results
         if best_ppo_folds:
-            conn_t1 = duckdb.connect(str(db_path))
+            conn_t1 = psycopg.connect(database_url, row_factory=dict_row)
             try:
                 store_fold_results_to_duckdb(
                     conn=conn_t1,
@@ -2353,7 +2371,7 @@ def run_environment(
                     per_asset=_per_asset,
                 )
             except Exception as exc:
-                log.warning("tuning_r1_duckdb_write_failed", error=str(exc))
+                log.warning("tuning_r1_db_write_failed", error=str(exc))
             finally:
                 conn_t1.close()
 
@@ -2411,9 +2429,9 @@ def run_environment(
                 if best_params_r2:
                     tuning_best_params[algo_r2] = best_params_r2
 
-                # Deferred DuckDB write — tuning round 2 fold results
+                # Deferred PostgreSQL write — tuning round 2 fold results
                 if best_folds_r2:
-                    conn_t2 = duckdb.connect(str(db_path))
+                    conn_t2 = psycopg.connect(database_url, row_factory=dict_row)
                     try:
                         store_fold_results_to_duckdb(
                             conn=conn_t2,
@@ -2428,7 +2446,7 @@ def run_environment(
                             per_asset=_per_asset,
                         )
                     except Exception as exc:
-                        log.warning("tuning_r2_duckdb_write_failed", error=str(exc))
+                        log.warning("tuning_r2_db_write_failed", error=str(exc))
                     finally:
                         conn_t2.close()
 
@@ -2561,8 +2579,8 @@ def run_environment(
                 log.error("final_training_failed", algo=algo_name, exc_info=True)
                 continue
 
-    # Deferred DuckDB writes — sequential after all parallel training completes
-    conn = duckdb.connect(str(db_path))
+    # Deferred PostgreSQL writes — sequential after all parallel training completes
+    conn = psycopg.connect(database_url, row_factory=dict_row)
     try:
         for algo_name in ALGO_NAMES:
             if algo_name in final_training:

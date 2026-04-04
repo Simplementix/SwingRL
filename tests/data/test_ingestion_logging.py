@@ -1,11 +1,12 @@
-"""Ingestion logging tests for BaseIngestor DuckDB integration.
+"""Ingestion logging tests for BaseIngestor PostgreSQL integration.
 
 Tests verify that every ingestor run() creates a data_ingestion_log row,
-quarantine writes to DuckDB data_quarantine table, and DuckDB sync works.
+quarantine writes to PostgreSQL data_quarantine table, and DB sync works.
 """
 
 from __future__ import annotations
 
+import os
 import textwrap
 from pathlib import Path
 
@@ -15,6 +16,15 @@ import pytest
 from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.data.base import BaseIngestor
 from swingrl.data.db import DatabaseManager
+
+# ---------------------------------------------------------------------------
+# Skip entire module if no PostgreSQL available
+# ---------------------------------------------------------------------------
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="DATABASE_URL not set — no PostgreSQL available for testing",
+)
 
 # ---------------------------------------------------------------------------
 # Test-only concrete ingestor
@@ -96,9 +106,10 @@ class _FailingTestIngestor(BaseIngestor):
 
 @pytest.fixture
 def db_config(tmp_path: Path) -> SwingRLConfig:
-    """Config with tmp_path DB paths for test isolation."""
-    duckdb_path = str(tmp_path / "market_data.ddb")
-    sqlite_path = str(tmp_path / "trading_ops.db")
+    """Config with DATABASE_URL for test isolation."""
+    db_url = os.environ.get(
+        "DATABASE_URL", "postgresql://test:test@localhost:5432/swingrl_test"
+    )  # pragma: allowlist secret
     config_yaml = textwrap.dedent(f"""\
         trading_mode: paper
         equity:
@@ -124,8 +135,9 @@ def db_config(tmp_path: Path) -> SwingRLConfig:
           level: INFO
           json_logs: false
         system:
-          duckdb_path: "{duckdb_path}"
-          sqlite_path: "{sqlite_path}"
+          database_url: "{db_url}"
+          duckdb_path: data/db/market_data.ddb
+          sqlite_path: data/db/trading_ops.db
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3
@@ -142,6 +154,14 @@ def db_manager(db_config: SwingRLConfig) -> DatabaseManager:
     mgr = DatabaseManager(db_config)
     mgr.init_schema()
     yield mgr  # type: ignore[misc]
+    # Truncate all tables for test isolation
+    with mgr.connection() as conn:
+        conn.execute(
+            "DO $$ DECLARE r RECORD; BEGIN "
+            "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
+            "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
+            "END LOOP; END $$"
+        )
     DatabaseManager.reset()
 
 
@@ -203,21 +223,21 @@ class TestIngestionLogOnSuccess:
         ingestor = _EquityTestIngestor(db_config, fetch_data=equity_ohlcv_small)
         ingestor.run("SPY")
 
-        with db_manager.duckdb() as cursor:
-            rows = cursor.execute(
+        with db_manager.connection() as conn:
+            rows = conn.execute(
                 "SELECT run_id, environment, symbol, status, rows_inserted, "
                 "errors_count, duration_ms FROM data_ingestion_log"
             ).fetchall()
 
         assert len(rows) == 1
         row = rows[0]
-        assert len(row[0]) == 36  # UUID format
-        assert row[1] == "equity"
-        assert row[2] == "SPY"
-        assert row[3] == "success"
-        assert row[4] == len(equity_ohlcv_small)  # rows_inserted
-        assert row[5] == 0  # errors_count
-        assert row[6] > 0  # duration_ms
+        assert len(row["run_id"]) == 36  # UUID format
+        assert row["environment"] == "equity"
+        assert row["symbol"] == "SPY"
+        assert row["status"] == "success"
+        assert row["rows_inserted"] == len(equity_ohlcv_small)
+        assert row["errors_count"] == 0
+        assert row["duration_ms"] > 0
 
     def test_no_data_creates_log_row(
         self, db_config: SwingRLConfig, db_manager: DatabaseManager
@@ -226,12 +246,12 @@ class TestIngestionLogOnSuccess:
         ingestor = _EquityTestIngestor(db_config, fetch_data=pd.DataFrame())
         ingestor.run("SPY")
 
-        with db_manager.duckdb() as cursor:
-            rows = cursor.execute("SELECT status, rows_inserted FROM data_ingestion_log").fetchall()
+        with db_manager.connection() as conn:
+            rows = conn.execute("SELECT status, rows_inserted FROM data_ingestion_log").fetchall()
 
         assert len(rows) == 1
-        assert rows[0][0] == "no_data"
-        assert rows[0][1] == 0
+        assert rows[0]["status"] == "no_data"
+        assert rows[0]["rows_inserted"] == 0
 
 
 class TestIngestionLogOnFailure:
@@ -245,15 +265,15 @@ class TestIngestionLogOnFailure:
         with pytest.raises(RuntimeError):
             ingestor.run("SPY")
 
-        with db_manager.duckdb() as cursor:
-            rows = cursor.execute(
+        with db_manager.connection() as conn:
+            rows = conn.execute(
                 "SELECT status, rows_inserted, duration_ms FROM data_ingestion_log"
             ).fetchall()
 
         assert len(rows) == 1
-        assert rows[0][0] == "failed"
-        assert rows[0][1] == 0
-        assert rows[0][2] >= 0  # duration_ms recorded (may be 0 for fast failures)
+        assert rows[0]["status"] == "failed"
+        assert rows[0]["rows_inserted"] == 0
+        assert rows[0]["duration_ms"] >= 0
 
 
 class TestIngestionLogWithQuarantine:
@@ -274,11 +294,11 @@ class TestIngestionLogWithQuarantine:
 
         ingestor.run("SPY")
 
-        with db_manager.duckdb() as cursor:
-            rows = cursor.execute("SELECT errors_count FROM data_ingestion_log").fetchall()
+        with db_manager.connection() as conn:
+            rows = conn.execute("SELECT errors_count FROM data_ingestion_log").fetchall()
 
         assert len(rows) == 1
-        assert rows[0][0] == 2
+        assert rows[0]["errors_count"] == 2
 
 
 class TestIngestionLogBinanceWeight:
@@ -295,20 +315,20 @@ class TestIngestionLogBinanceWeight:
         ingestor._binance_weight_used = 450
         ingestor.run("BTCUSDT")
 
-        with db_manager.duckdb() as cursor:
-            rows = cursor.execute("SELECT binance_weight_used FROM data_ingestion_log").fetchall()
+        with db_manager.connection() as conn:
+            rows = conn.execute("SELECT binance_weight_used FROM data_ingestion_log").fetchall()
 
         assert len(rows) == 1
-        assert rows[0][0] == 450
+        assert rows[0]["binance_weight_used"] == 450
 
 
 # ---------------------------------------------------------------------------
-# Tests: DuckDB sync
+# Tests: DB sync
 # ---------------------------------------------------------------------------
 
 
-class TestSyncToDuckDB:
-    """_sync_to_duckdb() inserts rows into correct DuckDB table."""
+class TestSyncToDB:
+    """_sync_to_duckdb() inserts rows into correct PostgreSQL table."""
 
     def test_equity_sync_to_ohlcv_daily(
         self,
@@ -320,8 +340,8 @@ class TestSyncToDuckDB:
         ingestor = _EquityTestIngestor(db_config, fetch_data=equity_ohlcv_small)
         ingestor.run("SPY")
 
-        with db_manager.duckdb() as cursor:
-            rows = cursor.execute(
+        with db_manager.connection() as conn:
+            rows = conn.execute(
                 "SELECT symbol, date, open, high, low, close, volume "
                 "FROM ohlcv_daily WHERE symbol = 'SPY' ORDER BY date"
             ).fetchall()
@@ -338,8 +358,8 @@ class TestSyncToDuckDB:
         ingestor = _CryptoTestIngestor(db_config, fetch_data=crypto_ohlcv_small)
         ingestor.run("BTCUSDT")
 
-        with db_manager.duckdb() as cursor:
-            rows = cursor.execute(
+        with db_manager.connection() as conn:
+            rows = conn.execute(
                 "SELECT symbol, datetime, open, high, low, close, volume "
                 "FROM ohlcv_4h WHERE symbol = 'BTCUSDT' ORDER BY datetime"
             ).fetchall()
@@ -357,29 +377,29 @@ class TestSyncToDuckDB:
         ingestor.run("SPY")
         ingestor.run("SPY")  # Second run with same data
 
-        with db_manager.duckdb() as cursor:
-            count = cursor.execute(
-                "SELECT COUNT(*) FROM ohlcv_daily WHERE symbol = 'SPY'"
-            ).fetchone()[0]
+        with db_manager.connection() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM ohlcv_daily WHERE symbol = 'SPY'"
+            ).fetchone()["cnt"]
 
         assert count == len(equity_ohlcv_small)
 
 
 # ---------------------------------------------------------------------------
-# Tests: Quarantine to DuckDB
+# Tests: Quarantine to DB
 # ---------------------------------------------------------------------------
 
 
-class TestQuarantineToDuckDB:
-    """_store_quarantine() writes to DuckDB data_quarantine table."""
+class TestQuarantineToDB:
+    """_store_quarantine() writes to PostgreSQL data_quarantine table."""
 
-    def test_quarantine_written_to_duckdb(
+    def test_quarantine_written_to_db(
         self,
         db_config: SwingRLConfig,
         db_manager: DatabaseManager,
         equity_ohlcv_small: pd.DataFrame,
     ) -> None:
-        """DATA-12: _store_quarantine() writes to DuckDB data_quarantine with JSON."""
+        """DATA-12: _store_quarantine() writes to data_quarantine with JSON."""
         ingestor = _EquityTestIngestor(db_config, fetch_data=equity_ohlcv_small)
         bad_rows = equity_ohlcv_small.iloc[:2].copy()
         bad_rows["reason"] = "test quarantine"
@@ -387,18 +407,18 @@ class TestQuarantineToDuckDB:
 
         ingestor.run("SPY")
 
-        with db_manager.duckdb() as cursor:
-            rows = cursor.execute(
+        with db_manager.connection() as conn:
+            rows = conn.execute(
                 "SELECT source, symbol, raw_data_json, failure_reason, severity "
                 "FROM data_quarantine ORDER BY quarantined_at"
             ).fetchall()
 
         assert len(rows) == 2
-        assert rows[0][0] == "equity"  # source
-        assert rows[0][1] == "SPY"  # symbol
-        assert rows[0][2] is not None  # raw_data_json not empty
-        assert rows[0][3] == "test quarantine"  # failure_reason
-        assert rows[0][4] == "warning"  # severity
+        assert rows[0]["source"] == "equity"
+        assert rows[0]["symbol"] == "SPY"
+        assert rows[0]["raw_data_json"] is not None
+        assert rows[0]["failure_reason"] == "test quarantine"
+        assert rows[0]["severity"] == "warning"
 
     def test_quarantine_still_writes_parquet(
         self,

@@ -34,8 +34,9 @@ logging:
   # Override: SWINGRL_LOGGING__JSON_LOGS=true
 
 system:
-  duckdb_path: /app/data/db/market_data.ddb   # DuckDB: market data analytics
-  sqlite_path: /app/data/db/trading_ops.db    # SQLite: trading operations
+  database_url: ""                            # PostgreSQL — set via DATABASE_URL env var (pg16 on br0)
+  duckdb_path: /app/data/db/market_data.ddb   # DEPRECATED: kept for migration rollback only
+  sqlite_path: /app/data/db/trading_ops.db    # DEPRECATED: kept for migration rollback only
 
 alerting:
   alert_cooldown_minutes: 30               # minimum minutes between repeat alerts

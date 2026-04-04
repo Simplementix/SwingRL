@@ -193,10 +193,11 @@ class EnvironmentConfig(BaseModel):
 
 
 class SystemConfig(BaseModel):
-    """System-level database paths."""
+    """System-level database configuration."""
 
-    duckdb_path: str = Field(default="data/db/market_data.ddb")
-    sqlite_path: str = Field(default="data/db/trading_ops.db")
+    database_url: str = Field(default="")  # Set via DATABASE_URL env var
+    duckdb_path: str = Field(default="data/db/market_data.ddb")  # deprecated
+    sqlite_path: str = Field(default="data/db/trading_ops.db")  # deprecated
 
 
 class AlertingConfig(BaseModel):

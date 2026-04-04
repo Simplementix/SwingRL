@@ -61,11 +61,11 @@ class TestExecuteCycle:
     def test_cb_halted_returns_empty(self, pipeline: ExecutionPipeline) -> None:
         """PAPER-09: Circuit breaker halt short-circuits to empty list."""
         # Trigger CB for equity
-        with pipeline._db.sqlite() as conn:
+        with pipeline._db.connection() as conn:
             conn.execute(
                 "INSERT INTO circuit_breaker_events "
                 "(event_id, environment, triggered_at, trigger_value, threshold, reason) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s)",
                 ("cb1", "equity", "2099-01-01T00:00:00+00:00", 0.15, 0.10, "test"),
             )
 

@@ -30,12 +30,12 @@ class TestPositionTrackerPortfolioValue:
         self, position_tracker: PositionTracker, mock_db: DatabaseManager
     ) -> None:
         """PAPER-03: Returns latest snapshot total_value when snapshot exists."""
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
                 "(timestamp, environment, total_value, cash_balance, high_water_mark, "
                 "daily_pnl, drawdown_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("2026-03-09T10:00:00Z", "equity", 450.0, 100.0, 450.0, 5.0, 0.0),
             )
         value = position_tracker.get_portfolio_value("equity")
@@ -54,15 +54,15 @@ class TestPositionTrackerPositions:
         self, position_tracker: PositionTracker, mock_db: DatabaseManager
     ) -> None:
         """PAPER-03: Returns positions filtered by environment."""
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
-                "last_price, unrealized_pnl, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("SPY", "equity", 2.0, 470.0, 475.0, 10.0, "2026-03-09T10:00:00Z"),
             )
             conn.execute(
                 "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
-                "last_price, unrealized_pnl, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("BTCUSDT", "crypto", 0.001, 42000.0, 43000.0, 1.0, "2026-03-09T10:00:00Z"),
             )
         equity_pos = position_tracker.get_positions("equity")
@@ -84,12 +84,12 @@ class TestPositionTrackerHighWaterMark:
         self, position_tracker: PositionTracker, mock_db: DatabaseManager
     ) -> None:
         """PAPER-03: Returns HWM from latest snapshot for environment."""
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
                 "(timestamp, environment, total_value, cash_balance, high_water_mark, "
                 "daily_pnl, drawdown_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("2026-03-09T10:00:00Z", "equity", 420.0, 100.0, 425.0, 5.0, 0.0),
             )
         hwm = position_tracker.get_high_water_mark("equity")
@@ -109,12 +109,12 @@ class TestPositionTrackerDailyPnl:
     ) -> None:
         """PAPER-03: Returns daily_pnl from today's snapshot."""
         today_ts = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
                 "(timestamp, environment, total_value, cash_balance, high_water_mark, "
                 "daily_pnl, drawdown_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (today_ts, "equity", 410.0, 100.0, 420.0, -5.0, 0.024),
             )
         pnl = position_tracker.get_daily_pnl("equity")
@@ -133,10 +133,10 @@ class TestPositionTrackerExposure:
         self, position_tracker: PositionTracker, mock_db: DatabaseManager
     ) -> None:
         """PAPER-03: Exposure = sum(abs(qty * last_price)) / portfolio_value."""
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
-                "last_price, unrealized_pnl, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("SPY", "equity", 0.5, 470.0, 480.0, 5.0, "2026-03-09T10:00:00Z"),
             )
         exposure = position_tracker.get_exposure("equity")
@@ -154,7 +154,7 @@ class TestPositionTrackerRecordSnapshot:
         position_tracker.record_snapshot(
             env="equity", portfolio_value=410.0, cash=100.0, daily_pnl=10.0
         )
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             row = conn.execute(
                 "SELECT * FROM portfolio_snapshots WHERE environment = 'equity' "
                 "ORDER BY timestamp DESC LIMIT 1"
@@ -174,7 +174,7 @@ class TestPositionTrackerRecordSnapshot:
         position_tracker.record_snapshot(
             env="equity", portfolio_value=400.0, cash=80.0, daily_pnl=-20.0
         )
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             row = conn.execute(
                 "SELECT * FROM portfolio_snapshots WHERE environment = 'equity' "
                 "ORDER BY timestamp DESC LIMIT 1"
@@ -211,10 +211,10 @@ class TestPositionTrackerPortfolioStateArray:
         self, position_tracker: PositionTracker, mock_db: DatabaseManager
     ) -> None:
         """PAPER-05: State reflects positions when held with interleaved layout."""
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
-                "last_price, unrealized_pnl, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("SPY", "equity", 0.5, 470.0, 480.0, 5.0, "2026-03-09T10:00:00Z"),
             )
         state = position_tracker.get_portfolio_state_array("equity")

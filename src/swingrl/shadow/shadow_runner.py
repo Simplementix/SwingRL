@@ -1,7 +1,7 @@
 """Shadow inference runner for parallel model evaluation.
 
 Runs shadow model inference after active trading cycle, recording hypothetical
-trades in the shadow_trades SQLite table. Failures are logged but never raised
+trades in the shadow_trades table. Failures are logged but never raised
 to protect the active trading cycle.
 
 Usage:
@@ -36,10 +36,10 @@ def _fetch_latest_prices(db: Any, env_name: str, symbols: list[str]) -> dict[str
     date_col = "date" if env_name == "equity" else "datetime"
     prices: dict[str, float] = {}
     try:
-        with db.duckdb() as conn:
+        with db.connection() as conn:
             for symbol in symbols:
                 row = conn.execute(
-                    f"SELECT close FROM {table} WHERE symbol = ? "  # noqa: S608
+                    f"SELECT close FROM {table} WHERE symbol = %s "  # noqa: S608
                     f"ORDER BY {date_col} DESC LIMIT 1",  # nosec B608
                     [symbol],
                 ).fetchone()
@@ -270,21 +270,21 @@ def _maybe_normalize_obs(model: Any, observation: Any) -> Any:
 
 
 def _record_shadow_trades(db: Any, trades: list[dict[str, Any]]) -> None:
-    """Insert hypothetical trades into shadow_trades SQLite table.
+    """Insert hypothetical trades into shadow_trades table.
 
     Args:
         db: DatabaseManager instance.
         trades: List of trade dicts with shadow_trades column keys.
     """
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         for trade in trades:
             conn.execute(
                 "INSERT INTO shadow_trades "
                 "(trade_id, timestamp, symbol, side, quantity, price, "
                 "commission, slippage, environment, broker, order_type, "
                 "trade_type, model_version) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                [
                     trade.get("trade_id", str(uuid.uuid4())),
                     trade.get("timestamp", datetime.now(tz=UTC).isoformat()),
                     trade["symbol"],
@@ -298,7 +298,7 @@ def _record_shadow_trades(db: Any, trades: list[dict[str, Any]]) -> None:
                     trade.get("order_type"),
                     trade.get("trade_type"),
                     trade["model_version"],
-                ),
+                ],
             )
 
     log.info("shadow_trades_recorded", count=len(trades))

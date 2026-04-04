@@ -40,14 +40,15 @@ class TestFeaturesConfig:
 class TestFeatureDDL:
     """Tests for DuckDB feature table DDL."""
 
-    def test_init_feature_schema_creates_tables(self, duckdb_conn: Any) -> None:
+    def test_init_feature_schema_creates_tables(self, pg_conn: Any) -> None:
         """FEAT-11: init_feature_schema creates all 4 required tables."""
-        from swingrl.features.schema import init_feature_schema
+        from swingrl.data.postgres_schema import init_postgres_schema
 
-        init_feature_schema(duckdb_conn)
+        init_postgres_schema(pg_conn)
+        pg_conn.commit()
 
-        tables = duckdb_conn.execute(
-            "SELECT table_name FROM information_schema.tables ORDER BY table_name"
+        tables = pg_conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
         ).fetchall()
         table_names = [row[0] for row in tables]
 
@@ -56,55 +57,58 @@ class TestFeatureDDL:
         assert "fundamentals" in table_names
         assert "hmm_state_history" in table_names
 
-    def test_features_equity_accepts_insert(self, duckdb_conn: Any) -> None:
+    def test_features_equity_accepts_insert(self, pg_conn: Any) -> None:
         """FEAT-11: features_equity table accepts valid data insertion."""
-        from swingrl.features.schema import init_feature_schema
+        from swingrl.data.postgres_schema import init_postgres_schema
 
-        init_feature_schema(duckdb_conn)
+        init_postgres_schema(pg_conn)
 
-        duckdb_conn.execute("""
+        pg_conn.execute("""
             INSERT INTO features_equity VALUES (
                 'SPY', '2024-01-02',
                 1.02, 0.98, 55.0, 0.005, 0.002,
                 0.65, 0.015, 1.2, 25.0,
                 1.0, 58.0,
                 -0.5, 0.10, 0.45, 0.018
-            )
+            ) ON CONFLICT DO NOTHING
         """)
+        pg_conn.commit()
 
-        result = duckdb_conn.execute(
-            "SELECT * FROM features_equity WHERE symbol = 'SPY'"
-        ).fetchone()
+        result = pg_conn.execute("SELECT * FROM features_equity WHERE symbol = 'SPY'").fetchone()
         assert result is not None
         assert result[0] == "SPY"
 
-    def test_features_crypto_accepts_insert(self, duckdb_conn: Any) -> None:
+    def test_features_crypto_accepts_insert(self, pg_conn: Any) -> None:
         """FEAT-11: features_crypto table accepts valid data insertion."""
-        from swingrl.features.schema import init_feature_schema
+        from swingrl.data.postgres_schema import init_postgres_schema
 
-        init_feature_schema(duckdb_conn)
+        init_postgres_schema(pg_conn)
 
-        duckdb_conn.execute("""
+        pg_conn.execute("""
             INSERT INTO features_crypto VALUES (
                 'BTCUSDT', '2024-01-01 04:00:00',
                 1.01, 0.99, 60.0, 0.003, 0.001,
                 0.55, 0.02, 0.9, 22.0,
                 1.0, 55.0, 62.0, 1.05
-            )
+            ) ON CONFLICT DO NOTHING
         """)
+        pg_conn.commit()
 
-        result = duckdb_conn.execute(
+        result = pg_conn.execute(
             "SELECT * FROM features_crypto WHERE symbol = 'BTCUSDT'"
         ).fetchone()
         assert result is not None
         assert result[0] == "BTCUSDT"
 
-    def test_init_feature_schema_is_idempotent(self, duckdb_conn: Any) -> None:
+    def test_init_feature_schema_is_idempotent(self, pg_conn: Any) -> None:
         """FEAT-11: Calling init_feature_schema twice does not error."""
-        from swingrl.features.schema import init_feature_schema
+        from swingrl.data.postgres_schema import init_postgres_schema
 
-        init_feature_schema(duckdb_conn)
-        init_feature_schema(duckdb_conn)  # Should not raise
+        init_postgres_schema(pg_conn)
+        init_postgres_schema(pg_conn)  # Should not raise
+        pg_conn.commit()
 
-        tables = duckdb_conn.execute("SELECT table_name FROM information_schema.tables").fetchall()
+        tables = pg_conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+        ).fetchall()
         assert len(tables) >= 4
