@@ -48,7 +48,6 @@ services:
     cpus: 1.0
     env_file: .env
     volumes:
-      - ./db:/app/db
       - ./data:/app/data
       - ./config:/app/config
     healthcheck:
@@ -56,6 +55,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - default
+      - br0
     restart: unless-stopped
 
   swingrl:

@@ -10,13 +10,17 @@ Usage:
 from __future__ import annotations
 
 import os
-import sqlite3
 
+import psycopg
 import structlog
+from psycopg.rows import dict_row
 
 log = structlog.get_logger(__name__)
 
-DB_PATH = os.environ.get("MEMORY_DB_PATH", "/app/db/memory.db")
+DB_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://swingrl:changeme@localhost:5432/swingrl",  # pragma: allowlist secret
+)
 
 # Patterns to retire with reasons
 RETIRE_IDS: dict[int, str] = {
@@ -43,15 +47,14 @@ RESTORE_IDS: dict[int, str] = {
 
 def run_cleanup() -> None:
     """Execute pattern cleanup migration."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg.connect(DB_URL, row_factory=dict_row)
     retired_count = 0
     restored_count = 0
 
     try:
         for row_id, reason in RETIRE_IDS.items():
             current = conn.execute(
-                "SELECT status FROM consolidations WHERE id = ?", (row_id,)
+                "SELECT status FROM consolidations WHERE id = %s", [row_id]
             ).fetchone()
             if current is None:
                 log.warning("pattern_not_found", id=row_id)
@@ -60,16 +63,16 @@ def run_cleanup() -> None:
                 log.info("pattern_already_retired", id=row_id)
                 continue
             conn.execute(
-                "UPDATE consolidations SET status = 'retired' WHERE id = ?",
-                (row_id,),
+                "UPDATE consolidations SET status = 'retired' WHERE id = %s",
+                [row_id],
             )
             retired_count += 1
             log.info("pattern_retired", id=row_id, reason=reason)
 
         for row_id, reason in RESTORE_IDS.items():
             current = conn.execute(
-                "SELECT status, superseded_by FROM consolidations WHERE id = ?",
-                (row_id,),
+                "SELECT status, superseded_by FROM consolidations WHERE id = %s",
+                [row_id],
             ).fetchone()
             if current is None:
                 log.warning("pattern_not_found", id=row_id)
@@ -79,8 +82,8 @@ def run_cleanup() -> None:
                 continue
             conn.execute(
                 "UPDATE consolidations SET status = 'active', superseded_by = NULL, "
-                "conflict_group_id = NULL WHERE id = ?",
-                (row_id,),
+                "conflict_group_id = NULL WHERE id = %s",
+                [row_id],
             )
             restored_count += 1
             log.info("pattern_restored", id=row_id, reason=reason)
@@ -91,6 +94,9 @@ def run_cleanup() -> None:
             retired=retired_count,
             restored=restored_count,
         )
+    except Exception:
+        conn.rollback()
+        log.error("cleanup_failed", exc_info=True)
     finally:
         conn.close()
 

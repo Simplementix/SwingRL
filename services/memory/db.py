@@ -1,6 +1,6 @@
-"""SQLite database layer for the swingrl-memory service.
+"""PostgreSQL database layer for the swingrl-memory service.
 
-Manages the memory.db file with tables:
+Manages the PostgreSQL database with tables:
 - memories: raw ingested text with source tags
 - consolidations: LLM-synthesized patterns from memory batches (enriched schema)
 - consolidation_quality: quality audit log for consolidation attempts
@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
-from pathlib import Path
 from typing import Any
 
 import anyio
+import psycopg
 import structlog
+from psycopg.rows import dict_row
 
 log = structlog.get_logger(__name__)
 
@@ -85,10 +85,10 @@ async def _run_background(func: Any, *args: Any) -> Any:
 
 _CREATE_MEMORIES = """
 CREATE TABLE IF NOT EXISTS memories (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     text       TEXT NOT NULL,
     source     TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     archived   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source);
@@ -97,16 +97,16 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 
 _CREATE_CONSOLIDATIONS = """
 CREATE TABLE IF NOT EXISTS consolidations (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     pattern_text        TEXT NOT NULL,
     source_count        INTEGER NOT NULL DEFAULT 1,
-    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     conflicting_with    INTEGER REFERENCES consolidations(id),
     category            TEXT,
     affected_algos      TEXT,
     affected_envs       TEXT,
     actionable_implication TEXT,
-    confidence          REAL,
+    confidence          DOUBLE PRECISION,
     evidence            TEXT,
     stage               INTEGER DEFAULT 1,
     env_name            TEXT,
@@ -122,11 +122,11 @@ CREATE TABLE IF NOT EXISTS consolidations (
 
 _CREATE_CONSOLIDATION_QUALITY = """
 CREATE TABLE IF NOT EXISTS consolidation_quality (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     attempt_count   INTEGER NOT NULL DEFAULT 1,
     accepted        INTEGER NOT NULL DEFAULT 0,
     rejected_reason TEXT,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 """
 
@@ -140,9 +140,9 @@ CREATE TABLE IF NOT EXISTS consolidation_sources (
 
 _CREATE_PATTERN_PRESENTATIONS = """
 CREATE TABLE IF NOT EXISTS pattern_presentations (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     consolidation_id  INTEGER NOT NULL REFERENCES consolidations(id),
-    presented_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    presented_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     iteration         INTEGER,
     env_name          TEXT,
     request_type      TEXT,
@@ -152,23 +152,23 @@ CREATE TABLE IF NOT EXISTS pattern_presentations (
 
 _CREATE_PATTERN_OUTCOMES = """
 CREATE TABLE IF NOT EXISTS pattern_outcomes (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     iteration           INTEGER NOT NULL,
     env_name            TEXT NOT NULL,
     gate_passed         INTEGER,
-    sharpe              REAL,
-    mdd                 REAL,
-    sortino             REAL,
-    pnl                 REAL,
-    recorded_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    sharpe              DOUBLE PRECISION,
+    mdd                 DOUBLE PRECISION,
+    sortino             DOUBLE PRECISION,
+    pnl                 DOUBLE PRECISION,
+    recorded_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     patterns_presented  TEXT
 );
 """
 
 _CREATE_LLM_AUDIT_LOG = """
 CREATE TABLE IF NOT EXISTS llm_audit_log (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp         TEXT NOT NULL DEFAULT (datetime('now')),
+    id                INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    timestamp         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     call_type         TEXT NOT NULL,
     algo              TEXT,
     env               TEXT,
@@ -197,7 +197,7 @@ _CONSOLIDATION_NEW_COLUMNS = [
     ("affected_algos", "TEXT"),
     ("affected_envs", "TEXT"),
     ("actionable_implication", "TEXT"),
-    ("confidence", "REAL"),
+    ("confidence", "DOUBLE PRECISION"),
     ("evidence", "TEXT"),
     ("stage", "INTEGER DEFAULT 1"),
     ("env_name", "TEXT"),
@@ -209,49 +209,55 @@ _CONSOLIDATION_NEW_COLUMNS = [
 ]
 
 
-def _migrate_consolidations(conn: sqlite3.Connection) -> None:
+def _migrate_consolidations(conn: psycopg.Connection[dict[str, Any]]) -> None:
     """Add new columns to consolidations table if they don't exist."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(consolidations)").fetchall()}
+    existing = {
+        row["column_name"]
+        for row in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'consolidations'"
+        ).fetchall()
+    }
     for col_name, col_type in _CONSOLIDATION_NEW_COLUMNS:
         if col_name not in existing:
             conn.execute(
-                f"ALTER TABLE consolidations ADD COLUMN {col_name} {col_type}"  # nosec B608 — col names are fixed strings
+                f"ALTER TABLE consolidations ADD COLUMN IF NOT EXISTS {col_name} {col_type}"  # nosec B608 — col names are fixed strings
             )
             log.info("consolidation_column_added", column=col_name)
 
 
-def _get_db_path() -> Path:
-    """Return the SQLite database path from MEMORY_DB_PATH env var."""
-    raw = os.environ.get("MEMORY_DB_PATH", "/app/db/memory.db")
-    path = Path(raw)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+def _get_db_url() -> str:
+    """Return the PostgreSQL connection URL from DATABASE_URL env var."""
+    return os.environ.get("DATABASE_URL", "postgresql://swingrl:changeme@localhost:5432/swingrl")
 
 
-def get_connection() -> sqlite3.Connection:
-    """Open a new SQLite connection with WAL mode and row_factory.
+def get_connection() -> psycopg.Connection[dict[str, Any]]:
+    """Open a new PostgreSQL connection with dict_row factory.
 
     Callers are responsible for closing the connection.
     """
-    # Disable thread check: FastAPI async handlers may resume on different threads;
-    # each function opens its own connection
-    conn = sqlite3.connect(str(_get_db_path()), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn = psycopg.connect(_get_db_url(), row_factory=dict_row)
     return conn
+
+
+def _execute_ddl(conn: psycopg.Connection[dict[str, Any]], ddl: str) -> None:
+    """Execute a DDL string that may contain multiple statements separated by semicolons."""
+    for stmt in ddl.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            conn.execute(stmt)
 
 
 def init_db() -> None:
     """Create all tables and indexes if they do not already exist."""
     conn = get_connection()
     try:
-        conn.executescript(_CREATE_MEMORIES)
-        conn.executescript(_CREATE_CONSOLIDATIONS)
-        conn.executescript(_CREATE_CONSOLIDATION_QUALITY)
-        conn.executescript(_CREATE_CONSOLIDATION_SOURCES)
-        conn.executescript(_CREATE_PATTERN_PRESENTATIONS)
-        conn.executescript(_CREATE_PATTERN_OUTCOMES)
-        conn.executescript(_CREATE_LLM_AUDIT_LOG)
+        _execute_ddl(conn, _CREATE_MEMORIES)
+        _execute_ddl(conn, _CREATE_CONSOLIDATIONS)
+        _execute_ddl(conn, _CREATE_CONSOLIDATION_QUALITY)
+        _execute_ddl(conn, _CREATE_CONSOLIDATION_SOURCES)
+        _execute_ddl(conn, _CREATE_PATTERN_PRESENTATIONS)
+        _execute_ddl(conn, _CREATE_PATTERN_OUTCOMES)
+        _execute_ddl(conn, _CREATE_LLM_AUDIT_LOG)
         # Migrate existing consolidations table with new columns
         _migrate_consolidations(conn)
         # Create indexes that may not exist on older DBs
@@ -266,7 +272,7 @@ def init_db() -> None:
             "ON consolidations(category, status)"
         )
         conn.commit()
-        log.info("memory_db_initialized", path=str(_get_db_path()))
+        log.info("memory_db_initialized", url=_get_db_url().split("@")[-1])
     finally:
         conn.close()
 
@@ -289,13 +295,12 @@ def insert_memory(text: str, source: str) -> int:
     conn = get_connection()
     try:
         cur = conn.execute(
-            "INSERT INTO memories (text, source) VALUES (?, ?)",
-            (text, source),
+            "INSERT INTO memories (text, source) VALUES (%s, %s) RETURNING id",
+            [text, source],
         )
         conn.commit()
-        row_id = cur.lastrowid
-        if row_id is None:  # pragma: no cover
-            row_id = 0
+        row = cur.fetchone()
+        row_id = row["id"] if row else 0
         log.info("memory_inserted", source=source, row_id=row_id)
         return int(row_id)
     finally:
@@ -328,8 +333,8 @@ def insert_audit_log(
                    (call_type, algo, env, fold_number, iteration_number,
                     is_control_fold, provider, model_name, prompt_text,
                     response_text, response_parsed, latency_ms, success, error_text)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                [
                     call_type,
                     algo,
                     env,
@@ -344,7 +349,7 @@ def insert_audit_log(
                     latency_ms,
                     int(success),
                     error_text,
-                ),
+                ],
             )
             conn.commit()
         finally:
@@ -378,15 +383,15 @@ def get_memories(
         if not archived:
             clauses.append("archived = 0")
         if source is not None:
-            clauses.append("source = ?")
+            clauses.append("source = %s")
             params.append(source)
         if since is not None:
-            clauses.append("created_at > ?")
+            clauses.append("created_at > %s")
             params.append(since)
 
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(limit)
-        sql = f"SELECT id, text, source, created_at, archived FROM memories {where} ORDER BY created_at DESC LIMIT ?"  # noqa: E501  # nosec B608 — where clause built from fixed strings only
+        sql = f"SELECT id, text, source, created_at, archived FROM memories {where} ORDER BY created_at DESC LIMIT %s"  # noqa: E501  # nosec B608 — where clause built from fixed strings only
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -412,13 +417,13 @@ def get_memories_by_source_prefix(
     """
     conn = get_connection()
     try:
-        clauses = ["source LIKE ?"]
+        clauses = ["source LIKE %s"]
         params: list[Any] = [f"{prefix}%"]
         if not archived:
             clauses.append("archived = 0")
         where = "WHERE " + " AND ".join(clauses)
         params.extend([limit, offset])
-        sql = f"SELECT id, text, source, created_at, archived FROM memories {where} ORDER BY created_at DESC LIMIT ? OFFSET ?"  # noqa: E501  # nosec B608
+        sql = f"SELECT id, text, source, created_at, archived FROM memories {where} ORDER BY created_at DESC LIMIT %s OFFSET %s"  # noqa: E501  # nosec B608
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -428,19 +433,19 @@ def get_memories_by_source_prefix(
 def archive_memories(row_ids: list[int]) -> None:
     """Mark memories as archived after successful consolidation.
 
-    Batches updates to stay within SQLite's variable limit (~32766).
+    Batches updates to stay within PostgreSQL's parameter limit.
 
     Args:
         row_ids: List of memory row IDs to archive.
     """
     if not row_ids:
         return
-    _BATCH = 10_000  # well within SQLite's SQLITE_MAX_VARIABLE_NUMBER
+    _BATCH = 10_000
     conn = get_connection()
     try:
         for start in range(0, len(row_ids), _BATCH):
             chunk = row_ids[start : start + _BATCH]
-            placeholders = ",".join("?" * len(chunk))
+            placeholders = ",".join(["%s"] * len(chunk))
             conn.execute(
                 f"UPDATE memories SET archived = 1 WHERE id IN ({placeholders})",  # nosec B608
                 chunk,
@@ -457,7 +462,7 @@ def unarchive_memories(row_ids: list[int]) -> int:
         return 0
     conn = get_connection()
     try:
-        placeholders = ",".join("?" * len(row_ids))
+        placeholders = ",".join(["%s"] * len(row_ids))
         cursor = conn.execute(
             f"UPDATE memories SET archived = 0 WHERE id IN ({placeholders})",  # noqa: S608  # nosec B608
             row_ids,
@@ -474,11 +479,17 @@ def get_archived_memories_by_prefix(prefix: str, limit: int = 1000) -> list[dict
     try:
         rows = conn.execute(
             "SELECT id, text, source, created_at FROM memories "
-            "WHERE source LIKE ? AND archived = 1 ORDER BY id LIMIT ?",
-            (f"{prefix}%", limit),
+            "WHERE source LIKE %s AND archived = 1 ORDER BY id LIMIT %s",
+            [f"{prefix}%", limit],
         ).fetchall()
         return [
-            {"id": row[0], "text": row[1], "source": row[2], "created_at": row[3]} for row in rows
+            {
+                "id": row["id"],
+                "text": row["text"],
+                "source": row["source"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
         ]
     finally:
         conn.close()
@@ -531,8 +542,8 @@ def insert_consolidation(
             "(pattern_text, source_count, conflicting_with, category, affected_algos, "
             "affected_envs, actionable_implication, confidence, evidence, stage, env_name, "
             "status, conflict_group_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            [
                 pattern_text,
                 source_count,
                 conflicting_with,
@@ -546,12 +557,11 @@ def insert_consolidation(
                 env_name,
                 status,
                 conflict_group_id,
-            ),
+            ],
         )
         conn.commit()
-        row_id = cur.lastrowid
-        if row_id is None:  # pragma: no cover
-            row_id = 0
+        row = cur.fetchone()
+        row_id = row["id"] if row else 0
         log.info(
             "consolidation_inserted",
             source_count=source_count,
@@ -574,8 +584,8 @@ def insert_consolidation_source(consolidation_id: int, memory_id: int) -> None:
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT OR IGNORE INTO consolidation_sources (consolidation_id, memory_id) VALUES (?, ?)",
-            (consolidation_id, memory_id),
+            "INSERT INTO consolidation_sources (consolidation_id, memory_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            [consolidation_id, memory_id],
         )
         conn.commit()
     finally:
@@ -593,8 +603,8 @@ def insert_consolidation_sources(consolidation_id: int, memory_ids: list[int]) -
         return
     conn = get_connection()
     try:
-        conn.executemany(
-            "INSERT OR IGNORE INTO consolidation_sources (consolidation_id, memory_id) VALUES (?, ?)",
+        conn.cursor().executemany(
+            "INSERT INTO consolidation_sources (consolidation_id, memory_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
             [(consolidation_id, mid) for mid in memory_ids],
         )
         conn.commit()
@@ -614,8 +624,8 @@ def get_consolidations(limit: int = 50) -> list[dict[str, Any]]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT * FROM consolidations ORDER BY created_at DESC LIMIT ?",
-            (limit,),
+            "SELECT * FROM consolidations ORDER BY created_at DESC LIMIT %s",
+            [limit],
         ).fetchall()
         return [_deserialize_consolidation(r) for r in rows]
     finally:
@@ -647,25 +657,25 @@ def get_active_consolidations(
         params: list[Any] = []
 
         if env_name is not None:
-            clauses.append("(env_name = ? OR env_name IS NULL)")
+            clauses.append("(env_name = %s OR env_name IS NULL)")
             params.append(env_name)
         if stage is not None:
-            clauses.append("stage = ?")
+            clauses.append("stage = %s")
             params.append(stage)
         if min_confidence is not None:
-            clauses.append("(confidence >= ? OR confidence IS NULL)")
+            clauses.append("(confidence >= %s OR confidence IS NULL)")
             params.append(min_confidence)
         if categories:
-            placeholders = ",".join("?" * len(categories))
+            placeholders = ",".join(["%s"] * len(categories))
             clauses.append(f"category IN ({placeholders})")
             params.extend(categories)
 
         where = "WHERE " + " AND ".join(clauses)
 
         if limit_per_category is not None:
-            # Composite score ranking with ROW_NUMBER window function (SQLite 3.25+)
+            # Composite score ranking with ROW_NUMBER window function
             # score = confidence*0.5 + (confirmation_count/max_active)*0.3 + recency*0.2
-            sql = f"""
+            sql = """
                 WITH scored AS (
                     SELECT *,
                         COALESCE(confidence, 0) * 0.5
@@ -675,8 +685,8 @@ def get_active_consolidations(
                           ELSE (COALESCE(confirmation_count, 0) * 1.0
                             / (SELECT MAX(confirmation_count) FROM consolidations WHERE status = 'active')) * 0.3
                         END
-                        + MAX(0.0, MIN(1.0,
-                            1.0 - (julianday('now') - julianday(created_at)) / 90.0
+                        + GREATEST(0.0, LEAST(1.0,
+                            1.0 - EXTRACT(EPOCH FROM (NOW() - created_at::TIMESTAMPTZ)) / (90.0 * 86400)
                           )) * 0.2
                         AS composite_score
                     FROM consolidations
@@ -689,9 +699,9 @@ def get_active_consolidations(
                         ) AS _rn
                     FROM scored
                 )
-                SELECT * FROM ranked WHERE _rn <= ?
+                SELECT * FROM ranked WHERE _rn <= %s
                 ORDER BY composite_score DESC
-            """  # nosec B608 — where clause built from fixed strings + parameterized values
+            """.format(where=where)  # nosec B608 — where clause built from fixed strings
             params.append(limit_per_category)
         else:
             sql = f"SELECT * FROM consolidations {where} ORDER BY confidence DESC, created_at DESC"  # nosec B608
@@ -720,14 +730,14 @@ def update_consolidation_status(
     try:
         if conflict_group_id is not None:
             conn.execute(
-                "UPDATE consolidations SET status = ?, superseded_by = ?, "
-                "conflict_group_id = ? WHERE id = ?",
-                (status, superseded_by, conflict_group_id, row_id),
+                "UPDATE consolidations SET status = %s, superseded_by = %s, "
+                "conflict_group_id = %s WHERE id = %s",
+                [status, superseded_by, conflict_group_id, row_id],
             )
         else:
             conn.execute(
-                "UPDATE consolidations SET status = ?, superseded_by = ? WHERE id = ?",
-                (status, superseded_by, row_id),
+                "UPDATE consolidations SET status = %s, superseded_by = %s WHERE id = %s",
+                [status, superseded_by, row_id],
             )
         conn.commit()
         log.info("consolidation_status_updated", row_id=row_id, status=status)
@@ -745,8 +755,8 @@ def increment_confirmation(row_id: int) -> None:
     try:
         conn.execute(
             "UPDATE consolidations SET confirmation_count = confirmation_count + 1, "
-            "last_confirmed_at = datetime('now') WHERE id = ?",
-            (row_id,),
+            "last_confirmed_at = NOW() WHERE id = %s",
+            [row_id],
         )
         conn.commit()
     finally:
@@ -777,11 +787,12 @@ def insert_pattern_presentation(
         cur = conn.execute(
             "INSERT INTO pattern_presentations "
             "(consolidation_id, iteration, env_name, request_type, advice_response) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (consolidation_id, iteration, env_name, request_type, advice_response),
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            [consolidation_id, iteration, env_name, request_type, advice_response],
         )
         conn.commit()
-        row_id = cur.lastrowid if cur.lastrowid is not None else 0
+        row = cur.fetchone()
+        row_id = row["id"] if row else 0
         return int(row_id)
     finally:
         conn.close()
@@ -817,8 +828,8 @@ def insert_pattern_outcome(
         cur = conn.execute(
             "INSERT INTO pattern_outcomes "
             "(iteration, env_name, gate_passed, sharpe, mdd, sortino, pnl, patterns_presented) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            [
                 iteration,
                 env_name,
                 int(gate_passed) if gate_passed is not None else None,
@@ -827,10 +838,11 @@ def insert_pattern_outcome(
                 sortino,
                 pnl,
                 json.dumps(patterns_presented) if patterns_presented else None,
-            ),
+            ],
         )
         conn.commit()
-        row_id = cur.lastrowid if cur.lastrowid is not None else 0
+        row = cur.fetchone()
+        row_id = row["id"] if row else 0
         return int(row_id)
     finally:
         conn.close()
@@ -877,8 +889,8 @@ def log_consolidation_quality(
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT INTO consolidation_quality (attempt_count, accepted, rejected_reason) VALUES (?, ?, ?)",
-            (attempt_count, int(accepted), rejected_reason),
+            "INSERT INTO consolidation_quality (attempt_count, accepted, rejected_reason) VALUES (%s, %s, %s)",
+            [attempt_count, int(accepted), rejected_reason],
         )
         conn.commit()
         log.info(
@@ -896,7 +908,7 @@ def log_consolidation_quality(
 # ---------------------------------------------------------------------------
 
 
-def _deserialize_consolidation(row: sqlite3.Row) -> dict[str, Any]:
+def _deserialize_consolidation(row: Any) -> dict[str, Any]:
     """Convert a consolidation row to dict with deserialized JSON fields."""
     d = dict(row)
     for field in ("affected_algos", "affected_envs"):
@@ -969,11 +981,11 @@ def get_recent_outcomes_for_run_id(run_id: str, limit: int = 5) -> list[dict[str
     try:
         rows = conn.execute(
             "SELECT id, text FROM memories "
-            "WHERE source LIKE 'reward_adjustment%' AND archived = 0 "
-            "AND text LIKE '%REWARD_ADJUSTMENT_OUTCOME%' "
-            "AND text LIKE ? "
-            "ORDER BY id DESC LIMIT ?",
-            (f"%run_id={run_id} %", limit),
+            "WHERE source LIKE 'reward_adjustment%%' AND archived = 0 "
+            "AND text LIKE '%%REWARD_ADJUSTMENT_OUTCOME%%' "
+            "AND text LIKE %s "
+            "ORDER BY id DESC LIMIT %s",
+            [f"%run_id={run_id} %", limit],
         ).fetchall()
         return [dict(r) for r in rows]
     finally:

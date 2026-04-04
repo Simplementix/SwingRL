@@ -65,6 +65,17 @@ _SQLITE_TABLES = [
     "api_errors",
 ]
 
+# Memory service tables (from db/memory.db)
+_MEMORY_TABLES = [
+    "memories",
+    "consolidations",
+    "consolidation_quality",
+    "consolidation_sources",
+    "pattern_presentations",
+    "pattern_outcomes",
+    "llm_audit_log",
+]
+
 BATCH_SIZE = 1000
 
 
@@ -165,9 +176,11 @@ def main() -> None:
 
     duckdb_path = Path(os.environ.get("DUCKDB_PATH", "db/market_data.ddb"))
     sqlite_path = Path(os.environ.get("SQLITE_PATH", "db/trading_ops.db"))
+    memory_path = Path(os.environ.get("MEMORY_DB_PATH", "db/memory.db"))
 
     print(f"Source DuckDB: {duckdb_path}")
     print(f"Source SQLite: {sqlite_path}")
+    print(f"Source Memory: {memory_path}")
     print(f"Target: {database_url.split('@')[1] if '@' in database_url else database_url}")
     print()
 
@@ -204,6 +217,19 @@ def main() -> None:
             sqlite_conn.close()
     else:
         print(f"SQLite not found at {sqlite_path}, skipping.")
+
+    # Migrate memory service SQLite tables
+    if memory_path.exists():
+        print(f"\nMigrating Memory SQLite ({memory_path})...")
+        memory_conn = sqlite3.connect(str(memory_path))
+        try:
+            for table in _MEMORY_TABLES:
+                count = _migrate_sqlite_table(memory_conn, pg_conn, table)
+                total_rows += count
+        finally:
+            memory_conn.close()
+    else:
+        print(f"Memory DB not found at {memory_path}, skipping.")
 
     # Verify
     print("\n--- Verification ---")

@@ -526,6 +526,109 @@ CREATE TABLE IF NOT EXISTS emergency_flags (
 """
 
 # ---------------------------------------------------------------------------
+# Memory service tables (formerly in services/memory/db.py SQLite)
+# ---------------------------------------------------------------------------
+
+_MEMORIES_DDL = """\
+CREATE TABLE IF NOT EXISTS memories (
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    text                TEXT NOT NULL,
+    source              TEXT NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    archived            INTEGER NOT NULL DEFAULT 0
+)
+"""
+
+_CONSOLIDATIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS consolidations (
+    id                      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    pattern_text            TEXT NOT NULL,
+    source_count            INTEGER NOT NULL DEFAULT 1,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    conflicting_with        INTEGER REFERENCES consolidations(id),
+    category                TEXT,
+    affected_algos          TEXT,
+    affected_envs           TEXT,
+    actionable_implication  TEXT,
+    confidence              DOUBLE PRECISION,
+    evidence                TEXT,
+    stage                   INTEGER DEFAULT 1,
+    env_name                TEXT,
+    confirmation_count      INTEGER DEFAULT 0,
+    last_confirmed_at       TIMESTAMPTZ,
+    superseded_by           INTEGER REFERENCES consolidations(id),
+    status                  TEXT DEFAULT 'active',
+    conflict_group_id       TEXT
+)
+"""
+
+_CONSOLIDATION_QUALITY_DDL = """\
+CREATE TABLE IF NOT EXISTS consolidation_quality (
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    attempt_count       INTEGER NOT NULL DEFAULT 1,
+    accepted            INTEGER NOT NULL DEFAULT 0,
+    rejected_reason     TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+"""
+
+_CONSOLIDATION_SOURCES_DDL = """\
+CREATE TABLE IF NOT EXISTS consolidation_sources (
+    consolidation_id    INTEGER NOT NULL REFERENCES consolidations(id),
+    memory_id           INTEGER NOT NULL REFERENCES memories(id),
+    PRIMARY KEY (consolidation_id, memory_id)
+)
+"""
+
+_PATTERN_PRESENTATIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS pattern_presentations (
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    consolidation_id    INTEGER NOT NULL REFERENCES consolidations(id),
+    presented_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    iteration           INTEGER,
+    env_name            TEXT,
+    request_type        TEXT,
+    advice_response     TEXT
+)
+"""
+
+_PATTERN_OUTCOMES_DDL = """\
+CREATE TABLE IF NOT EXISTS pattern_outcomes (
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    iteration           INTEGER NOT NULL,
+    env_name            TEXT NOT NULL,
+    gate_passed         INTEGER,
+    sharpe              DOUBLE PRECISION,
+    mdd                 DOUBLE PRECISION,
+    sortino             DOUBLE PRECISION,
+    pnl                 DOUBLE PRECISION,
+    recorded_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    patterns_presented  TEXT
+)
+"""
+
+_LLM_AUDIT_LOG_DDL = """\
+CREATE TABLE IF NOT EXISTS llm_audit_log (
+    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    timestamp           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    call_type           TEXT NOT NULL,
+    algo                TEXT,
+    env                 TEXT,
+    fold_number         INTEGER,
+    iteration_number    INTEGER,
+    is_control_fold     INTEGER,
+    provider            TEXT NOT NULL,
+    model_name          TEXT NOT NULL,
+    prompt_text         TEXT NOT NULL,
+    response_text       TEXT,
+    response_parsed     TEXT,
+    latency_ms          INTEGER,
+    success             INTEGER NOT NULL DEFAULT 1,
+    error_text          TEXT
+)
+"""
+
+# ---------------------------------------------------------------------------
 # All table DDL in creation order (respects implicit dependencies)
 # ---------------------------------------------------------------------------
 
@@ -563,6 +666,14 @@ _ALL_TABLE_DDL: list[str] = [
     _INFERENCE_OUTCOMES_DDL,
     _API_ERRORS_DDL,
     _EMERGENCY_FLAGS_DDL,
+    # Memory service tables
+    _MEMORIES_DDL,
+    _CONSOLIDATIONS_DDL,
+    _CONSOLIDATION_QUALITY_DDL,
+    _CONSOLIDATION_SOURCES_DDL,
+    _PATTERN_PRESENTATIONS_DDL,
+    _PATTERN_OUTCOMES_DDL,
+    _LLM_AUDIT_LOG_DDL,
 ]
 
 # ---------------------------------------------------------------------------
@@ -620,6 +731,15 @@ _ALL_INDEXES: list[str] = [
     # New: frequent query pattern in position_tracker and dashboard
     "CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_env_ts "
     "ON portfolio_snapshots (environment, timestamp DESC)",
+    # Memory service indexes
+    "CREATE INDEX IF NOT EXISTS idx_memories_source ON memories (source)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories (created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_consolidations_status ON consolidations (status)",
+    "CREATE INDEX IF NOT EXISTS idx_consolidations_env_stage ON consolidations (env_name, stage)",
+    "CREATE INDEX IF NOT EXISTS idx_consolidations_category_status "
+    "ON consolidations (category, status)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_call_type ON llm_audit_log (call_type)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON llm_audit_log (timestamp)",
 ]
 
 # ---------------------------------------------------------------------------
