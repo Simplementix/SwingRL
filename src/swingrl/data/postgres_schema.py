@@ -783,7 +783,7 @@ def init_postgres_schema(conn: psycopg.Connection) -> None:
             "WHERE table_schema = 'public' AND table_name = 'training_runs'"
         )
         row = cur.fetchone()
-        if row and row[0] > 0:
+        if row and row["count"] > 0:
             for alter_ddl in _TRAINING_RUNS_ALTER:
                 cur.execute(alter_ddl)
             log.info(
