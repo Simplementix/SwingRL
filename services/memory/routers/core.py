@@ -98,10 +98,10 @@ async def consolidate(
 async def health() -> HealthResponse:
     """Service health check — no authentication required.
 
-    Returns overall status and SQLite accessibility.
+    Returns overall status and PostgreSQL connectivity.
     """
 
-    # Check SQLite (via live thread pool to avoid blocking event loop)
+    # Check PostgreSQL (via live thread pool to avoid blocking event loop)
     def _check_db() -> bool:
         conn = get_connection()
         try:

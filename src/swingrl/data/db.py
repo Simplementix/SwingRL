@@ -21,7 +21,6 @@ from __future__ import annotations
 import contextlib
 import os
 import threading
-import warnings
 from collections.abc import Generator
 from typing import TYPE_CHECKING
 
@@ -42,7 +41,7 @@ class DatabaseManager:
     Thread-safe via threading.Lock for singleton creation.
     Connections are borrowed from the pool and returned on context exit.
     Uses ``dict_row`` factory so callers can access columns by name
-    (``row["column"]``) — backward compatible with the old SQLite
+    (``row["column"]``) — backward compatible with the old sqlite3
     ``sqlite3.Row`` pattern and DuckDB tuple indexing.
     """
 
@@ -113,43 +112,6 @@ class DatabaseManager:
             except Exception:
                 conn.rollback()
                 raise
-
-    # ------------------------------------------------------------------
-    # Deprecated aliases — enable incremental migration from DuckDB/SQLite.
-    # All existing callers continue to work but emit DeprecationWarning.
-    # ------------------------------------------------------------------
-
-    @contextlib.contextmanager
-    def duckdb(
-        self,
-        read_only: bool = False,  # noqa: ARG002
-    ) -> Generator[psycopg.Connection, None, None]:
-        """Deprecated: use ``connection()`` instead.
-
-        Yields a PostgreSQL connection from the pool.
-        The ``read_only`` parameter is accepted but ignored.
-        """
-        warnings.warn(
-            "DatabaseManager.duckdb() is deprecated, use connection()",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        with self.connection() as conn:
-            yield conn
-
-    @contextlib.contextmanager
-    def sqlite(self) -> Generator[psycopg.Connection, None, None]:
-        """Deprecated: use ``connection()`` instead.
-
-        Yields a PostgreSQL connection from the pool.
-        """
-        warnings.warn(
-            "DatabaseManager.sqlite() is deprecated, use connection()",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        with self.connection() as conn:
-            yield conn
 
     def init_schema(self) -> None:
         """Create all tables, indexes, and views in PostgreSQL.

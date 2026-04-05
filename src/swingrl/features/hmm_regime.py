@@ -297,10 +297,10 @@ class HMMRegimeDetector:
         probs: np.ndarray,
         log_likelihood: float,
     ) -> None:
-        """Write HMM state to DuckDB hmm_state_history table.
+        """Write HMM state to PostgreSQL hmm_state_history table.
 
         Args:
-            db: DuckDB connection (or mock with execute method).
+            db: PostgreSQL connection (or mock with execute method).
             dt: Date for this observation.
             probs: (1, 3) or (3,) array with [P(bull), P(bear), P(crisis)].
             log_likelihood: Log-likelihood of the fitted model.
@@ -334,7 +334,7 @@ class HMMRegimeDetector:
         for databases that were created with the 2-state schema.
 
         Args:
-            db: DuckDB connection (or mock with execute method).
+            db: PostgreSQL connection (or mock with execute method).
         """
         db.execute(
             "ALTER TABLE hmm_state_history ADD COLUMN IF NOT EXISTS p_crisis DOUBLE DEFAULT 0.0"

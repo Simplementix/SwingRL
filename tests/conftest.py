@@ -61,8 +61,6 @@ def valid_config_yaml() -> str:
           drawdown_penalty_coeff: 5.0
         system:
           database_url: "postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
-          duckdb_path: data/db/market_data.ddb
-          sqlite_path: data/db/trading_ops.db
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3
@@ -175,8 +173,6 @@ def equity_env_config_yaml() -> str:
           drawdown_penalty_coeff: 5.0
         system:
           database_url: "postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
-          duckdb_path: data/db/market_data.ddb
-          sqlite_path: data/db/trading_ops.db
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3

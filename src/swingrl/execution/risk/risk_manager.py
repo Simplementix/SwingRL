@@ -1,7 +1,7 @@
 """Two-tier risk veto layer.
 
 Evaluates orders against per-environment and global portfolio risk limits.
-All veto decisions are logged to risk_decisions SQLite table for audit.
+All veto decisions are logged to risk_decisions table for audit.
 
 Check order (Doc 04):
 1. Circuit breaker state
@@ -271,7 +271,7 @@ class RiskManager:
         )
 
     def _record_decision(self, decision: RiskDecision) -> None:
-        """Write decision to risk_decisions SQLite table."""
+        """Write decision to risk_decisions table."""
         with self._db.connection() as conn:
             conn.execute(
                 "INSERT INTO risk_decisions "

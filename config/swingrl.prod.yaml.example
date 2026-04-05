@@ -35,15 +35,13 @@ logging:
 
 system:
   database_url: ""                            # PostgreSQL — set via DATABASE_URL env var (pg16 on br0)
-  duckdb_path: /app/data/db/market_data.ddb   # DEPRECATED: kept for migration rollback only
-  sqlite_path: /app/data/db/trading_ops.db    # DEPRECATED: kept for migration rollback only
 
 alerting:
   alert_cooldown_minutes: 30               # minimum minutes between repeat alerts
   consecutive_failures_before_alert: 3     # failures before triggering alert
 
 backup:
-  sqlite_retention_days: 14         # keep 2 weeks of SQLite backups
+  backup_retention_days: 14         # keep 2 weeks of database backups
   duckdb_rotate: true               # rotate DuckDB snapshots in production
   backup_dir: /app/backups/         # absolute path in Docker
   offsite_host: ""                  # SET: rsync destination host for off-site backups

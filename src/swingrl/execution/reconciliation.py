@@ -1,6 +1,6 @@
 """Position reconciliation: DB vs broker state comparison and correction.
 
-Detects mismatches between SQLite positions and broker-reported positions,
+Detects mismatches between database positions and broker-reported positions,
 auto-corrects DB to match broker (source of truth), inserts adjustment
 trades, and sends Discord warning alerts.
 
@@ -47,7 +47,7 @@ class PositionReconciler:
 
         Args:
             config: Validated SwingRLConfig.
-            db: DatabaseManager for SQLite access.
+            db: DatabaseManager for database access.
             adapter: Exchange adapter for broker position reads (equity only).
             alerter: Discord alerter for mismatch warnings.
         """

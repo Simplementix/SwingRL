@@ -117,7 +117,7 @@ class BinanceSimAdapter:
         )
 
     def get_positions(self) -> list[dict[str, object]]:
-        """Get current crypto positions from SQLite.
+        """Get current crypto positions from database.
 
         Returns:
             List of position dicts for the crypto environment.

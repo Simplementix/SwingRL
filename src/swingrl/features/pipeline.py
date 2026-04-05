@@ -143,7 +143,7 @@ class FeaturePipeline:
         start: str | None = None,
         end: str | None = None,
     ) -> pd.DataFrame:
-        """Compute equity features: technical -> normalize -> store to DuckDB.
+        """Compute equity features: technical -> normalize -> store to PostgreSQL.
 
         Args:
             symbols: Override symbol list (default: config equity symbols).
@@ -234,7 +234,7 @@ class FeaturePipeline:
         start: str | None = None,
         end: str | None = None,
     ) -> pd.DataFrame:
-        """Compute crypto features: technical -> normalize -> store to DuckDB.
+        """Compute crypto features: technical -> normalize -> store to PostgreSQL.
 
         Args:
             symbols: Override symbol list (default: config crypto symbols).
@@ -633,7 +633,7 @@ class FeaturePipeline:
             return 0.0
 
     def _read_equity_ohlcv(self, symbol: str, start: str | None, end: str | None) -> pd.DataFrame:
-        """Read equity OHLCV from DuckDB."""
+        """Read equity OHLCV from PostgreSQL."""
         conditions = ["symbol = %s"]
         params: list[Any] = [symbol]
 
@@ -655,7 +655,7 @@ class FeaturePipeline:
         return result
 
     def _read_crypto_ohlcv(self, symbol: str, start: str | None, end: str | None) -> pd.DataFrame:
-        """Read crypto OHLCV from DuckDB."""
+        """Read crypto OHLCV from PostgreSQL."""
         conditions = ["symbol = %s"]
         params: list[Any] = [symbol]
 

@@ -14,14 +14,13 @@ Implements the full DR checklist from Doc 14 Section 10.1:
 Usage:
     python scripts/disaster_recovery.py --dry-run    # Steps 3-7 only (non-destructive)
     python scripts/disaster_recovery.py --full        # All 9 steps
-    python scripts/disaster_recovery.py --dry-run --backup-dir backups/ --db-dir db/
+    python scripts/disaster_recovery.py --dry-run --backup-dir backups/ --database-url postgresql://...
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess  # nosec B404
 import sys
 from dataclasses import dataclass
@@ -53,63 +52,59 @@ def _find_latest_backup(backup_dir: Path, pattern: str) -> Path | None:
     return files[-1] if files else None
 
 
-def restore_sqlite_backup(backup_dir: Path, target: Path) -> StepResult:
-    """Restore SQLite from the latest backup in backup_dir.
+def restore_postgres_backup(backup_dir: Path, database_url: str) -> StepResult:
+    """Restore PostgreSQL from the latest pg_dump backup in backup_dir.
 
     Args:
-        backup_dir: Directory containing SQLite backup .db files.
-        target: Target path for restored database.
+        backup_dir: Directory containing PostgreSQL backup .sql.gz files.
+        database_url: PostgreSQL connection URL for pg_restore target.
 
     Returns:
         StepResult with pass/fail.
     """
-    latest = _find_latest_backup(backup_dir, "*.db")
+    latest = _find_latest_backup(backup_dir, "*.sql.gz")
     if latest is None:
         return StepResult(
             step=4,
-            name="restore-sqlite",
+            name="restore-postgres",
             passed=False,
-            detail=f"No SQLite backup files found in {backup_dir}",
+            detail=f"No PostgreSQL backup files found in {backup_dir}",
         )
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(str(latest), str(target))
+    try:
+        subprocess.run(  # nosec B603 B607
+            ["pg_restore", "--dbname", database_url, "--clean", "--if-exists", str(latest)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return StepResult(
+            step=4,
+            name="restore-postgres",
+            passed=True,
+            detail=f"Restored {latest.name} via pg_restore",
+        )
+    except subprocess.CalledProcessError as exc:
+        return StepResult(
+            step=4,
+            name="restore-postgres",
+            passed=False,
+            detail=f"pg_restore failed: {exc.stderr}",
+        )
 
-    return StepResult(
-        step=4,
-        name="restore-sqlite",
-        passed=True,
-        detail=f"Restored {latest.name} -> {target}",
-    )
 
-
-def restore_duckdb_backup(backup_dir: Path, target: Path) -> StepResult:
-    """Restore DuckDB from the latest backup in backup_dir.
-
-    Args:
-        backup_dir: Directory containing DuckDB backup .ddb files.
-        target: Target path for restored database.
+def _step5_reserved() -> StepResult:
+    """Step 5 is reserved (previously DuckDB restore, now handled by PostgreSQL).
 
     Returns:
-        StepResult with pass/fail.
+        StepResult marked as skipped.
     """
-    latest = _find_latest_backup(backup_dir, "*.ddb")
-    if latest is None:
-        return StepResult(
-            step=5,
-            name="restore-duckdb",
-            passed=False,
-            detail=f"No DuckDB backup files found in {backup_dir}",
-        )
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(str(latest), str(target))
-
     return StepResult(
         step=5,
-        name="restore-duckdb",
+        name="reserved",
         passed=True,
-        detail=f"Restored {latest.name} -> {target}",
+        detail="Reserved (DuckDB restore removed — data now in PostgreSQL)",
+        skipped=True,
     )
 
 
@@ -203,38 +198,33 @@ def verify_model_loading(active_dir: Path) -> StepResult:
 
 
 def _locate_backups(backup_dir: Path) -> StepResult:
-    """Step 3: Locate latest backups.
+    """Step 3: Locate latest PostgreSQL backup.
 
     Args:
-        backup_dir: Root backup directory containing sqlite/ and duckdb/ subdirs.
+        backup_dir: Root backup directory containing postgres/ subdir.
 
     Returns:
         StepResult with backup location details.
     """
-    sqlite_dir = backup_dir / "sqlite"
-    duckdb_dir = backup_dir / "duckdb"
+    postgres_dir = backup_dir / "postgres"
 
-    sqlite_latest = _find_latest_backup(sqlite_dir, "*.db") if sqlite_dir.exists() else None
-    duckdb_latest = _find_latest_backup(duckdb_dir, "*.ddb") if duckdb_dir.exists() else None
+    postgres_latest = (
+        _find_latest_backup(postgres_dir, "*.sql.gz") if postgres_dir.exists() else None
+    )
 
-    if sqlite_latest and duckdb_latest:
+    if postgres_latest:
         return StepResult(
             step=3,
             name="locate-backups",
             passed=True,
-            detail=f"SQLite: {sqlite_latest.name}, DuckDB: {duckdb_latest.name}",
+            detail=f"PostgreSQL: {postgres_latest.name}",
         )
 
-    missing = []
-    if not sqlite_latest:
-        missing.append("SQLite")
-    if not duckdb_latest:
-        missing.append("DuckDB")
     return StepResult(
         step=3,
         name="locate-backups",
         passed=False,
-        detail=f"Missing backups: {', '.join(missing)}",
+        detail="Missing backups: PostgreSQL",
     )
 
 
@@ -242,8 +232,7 @@ def run_dr_checklist(
     *,
     backup_dir: Path,
     db_dir: Path,
-    duckdb_target: Path,
-    sqlite_target: Path,
+    database_url: str = "",
     models_active_dir: Path,
     dry_run: bool = True,
     compose_project: str = "swingrl",
@@ -254,10 +243,9 @@ def run_dr_checklist(
     Steps 3-7 (locate, restore, verify) run non-destructively.
 
     Args:
-        backup_dir: Root backup directory (contains sqlite/ and duckdb/ subdirs).
-        db_dir: Target directory for restored SQLite databases.
-        duckdb_target: Target path for restored DuckDB file.
-        sqlite_target: Target path for restored SQLite file.
+        backup_dir: Root backup directory (contains postgres/ subdir).
+        db_dir: Target directory for database files (used for volume cleanup).
+        database_url: PostgreSQL connection URL for pg_restore.
         models_active_dir: Path to models/active/ directory.
         dry_run: If True, skip destructive Docker operations.
         compose_project: Docker compose project name.
@@ -342,13 +330,17 @@ def run_dr_checklist(
     # Step 3: Locate latest backups
     results.append(_locate_backups(backup_dir))
 
-    # Step 4: Restore SQLite from backup
-    sqlite_backup_dir = backup_dir / "sqlite"
-    results.append(restore_sqlite_backup(sqlite_backup_dir, sqlite_target))
+    # Step 4: Restore PostgreSQL from backup
+    postgres_backup_dir = backup_dir / "postgres"
+    if not database_url:
+        database_url = os.environ.get(
+            "DATABASE_URL",
+            "postgresql://swingrl:changeme@localhost:5432/swingrl",  # pragma: allowlist secret
+        )
+    results.append(restore_postgres_backup(postgres_backup_dir, database_url))
 
-    # Step 5: Restore DuckDB from backup
-    duckdb_backup_dir = backup_dir / "duckdb"
-    results.append(restore_duckdb_backup(duckdb_backup_dir, duckdb_target))
+    # Step 5: Reserved (previously DuckDB restore)
+    results.append(_step5_reserved())
 
     # Step 6: Verify DB integrity (PostgreSQL)
     results.append(verify_postgres_integrity())
@@ -461,16 +453,10 @@ def main() -> None:
         help="Target database directory (default: db/)",
     )
     parser.add_argument(
-        "--duckdb-target",
-        type=Path,
-        default=Path("data/db/market_data.ddb"),
-        help="Target DuckDB path (default: data/db/market_data.ddb)",
-    )
-    parser.add_argument(
-        "--sqlite-target",
-        type=Path,
-        default=Path("db/trading_ops.db"),
-        help="Target SQLite path (default: db/trading_ops.db)",
+        "--database-url",
+        type=str,
+        default="",
+        help="PostgreSQL connection URL (default: from DATABASE_URL env var)",
     )
     parser.add_argument(
         "--models-dir",
@@ -495,8 +481,7 @@ def main() -> None:
     results = run_dr_checklist(
         backup_dir=args.backup_dir,
         db_dir=args.db_dir,
-        duckdb_target=args.duckdb_target,
-        sqlite_target=args.sqlite_target,
+        database_url=args.database_url,
         models_active_dir=args.models_dir,
         dry_run=dry_run,
     )

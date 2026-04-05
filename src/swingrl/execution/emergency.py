@@ -427,9 +427,9 @@ def check_automated_triggers(
     """Check for automated emergency stop triggers.
 
     Three triggers are checked:
-    1. VIX > 40 (from DuckDB macro_features) AND drawdown >= 13% (from SQLite portfolio_snapshots)
-    2. 2+ NaN inference outputs in 24h (from SQLite inference_outcomes)
-    3. Binance.US IP ban HTTP 418 (from SQLite api_errors)
+    1. VIX > 40 (from PostgreSQL macro_features) AND drawdown >= 13% (from database portfolio_snapshots)
+    2. 2+ NaN inference outputs in 24h (from database inference_outcomes)
+    3. Binance.US IP ban HTTP 418 (from database api_errors)
 
     Each trigger manages its own DB connection independently and fails gracefully.
 
@@ -443,7 +443,7 @@ def check_automated_triggers(
     triggers: list[str] = []
 
     # Trigger 1: VIX + CB threshold
-    # VIX comes from DuckDB macro_features, drawdown from SQLite portfolio_snapshots
+    # VIX comes from PostgreSQL macro_features, drawdown from database portfolio_snapshots
     try:
         with db.connection() as cursor:
             vix_row = cursor.execute(

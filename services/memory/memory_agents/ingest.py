@@ -1,4 +1,4 @@
-"""IngestAgent: accepts raw text and stores it to the memory SQLite database.
+"""IngestAgent: accepts raw text and stores it to the memory PostgreSQL database.
 
 Text is wrapped with XML delimiters before storage for prompt injection safety.
 No LLM calls are made during ingestion — this is a pure write path.
@@ -42,7 +42,7 @@ def _sanitize_for_xml(text: str) -> str:
 
 
 class IngestAgent:
-    """Stores memory text records to SQLite with XML delimiter wrapping."""
+    """Stores memory text records to PostgreSQL with XML delimiter wrapping."""
 
     def store(self, text: str, source: str) -> int:
         """Wrap text in XML delimiters and store to memories table.

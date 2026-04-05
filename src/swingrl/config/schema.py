@@ -196,8 +196,6 @@ class SystemConfig(BaseModel):
     """System-level database configuration."""
 
     database_url: str = Field(default="")  # Set via DATABASE_URL env var
-    duckdb_path: str = Field(default="data/db/market_data.ddb")  # deprecated
-    sqlite_path: str = Field(default="data/db/trading_ops.db")  # deprecated
 
 
 class AlertingConfig(BaseModel):
@@ -223,8 +221,7 @@ class SchedulerConfig(BaseModel):
 class BackupConfig(BaseModel):
     """Backup and retention configuration."""
 
-    sqlite_retention_days: int = Field(default=14, ge=1)
-    duckdb_rotate: bool = Field(default=False)
+    backup_retention_days: int = Field(default=14, ge=1)
     backup_dir: str = Field(default="backups/")
     offsite_host: str = Field(default="")
     offsite_path: str = Field(default="")

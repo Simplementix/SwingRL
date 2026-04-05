@@ -38,7 +38,7 @@ class CrossSourceResult:
 
 
 class CrossSourceValidator:
-    """Compare Alpaca closing prices in DuckDB with yfinance as reference."""
+    """Compare Alpaca closing prices in PostgreSQL with yfinance as reference."""
 
     def __init__(self, db: DatabaseManager, config: SwingRLConfig) -> None:
         self._db = db
@@ -50,7 +50,7 @@ class CrossSourceValidator:
         lookback_days: int = 7,
         as_of_date: date | None = None,
     ) -> list[CrossSourceResult]:
-        """Compare DuckDB ohlcv_daily prices with yfinance for recent dates.
+        """Compare ohlcv_daily prices with yfinance for recent dates.
 
         Args:
             symbols: List of equity symbols to validate. Defaults to config equity symbols.

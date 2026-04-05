@@ -32,12 +32,10 @@ def webhook_url() -> str:
 @pytest.fixture
 def db_manager(tmp_path: Path) -> DatabaseManager:
     """Provide a DatabaseManager with real SQLite for alert_log tests."""
-    config_yaml = textwrap.dedent(f"""\
+    config_yaml = textwrap.dedent("""\
         trading_mode: paper
         system:
           database_url: postgresql://test:test@localhost:5432/swingrl_test  # pragma: allowlist secret
-          duckdb_path: {tmp_path}/market.ddb
-          sqlite_path: {tmp_path}/ops.db
     """)
     config_file = tmp_path / "swingrl.yaml"
     config_file.write_text(config_yaml)

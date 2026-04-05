@@ -36,8 +36,6 @@ def fetcher(tmp_path: Path) -> FundamentalFetcher:
         "  min_order_usd: 10.0\n"
         "system:\n"
         "  database_url: postgresql://test:test@localhost:5432/swingrl_test\n"  # pragma: allowlist secret
-        "  duckdb_path: data/db/market_data.ddb\n"
-        "  sqlite_path: data/db/trading_ops.db\n"
     )
     config = load_config(config_file)
     return FundamentalFetcher(config)
@@ -285,8 +283,6 @@ class TestStoreFundamentals:
             "  daily_loss_limit_pct: 0.03\n"
             "  min_order_usd: 10.0\n"
             "system:\n"
-            "  duckdb_path: data/db/market_data.ddb\n"
-            "  sqlite_path: data/db/trading_ops.db\n"
         )
         config = load_config(config_file)
         fetcher = FundamentalFetcher(config)

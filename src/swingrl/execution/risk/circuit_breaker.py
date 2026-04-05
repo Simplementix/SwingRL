@@ -1,8 +1,8 @@
-"""Circuit breaker state machine with SQLite persistence.
+"""Circuit breaker state machine with PostgreSQL persistence.
 
 Three states: ACTIVE -> HALTED -> RAMPING -> ACTIVE
 Triggers on drawdown or daily loss threshold breach.
-Persists halt events in circuit_breaker_events SQLite table.
+Persists halt events in circuit_breaker_events table.
 
 Cooldown periods:
 - Equity: 5 business days (NYSE calendar)
@@ -39,11 +39,11 @@ class CBState(enum.Enum):
 
 
 class CircuitBreaker:
-    """Per-environment circuit breaker with SQLite persistence.
+    """Per-environment circuit breaker with PostgreSQL persistence.
 
     Args:
         environment: "equity" or "crypto".
-        db: DatabaseManager for SQLite access.
+        db: DatabaseManager for database access.
         config: SwingRLConfig for thresholds and initial capital.
     """
 
@@ -107,7 +107,7 @@ class CircuitBreaker:
         return self.get_state()
 
     def get_state(self) -> CBState:
-        """Load current state from SQLite.
+        """Load current state from database.
 
         Returns:
             ACTIVE if no unresolved halt, HALTED if within initial cooldown,

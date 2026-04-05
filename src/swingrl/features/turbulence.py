@@ -7,7 +7,7 @@ Two specialized calculators with different algorithms suited to each asset class
 Both calculators expose compute() and compute_series() with identical algorithms
 to eliminate train/live divergence.
 
-Computed on-the-fly at each decision step, NOT stored in DuckDB.
+Computed on-the-fly at each decision step, NOT stored in PostgreSQL.
 """
 
 from __future__ import annotations

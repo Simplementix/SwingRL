@@ -1,7 +1,7 @@
 """swingrl-memory FastAPI application entry point.
 
 Startup sequence (lifespan):
-1. Initialize SQLite database (create tables if not exist)
+1. Initialize PostgreSQL database (create tables if not exist)
 2. Initialize capacity limiters
 3. Validate consolidation config (cloud LLM provider)
 4. Validate query config
@@ -13,7 +13,7 @@ Consolidation is event-driven only (no background scheduler):
 
 All config via environment variables:
 - MEMORY_API_KEY: Required for all endpoints except /health
-- MEMORY_DB_PATH: Path to SQLite file (default: /app/db/memory.db)
+- DATABASE_URL: PostgreSQL connection URL
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ log = structlog.get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Initialize service on startup; clean up on shutdown."""
-    # 1. Init SQLite tables
+    # 1. Init PostgreSQL tables
     init_db()
     log.info("db_initialized")
 

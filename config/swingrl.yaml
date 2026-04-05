@@ -47,8 +47,6 @@ environment:
 
 system:
   database_url: ""                       # PostgreSQL — override via DATABASE_URL env var in Docker
-  duckdb_path: data/db/market_data.ddb   # DEPRECATED: kept for migration rollback only
-  sqlite_path: data/db/trading_ops.db    # DEPRECATED: kept for migration rollback only
 
 alerting:
   alert_cooldown_minutes: 30               # minimum minutes between repeat alerts
@@ -65,7 +63,7 @@ scheduler:
   max_workers: 4                           # APScheduler thread pool size
 
 backup:
-  sqlite_retention_days: 14         # days to keep SQLite backups
+  backup_retention_days: 14         # days to keep database backups
   duckdb_rotate: false              # rotate DuckDB snapshots (off in dev)
   backup_dir: backups/              # relative to repo root
   # offsite_host: ""                # rsync destination host (production only)

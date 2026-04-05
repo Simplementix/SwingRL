@@ -1,7 +1,7 @@
-"""Portfolio state reader from SQLite positions and snapshots.
+"""Portfolio state reader from database positions and snapshots.
 
 Provides real-time portfolio state for risk evaluation and observation assembly.
-All reads from SQLite tables: positions, portfolio_snapshots, trades.
+All reads from tables: positions, portfolio_snapshots, trades.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ log = structlog.get_logger(__name__)
 
 
 class PositionTracker:
-    """Read portfolio state from SQLite for risk checks and observation assembly.
+    """Read portfolio state from database for risk checks and observation assembly.
 
     Args:
-        db: DatabaseManager for SQLite access.
+        db: DatabaseManager for database access.
         config: SwingRLConfig for initial capital and symbol lists.
     """
 

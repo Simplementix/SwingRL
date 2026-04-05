@@ -22,7 +22,7 @@ log = structlog.get_logger(__name__)
 
 
 def _fetch_latest_prices(db: Any, env_name: str, symbols: list[str]) -> dict[str, float]:
-    """Fetch latest close price per symbol from DuckDB.
+    """Fetch latest close price per symbol from PostgreSQL.
 
     Args:
         db: DatabaseManager instance.
@@ -184,7 +184,7 @@ def _generate_hypothetical_trades(
         )
         default_atr = 0.02  # conservative fallback
 
-        # Fetch latest prices from DuckDB for realistic sizing
+        # Fetch latest prices from PostgreSQL for realistic sizing
         latest_prices = _fetch_latest_prices(ctx.db, env_name, symbols)
 
         trades: list[dict[str, Any]] = []

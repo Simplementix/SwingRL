@@ -2,7 +2,7 @@
 
 Fetches P/E ratio, earnings growth, debt-to-equity, and dividend yield from
 yfinance (primary) with Alpha Vantage fallback. Validates, computes sector-relative
-z-scores, and stores to DuckDB.
+z-scores, and stores to PostgreSQL.
 
 Usage:
     from swingrl.config.schema import load_config
@@ -291,7 +291,7 @@ class FundamentalFetcher:
         return result
 
     def store_fundamentals(self, db: DatabaseManager, fundamentals: pd.DataFrame) -> int:
-        """Store fundamentals to DuckDB via replacement scan.
+        """Store fundamentals to PostgreSQL via replacement scan.
 
         Args:
             db: DatabaseManager instance.

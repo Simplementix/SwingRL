@@ -66,7 +66,7 @@ class ExecutionPipeline:
 
         Args:
             config: Validated SwingRLConfig.
-            db: DatabaseManager for SQLite/DuckDB access.
+            db: DatabaseManager for database access.
             feature_pipeline: FeaturePipeline for observation assembly.
             alerter: Discord alerter for critical/warning notifications.
             models_dir: Root directory for trained models.
@@ -408,7 +408,7 @@ class ExecutionPipeline:
         return models
 
     def _get_ensemble_weights(self, env_name: str) -> dict[str, float]:
-        """Query DuckDB model_metadata table for ensemble weights.
+        """Query model_metadata table for ensemble weights.
 
         Args:
             env_name: Environment name.
@@ -511,7 +511,7 @@ class ExecutionPipeline:
             current_date_str = self._get_current_date_str(env_name)
             turbulence = self._feature_pipeline.compute_turbulence(env_name, current_date_str)
 
-            # Get historical 90th percentile from DuckDB
+            # Get historical 90th percentile from database
             historical_90th = self._get_turbulence_90th_pct(env_name)
 
             if turbulence > 0 and historical_90th > 0:
@@ -522,7 +522,7 @@ class ExecutionPipeline:
         return False
 
     def _get_turbulence_90th_pct(self, env_name: str) -> float:
-        """Get historical 90th percentile turbulence from DuckDB.
+        """Get historical 90th percentile turbulence from database.
 
         Args:
             env_name: Environment name.

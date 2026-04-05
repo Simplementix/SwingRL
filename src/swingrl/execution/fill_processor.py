@@ -37,7 +37,7 @@ class FillProcessor:
         """Initialize fill processor.
 
         Args:
-            db: DatabaseManager for SQLite trades/positions access.
+            db: DatabaseManager for database access.
         """
         self._db = db
 
