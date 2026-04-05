@@ -43,8 +43,8 @@ def _fetch_latest_prices(db: Any, env_name: str, symbols: list[str]) -> dict[str
                     f"ORDER BY {date_col} DESC LIMIT 1",  # nosec B608
                     [symbol],
                 ).fetchone()
-                if row and row[0] is not None:
-                    prices[symbol] = float(row[0])
+                if row and row["close"] is not None:
+                    prices[symbol] = float(row["close"])
     except Exception:
         log.warning("shadow_price_fetch_failed", env=env_name)
     return prices

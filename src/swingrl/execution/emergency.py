@@ -451,7 +451,7 @@ def check_automated_triggers(
                 "WHERE series_id = 'VIXCLS' ORDER BY date DESC LIMIT 1"
             ).fetchone()
 
-        if vix_row is not None and vix_row[0] > _VIX_TRIGGER:
+        if vix_row is not None and vix_row["value"] > _VIX_TRIGGER:
             with db.connection() as conn:
                 dd_row = conn.execute(
                     "SELECT MAX(drawdown_pct) as worst_dd FROM portfolio_snapshots "
@@ -464,7 +464,7 @@ def check_automated_triggers(
                 and dd_row["worst_dd"] >= _CB_DRAWDOWN_TRIGGER
             ):
                 triggers.append(
-                    f"VIX={vix_row[0]:.1f} > {_VIX_TRIGGER} "
+                    f"VIX={vix_row['value']:.1f} > {_VIX_TRIGGER} "
                     f"AND drawdown={dd_row['worst_dd']:.1%} "
                     f"(CB threshold: {_CB_DRAWDOWN_TRIGGER:.0%})"
                 )

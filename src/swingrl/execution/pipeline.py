@@ -428,9 +428,13 @@ class ExecutionPipeline:
                 weights: dict[str, float] = {}
                 seen: set[str] = set()
                 for row in rows:
-                    algo = str(row[0])
+                    algo = str(row["algorithm"])
                     if algo not in seen:
-                        weights[algo] = float(row[1]) if row[1] is not None else 1.0 / 3
+                        weights[algo] = (
+                            float(row["ensemble_weight"])
+                            if row["ensemble_weight"] is not None
+                            else 1.0 / 3
+                        )
                         seen.add(algo)
                 if weights:
                     return weights
@@ -532,8 +536,8 @@ class ExecutionPipeline:
                 row = conn.execute(
                     f"SELECT PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY turbulence) as p90 FROM {table}",  # nosec B608
                 ).fetchone()
-                if row and row[0] is not None:
-                    return float(row[0])
+                if row and row["p90"] is not None:
+                    return float(row["p90"])
         except Exception:
             log.warning("turbulence_90th_query_failed", env=env_name)
 

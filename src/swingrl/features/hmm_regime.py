@@ -314,7 +314,7 @@ class HMMRegimeDetector:
         db.execute(
             """INSERT INTO hmm_state_history
                (environment, date, p_bull, p_bear, p_crisis, log_likelihood, fitted_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             [self.environment, dt, p_bull, p_bear, p_crisis, log_likelihood, fitted_at],
         )
 
