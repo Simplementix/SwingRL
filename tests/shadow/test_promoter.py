@@ -129,7 +129,7 @@ def _make_mock_db(db_url: str) -> MagicMock:
             self._conn.commit()
             self._conn.close()
 
-    mock_db.sqlite = _PgCM
+    mock_db.connection = _PgCM
     return mock_db
 
 

@@ -83,8 +83,14 @@ def _make_pg_conn() -> MagicMock:
 
 
 def _cleanup_pg_conn(conn: object) -> None:
-    """Truncate test tables and close connection."""
-    conn.execute("TRUNCATE TABLE ohlcv_daily, ohlcv_4h, macro_features CASCADE")
+    """Delete test data and close connection.
+
+    Uses DELETE instead of TRUNCATE to avoid AccessExclusiveLock deadlocks
+    when multiple connections are active in the same test session.
+    """
+    conn.execute("DELETE FROM ohlcv_daily")
+    conn.execute("DELETE FROM ohlcv_4h")
+    conn.execute("DELETE FROM macro_features")
     conn.close()
 
 
@@ -420,8 +426,8 @@ class TestRunVerification:
             mock_cursor.execute.return_value.fetchall.return_value = []
             mock_cursor.execute.return_value.fetchdf.return_value = __import__("pandas").DataFrame()
             mock_db = MagicMock()
-            mock_db.duckdb.return_value.__enter__ = MagicMock(return_value=mock_cursor)
-            mock_db.duckdb.return_value.__exit__ = MagicMock(return_value=False)
+            mock_db.connection.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_db.connection.return_value.__exit__ = MagicMock(return_value=False)
             mock_db_cls.return_value = mock_db
 
             # Mock FeaturePipeline to return NaN vector (will fail obs check)
@@ -445,8 +451,8 @@ class TestRunVerification:
             # Build a cursor mock that returns adequate data for all checks
             mock_cursor = _build_passing_cursor_mock(loaded_config)
             mock_db = MagicMock()
-            mock_db.duckdb.return_value.__enter__ = MagicMock(return_value=mock_cursor)
-            mock_db.duckdb.return_value.__exit__ = MagicMock(return_value=False)
+            mock_db.connection.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_db.connection.return_value.__exit__ = MagicMock(return_value=False)
             mock_db_cls.return_value = mock_db
 
             # Pipeline returns clean observation vectors
@@ -482,8 +488,8 @@ def _build_passing_cursor_mock(config: object) -> MagicMock:
     crypto_symbols = cfg.crypto.symbols
     fred_series = FRED_ALL_SERIES
 
-    equity_rows = [{"symbol": sym, "count": 150} for sym in equity_symbols]
-    crypto_rows = [{"symbol": sym, "count": 150} for sym in crypto_symbols]
+    equity_rows = [{"symbol": sym, "cnt": 150} for sym in equity_symbols]
+    crypto_rows = [{"symbol": sym, "cnt": 150} for sym in crypto_symbols]
     macro_rows = [{"series_id": sid} for sid in fred_series]
 
     # Build timestamp pairs for crypto gaps (all 4h apart — no gaps)

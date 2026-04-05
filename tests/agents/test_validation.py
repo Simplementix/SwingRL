@@ -159,8 +159,8 @@ class TestDuckDBDDL:
                 training_end_date TEXT,
                 total_timesteps INTEGER,
                 converged_at_step INTEGER,
-                validation_sharpe DOUBLE,
-                ensemble_weight DOUBLE,
+                validation_sharpe DOUBLE PRECISION,
+                ensemble_weight DOUBLE PRECISION,
                 model_path TEXT NOT NULL,
                 vec_normalize_path TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT current_timestamp

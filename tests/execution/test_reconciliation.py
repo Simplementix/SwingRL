@@ -24,12 +24,6 @@ def mock_adapter() -> MagicMock:
 
 
 @pytest.fixture
-def mock_alerter() -> MagicMock:
-    """Mock Alerter for Discord warnings."""
-    return MagicMock()
-
-
-@pytest.fixture
 def reconciler(
     exec_config: Any,
     mock_db: Any,

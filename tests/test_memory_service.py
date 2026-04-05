@@ -1,8 +1,8 @@
-"""Tests for the swingrl-memory FastAPI service and DuckDB training telemetry migrations.
+"""Tests for the swingrl-memory FastAPI service and PostgreSQL training telemetry.
 
 TRAIN-06, TRAIN-07: Covers:
 - swingrl-memory FastAPI endpoints (ingest, health, training, debug, consolidation)
-- DuckDB telemetry tables (training_epochs, meta_decisions, reward_adjustments, ALTER training_runs)
+- PostgreSQL telemetry tables (training_epochs, meta_decisions, reward_adjustments, ALTER training_runs)
 - Enriched DB schema (new tables, columns, indexes)
 - Two-stage consolidation pipeline (Stage 1 per-env, Stage 2 cross-env)
 - Pattern lifecycle (active → superseded → retired)
@@ -17,6 +17,7 @@ TRAIN-06, TRAIN-07: Covers:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -69,17 +70,22 @@ def _patch_consolidation_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def memory_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Redirect SQLite db to a temp directory and set required env vars."""
-    db_path = tmp_path / "memory.db"
-    monkeypatch.setenv("MEMORY_DB_PATH", str(db_path))
+def memory_db_env(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Set DATABASE_URL and required env vars for memory service tests.
+
+    Skips test if DATABASE_URL is not set (no PostgreSQL available).
+    """
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        pytest.skip("DATABASE_URL not set — no PostgreSQL available for memory service tests")
+    monkeypatch.setenv("DATABASE_URL", db_url)
     monkeypatch.setenv("MEMORY_API_KEY", "test-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
-    return db_path
+    return db_url
 
 
 @pytest.fixture()
-def api_client(memory_db_env: Path):  # type: ignore[no-untyped-def]
+def api_client(memory_db_env: str):  # type: ignore[no-untyped-def]
     """Return a FastAPI TestClient."""
     from fastapi.testclient import TestClient
 
@@ -96,9 +102,18 @@ def api_client(memory_db_env: Path):  # type: ignore[no-untyped-def]
     client = TestClient(app.app, raise_server_exceptions=True)
     yield client
 
-    # Clean up memory service modules after each test to avoid cross-test pollution
+    # Clean up memory service modules and pool after each test
     for mod_name in list(_MEMORY_MODULE_NAMES):
         sys.modules.pop(mod_name, None)
+    # Reset the connection pool to prevent cross-test leaks
+    try:
+        import db as _db_cleanup
+
+        if _db_cleanup._pool is not None:
+            _db_cleanup._pool.close()
+            _db_cleanup._pool = None
+    except Exception:
+        pass
 
 
 @pytest.fixture()
@@ -197,7 +212,7 @@ class TestHealth:
     """Tests for GET /health endpoint."""
 
     def test_health_returns_healthy(self, api_client: Any) -> None:
-        """TRAIN-06: GET /health returns status: healthy when SQLite is reachable."""
+        """TRAIN-06: GET /health returns status: healthy when PostgreSQL is reachable."""
         response = api_client.get("/health")
 
         assert response.status_code == 200
@@ -417,6 +432,22 @@ class TestDebugEndpoints:
 class TestConsolidation:
     """Tests for POST /consolidate and ConsolidateAgent behavior."""
 
+    @pytest.fixture(autouse=True)
+    def _clean_memory_tables(self, memory_db_env: str) -> None:
+        """Truncate memory tables before each test for isolation."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        with memory_db_module.get_connection() as conn:
+            conn.execute(
+                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "consolidation_quality, pattern_outcomes, consolidations, memories "
+                "CASCADE"
+            )
+            conn.commit()
+
     def test_consolidate_triggers_and_returns_count(
         self, api_client: Any, auth_headers: dict[str, str]
     ) -> None:
@@ -480,9 +511,8 @@ class TestConsolidation:
 
         import db as memory_db_module
 
-        conn = memory_db_module.get_connection()
-        rows = conn.execute("SELECT * FROM consolidation_quality WHERE accepted = 0").fetchall()
-        conn.close()
+        with memory_db_module.get_connection() as conn:
+            rows = conn.execute("SELECT * FROM consolidation_quality WHERE accepted = 0").fetchall()
         assert len(rows) >= 1
         assert rows[0]["rejected_reason"] is not None
 
@@ -564,6 +594,22 @@ class TestConsolidation:
 class TestConsolidationArchiving:
     """Tests for Fix A (no archive on LLM failure) and Fix F (batch loop)."""
 
+    @pytest.fixture(autouse=True)
+    def _clean_memory_tables(self, memory_db_env: str) -> None:
+        """Truncate memory tables before each test for isolation."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        with memory_db_module.get_connection() as conn:
+            conn.execute(
+                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "consolidation_quality, pattern_outcomes, consolidations, memories "
+                "CASCADE"
+            )
+            conn.commit()
+
     def test_consolidate_does_not_archive_on_llm_failure(
         self, api_client: Any, auth_headers: dict[str, str]
     ) -> None:
@@ -591,17 +637,14 @@ class TestConsolidationArchiving:
         assert response.json()["consolidated"] == 0
 
         # Verify memories are NOT archived
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             rows = conn.execute(
-                "SELECT id, archived FROM memories WHERE source LIKE 'walk_forward:equity%'"
+                "SELECT id, archived FROM memories WHERE source LIKE 'walk_forward:equity%%'"
             ).fetchall()
-            assert len(rows) >= 3
-            assert all(row["archived"] == 0 for row in rows), (
-                "Memories must remain unarchived when LLM fails"
-            )
-        finally:
-            conn.close()
+        assert len(rows) >= 3
+        assert all(row["archived"] == 0 for row in rows), (
+            "Memories must remain unarchived when LLM fails"
+        )
 
     def test_consolidate_archives_on_success(
         self, api_client: Any, auth_headers: dict[str, str]
@@ -645,17 +688,14 @@ class TestConsolidationArchiving:
         assert response.json()["consolidated"] >= 1
 
         # Verify memories ARE archived
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             rows = conn.execute(
-                "SELECT id, archived FROM memories WHERE source LIKE 'walk_forward:equity:sac%'"
+                "SELECT id, archived FROM memories WHERE source LIKE 'walk_forward:equity:sac%%'"
             ).fetchall()
-            assert len(rows) >= 3
-            assert all(row["archived"] == 1 for row in rows), (
-                "Memories must be archived after successful consolidation"
-            )
-        finally:
-            conn.close()
+        assert len(rows) >= 3
+        assert all(row["archived"] == 1 for row in rows), (
+            "Memories must be archived after successful consolidation"
+        )
 
     def test_consolidate_aggregates_epoch_memories(
         self, api_client: Any, auth_headers: dict[str, str]
@@ -717,15 +757,12 @@ class TestConsolidationArchiving:
         assert call_count >= 1, f"Expected >= 1 LLM call for aggregated memories, got {call_count}"
 
         # Verify ALL epoch memories are archived
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             unarchived = conn.execute(
-                "SELECT COUNT(*) FROM memories "
-                "WHERE source LIKE 'training_epoch:%' AND archived = 0"
-            ).fetchone()[0]
-            assert unarchived == 0, f"Expected 0 unarchived epoch memories, got {unarchived}"
-        finally:
-            conn.close()
+                "SELECT COUNT(*) AS cnt FROM memories "
+                "WHERE source LIKE 'training_epoch:%%' AND archived = 0"
+            ).fetchone()["cnt"]
+        assert unarchived == 0, f"Expected 0 unarchived epoch memories, got {unarchived}"
 
     def test_consolidate_preserves_memories_on_llm_failure(
         self, api_client: Any, auth_headers: dict[str, str]
@@ -766,15 +803,12 @@ class TestConsolidationArchiving:
         assert response.status_code == 200
 
         # All memories should be preserved (not archived) on LLM failure
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             unarchived = conn.execute(
-                "SELECT COUNT(*) FROM memories "
-                "WHERE source LIKE 'training_epoch:%' AND archived = 0"
-            ).fetchone()[0]
-            assert unarchived == 250, f"All 250 memories should be preserved, got {unarchived}"
-        finally:
-            conn.close()
+                "SELECT COUNT(*) AS cnt FROM memories "
+                "WHERE source LIKE 'training_epoch:%%' AND archived = 0"
+            ).fetchone()["cnt"]
+        assert unarchived == 250, f"All 250 memories should be preserved, got {unarchived}"
 
 
 # ---------------------------------------------------------------------------
@@ -785,7 +819,23 @@ class TestConsolidationArchiving:
 class TestUnarchiveMechanism:
     """Tests for Fix B: unarchive_memories() and get_archived_memories_by_prefix()."""
 
-    def test_unarchive_resets_flag(self, memory_db_env: Path) -> None:
+    @pytest.fixture(autouse=True)
+    def _clean_memory_tables(self, memory_db_env: str) -> None:
+        """Truncate memory tables before each test for isolation."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        with memory_db_module.get_connection() as conn:
+            conn.execute(
+                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "consolidation_quality, pattern_outcomes, consolidations, memories "
+                "CASCADE"
+            )
+            conn.commit()
+
+    def test_unarchive_resets_flag(self, memory_db_env: str) -> None:
         """19.1-FIX-B: unarchive_memories resets archived flag to 0."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -805,34 +855,28 @@ class TestUnarchiveMechanism:
         memory_db_module.archive_memories(ids)
 
         # Verify they are archived
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             archived_count = conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE archived = 1"
-            ).fetchone()[0]
-            assert archived_count == 5
-        finally:
-            conn.close()
+                "SELECT COUNT(*) AS cnt FROM memories WHERE archived = 1"
+            ).fetchone()["cnt"]
+        assert archived_count == 5
 
         # Unarchive them
         updated = memory_db_module.unarchive_memories(ids)
         assert updated == 5
 
         # Verify they are back to active
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             active_count = conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE archived = 0"
-            ).fetchone()[0]
-            assert active_count == 5
+                "SELECT COUNT(*) AS cnt FROM memories WHERE archived = 0"
+            ).fetchone()["cnt"]
             archived_count = conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE archived = 1"
-            ).fetchone()[0]
-            assert archived_count == 0
-        finally:
-            conn.close()
+                "SELECT COUNT(*) AS cnt FROM memories WHERE archived = 1"
+            ).fetchone()["cnt"]
+        assert active_count == 5
+        assert archived_count == 0
 
-    def test_get_archived_memories_by_prefix(self, memory_db_env: Path) -> None:
+    def test_get_archived_memories_by_prefix(self, memory_db_env: str) -> None:
         """19.1-FIX-B: get_archived_memories_by_prefix filters by source prefix."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -900,104 +944,96 @@ class TestUnarchiveMechanism:
 class TestDBSchema:
     """Tests for the enriched database schema."""
 
-    def test_consolidation_sources_table_exists(self, memory_db_env: Path) -> None:
+    def test_consolidation_sources_table_exists(self, memory_db_env: str) -> None:
         """19.1: consolidation_sources join table is created."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
         import db as memory_db_module
 
         memory_db_module.init_db()
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             rows = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='consolidation_sources'"
+                "SELECT tablename FROM pg_tables "
+                "WHERE schemaname='public' AND tablename='consolidation_sources'"
             ).fetchall()
-            assert len(rows) == 1
-        finally:
-            conn.close()
+        assert len(rows) == 1
 
-    def test_pattern_presentations_table_exists(self, memory_db_env: Path) -> None:
+    def test_pattern_presentations_table_exists(self, memory_db_env: str) -> None:
         """19.1: pattern_presentations table is created."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
         import db as memory_db_module
 
         memory_db_module.init_db()
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             rows = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='pattern_presentations'"
+                "SELECT tablename FROM pg_tables "
+                "WHERE schemaname='public' AND tablename='pattern_presentations'"
             ).fetchall()
-            assert len(rows) == 1
-        finally:
-            conn.close()
+        assert len(rows) == 1
 
-    def test_pattern_outcomes_table_exists(self, memory_db_env: Path) -> None:
+    def test_pattern_outcomes_table_exists(self, memory_db_env: str) -> None:
         """19.1: pattern_outcomes table is created."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
         import db as memory_db_module
 
         memory_db_module.init_db()
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             rows = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='pattern_outcomes'"
+                "SELECT tablename FROM pg_tables "
+                "WHERE schemaname='public' AND tablename='pattern_outcomes'"
             ).fetchall()
-            assert len(rows) == 1
-        finally:
-            conn.close()
+        assert len(rows) == 1
 
-    def test_consolidations_has_new_columns(self, memory_db_env: Path) -> None:
+    def test_consolidations_has_new_columns(self, memory_db_env: str) -> None:
         """19.1: consolidations table has all new columns."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
         import db as memory_db_module
 
         memory_db_module.init_db()
-        conn = memory_db_module.get_connection()
-        try:
-            cols = conn.execute("PRAGMA table_info(consolidations)").fetchall()
-            col_names = {row[1] for row in cols}
-            expected_new = {
-                "category",
-                "affected_algos",
-                "affected_envs",
-                "actionable_implication",
-                "confidence",
-                "evidence",
-                "stage",
-                "env_name",
-                "confirmation_count",
-                "last_confirmed_at",
-                "superseded_by",
-                "status",
-                "conflict_group_id",
-            }
-            missing = expected_new - col_names
-            assert not missing, f"Missing columns: {missing}"
-        finally:
-            conn.close()
+        with memory_db_module.get_connection() as conn:
+            cols = conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'consolidations' AND table_schema = 'public'"
+            ).fetchall()
+            col_names = {row["column_name"] for row in cols}
+        expected_new = {
+            "category",
+            "affected_algos",
+            "affected_envs",
+            "actionable_implication",
+            "confidence",
+            "evidence",
+            "stage",
+            "env_name",
+            "confirmation_count",
+            "last_confirmed_at",
+            "superseded_by",
+            "status",
+            "conflict_group_id",
+        }
+        missing = expected_new - col_names
+        assert not missing, f"Missing columns: {missing}"
 
-    def test_consolidation_indexes_exist(self, memory_db_env: Path) -> None:
+    def test_consolidation_indexes_exist(self, memory_db_env: str) -> None:
         """19.1: New indexes on consolidations table exist."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
         import db as memory_db_module
 
         memory_db_module.init_db()
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             indexes = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='consolidations'"
+                "SELECT indexname FROM pg_indexes "
+                "WHERE schemaname = 'public' AND tablename = 'consolidations'"
             ).fetchall()
-            index_names = {row[0] for row in indexes}
-            assert "idx_consolidations_status" in index_names
-            assert "idx_consolidations_env_stage" in index_names
-        finally:
-            conn.close()
+            index_names = {row["indexname"] for row in indexes}
+        assert "idx_consolidations_status" in index_names
+        assert "idx_consolidations_env_stage" in index_names
 
-    def test_schema_migration_idempotent(self, memory_db_env: Path) -> None:
+    def test_schema_migration_idempotent(self, memory_db_env: str) -> None:
         """19.1: init_db() is idempotent — running twice does not error."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1015,7 +1051,23 @@ class TestDBSchema:
 class TestDBFunctions:
     """Tests for new DB functions."""
 
-    def test_insert_consolidation_with_new_fields(self, memory_db_env: Path) -> None:
+    @pytest.fixture(autouse=True)
+    def _clean_memory_tables(self, memory_db_env: str) -> None:
+        """Truncate memory tables before each test for isolation."""
+        for mod_name in list(_MEMORY_MODULE_NAMES):
+            sys.modules.pop(mod_name, None)
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        with memory_db_module.get_connection() as conn:
+            conn.execute(
+                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "consolidation_quality, pattern_outcomes, consolidations, memories "
+                "CASCADE"
+            )
+            conn.commit()
+
+    def test_insert_consolidation_with_new_fields(self, memory_db_env: str) -> None:
         """19.1: insert_consolidation() accepts all new fields."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1046,7 +1098,7 @@ class TestDBFunctions:
         assert row["confidence"] == pytest.approx(0.65)
         assert row["stage"] == 1
 
-    def test_insert_consolidation_source(self, memory_db_env: Path) -> None:
+    def test_insert_consolidation_source(self, memory_db_env: str) -> None:
         """19.1: consolidation_sources join table is populated."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1061,17 +1113,14 @@ class TestDBFunctions:
         )
         memory_db_module.insert_consolidation_source(cid, mid)
 
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM consolidation_sources WHERE consolidation_id = ?", (cid,)
+                "SELECT * FROM consolidation_sources WHERE consolidation_id = %s", (cid,)
             ).fetchall()
-            assert len(rows) == 1
-            assert rows[0]["memory_id"] == mid
-        finally:
-            conn.close()
+        assert len(rows) == 1
+        assert rows[0]["memory_id"] == mid
 
-    def test_get_active_consolidations_filters(self, memory_db_env: Path) -> None:
+    def test_get_active_consolidations_filters(self, memory_db_env: str) -> None:
         """19.1: get_active_consolidations filters by env, stage, confidence."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1103,8 +1152,8 @@ class TestDBFunctions:
             (r.get("confidence") or 0) >= 0.5 or r.get("confidence") is None for r in high_conf
         )
 
-    def test_update_consolidation_status(self, memory_db_env: Path) -> None:
-        """19.1: Pattern lifecycle active → superseded works."""
+    def test_update_consolidation_status(self, memory_db_env: str) -> None:
+        """19.1: Pattern lifecycle active -> superseded works."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
         import db as memory_db_module
@@ -1120,17 +1169,14 @@ class TestDBFunctions:
         )
         memory_db_module.update_consolidation_status(old_id, "superseded", superseded_by=new_id)
 
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             row = conn.execute(
-                "SELECT status, superseded_by FROM consolidations WHERE id = ?", (old_id,)
+                "SELECT status, superseded_by FROM consolidations WHERE id = %s", (old_id,)
             ).fetchone()
-            assert row["status"] == "superseded"
-            assert row["superseded_by"] == new_id
-        finally:
-            conn.close()
+        assert row["status"] == "superseded"
+        assert row["superseded_by"] == new_id
 
-    def test_update_consolidation_status_with_conflict_group_id(self, memory_db_env: Path) -> None:
+    def test_update_consolidation_status_with_conflict_group_id(self, memory_db_env: str) -> None:
         """Fix 2: update_consolidation_status propagates conflict_group_id."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1151,19 +1197,16 @@ class TestDBFunctions:
             old_id, "superseded", superseded_by=new_id, conflict_group_id=group_id
         )
 
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             row = conn.execute(
-                "SELECT status, superseded_by, conflict_group_id FROM consolidations WHERE id = ?",
+                "SELECT status, superseded_by, conflict_group_id FROM consolidations WHERE id = %s",
                 (old_id,),
             ).fetchone()
-            assert row["status"] == "superseded"
-            assert row["superseded_by"] == new_id
-            assert row["conflict_group_id"] == group_id
-        finally:
-            conn.close()
+        assert row["status"] == "superseded"
+        assert row["superseded_by"] == new_id
+        assert row["conflict_group_id"] == group_id
 
-    def test_check_conflicts_same_metric_opposite_sentiment(self, memory_db_env: Path) -> None:
+    def test_check_conflicts_same_metric_opposite_sentiment(self, memory_db_env: str) -> None:
         """Fix 1: Same metric + opposite sentiment + same category + same env = conflict."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1187,7 +1230,7 @@ class TestDBFunctions:
         )
         assert result == 1, "Expected conflict on same metric (sharpe) with opposite sentiment"
 
-    def test_check_conflicts_different_metrics_no_conflict(self, memory_db_env: Path) -> None:
+    def test_check_conflicts_different_metrics_no_conflict(self, memory_db_env: str) -> None:
         """Fix 1: Different metrics should not conflict even with opposite sentiment words."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1211,7 +1254,7 @@ class TestDBFunctions:
         )
         assert result is None, "Different metrics (win vs performance) should not conflict"
 
-    def test_check_conflicts_different_env_no_conflict(self, memory_db_env: Path) -> None:
+    def test_check_conflicts_different_env_no_conflict(self, memory_db_env: str) -> None:
         """Fix 1: Different envs should not conflict even with same category."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1235,7 +1278,7 @@ class TestDBFunctions:
         )
         assert result is None, "Different envs + different algos should not conflict"
 
-    def test_check_conflicts_different_category_no_conflict(self, memory_db_env: Path) -> None:
+    def test_check_conflicts_different_category_no_conflict(self, memory_db_env: str) -> None:
         """Fix 1: Different categories should never conflict."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1259,7 +1302,7 @@ class TestDBFunctions:
         )
         assert result is None, "Different categories should never conflict"
 
-    def test_increment_confirmation(self, memory_db_env: Path) -> None:
+    def test_increment_confirmation(self, memory_db_env: str) -> None:
         """19.1: increment_confirmation updates count and timestamp."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1273,18 +1316,15 @@ class TestDBFunctions:
         memory_db_module.increment_confirmation(cid)
         memory_db_module.increment_confirmation(cid)
 
-        conn = memory_db_module.get_connection()
-        try:
+        with memory_db_module.get_connection() as conn:
             row = conn.execute(
-                "SELECT confirmation_count, last_confirmed_at FROM consolidations WHERE id = ?",
+                "SELECT confirmation_count, last_confirmed_at FROM consolidations WHERE id = %s",
                 (cid,),
             ).fetchone()
-            assert row["confirmation_count"] == 2
-            assert row["last_confirmed_at"] is not None
-        finally:
-            conn.close()
+        assert row["confirmation_count"] == 2
+        assert row["last_confirmed_at"] is not None
 
-    def test_insert_pattern_presentation(self, memory_db_env: Path) -> None:
+    def test_insert_pattern_presentation(self, memory_db_env: str) -> None:
         """19.1: Presentation tracking records are created."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1304,7 +1344,7 @@ class TestDBFunctions:
         )
         assert pid >= 1
 
-    def test_insert_pattern_outcome(self, memory_db_env: Path) -> None:
+    def test_insert_pattern_outcome(self, memory_db_env: str) -> None:
         """19.1: Outcome recording stores iteration results."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1323,7 +1363,7 @@ class TestDBFunctions:
         )
         assert oid >= 1
 
-    def test_get_pattern_effectiveness(self, memory_db_env: Path) -> None:
+    def test_get_pattern_effectiveness(self, memory_db_env: str) -> None:
         """19.1: Pattern effectiveness join returns presentation + outcome data."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1356,7 +1396,7 @@ class TestDBFunctions:
         row = results[0]
         assert row["consolidation_id"] == cid
         assert row["sharpe"] == pytest.approx(1.5)
-        assert row["gate_passed"] == 1  # SQLite stores bool as int
+        assert row["gate_passed"] == 1  # PostgreSQL stores bool as int in this schema
 
 
 # ---------------------------------------------------------------------------
@@ -1542,7 +1582,7 @@ class TestConsolidationSchema:
 class TestSourceTags:
     """Tests for the updated source tag format."""
 
-    def test_source_prefix_query(self, memory_db_env: Path) -> None:
+    def test_source_prefix_query(self, memory_db_env: str) -> None:
         """19.1: get_memories_by_source_prefix filters by env prefix."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -1599,15 +1639,15 @@ class TestAuth:
 
 
 # ---------------------------------------------------------------------------
-# TestTrainingTelemetryDDL (existing DuckDB migration tests — preserved)
+# TestTrainingTelemetryDDL (existing PostgreSQL schema tests — preserved)
 # ---------------------------------------------------------------------------
 
 
 class TestTrainingTelemetryDDL:
-    """Tests for apply_training_telemetry_ddl() DuckDB schema migrations."""
+    """Tests for PostgreSQL training telemetry schema migrations."""
 
     def test_training_epochs_table_created(self, tmp_path: pytest.TempPathFactory) -> None:
-        """TRAIN-06: apply_training_telemetry_ddl creates training_epochs table in DuckDB."""
+        """TRAIN-06: init_postgres_schema creates training_epochs table in PostgreSQL."""
         import os
 
         import psycopg
@@ -1959,6 +1999,8 @@ class TestTrainingTelemetryDDL:
         conn = psycopg.connect(db_url, autocommit=True)
         try:
             init_postgres_schema(conn)
+            # Truncate to ensure isolation from prior test runs
+            conn.execute("TRUNCATE training_epochs, meta_decisions, reward_adjustments")
             # Insert into training_epochs
             conn.execute(
                 "INSERT INTO training_epochs (run_id, epoch, algo, env, rolling_sharpe, rolling_mdd) "
@@ -1992,7 +2034,25 @@ class TestTrainingTelemetryDDL:
 class TestRetrievalEfficiency:
     """Tests for context-aware category & env/algo filtering (R1-R3)."""
 
-    def test_parse_query_context(self, memory_db_env: Path) -> None:
+    @pytest.fixture(autouse=True)
+    def _clean_memory_tables(self, memory_db_env: str) -> None:
+        """Truncate memory-related tables before each test for isolation.
+
+        Tests in this class insert specific rows and assert exact counts,
+        so leftover data from prior runs would cause false failures.
+        """
+        import db as memory_db_module
+
+        memory_db_module.init_db()
+        with memory_db_module.get_connection() as conn:
+            conn.execute(
+                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "consolidation_quality, pattern_outcomes, consolidations, memories "
+                "CASCADE"
+            )
+            conn.commit()
+
+    def test_parse_query_context(self, memory_db_env: str) -> None:
         """Correct extraction of env/algo/iteration from query string."""
         from memory_agents.query import _parse_query_context
 
@@ -2001,7 +2061,7 @@ class TestRetrievalEfficiency:
         assert result["algo_name"] == "ppo"
         assert result["iteration"] == 5
 
-    def test_parse_query_context_partial(self, memory_db_env: Path) -> None:
+    def test_parse_query_context_partial(self, memory_db_env: str) -> None:
         """Parsing with missing fields returns None for those fields."""
         from memory_agents.query import _parse_query_context
 
@@ -2010,7 +2070,7 @@ class TestRetrievalEfficiency:
         assert result["algo_name"] is None
         assert result["iteration"] is None
 
-    def test_parse_query_context_iter_alias(self, memory_db_env: Path) -> None:
+    def test_parse_query_context_iter_alias(self, memory_db_env: str) -> None:
         """iter= alias works same as iteration=."""
         from memory_agents.query import _parse_query_context
 
@@ -2019,7 +2079,7 @@ class TestRetrievalEfficiency:
         assert result["algo_name"] == "sac"
         assert result["iteration"] == 3
 
-    def test_build_context_filters_by_env(self, memory_db_env: Path) -> None:
+    def test_build_context_filters_by_env(self, memory_db_env: str) -> None:
         """Only equity + NULL env patterns returned for equity query."""
         from memory_agents.query import QueryAgent
 
@@ -2062,7 +2122,7 @@ class TestRetrievalEfficiency:
         assert "universal pattern" in context
         assert "crypto pattern" not in context
 
-    def test_build_context_filters_by_algo(self, memory_db_env: Path) -> None:
+    def test_build_context_filters_by_algo(self, memory_db_env: str) -> None:
         """SAC-only patterns excluded from PPO query; universal patterns kept."""
         from memory_agents.query import QueryAgent
 
@@ -2104,7 +2164,7 @@ class TestRetrievalEfficiency:
         assert "ppo specific pattern" in context
         assert "sac only pattern" not in context
 
-    def test_build_context_category_filtering_run_config(self, memory_db_env: Path) -> None:
+    def test_build_context_category_filtering_run_config(self, memory_db_env: str) -> None:
         """Training categories included, live categories excluded for run_config."""
         from memory_agents.query import QueryAgent
 
@@ -2135,7 +2195,7 @@ class TestRetrievalEfficiency:
         assert "regime perf pattern" in context
         assert "live gate pattern" not in context
 
-    def test_build_context_category_filtering_epoch_advice(self, memory_db_env: Path) -> None:
+    def test_build_context_category_filtering_epoch_advice(self, memory_db_env: str) -> None:
         """Epoch-relevant categories included, others excluded."""
         from memory_agents.query import QueryAgent
 
@@ -2166,7 +2226,7 @@ class TestRetrievalEfficiency:
         assert "drawdown recovery tip" in context
         assert "data size impact note" not in context
 
-    def test_build_context_skips_raw_memories(self, memory_db_env: Path) -> None:
+    def test_build_context_skips_raw_memories(self, memory_db_env: str) -> None:
         """No raw memories when >= 3 consolidations exist."""
         from memory_agents.query import QueryAgent
 
@@ -2196,7 +2256,7 @@ class TestRetrievalEfficiency:
         assert "raw memory text xyz" not in context
         assert "pattern 0" in context
 
-    def test_build_context_includes_raw_on_cold_start(self, memory_db_env: Path) -> None:
+    def test_build_context_includes_raw_on_cold_start(self, memory_db_env: str) -> None:
         """Raw memories included when < 3 consolidations."""
         from memory_agents.query import QueryAgent
 
@@ -2225,7 +2285,7 @@ class TestRetrievalEfficiency:
         assert "single pattern" in context
         assert "cold start raw memory" in context
 
-    def test_get_active_consolidations_limit_per_category(self, memory_db_env: Path) -> None:
+    def test_get_active_consolidations_limit_per_category(self, memory_db_env: str) -> None:
         """Top-3 per category respected with limit_per_category."""
         import db as memory_db_module
 
@@ -2253,7 +2313,7 @@ class TestRetrievalEfficiency:
         assert "pattern conf 3" in texts  # conf=0.8
         assert "pattern conf 2" in texts  # conf=0.7
 
-    def test_get_active_consolidations_composite_score(self, memory_db_env: Path) -> None:
+    def test_get_active_consolidations_composite_score(self, memory_db_env: str) -> None:
         """High-confidence old vs low-confidence recent — confidence dominates."""
         import db as memory_db_module
 
@@ -2284,7 +2344,7 @@ class TestRetrievalEfficiency:
         assert len(results) == 1
         assert results[0]["pattern_text"] == "high conf old"
 
-    def test_get_active_consolidations_multi_category_spread(self, memory_db_env: Path) -> None:
+    def test_get_active_consolidations_multi_category_spread(self, memory_db_env: str) -> None:
         """limit_per_category=2 across 2 categories returns up to 2 from each."""
         import db as memory_db_module
 
@@ -2319,7 +2379,7 @@ class TestRetrievalEfficiency:
         assert cats.count("regime_performance") == 2
         assert cats.count("overfit_diagnosis") == 2
 
-    def test_get_active_consolidations_empty_categories(self, memory_db_env: Path) -> None:
+    def test_get_active_consolidations_empty_categories(self, memory_db_env: str) -> None:
         """Empty categories list returns no results (not a SQL error)."""
         import db as memory_db_module
 
@@ -2928,7 +2988,7 @@ class TestFoldAdjustmentHistory:
         parsed = _parse_query_context(query)
         assert parsed["run_id"] is None
 
-    def test_get_recent_outcomes_returns_matching(self, memory_db_env: Path) -> None:
+    def test_get_recent_outcomes_returns_matching(self, memory_db_env: str) -> None:
         """get_recent_outcomes_for_run_id returns only matching fold outcomes."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
@@ -2952,7 +3012,7 @@ class TestFoldAdjustmentHistory:
         assert len(results) == 1
         assert "crypto_a2c_fold0" in results[0]["text"]
 
-    def test_get_recent_outcomes_respects_limit(self, memory_db_env: Path) -> None:
+    def test_get_recent_outcomes_respects_limit(self, memory_db_env: str) -> None:
         """get_recent_outcomes_for_run_id respects the limit parameter."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)

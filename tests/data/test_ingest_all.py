@@ -41,17 +41,17 @@ def _subprocess_env() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _make_duckdb_ctx_mock(row_count: int = 0) -> MagicMock:
-    """Return a mock DatabaseManager whose duckdb() yields a cursor with COUNT(*)."""
+def _make_db_ctx_mock(row_count: int = 0) -> MagicMock:
+    """Return a mock DatabaseManager whose connection() yields a cursor with COUNT(*)."""
     mock_db = MagicMock()
     mock_cursor = MagicMock()
-    mock_cursor.execute.return_value.fetchone.return_value = (row_count,)
+    mock_cursor.execute.return_value.fetchone.return_value = {"cnt": row_count}
 
     @contextmanager
-    def _duckdb_ctx():  # type: ignore[return]
+    def _connection_ctx():  # type: ignore[return]
         yield mock_cursor
 
-    mock_db.duckdb.side_effect = _duckdb_ctx
+    mock_db.connection.side_effect = _connection_ctx
     return mock_db
 
 
@@ -69,7 +69,7 @@ class TestRunEquity:
         """DATA-01: Calls AlpacaIngestor.run_all(symbols, since=None) when backfill=True."""
         from swingrl.data.ingest_all import run_equity
 
-        mock_db = _make_duckdb_ctx_mock(row_count=0)
+        mock_db = _make_db_ctx_mock(row_count=0)
         mock_ingestor = MagicMock()
         mock_ingestor.run_all.return_value = []
 
@@ -87,7 +87,7 @@ class TestRunEquity:
         """DATA-01: Raises DataError when AlpacaIngestor.run_all returns failed symbols."""
         from swingrl.data.ingest_all import run_equity
 
-        mock_db = _make_duckdb_ctx_mock(row_count=0)
+        mock_db = _make_db_ctx_mock(row_count=0)
         mock_ingestor = MagicMock()
         mock_ingestor.run_all.return_value = ["SPY"]
 
@@ -107,17 +107,17 @@ class TestRunEquity:
         mock_cursor = MagicMock()
         call_count = [0]
 
-        def _fetchone_side_effect() -> tuple[int]:
+        def _fetchone_side_effect() -> dict[str, int]:
             call_count[0] += 1
-            return (100,) if call_count[0] == 1 else (150,)
+            return {"cnt": 100} if call_count[0] == 1 else {"cnt": 150}
 
         mock_cursor.execute.return_value.fetchone.side_effect = _fetchone_side_effect
 
         @contextmanager
-        def _duckdb_ctx():  # type: ignore[return]
+        def _connection_ctx():  # type: ignore[return]
             yield mock_cursor
 
-        mock_db.duckdb.side_effect = _duckdb_ctx
+        mock_db.connection.side_effect = _connection_ctx
 
         mock_ingestor = MagicMock()
         mock_ingestor.run_all.return_value = []
@@ -140,7 +140,7 @@ class TestRunCrypto:
         """DATA-02: Calls BinanceIngestor.backfill(symbol) for each symbol when backfill=True."""
         from swingrl.data.ingest_all import run_crypto
 
-        mock_db = _make_duckdb_ctx_mock(row_count=0)
+        mock_db = _make_db_ctx_mock(row_count=0)
         mock_ingestor = MagicMock()
         mock_ingestor.backfill.return_value = pd.DataFrame()
         mock_ingestor.__enter__ = MagicMock(return_value=mock_ingestor)
@@ -161,7 +161,7 @@ class TestRunCrypto:
         """DATA-02: Calls BinanceIngestor.run_all(symbols, since=None) when backfill=False."""
         from swingrl.data.ingest_all import run_crypto
 
-        mock_db = _make_duckdb_ctx_mock(row_count=0)
+        mock_db = _make_db_ctx_mock(row_count=0)
         mock_ingestor = MagicMock()
         mock_ingestor.run_all.return_value = []
         mock_ingestor.__enter__ = MagicMock(return_value=mock_ingestor)
@@ -183,17 +183,17 @@ class TestRunCrypto:
         mock_cursor = MagicMock()
         call_count = [0]
 
-        def _fetchone_side_effect() -> tuple[int]:
+        def _fetchone_side_effect() -> dict[str, int]:
             call_count[0] += 1
-            return (200,) if call_count[0] == 1 else (300,)
+            return {"cnt": 200} if call_count[0] == 1 else {"cnt": 300}
 
         mock_cursor.execute.return_value.fetchone.side_effect = _fetchone_side_effect
 
         @contextmanager
-        def _duckdb_ctx():  # type: ignore[return]
+        def _connection_ctx():  # type: ignore[return]
             yield mock_cursor
 
-        mock_db.duckdb.side_effect = _duckdb_ctx
+        mock_db.connection.side_effect = _connection_ctx
 
         mock_ingestor = MagicMock()
         mock_ingestor.backfill.return_value = pd.DataFrame()
@@ -218,7 +218,7 @@ class TestRunMacro:
         """DATA-03: Calls FREDIngestor.run_all(backfill=True) when backfill=True."""
         from swingrl.data.ingest_all import run_macro
 
-        mock_db = _make_duckdb_ctx_mock(row_count=0)
+        mock_db = _make_db_ctx_mock(row_count=0)
         mock_ingestor = MagicMock()
         mock_ingestor.run_all.return_value = []
 
@@ -236,7 +236,7 @@ class TestRunMacro:
         """DATA-03: Raises DataError when FREDIngestor.run_all returns failed series."""
         from swingrl.data.ingest_all import run_macro
 
-        mock_db = _make_duckdb_ctx_mock(row_count=0)
+        mock_db = _make_db_ctx_mock(row_count=0)
         mock_ingestor = MagicMock()
         mock_ingestor.run_all.return_value = ["VIXCLS"]
 
@@ -289,7 +289,7 @@ class TestRunFeatures:
         """DATA-05: Calls FeaturePipeline.compute_equity() and compute_crypto()."""
         from swingrl.data.ingest_all import run_features
 
-        mock_db = _make_duckdb_ctx_mock()
+        mock_db = _make_db_ctx_mock()
         mock_pipeline = MagicMock()
 
         with (
@@ -323,16 +323,16 @@ class TestRunPipeline:
             val = call_count[0]
             call_count[0] += 1
             if val < len(rows_per_call):
-                return (rows_per_call[val],)
-            return (50,)
+                return {"cnt": rows_per_call[val]}
+            return {"cnt": 50}
 
         mock_cursor.execute.return_value.fetchone.side_effect = _fetchone
 
         @contextmanager
-        def _duckdb_ctx():  # type: ignore[return]
+        def _connection_ctx():  # type: ignore[return]
             yield mock_cursor
 
-        mock_db.duckdb.side_effect = _duckdb_ctx
+        mock_db.connection.side_effect = _connection_ctx
 
         mock_alpaca = MagicMock()
         mock_alpaca.run_all.return_value = []
@@ -365,7 +365,7 @@ class TestRunPipeline:
         from swingrl.data.ingest_all import run_pipeline
         from swingrl.data.verification import VerificationResult
 
-        mock_db = _make_duckdb_ctx_mock(row_count=0)
+        mock_db = _make_db_ctx_mock(row_count=0)
         mock_alpaca = MagicMock()
         mock_alpaca.run_all.return_value = []
         mock_binance = MagicMock()
@@ -387,6 +387,7 @@ class TestRunPipeline:
             patch("swingrl.data.ingest_all.run_verification", return_value=vr),
             patch("swingrl.data.ingest_all.write_report"),
             patch("swingrl.data.ingest_all.print_summary"),
+            patch("swingrl.data.ingest_all.detect_and_fill_crypto_gaps", return_value=[]),
         ):
             run_pipeline(loaded_config, backfill=True)
 
@@ -410,16 +411,16 @@ class TestRunPipeline:
             idx = call_idx[0]
             call_idx[0] += 1
             if idx < len(call_results):
-                return (call_results[idx],)
-            return (0,)
+                return {"cnt": call_results[idx]}
+            return {"cnt": 0}
 
         mock_cursor.execute.return_value.fetchone.side_effect = _fetchone
 
         @contextmanager
-        def _duckdb_ctx():  # type: ignore[return]
+        def _connection_ctx():  # type: ignore[return]
             yield mock_cursor
 
-        mock_db.duckdb.side_effect = _duckdb_ctx
+        mock_db.connection.side_effect = _connection_ctx
 
         mock_alpaca = MagicMock()
         mock_alpaca.run_all.return_value = []
@@ -442,6 +443,7 @@ class TestRunPipeline:
             patch("swingrl.data.ingest_all.run_verification", return_value=vr),
             patch("swingrl.data.ingest_all.write_report"),
             patch("swingrl.data.ingest_all.print_summary"),
+            patch("swingrl.data.ingest_all.detect_and_fill_crypto_gaps", return_value=[]),
         ):
             run_pipeline(loaded_config, backfill=True)
 
@@ -455,7 +457,7 @@ class TestRunPipeline:
         from swingrl.data.ingest_all import run_pipeline
         from swingrl.data.verification import VerificationResult
 
-        mock_db = _make_duckdb_ctx_mock(row_count=0)
+        mock_db = _make_db_ctx_mock(row_count=0)
         mock_alpaca = MagicMock()
         mock_alpaca.run_all.return_value = []
         mock_binance = MagicMock()
@@ -477,6 +479,7 @@ class TestRunPipeline:
             patch("swingrl.data.ingest_all.run_verification", return_value=vr),
             patch("swingrl.data.ingest_all.write_report"),
             patch("swingrl.data.ingest_all.print_summary"),
+            patch("swingrl.data.ingest_all.detect_and_fill_crypto_gaps", return_value=[]),
         ):
             exit_code = run_pipeline(loaded_config, backfill=True)
 
@@ -489,7 +492,7 @@ class TestRunPipeline:
         from swingrl.data.ingest_all import run_pipeline
         from swingrl.data.verification import VerificationResult
 
-        mock_db = _make_duckdb_ctx_mock(row_count=0)
+        mock_db = _make_db_ctx_mock(row_count=0)
         mock_alpaca = MagicMock()
         mock_alpaca.run_all.return_value = []
         mock_binance = MagicMock()
@@ -511,6 +514,7 @@ class TestRunPipeline:
             patch("swingrl.data.ingest_all.run_verification", return_value=vr),
             patch("swingrl.data.ingest_all.write_report"),
             patch("swingrl.data.ingest_all.print_summary"),
+            patch("swingrl.data.ingest_all.detect_and_fill_crypto_gaps", return_value=[]),
         ):
             exit_code = run_pipeline(loaded_config, backfill=True)
 
@@ -591,16 +595,16 @@ class TestFullPipelineMock:
             idx = call_idx[0]
             call_idx[0] += 1
             if idx < len(call_results):
-                return (call_results[idx],)
-            return (0,)
+                return {"cnt": call_results[idx]}
+            return {"cnt": 0}
 
         mock_cursor.execute.return_value.fetchone.side_effect = _fetchone
 
         @contextmanager
-        def _duckdb_ctx():  # type: ignore[return]
+        def _connection_ctx():  # type: ignore[return]
             yield mock_cursor
 
-        mock_db.duckdb.side_effect = _duckdb_ctx
+        mock_db.connection.side_effect = _connection_ctx
 
         mock_alpaca = MagicMock()
         mock_alpaca.run_all.return_value = []
@@ -626,6 +630,7 @@ class TestFullPipelineMock:
             patch("swingrl.data.ingest_all.run_verification", return_value=vr) as mock_verify,
             patch("swingrl.data.ingest_all.write_report") as mock_write,
             patch("swingrl.data.ingest_all.print_summary") as mock_print,
+            patch("swingrl.data.ingest_all.detect_and_fill_crypto_gaps", return_value=[]),
         ):
             exit_code = run_pipeline(loaded_config, backfill=True)
 

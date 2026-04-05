@@ -6,7 +6,7 @@ PAPER-17: Wash sale scanner flags buys within 30-day window of realized loss.
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock
 
 import psycopg
@@ -24,25 +24,28 @@ pytestmark = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATA
 
 
 def _make_mock_db() -> tuple[MagicMock, Any]:
-    """Create a mock DatabaseManager backed by PostgreSQL."""
+    """Create a mock DatabaseManager backed by PostgreSQL.
+
+    Uses autocommit=True to avoid cross-test deadlocks from uncommitted
+    transactions. The real DatabaseManager.connection() auto-commits on exit.
+    """
     db_url = os.environ["DATABASE_URL"]
-    conn = psycopg.connect(db_url, row_factory=dict_row, autocommit=False)
+    conn = psycopg.connect(db_url, row_factory=dict_row, autocommit=True)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS wash_sale_tracker (
             symbol TEXT NOT NULL,
-            sale_date TEXT NOT NULL,
+            sale_date DATE NOT NULL,
             loss_amount DOUBLE PRECISION NOT NULL,
-            wash_window_end TEXT NOT NULL,
+            wash_window_end DATE NOT NULL,
             triggered INTEGER DEFAULT 0,
             PRIMARY KEY (symbol, sale_date)
         )
     """)
     conn.execute("DELETE FROM wash_sale_tracker")
-    conn.commit()
 
     db = MagicMock()
-    db.sqlite.return_value.__enter__ = MagicMock(return_value=conn)
-    db.sqlite.return_value.__exit__ = MagicMock(return_value=False)
+    db.connection.return_value.__enter__ = MagicMock(return_value=conn)
+    db.connection.return_value.__exit__ = MagicMock(return_value=False)
     return db, conn
 
 
@@ -66,9 +69,9 @@ class TestRecordRealizedLoss:
         assert len(rows) == 1
         row = dict(rows[0])
         assert row["symbol"] == "SPY"
-        assert row["sale_date"] == "2026-03-01"
+        assert row["sale_date"] == date(2026, 3, 1)
         assert row["loss_amount"] == 150.0
-        assert row["wash_window_end"] == "2026-03-31"
+        assert row["wash_window_end"] == date(2026, 3, 31)
         assert row["triggered"] == 0
 
     def test_replaces_existing_record(self) -> None:

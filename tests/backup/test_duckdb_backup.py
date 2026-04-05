@@ -32,8 +32,11 @@ class TestBackupPostgres:
         config = _make_config(tmp_path)
         alerter = MagicMock()
 
-        # Mock subprocess.run to simulate successful pg_dump
-        with patch("swingrl.backup.duckdb_backup.subprocess.run") as mock_run:
+        # Mock subprocess.run and _verify_backup (test DB has no data)
+        with (
+            patch("swingrl.backup.duckdb_backup.subprocess.run") as mock_run,
+            patch("swingrl.backup.duckdb_backup._verify_backup"),
+        ):
             mock_run.return_value = MagicMock(returncode=0, stderr="")
             result = backup_duckdb(config, alerter)
 
@@ -47,7 +50,10 @@ class TestBackupPostgres:
         config = _make_config(tmp_path)
         alerter = MagicMock()
 
-        with patch("swingrl.backup.duckdb_backup.subprocess.run") as mock_run:
+        with (
+            patch("swingrl.backup.duckdb_backup.subprocess.run") as mock_run,
+            patch("swingrl.backup.duckdb_backup._verify_backup"),
+        ):
             mock_run.return_value = MagicMock(returncode=0, stderr="")
             backup_duckdb(config, alerter)
 

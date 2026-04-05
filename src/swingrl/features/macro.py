@@ -13,16 +13,14 @@ Usage:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any
 
 import numpy as np
 import pandas as pd
+import psycopg
 import structlog
 
 from swingrl.data.pg_helpers import fetchdf
-
-if TYPE_CHECKING:
-    from swingrl.data.db import DatabaseManager
 
 log = structlog.get_logger(__name__)
 
@@ -131,13 +129,36 @@ class MacroFeatureAligner:
     6. unemployment_3m_direction: binary (1 if improving = lower, else 0)
     """
 
-    def __init__(self, db: DatabaseManager) -> None:
-        """Initialize with DatabaseManager for pooled connections.
+    def __init__(self, db: Any) -> None:
+        """Initialize with DatabaseManager or raw psycopg connection.
 
         Args:
-            db: DatabaseManager instance providing PostgreSQL connections.
+            db: DatabaseManager instance providing PostgreSQL connections,
+                or a raw psycopg Connection for direct use.
         """
         self._db = db
+        # Detect whether db is a raw psycopg Connection vs a DatabaseManager
+        self._is_raw_conn = isinstance(db, psycopg.Connection)
+
+    def _execute_query(self, query: str, params: list[object]) -> pd.DataFrame:
+        """Execute a query and return a DataFrame via fetchdf.
+
+        Handles both DatabaseManager (context manager) and raw psycopg
+        connections transparently.
+
+        Args:
+            query: SQL query string with %s placeholders.
+            params: Query parameters.
+
+        Returns:
+            DataFrame with query results.
+        """
+        if self._is_raw_conn:
+            cur = self._db.execute(query, params)
+            return fetchdf(cur)
+        with self._db.connection() as conn:
+            cur = conn.execute(query, params)
+            return fetchdf(cur)
 
     def _fetch_macro_aligned_equity(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         """Fetch raw macro values aligned to equity daily bars via LATERAL JOIN.
@@ -150,9 +171,7 @@ class MacroFeatureAligner:
         Returns:
             DataFrame with date index and raw macro columns.
         """
-        with self._db.connection() as conn:
-            cur = conn.execute(_EQUITY_LATERAL_QUERY, [symbol, start, end])
-            result = fetchdf(cur)
+        result = self._execute_query(_EQUITY_LATERAL_QUERY, [symbol, start, end])
 
         if "date" in result.columns:
             result = result.set_index("date")
@@ -177,9 +196,7 @@ class MacroFeatureAligner:
         Returns:
             DataFrame with datetime index and raw macro columns.
         """
-        with self._db.connection() as conn:
-            cur = conn.execute(_CRYPTO_LATERAL_QUERY, [symbol, start, end])
-            result = fetchdf(cur)
+        result = self._execute_query(_CRYPTO_LATERAL_QUERY, [symbol, start, end])
 
         if "datetime" in result.columns:
             result = result.set_index("datetime")

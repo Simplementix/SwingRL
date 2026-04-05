@@ -27,7 +27,10 @@ class TestBackupSqlite:
         config.backup.backup_dir = str(tmp_path / "backups")
         alerter = MagicMock()
 
-        with patch("swingrl.backup.duckdb_backup.subprocess.run") as mock_run:
+        with (
+            patch("swingrl.backup.duckdb_backup.subprocess.run") as mock_run,
+            patch("swingrl.backup.duckdb_backup._verify_backup"),
+        ):
             mock_run.return_value = MagicMock(returncode=0, stderr="")
             result = backup_sqlite(config, alerter)
 
@@ -41,7 +44,10 @@ class TestBackupSqlite:
         config.backup.backup_dir = str(tmp_path / "backups")
         alerter = MagicMock()
 
-        with patch("swingrl.backup.duckdb_backup.subprocess.run") as mock_run:
+        with (
+            patch("swingrl.backup.duckdb_backup.subprocess.run") as mock_run,
+            patch("swingrl.backup.duckdb_backup._verify_backup"),
+        ):
             mock_run.return_value = MagicMock(returncode=0, stderr="")
             backup_sqlite(config, alerter)
 

@@ -5,6 +5,7 @@ DATA-13: Alert infrastructure for ingestion failures, circuit breakers, daily su
 
 from __future__ import annotations
 
+import os
 import textwrap
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -31,11 +32,14 @@ def webhook_url() -> str:
 
 @pytest.fixture
 def db_manager(tmp_path: Path) -> DatabaseManager:
-    """Provide a DatabaseManager with real SQLite for alert_log tests."""
-    config_yaml = textwrap.dedent("""\
+    """Provide a DatabaseManager with real PostgreSQL for alert_log tests."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        pytest.skip("DATABASE_URL not set — no PostgreSQL available")
+    config_yaml = textwrap.dedent(f"""\
         trading_mode: paper
         system:
-          database_url: ""
+          database_url: "{db_url}"
     """)
     config_file = tmp_path / "swingrl.yaml"
     config_file.write_text(config_yaml)
@@ -43,6 +47,9 @@ def db_manager(tmp_path: Path) -> DatabaseManager:
     DatabaseManager.reset()
     db = DatabaseManager(config)
     db.init_schema()
+    # Clean stale data from prior test runs
+    with db.connection() as conn:
+        conn.execute("DELETE FROM alert_log")
     yield db
     DatabaseManager.reset()
 

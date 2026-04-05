@@ -129,7 +129,7 @@ class TestShadowRunnerInference:
                 self._conn.commit()
                 self._conn.close()
 
-        mock_db.sqlite = _PgCM
+        mock_db.connection = _PgCM
 
         config = _FakeConfig(
             shadow=_FakeShadow(),
@@ -215,7 +215,7 @@ class TestShadowTradesSchema:
             "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
             ("shadow_trades",),
         )
-        columns = {row[0] for row in cursor.fetchall()}
+        columns = {row["column_name"] for row in cursor.fetchall()}
         expected = {
             "trade_id",
             "timestamp",

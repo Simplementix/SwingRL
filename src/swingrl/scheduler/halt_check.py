@@ -25,12 +25,25 @@ log = structlog.get_logger(__name__)
 
 
 def init_emergency_flags(db: DatabaseManager) -> None:
-    """Ensure the emergency_flags table exists (managed by postgres_schema.py).
+    """Ensure the emergency_flags table exists.
+
+    Creates the table idempotently (IF NOT EXISTS). Safe to call on every
+    startup or before any halt-check operation.
 
     Args:
         db: DatabaseManager providing PostgreSQL connection.
     """
-    log.debug("init_emergency_flags_noop", reason="schema_managed_by_postgres_schema")
+    with db.connection() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS emergency_flags ("
+            "  flag_name TEXT PRIMARY KEY,"
+            "  active INTEGER NOT NULL DEFAULT 0,"
+            "  set_at TIMESTAMPTZ,"
+            "  set_by TEXT,"
+            "  reason TEXT"
+            ")"
+        )
+    log.debug("init_emergency_flags_ensured")
 
 
 def is_halted(db: DatabaseManager) -> bool:

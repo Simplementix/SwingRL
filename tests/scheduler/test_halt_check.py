@@ -17,6 +17,21 @@ from swingrl.scheduler.halt_check import clear_halt, init_emergency_flags, is_ha
 pytestmark = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
 
 
+@pytest.fixture(autouse=True)
+def _clean_emergency_flags() -> None:
+    """Truncate emergency_flags before each test to avoid cross-test pollution."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return
+    conn = psycopg.connect(db_url, autocommit=True)
+    try:
+        conn.execute("DELETE FROM emergency_flags")
+    except Exception:
+        pass  # Table may not exist yet
+    finally:
+        conn.close()
+
+
 @pytest.fixture
 def mock_db() -> MagicMock:
     """Create a mock DatabaseManager backed by a real PostgreSQL connection."""
@@ -41,7 +56,7 @@ def mock_db() -> MagicMock:
 
         return _ctx()
 
-    db.sqlite = _pg_ctx
+    db.connection = _pg_ctx
     return db
 
 

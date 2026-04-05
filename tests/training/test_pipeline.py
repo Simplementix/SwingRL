@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from tests.training.conftest import _make_fold_result
@@ -70,6 +71,25 @@ def _make_mock_features_prices(
     return features, prices
 
 
+def _configure_mock_conn_cursor(mock_conn: MagicMock) -> None:
+    """Configure mock_conn.execute() to return a cursor that fetchdf can handle.
+
+    The production code calls ``fetchdf(conn.execute("SELECT DISTINCT date ..."))``
+    which needs a cursor with ``.description`` and ``.fetchall()`` returning dicts.
+
+    Args:
+        mock_conn: The MagicMock standing in for a psycopg connection.
+    """
+    mock_cursor = MagicMock()
+    mock_desc = MagicMock()
+    mock_desc.name = "date"
+    mock_cursor.description = [mock_desc]
+    mock_cursor.fetchall.return_value = [
+        {"date": str(d.date())} for d in pd.date_range("2023-01-02", periods=800, freq="B")
+    ]
+    mock_conn.execute.return_value = mock_cursor
+
+
 # ---------------------------------------------------------------------------
 # Common fixtures and mock paths
 # ---------------------------------------------------------------------------
@@ -111,6 +131,7 @@ class TestEquityBaselineTraining:
         mock_conn = MagicMock()
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
         mock_conn.__exit__ = MagicMock(return_value=False)
+        _configure_mock_conn_cursor(mock_conn)
 
         with (
             patch.object(pipeline, "_load_features_prices", return_value=(features, prices)),
@@ -195,6 +216,7 @@ class TestTuningTriggersOnLowSharpe:
         )
 
         mock_conn = MagicMock()
+        _configure_mock_conn_cursor(mock_conn)
 
         with (
             patch.object(pipeline, "_load_features_prices", return_value=(features, prices)),
@@ -372,6 +394,7 @@ class TestJsonReportWritten:
             )
 
         mock_conn = MagicMock()
+        _configure_mock_conn_cursor(mock_conn)
 
         with (
             patch.object(pipeline, "_load_features_prices", return_value=(features, prices)),
@@ -433,6 +456,7 @@ class TestCheckpointResume:
         good_folds = [_make_fold_result(sharpe=1.5, mdd=-0.05)] * 3
 
         mock_conn = MagicMock()
+        _configure_mock_conn_cursor(mock_conn)
 
         with (
             patch.object(pipeline, "_load_features_prices", return_value=(features, prices)),
@@ -476,6 +500,7 @@ class TestMainCLI:
         features, prices = _make_mock_features_prices(n_bars=800)
         good_folds = [_make_fold_result(sharpe=1.5, mdd=-0.05)] * 3
         mock_conn = MagicMock()
+        _configure_mock_conn_cursor(mock_conn)
 
         def mock_train_side_effect(
             env_name: str, algo_name: str, features: Any, prices: Any, **kwargs: Any

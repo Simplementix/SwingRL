@@ -252,10 +252,10 @@ class TestStoreFundamentals:
             )
         """)
 
-        # Create a mock DatabaseManager
+        # Create a mock DatabaseManager that yields the real connection
         mock_db = MagicMock()
-        mock_db.duckdb.return_value.__enter__ = MagicMock(return_value=conn.cursor())
-        mock_db.duckdb.return_value.__exit__ = MagicMock(return_value=False)
+        mock_db.connection.return_value.__enter__ = MagicMock(return_value=conn)
+        mock_db.connection.return_value.__exit__ = MagicMock(return_value=False)
 
         df = pd.DataFrame(
             {
@@ -283,6 +283,7 @@ class TestStoreFundamentals:
             "  daily_loss_limit_pct: 0.03\n"
             "  min_order_usd: 10.0\n"
             "system:\n"
+            '  database_url: ""\n'
         )
         config = load_config(config_file)
         fetcher = FundamentalFetcher(config)

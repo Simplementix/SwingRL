@@ -8,7 +8,11 @@ Scope rules:
 from __future__ import annotations
 
 import textwrap
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -252,3 +256,75 @@ def tmp_dirs(tmp_path: Path) -> dict[str, Path]:
         d.mkdir(parents=True)
         dirs[name] = d
     return dirs
+
+
+# ---------------------------------------------------------------------------
+# Shared database mock helpers
+# ---------------------------------------------------------------------------
+
+
+def make_mock_db(
+    fetchone_returns: list[Any] | None = None,
+    fetchall_returns: list[Any] | None = None,
+) -> tuple[MagicMock, MagicMock]:
+    """Create a standard mock DatabaseManager with connection() context manager.
+
+    Returns (db_mock, conn_mock) so callers can further configure the connection.
+    The connection() method is a context manager yielding conn_mock.
+    """
+    db = MagicMock(spec=["connection", "close", "init_schema", "reset"])
+    conn = MagicMock()
+
+    @contextmanager
+    def _connection_ctx() -> Generator[MagicMock, None, None]:
+        yield conn
+
+    db.connection.side_effect = _connection_ctx
+
+    if fetchone_returns is not None:
+        conn.execute.return_value.fetchone.side_effect = fetchone_returns
+    if fetchall_returns is not None:
+        conn.execute.return_value.fetchall.side_effect = fetchall_returns
+
+    return db, conn
+
+
+def make_mock_db_multi(
+    connection_configs: list[dict[str, Any]],
+) -> MagicMock:
+    """Create a mock DatabaseManager where each connection() call returns a different mock.
+
+    Each item in connection_configs is a dict with optional keys:
+      - "fetchone": return value for cursor.execute().fetchone()
+      - "fetchone_side_effect": side_effect for fetchone()
+      - "fetchall": return value for cursor.execute().fetchall()
+    """
+    db = MagicMock(spec=["connection", "close", "init_schema", "reset"])
+    contexts = []
+
+    for cfg in connection_configs:
+        conn = MagicMock()
+        if "fetchone" in cfg:
+            conn.execute.return_value.fetchone.return_value = cfg["fetchone"]
+        if "fetchone_side_effect" in cfg:
+            conn.execute.return_value.fetchone.side_effect = cfg["fetchone_side_effect"]
+        if "fetchall" in cfg:
+            conn.execute.return_value.fetchall.return_value = cfg["fetchall"]
+
+        @contextmanager
+        def _ctx(c: MagicMock = conn) -> Generator[MagicMock, None, None]:
+            yield c
+
+        contexts.append(_ctx)
+
+    db.connection.side_effect = contexts
+    return db
+
+
+@pytest.fixture()
+def mock_alerter() -> MagicMock:
+    """Mock Alerter with send_alert and send_embed methods."""
+    alerter = MagicMock()
+    alerter.send_alert = MagicMock()
+    alerter.send_embed = MagicMock()
+    return alerter

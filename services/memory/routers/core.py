@@ -103,12 +103,9 @@ async def health() -> HealthResponse:
 
     # Check PostgreSQL (via live thread pool to avoid blocking event loop)
     def _check_db() -> bool:
-        conn = get_connection()
-        try:
+        with get_connection() as conn:
             conn.execute("SELECT 1")
             return True
-        finally:
-            conn.close()
 
     db_ok = False
     try:

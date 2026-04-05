@@ -27,12 +27,6 @@ def mock_feature_pipeline() -> MagicMock:
 
 
 @pytest.fixture
-def mock_alerter() -> MagicMock:
-    """Mock Alerter."""
-    return MagicMock()
-
-
-@pytest.fixture
 def pipeline(
     exec_config: Any,
     mock_db: Any,

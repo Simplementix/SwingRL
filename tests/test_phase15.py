@@ -92,11 +92,11 @@ def _make_equity_db(equity_symbols: list[str] | None = None) -> Any:
         CREATE TABLE IF NOT EXISTS ohlcv_daily (
             symbol TEXT NOT NULL,
             date DATE NOT NULL,
-            open DOUBLE,
-            high DOUBLE,
-            low DOUBLE,
-            close DOUBLE,
-            volume DOUBLE,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
             PRIMARY KEY (symbol, date)
         )
     """)
@@ -106,7 +106,7 @@ def _make_equity_db(equity_symbols: list[str] | None = None) -> Any:
         CREATE TABLE IF NOT EXISTS macro_features (
             series_id TEXT NOT NULL,
             date DATE NOT NULL,
-            value DOUBLE,
+            value DOUBLE PRECISION,
             PRIMARY KEY (series_id, date)
         )
     """)
@@ -175,11 +175,11 @@ def _make_crypto_db() -> Any:
         CREATE TABLE IF NOT EXISTS ohlcv_4h (
             symbol TEXT NOT NULL,
             datetime TIMESTAMP NOT NULL,
-            open DOUBLE,
-            high DOUBLE,
-            low DOUBLE,
-            close DOUBLE,
-            volume DOUBLE,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
             PRIMARY KEY (symbol, datetime)
         )
     """)
@@ -189,7 +189,7 @@ def _make_crypto_db() -> Any:
         CREATE TABLE IF NOT EXISTS macro_features (
             series_id TEXT NOT NULL,
             date DATE NOT NULL,
-            value DOUBLE,
+            value DOUBLE PRECISION,
             PRIMARY KEY (series_id, date)
         )
     """)
@@ -448,7 +448,8 @@ class TestDryRunCLI:
             for date in _EQUITY_DATES:
                 seed_conn.execute(
                     "INSERT INTO macro_features (series_id, date, value) "
-                    f"VALUES ('{series_id}', '{date}', {value})"
+                    f"VALUES ('{series_id}', '{date}', {value})"  # nosec B608
+                    " ON CONFLICT DO NOTHING"
                 )
         for date in _EQUITY_DATES:
             seed_conn.execute(

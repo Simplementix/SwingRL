@@ -50,7 +50,7 @@ class TestFeatureDDL:
         tables = pg_conn.execute(
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
         ).fetchall()
-        table_names = [row[0] for row in tables]
+        table_names = [row["tablename"] for row in tables]
 
         assert "features_equity" in table_names
         assert "features_crypto" in table_names
@@ -76,7 +76,7 @@ class TestFeatureDDL:
 
         result = pg_conn.execute("SELECT * FROM features_equity WHERE symbol = 'SPY'").fetchone()
         assert result is not None
-        assert result[0] == "SPY"
+        assert result["symbol"] == "SPY"
 
     def test_features_crypto_accepts_insert(self, pg_conn: Any) -> None:
         """FEAT-11: features_crypto table accepts valid data insertion."""
@@ -98,7 +98,7 @@ class TestFeatureDDL:
             "SELECT * FROM features_crypto WHERE symbol = 'BTCUSDT'"
         ).fetchone()
         assert result is not None
-        assert result[0] == "BTCUSDT"
+        assert result["symbol"] == "BTCUSDT"
 
     def test_init_feature_schema_is_idempotent(self, pg_conn: Any) -> None:
         """FEAT-11: Calling init_feature_schema twice does not error."""

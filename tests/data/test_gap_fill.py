@@ -161,8 +161,8 @@ class TestDetectCryptoGaps:
             _insert_crypto_rows(conn, "ETHUSDT", start, 4, 50)
 
             with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
-                mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn
-                mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
+                mock_db.return_value.connection.return_value.__enter__ = lambda s: conn
+                mock_db.return_value.connection.return_value.__exit__ = lambda s, *a: None
                 gaps = detect_crypto_gaps(loaded_config)  # type: ignore[arg-type]
 
             assert len(gaps) == 0
@@ -178,8 +178,8 @@ class TestDetectCryptoGaps:
             _insert_crypto_rows(conn, "ETHUSDT", start, 4, 50, skip_indices=set(range(10, 22)))
 
             with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
-                mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn
-                mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
+                mock_db.return_value.connection.return_value.__enter__ = lambda s: conn
+                mock_db.return_value.connection.return_value.__exit__ = lambda s, *a: None
                 gaps = detect_crypto_gaps(loaded_config)  # type: ignore[arg-type]
 
             assert len(gaps) == 1
@@ -197,8 +197,8 @@ class TestDetectCryptoGaps:
             _insert_crypto_rows(conn, "ETHUSDT", start, 4, 50)
 
             with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
-                mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn
-                mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
+                mock_db.return_value.connection.return_value.__enter__ = lambda s: conn
+                mock_db.return_value.connection.return_value.__exit__ = lambda s, *a: None
                 gaps = detect_crypto_gaps(loaded_config)  # type: ignore[arg-type]
 
             assert len(gaps) == 0
@@ -223,8 +223,8 @@ class TestDetectEquityGaps:
                 _insert_equity_rows(conn, symbol, start, 30)
 
             with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
-                mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn
-                mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
+                mock_db.return_value.connection.return_value.__enter__ = lambda s: conn
+                mock_db.return_value.connection.return_value.__exit__ = lambda s, *a: None
                 gaps = detect_equity_gaps(loaded_config)  # type: ignore[arg-type]
 
             assert len(gaps) == 0
@@ -241,8 +241,8 @@ class TestDetectEquityGaps:
                 _insert_equity_rows(conn, symbol, start, 30)
 
             with patch("swingrl.data.gap_fill.DatabaseManager") as mock_db:
-                mock_db.return_value.duckdb.return_value.__enter__ = lambda s: conn
-                mock_db.return_value.duckdb.return_value.__exit__ = lambda s, *a: None
+                mock_db.return_value.connection.return_value.__enter__ = lambda s: conn
+                mock_db.return_value.connection.return_value.__exit__ = lambda s, *a: None
                 gaps = detect_equity_gaps(loaded_config)  # type: ignore[arg-type]
 
             assert len(gaps) == 1

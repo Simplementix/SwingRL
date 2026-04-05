@@ -752,6 +752,33 @@ _TRAINING_RUNS_ALTER: list[str] = [
     "ALTER TABLE training_runs ADD COLUMN IF NOT EXISTS dominant_regime VARCHAR",
 ]
 
+# Columns that may be missing from hmm_state_history if created by an older schema.
+_HMM_STATE_HISTORY_MIGRATE: list[str] = [
+    "ALTER TABLE hmm_state_history ADD COLUMN IF NOT EXISTS log_likelihood DOUBLE PRECISION",
+    "ALTER TABLE hmm_state_history ADD COLUMN IF NOT EXISTS fitted_at TIMESTAMPTZ",
+]
+
+
+def _table_exists(cur: psycopg.Cursor, table_name: str) -> bool:
+    """Check if a table exists in the public schema.
+
+    Uses positional index so this works with both dict_row and tuple row factories.
+    """
+    cur.execute(
+        "SELECT EXISTS("
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'public' AND table_name = %s"
+        ")",
+        [table_name],
+    )
+    row = cur.fetchone()
+    # row[0] works for both tuple rows and dict_row (dicts support integer indexing
+    # only via __getitem__ if they are actually tuples).  For safety, handle both:
+    if row is None:
+        return False
+    val = row[0] if isinstance(row, tuple) else next(iter(row.values()))
+    return bool(val)
+
 
 def init_postgres_schema(conn: psycopg.Connection) -> None:
     """Create all tables, views, and indexes in PostgreSQL.
@@ -777,13 +804,12 @@ def init_postgres_schema(conn: psycopg.Connection) -> None:
             cur.execute(idx_ddl)
         log.info("postgres_indexes_created", count=len(_ALL_INDEXES))
 
+        # Migrate hmm_state_history (columns added after initial schema)
+        for alter_ddl in _HMM_STATE_HISTORY_MIGRATE:
+            cur.execute(alter_ddl)
+
         # Conditional ALTER TABLE for training_runs (only if table exists)
-        cur.execute(
-            "SELECT COUNT(*) FROM information_schema.tables "
-            "WHERE table_schema = 'public' AND table_name = 'training_runs'"
-        )
-        row = cur.fetchone()
-        if row and row["count"] > 0:
+        if _table_exists(cur, "training_runs"):
             for alter_ddl in _TRAINING_RUNS_ALTER:
                 cur.execute(alter_ddl)
             log.info(

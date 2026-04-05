@@ -131,9 +131,9 @@ class PositionTracker:
         with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT daily_pnl FROM portfolio_snapshots "
-                "WHERE environment = %s AND timestamp LIKE %s "
+                "WHERE environment = %s AND timestamp::date = %s::date "
                 "ORDER BY timestamp DESC LIMIT 1",
-                (env, f"{today_prefix}%"),
+                (env, today_prefix),
             ).fetchone()
         if row is not None:
             return float(row["daily_pnl"])

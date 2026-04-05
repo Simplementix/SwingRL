@@ -46,8 +46,8 @@ def mock_db() -> MagicMock:
     conn.commit()
 
     db = MagicMock()
-    db.sqlite.return_value.__enter__ = MagicMock(return_value=conn)
-    db.sqlite.return_value.__exit__ = MagicMock(return_value=False)
+    db.connection.return_value.__enter__ = MagicMock(return_value=conn)
+    db.connection.return_value.__exit__ = MagicMock(return_value=False)
     yield db
     conn.close()
 
@@ -92,7 +92,7 @@ class TestStuckEquity:
 
     def test_equity_stuck_at_threshold(self, mock_db: MagicMock) -> None:
         """10 consecutive all-cash equity snapshots triggers stuck alert."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "equity", 10, all_cash=True)
 
         alerts = check_stuck_agents(mock_db)
@@ -102,7 +102,7 @@ class TestStuckEquity:
 
     def test_equity_not_stuck_below_threshold(self, mock_db: MagicMock) -> None:
         """9 all-cash snapshots does not trigger equity stuck alert."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "equity", 9, all_cash=True)
 
         alerts = check_stuck_agents(mock_db)
@@ -120,7 +120,7 @@ class TestStuckCrypto:
 
     def test_crypto_stuck_at_threshold(self, mock_db: MagicMock) -> None:
         """30 consecutive all-cash crypto snapshots triggers stuck alert."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "crypto", 30, all_cash=True)
 
         alerts = check_stuck_agents(mock_db)
@@ -130,7 +130,7 @@ class TestStuckCrypto:
 
     def test_crypto_not_stuck_below_threshold(self, mock_db: MagicMock) -> None:
         """29 all-cash snapshots does not trigger crypto stuck alert."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "crypto", 29, all_cash=True)
 
         alerts = check_stuck_agents(mock_db)
@@ -148,7 +148,7 @@ class TestNotStuck:
 
     def test_equity_not_stuck_with_positions(self, mock_db: MagicMock) -> None:
         """Equity with positions (cash != total) is not stuck."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "equity", 15, all_cash=False)
 
         alerts = check_stuck_agents(mock_db)
@@ -162,7 +162,7 @@ class TestNotStuck:
 
     def test_mixed_cash_and_positions_not_stuck(self, mock_db: MagicMock) -> None:
         """Recent position snapshot among cash snapshots is not stuck."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         base = datetime(2026, 3, 1, tzinfo=UTC)
 
         # Insert 9 all-cash then 1 with positions (most recent)
@@ -198,7 +198,7 @@ class TestLastActionDate:
 
     def test_stuck_alert_has_last_action_date(self, mock_db: MagicMock) -> None:
         """Stuck alert dict includes last_action_date key."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "equity", 10, all_cash=True)
 
         alerts = check_stuck_agents(mock_db)

@@ -29,6 +29,21 @@ from swingrl.scheduler.jobs import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clean_test_tables() -> None:
+    """Truncate test-affected tables before each test to avoid cross-test pollution."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return
+    conn = psycopg.connect(db_url, autocommit=True)
+    for table in ("emergency_flags", "portfolio_snapshots"):
+        try:
+            conn.execute(f"DELETE FROM {table}")  # nosec B608
+        except Exception:
+            pass  # Table may not exist yet
+    conn.close()
+
+
 @pytest.fixture
 def mock_db() -> MagicMock:
     """Create a mock DatabaseManager backed by a real PostgreSQL connection."""
@@ -54,7 +69,7 @@ def mock_db() -> MagicMock:
 
         return _ctx()
 
-    db.sqlite = _pg_ctx
+    db.connection = _pg_ctx
     return db
 
 
