@@ -35,7 +35,7 @@ def db_manager(tmp_path: Path) -> DatabaseManager:
     config_yaml = textwrap.dedent("""\
         trading_mode: paper
         system:
-          database_url: postgresql://test:test@localhost:5432/swingrl_test  # pragma: allowlist secret
+          database_url: ""
     """)
     config_file = tmp_path / "swingrl.yaml"
     config_file.write_text(config_yaml)

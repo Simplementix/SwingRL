@@ -35,7 +35,7 @@ def fetcher(tmp_path: Path) -> FundamentalFetcher:
         "  daily_loss_limit_pct: 0.03\n"
         "  min_order_usd: 10.0\n"
         "system:\n"
-        "  database_url: postgresql://test:test@localhost:5432/swingrl_test\n"  # pragma: allowlist secret
+        "  database_url: ''\n"
     )
     config = load_config(config_file)
     return FundamentalFetcher(config)

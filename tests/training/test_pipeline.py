@@ -130,9 +130,7 @@ class TestEquityBaselineTraining:
                 env_name="equity",
                 config=MagicMock(
                     memory_agent=MagicMock(meta_training=False, enabled=False),
-                    system=MagicMock(
-                        database_url="postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
-                    ),
+                    system=MagicMock(database_url=""),
                     paths=MagicMock(logs_dir=str(tmp_path / "logs")),
                 ),
                 models_dir=tmp_path,
@@ -222,9 +220,7 @@ class TestTuningTriggersOnLowSharpe:
                 env_name="equity",
                 config=MagicMock(
                     memory_agent=MagicMock(meta_training=False, enabled=False),
-                    system=MagicMock(
-                        database_url="postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
-                    ),
+                    system=MagicMock(database_url=""),
                     paths=MagicMock(logs_dir=str(tmp_path / "logs")),
                     training=MagicMock(n_envs=6),
                 ),
@@ -396,9 +392,7 @@ class TestJsonReportWritten:
                 env_name="equity",
                 config=MagicMock(
                     memory_agent=MagicMock(meta_training=False, enabled=False),
-                    system=MagicMock(
-                        database_url="postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
-                    ),
+                    system=MagicMock(database_url=""),
                     paths=MagicMock(logs_dir=str(tmp_path / "logs")),
                 ),
                 models_dir=tmp_path,
@@ -457,9 +451,7 @@ class TestCheckpointResume:
                 env_name="equity",
                 config=MagicMock(
                     memory_agent=MagicMock(meta_training=False, enabled=False),
-                    system=MagicMock(
-                        database_url="postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
-                    ),
+                    system=MagicMock(database_url=""),
                     paths=MagicMock(logs_dir=str(tmp_path / "logs")),
                 ),
                 models_dir=tmp_path,
@@ -513,9 +505,7 @@ class TestMainCLI:
 
             mock_config = MagicMock()
             mock_config.memory_agent = MagicMock(meta_training=False, enabled=False)
-            mock_config.system = MagicMock(
-                database_url="postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
-            )
+            mock_config.system = MagicMock(database_url="")
             mock_config.paths = MagicMock(logs_dir=str(tmp_path / "logs"))
             mock_config.logging = MagicMock(json_logs=False, level="INFO")
             mock_cfg.return_value = mock_config

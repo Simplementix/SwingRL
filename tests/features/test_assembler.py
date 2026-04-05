@@ -43,7 +43,7 @@ logging:
   level: INFO
   json_logs: false
 system:
-  database_url: "postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
+  database_url: ""
 alerting:
   alert_cooldown_minutes: 30
   consecutive_failures_before_alert: 3

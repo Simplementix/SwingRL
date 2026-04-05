@@ -15,6 +15,14 @@ import pandas as pd
 import pytest
 
 from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.data.db import DatabaseManager
+
+
+@pytest.fixture(autouse=True)
+def _reset_db_singleton() -> None:
+    """Reset DatabaseManager singleton after every test to prevent pool thread leaks."""
+    yield
+    DatabaseManager.reset()
 
 
 @pytest.fixture(scope="session")
@@ -60,7 +68,7 @@ def valid_config_yaml() -> str:
           position_penalty_coeff: 10.0
           drawdown_penalty_coeff: 5.0
         system:
-          database_url: "postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
+          database_url: ""
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3
@@ -172,7 +180,7 @@ def equity_env_config_yaml() -> str:
           position_penalty_coeff: 10.0
           drawdown_penalty_coeff: 5.0
         system:
-          database_url: "postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
+          database_url: ""
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3

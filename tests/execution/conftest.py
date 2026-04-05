@@ -53,7 +53,7 @@ def exec_config_yaml() -> str:
           position_penalty_coeff: 10.0
           drawdown_penalty_coeff: 5.0
         system:
-          database_url: "postgresql://test:test@localhost:5432/swingrl_test"  # pragma: allowlist secret
+          database_url: ""
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3

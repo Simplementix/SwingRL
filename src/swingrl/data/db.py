@@ -72,13 +72,20 @@ class DatabaseManager:
             return
 
         self._database_url = os.environ.get("DATABASE_URL") or config.system.database_url
-        self._pool = ConnectionPool(
-            self._database_url,
-            min_size=2,
-            max_size=20,
-            timeout=30.0,
-            kwargs={"row_factory": dict_row, "autocommit": False},
-        )
+        # Pool is only created when a real DATABASE_URL is available.
+        # Without one (e.g. in tests), _pool stays None and connection()
+        # raises immediately instead of waiting for a TCP timeout.
+        if self._database_url:
+            self._pool = ConnectionPool(
+                self._database_url,
+                min_size=0,
+                max_size=20,
+                timeout=30.0,
+                open=False,
+                kwargs={"row_factory": dict_row, "autocommit": False},
+            )
+        else:
+            self._pool = None
         self._initialized = True
 
         # Mask password in log output
@@ -104,7 +111,12 @@ class DatabaseManager:
 
         Auto-commits on clean exit, rolls back on exception.
         The connection is returned to the pool when the context exits.
+        Lazily opens the pool on first call.
         """
+        if self._pool is None:
+            raise RuntimeError("DATABASE_URL not set — cannot connect to PostgreSQL")
+        if self._pool.closed:
+            self._pool.open()
         with self._pool.connection() as conn:
             try:
                 yield conn
