@@ -460,9 +460,20 @@ def run_all_iterations(
         state[f"iteration_{i}_result"] = iter_result
         state.pop(f"iteration_{i}_env_equity", None)
         state.pop(f"iteration_{i}_env_crypto", None)
-        completed = state.get("completed_iterations", [])
-        completed.append(i)
-        state["completed_iterations"] = completed
+
+        # Only mark complete if at least one env succeeded (no "error" key)
+        any_success = any("error" not in v for v in iter_result.values())
+        if any_success:
+            completed = state.get("completed_iterations", [])
+            completed.append(i)
+            state["completed_iterations"] = completed
+        else:
+            log.warning(
+                "iteration_not_checkpointed_all_envs_failed",
+                iteration=i,
+                total=total,
+            )
+
         save_training_state(state, state_path)
 
         iter_elapsed = time.monotonic() - iter_start
