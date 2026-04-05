@@ -245,60 +245,57 @@ class MemoryEpochCallback(BaseCallback):
             from psycopg.rows import dict_row
 
             db_url = os.environ.get("DATABASE_URL") or self._database_url
-            con = psycopg.connect(db_url, row_factory=dict_row)
-
-            if self._epoch_queue:
-                with con.cursor() as cur:
-                    cur.executemany(
-                        """INSERT INTO training_epochs (
-                            run_id, epoch, algo, env, timestep, mean_reward,
-                            policy_loss, value_loss, entropy_loss, approx_kl,
-                            clip_fraction, rolling_sharpe, rolling_mdd,
-                            rolling_win_rate, reward_weights, notable_event,
-                            is_control_fold
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                        self._epoch_queue,
+            with psycopg.connect(db_url, row_factory=dict_row) as con:
+                if self._epoch_queue:
+                    with con.cursor() as cur:
+                        cur.executemany(
+                            """INSERT INTO training_epochs (
+                                run_id, epoch, algo, env, timestep, mean_reward,
+                                policy_loss, value_loss, entropy_loss, approx_kl,
+                                clip_fraction, rolling_sharpe, rolling_mdd,
+                                rolling_win_rate, reward_weights, notable_event,
+                                is_control_fold
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            self._epoch_queue,
+                        )
+                    con.commit()
+                    log.info(
+                        "pg_epoch_telemetry_flushed",
+                        rows=len(self._epoch_queue),
+                        run_id=self._run_id,
                     )
-                con.commit()
-                log.info(
-                    "pg_epoch_telemetry_flushed",
-                    rows=len(self._epoch_queue),
-                    run_id=self._run_id,
-                )
 
-            if self._adjustment_trigger_queue:
-                with con.cursor() as cur:
-                    cur.executemany(
-                        """INSERT INTO reward_adjustments (
-                            run_id, epoch_trigger, algo, env, trigger_metric,
-                            trigger_value, trigger_reason, weight_before,
-                            weight_after, sharpe_at_trigger, mdd_at_trigger
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                        self._adjustment_trigger_queue,
+                if self._adjustment_trigger_queue:
+                    with con.cursor() as cur:
+                        cur.executemany(
+                            """INSERT INTO reward_adjustments (
+                                run_id, epoch_trigger, algo, env, trigger_metric,
+                                trigger_value, trigger_reason, weight_before,
+                                weight_after, sharpe_at_trigger, mdd_at_trigger
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            self._adjustment_trigger_queue,
+                        )
+                    con.commit()
+                    log.info(
+                        "pg_adjustment_triggers_flushed",
+                        rows=len(self._adjustment_trigger_queue),
                     )
-                con.commit()
-                log.info(
-                    "pg_adjustment_triggers_flushed",
-                    rows=len(self._adjustment_trigger_queue),
-                )
 
-            for params, run_id, epoch_trigger in self._adjustment_outcome_queue:
-                con.execute(
-                    """UPDATE reward_adjustments
-                    SET epoch_outcome = %s, outcome_sharpe = %s,
-                        sharpe_delta = %s, mdd_delta = %s, effective = %s
-                    WHERE run_id = %s AND epoch_trigger = %s
-                      AND epoch_outcome IS NULL""",
-                    params + [run_id, epoch_trigger],
-                )
-            if self._adjustment_outcome_queue:
-                con.commit()
-                log.info(
-                    "pg_adjustment_outcomes_flushed",
-                    rows=len(self._adjustment_outcome_queue),
-                )
-
-            con.close()
+                for params, run_id, epoch_trigger in self._adjustment_outcome_queue:
+                    con.execute(
+                        """UPDATE reward_adjustments
+                        SET epoch_outcome = %s, outcome_sharpe = %s,
+                            sharpe_delta = %s, mdd_delta = %s, effective = %s
+                        WHERE run_id = %s AND epoch_trigger = %s
+                          AND epoch_outcome IS NULL""",
+                        params + [run_id, epoch_trigger],
+                    )
+                if self._adjustment_outcome_queue:
+                    con.commit()
+                    log.info(
+                        "pg_adjustment_outcomes_flushed",
+                        rows=len(self._adjustment_outcome_queue),
+                    )
         except Exception as exc:
             log.error("pg_telemetry_flush_failed", error=str(exc))
         finally:

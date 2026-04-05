@@ -21,6 +21,7 @@ import anyio
 import psycopg
 import structlog
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 log = structlog.get_logger(__name__)
 
@@ -227,16 +228,42 @@ def _migrate_consolidations(conn: psycopg.Connection[dict[str, Any]]) -> None:
 
 def _get_db_url() -> str:
     """Return the PostgreSQL connection URL from DATABASE_URL env var."""
-    return os.environ.get("DATABASE_URL", "postgresql://swingrl:changeme@localhost:5432/swingrl")
+    return os.environ.get(
+        "DATABASE_URL",
+        "postgresql://swingrl:changeme@localhost:5432/swingrl",  # pragma: allowlist secret
+    )
 
 
-def get_connection() -> psycopg.Connection[dict[str, Any]]:
-    """Open a new PostgreSQL connection with dict_row factory.
+_pool: ConnectionPool | None = None
 
-    Callers are responsible for closing the connection.
+
+def _get_pool() -> ConnectionPool:
+    """Return the module-level connection pool (lazy-initialized)."""
+    global _pool  # noqa: PLW0603
+    if _pool is None:
+        _pool = ConnectionPool(
+            _get_db_url(),
+            min_size=1,
+            max_size=5,
+            timeout=30.0,
+            kwargs={"row_factory": dict_row},
+        )
+        log.info("memory_connection_pool_initialized", min_size=1, max_size=5)
+    return _pool
+
+
+def get_connection() -> Any:
+    """Borrow a connection from the pool.
+
+    Use as a context manager::
+
+        with get_connection() as conn:
+            conn.execute(...)
+            conn.commit()
+
+    The connection is automatically returned to the pool on exit.
     """
-    conn = psycopg.connect(_get_db_url(), row_factory=dict_row)
-    return conn
+    return _get_pool().connection()
 
 
 def _execute_ddl(conn: psycopg.Connection[dict[str, Any]], ddl: str) -> None:
@@ -249,8 +276,7 @@ def _execute_ddl(conn: psycopg.Connection[dict[str, Any]], ddl: str) -> None:
 
 def init_db() -> None:
     """Create all tables and indexes if they do not already exist."""
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         _execute_ddl(conn, _CREATE_MEMORIES)
         _execute_ddl(conn, _CREATE_CONSOLIDATIONS)
         _execute_ddl(conn, _CREATE_CONSOLIDATION_QUALITY)
@@ -273,8 +299,6 @@ def init_db() -> None:
         )
         conn.commit()
         log.info("memory_db_initialized", url=_get_db_url().split("@")[-1])
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -292,8 +316,7 @@ def insert_memory(text: str, source: str) -> int:
     Returns:
         Integer row ID of the inserted row.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         cur = conn.execute(
             "INSERT INTO memories (text, source) VALUES (%s, %s) RETURNING id",
             [text, source],
@@ -303,8 +326,6 @@ def insert_memory(text: str, source: str) -> int:
         row_id = row["id"] if row else 0
         log.info("memory_inserted", source=source, row_id=row_id)
         return int(row_id)
-    finally:
-        conn.close()
 
 
 def insert_audit_log(
@@ -326,8 +347,7 @@ def insert_audit_log(
 ) -> None:
     """Insert an LLM audit log entry.  Fire-and-forget: never raises."""
     try:
-        conn = get_connection()
-        try:
+        with get_connection() as conn:
             conn.execute(
                 """INSERT INTO llm_audit_log
                    (call_type, algo, env, fold_number, iteration_number,
@@ -352,8 +372,6 @@ def insert_audit_log(
                 ],
             )
             conn.commit()
-        finally:
-            conn.close()
     except Exception:
         log.warning("audit_log_write_failed", call_type=call_type, exc_info=True)
 
@@ -375,8 +393,7 @@ def get_memories(
     Returns:
         List of row dicts with keys: id, text, source, created_at, archived.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         clauses: list[str] = []
         params: list[Any] = []
 
@@ -394,8 +411,6 @@ def get_memories(
         sql = f"SELECT id, text, source, created_at, archived FROM memories {where} ORDER BY created_at DESC LIMIT %s"  # noqa: E501  # nosec B608 — where clause built from fixed strings only
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 
 def get_memories_by_source_prefix(
@@ -415,8 +430,7 @@ def get_memories_by_source_prefix(
     Returns:
         List of row dicts.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         clauses = ["source LIKE %s"]
         params: list[Any] = [f"{prefix}%"]
         if not archived:
@@ -426,8 +440,6 @@ def get_memories_by_source_prefix(
         sql = f"SELECT id, text, source, created_at, archived FROM memories {where} ORDER BY created_at DESC LIMIT %s OFFSET %s"  # noqa: E501  # nosec B608
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 
 def archive_memories(row_ids: list[int]) -> None:
@@ -441,8 +453,7 @@ def archive_memories(row_ids: list[int]) -> None:
     if not row_ids:
         return
     _BATCH = 10_000
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         for start in range(0, len(row_ids), _BATCH):
             chunk = row_ids[start : start + _BATCH]
             placeholders = ",".join(["%s"] * len(chunk))
@@ -452,16 +463,13 @@ def archive_memories(row_ids: list[int]) -> None:
             )
         conn.commit()
         log.info("memories_archived", count=len(row_ids))
-    finally:
-        conn.close()
 
 
 def unarchive_memories(row_ids: list[int]) -> int:
     """Reset archived memories to active state for re-consolidation."""
     if not row_ids:
         return 0
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         placeholders = ",".join(["%s"] * len(row_ids))
         cursor = conn.execute(
             f"UPDATE memories SET archived = 0 WHERE id IN ({placeholders})",  # noqa: S608  # nosec B608
@@ -469,14 +477,11 @@ def unarchive_memories(row_ids: list[int]) -> int:
         )
         conn.commit()
         return cursor.rowcount
-    finally:
-        conn.close()
 
 
 def get_archived_memories_by_prefix(prefix: str, limit: int = 1000) -> list[dict[str, Any]]:
     """Fetch archived memories matching source prefix."""
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         rows = conn.execute(
             "SELECT id, text, source, created_at FROM memories "
             "WHERE source LIKE %s AND archived = 1 ORDER BY id LIMIT %s",
@@ -491,8 +496,6 @@ def get_archived_memories_by_prefix(prefix: str, limit: int = 1000) -> list[dict
             }
             for row in rows
         ]
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -535,8 +538,7 @@ def insert_consolidation(
     Returns:
         Integer row ID of the inserted row.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         cur = conn.execute(
             "INSERT INTO consolidations "
             "(pattern_text, source_count, conflicting_with, category, affected_algos, "
@@ -570,8 +572,6 @@ def insert_consolidation(
             stage=stage,
         )
         return int(row_id)
-    finally:
-        conn.close()
 
 
 def insert_consolidation_source(consolidation_id: int, memory_id: int) -> None:
@@ -581,15 +581,12 @@ def insert_consolidation_source(consolidation_id: int, memory_id: int) -> None:
         consolidation_id: Consolidation row ID.
         memory_id: Memory row ID.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         conn.execute(
             "INSERT INTO consolidation_sources (consolidation_id, memory_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
             [consolidation_id, memory_id],
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def insert_consolidation_sources(consolidation_id: int, memory_ids: list[int]) -> None:
@@ -601,15 +598,12 @@ def insert_consolidation_sources(consolidation_id: int, memory_ids: list[int]) -
     """
     if not memory_ids:
         return
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         conn.cursor().executemany(
             "INSERT INTO consolidation_sources (consolidation_id, memory_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
             [(consolidation_id, mid) for mid in memory_ids],
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def get_consolidations(limit: int = 50) -> list[dict[str, Any]]:
@@ -621,15 +615,12 @@ def get_consolidations(limit: int = 50) -> list[dict[str, Any]]:
     Returns:
         List of row dicts with all consolidation columns.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM consolidations ORDER BY created_at DESC LIMIT %s",
             [limit],
         ).fetchall()
         return [_deserialize_consolidation(r) for r in rows]
-    finally:
-        conn.close()
 
 
 def get_active_consolidations(
@@ -651,8 +642,7 @@ def get_active_consolidations(
     Returns:
         List of row dicts with deserialized JSON fields.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         clauses = ["status = 'active'"]
         params: list[Any] = []
 
@@ -708,8 +698,6 @@ def get_active_consolidations(
 
         rows = conn.execute(sql, params).fetchall()
         return [_deserialize_consolidation(r) for r in rows]
-    finally:
-        conn.close()
 
 
 def update_consolidation_status(
@@ -726,8 +714,7 @@ def update_consolidation_status(
         superseded_by: ID of the pattern that supersedes this one.
         conflict_group_id: Shared UUID linking conflicting patterns.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         if conflict_group_id is not None:
             conn.execute(
                 "UPDATE consolidations SET status = %s, superseded_by = %s, "
@@ -741,8 +728,6 @@ def update_consolidation_status(
             )
         conn.commit()
         log.info("consolidation_status_updated", row_id=row_id, status=status)
-    finally:
-        conn.close()
 
 
 def increment_confirmation(row_id: int) -> None:
@@ -751,16 +736,13 @@ def increment_confirmation(row_id: int) -> None:
     Args:
         row_id: Consolidation row ID.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         conn.execute(
             "UPDATE consolidations SET confirmation_count = confirmation_count + 1, "
             "last_confirmed_at = NOW() WHERE id = %s",
             [row_id],
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def insert_pattern_presentation(
@@ -782,8 +764,7 @@ def insert_pattern_presentation(
     Returns:
         Row ID of the presentation record.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         cur = conn.execute(
             "INSERT INTO pattern_presentations "
             "(consolidation_id, iteration, env_name, request_type, advice_response) "
@@ -794,8 +775,6 @@ def insert_pattern_presentation(
         row = cur.fetchone()
         row_id = row["id"] if row else 0
         return int(row_id)
-    finally:
-        conn.close()
 
 
 def insert_pattern_outcome(
@@ -823,8 +802,7 @@ def insert_pattern_outcome(
     Returns:
         Row ID of the outcome record.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         cur = conn.execute(
             "INSERT INTO pattern_outcomes "
             "(iteration, env_name, gate_passed, sharpe, mdd, sortino, pnl, patterns_presented) "
@@ -844,8 +822,6 @@ def insert_pattern_outcome(
         row = cur.fetchone()
         row_id = row["id"] if row else 0
         return int(row_id)
-    finally:
-        conn.close()
 
 
 def get_pattern_effectiveness() -> list[dict[str, Any]]:
@@ -854,8 +830,7 @@ def get_pattern_effectiveness() -> list[dict[str, Any]]:
     Returns:
         List of dicts with presentation + outcome data joined by iteration/env.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         rows = conn.execute(
             "SELECT pp.consolidation_id, pp.iteration, pp.env_name, pp.request_type, "
             "pp.advice_response, po.gate_passed, po.sharpe, po.mdd, po.sortino, po.pnl "
@@ -865,8 +840,6 @@ def get_pattern_effectiveness() -> list[dict[str, Any]]:
             "ORDER BY pp.presented_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -886,8 +859,7 @@ def log_consolidation_quality(
         accepted: Whether the consolidation was accepted.
         rejected_reason: Human-readable reason for rejection, if any.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         conn.execute(
             "INSERT INTO consolidation_quality (attempt_count, accepted, rejected_reason) VALUES (%s, %s, %s)",
             [attempt_count, int(accepted), rejected_reason],
@@ -899,8 +871,6 @@ def log_consolidation_quality(
             attempts=attempt_count,
             reason=rejected_reason,
         )
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -977,8 +947,7 @@ def get_recent_outcomes_for_run_id(run_id: str, limit: int = 5) -> list[dict[str
     Returns:
         List of row dicts with id and text fields.
     """
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         rows = conn.execute(
             "SELECT id, text FROM memories "
             "WHERE source LIKE 'reward_adjustment%%' AND archived = 0 "
@@ -988,8 +957,6 @@ def get_recent_outcomes_for_run_id(run_id: str, limit: int = 5) -> list[dict[str
             [f"%run_id={run_id} %", limit],
         ).fetchall()
         return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 
 async def get_recent_outcomes_for_run_id_async(run_id: str, limit: int = 5) -> list[dict[str, Any]]:

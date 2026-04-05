@@ -26,10 +26,18 @@ st_autorefresh(interval=300_000, key="dashboard_refresh")  # 5-minute refresh
 # ---------------------------------------------------------------------------
 
 
+@st.cache_resource
 def get_pg_conn() -> psycopg.Connection:
-    """Return a PostgreSQL connection to the swingrl database."""
-    url = os.environ.get("DATABASE_URL", "postgresql://swingrl:changeme@localhost:5432/swingrl")
-    return psycopg.connect(url, row_factory=dict_row)
+    """Return a cached PostgreSQL connection to the swingrl database.
+
+    Uses Streamlit's cache_resource to reuse the connection across page renders
+    instead of creating a new connection per refresh cycle.
+    """
+    url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://swingrl:changeme@localhost:5432/swingrl",  # pragma: allowlist secret
+    )
+    return psycopg.connect(url, row_factory=dict_row, autocommit=True)
 
 
 # ---------------------------------------------------------------------------

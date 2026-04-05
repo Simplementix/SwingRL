@@ -533,15 +533,14 @@ class MetaTrainingOrchestrator:
         """Write HP tuning decision to PostgreSQL meta_decisions table."""
         try:
             db_url = os.environ.get("DATABASE_URL") or self._database_url
-            conn = psycopg.connect(db_url, row_factory=dict_row)
-            conn.execute(
-                """INSERT INTO meta_decisions
-                   (run_id, algo, env, decision_type, decision_json, rationale)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
-                [run_id, algo, env, "hp_tuning", decision_json, rationale],
-            )
-            conn.commit()
-            conn.close()
+            with psycopg.connect(db_url, row_factory=dict_row) as conn:
+                conn.execute(
+                    """INSERT INTO meta_decisions
+                       (run_id, algo, env, decision_type, decision_json, rationale)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    [run_id, algo, env, "hp_tuning", decision_json, rationale],
+                )
+                conn.commit()
         except Exception as exc:
             log.debug("meta_decision_write_failed", error=str(exc))
 
