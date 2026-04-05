@@ -2041,7 +2041,7 @@ def run_environment(
     from swingrl.training.trainer import TrainingOrchestrator
 
     env_start = time.monotonic()
-    database_url = config.system.database_url
+    database_url = os.environ.get("DATABASE_URL", "") or config.system.database_url
 
     log.info("pipeline_env_started", env_name=env_name)
 
