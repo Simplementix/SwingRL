@@ -2,7 +2,7 @@
 
 Assembles observation matrices using ObservationAssembler so the output
 shapes match the SB3 environment observation_space dimensions:
-- equity: (N, 164) features, (N, 8) prices
+- equity: (N, 164) features without sentiment, (N, 180) with sentiment, (N, 8) prices
 - crypto: (N, 47) features, (N, 2) prices
 
 Usage:
@@ -14,6 +14,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import numpy as np
@@ -144,7 +145,8 @@ def _load_equity(
         assembler: ObservationAssembler initialized from config.
 
     Returns:
-        Tuple of ((N, 164) features, (N, n_symbols) prices) float32.
+        Tuple of ((N, obs_dim) features, (N, n_symbols) prices) float32.
+        obs_dim is 164 without sentiment, 180 with sentiment (8 symbols).
 
     Raises:
         DataError: If no data found in features_equity table.
@@ -195,6 +197,20 @@ def _load_equity(
             prices_pivot[sym] = 0.0
     prices_pivot = prices_pivot[equity_symbols]
 
+    # Fetch live sentiment if enabled (FinBERT + Alpaca/Finnhub headlines).
+    # Computed once — same current-day scores applied to all historical dates.
+    sentiment_data: dict[str, tuple[float, float]] | None = None
+    if config.sentiment.enabled:
+        from swingrl.features.pipeline import get_sentiment_features  # noqa: PLC0415
+
+        sentiment_data = get_sentiment_features(
+            enabled=True,
+            symbols=equity_symbols,
+            alpaca_api_key=os.environ.get("APCA_API_KEY_ID", ""),
+            alpaca_api_secret=os.environ.get("APCA_API_SECRET_KEY", ""),
+            finnhub_api_key=config.sentiment.finnhub_api_key,
+        )
+
     obs_rows: list[np.ndarray] = []
     price_rows: list[np.ndarray] = []
 
@@ -220,6 +236,7 @@ def _load_equity(
             hmm_probs=hmm,
             turbulence=0.0,
             portfolio_state=None,
+            sentiment_features=sentiment_data,
         )
         obs_rows.append(obs)
 
