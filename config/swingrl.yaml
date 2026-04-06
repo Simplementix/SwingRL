@@ -57,7 +57,7 @@ alerting:
   healthchecks_crypto_url: ""              # Healthchecks.io crypto cycle ping URL
 
 scheduler:
-  enabled: false                           # set true for live/paper trading; false during training-only
+  enabled: true                           # set true for live/paper trading; false during training-only
   apscheduler_db_path: db/apscheduler_jobs.sqlite  # SEPARATE from trading_ops.db
   misfire_grace_time: 300                  # seconds to tolerate late job execution
   max_workers: 4                           # APScheduler thread pool size
@@ -76,7 +76,7 @@ shadow:
   mdd_tolerance_ratio: 1.2          # shadow MDD must be <= active_MDD * ratio
 
 sentiment:
-  enabled: false                    # set true + install transformers to enable
+  enabled: true                    # set true + install transformers to enable
   model_name: ProsusAI/finbert      # HuggingFace model for sentiment scoring
   max_headlines_per_asset: 10       # max news headlines per asset per cycle
   finnhub_api_key: ""               # OVERRIDE via SWINGRL_SENTIMENT__FINNHUB_API_KEY
@@ -86,7 +86,7 @@ security:
   env_file_permissions: "600"       # expected permissions on .env file
 
 memory_agent:
-  enabled: false                    # memory agent disabled by default — set true to enable
+  enabled: true                    # memory agent disabled by default — set true to enable
   meta_training: false              # LLM hyperparameter meta-training (disabled by default)
   base_url: "http://swingrl-memory:8889"
   api_key: ""                       # OVERRIDE via SWINGRL_MEMORY_AGENT__API_KEY in .env
