@@ -181,17 +181,28 @@ def _migrate_sqlite_table(
 
     pg_conn.commit()
 
-    # Second pass: restore self-referential FK values
+    # Second pass: restore self-referential FK values (skip dangling refs
+    # where the target ID was deleted from the source database).
     if fk_col_indices and original_rows:
         id_idx = columns.index("id")
+        live_ids = {row[id_idx] for row in original_rows}
         with pg_conn.cursor() as cur:
             for fk_col in fk_cols:
                 fk_idx = columns.index(fk_col)
                 for row in original_rows:
-                    if row[fk_idx] is not None:
+                    fk_val = row[fk_idx]
+                    if fk_val is not None and fk_val in live_ids:
                         cur.execute(
                             f"UPDATE {table} SET {fk_col} = %s WHERE id = %s",  # noqa: S608  # nosec B608
-                            (row[fk_idx], row[id_idx]),
+                            (fk_val, row[id_idx]),
+                        )
+                    elif fk_val is not None:
+                        log.warning(
+                            "dangling_fk_skipped",
+                            table=table,
+                            column=fk_col,
+                            id=row[id_idx],
+                            ref=fk_val,
                         )
         pg_conn.commit()
 
