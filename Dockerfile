@@ -24,6 +24,9 @@ RUN useradd -m -u 1000 trader && mkdir -p /app && chown trader:trader /app
 
 WORKDIR /app
 
+# Put venv on PATH so bare `python` resolves to the venv interpreter.
+ENV PATH="/app/.venv/bin:$PATH"
+
 # Install all dependencies (prod + dev for CI) using bind mounts.
 # Running as root here so the uv cache mount target is accessible.
 # The .venv is created inside /app which is owned by trader.
@@ -61,6 +64,9 @@ RUN useradd -m -u 1000 trader && mkdir -p /app && chown trader:trader /app
 
 WORKDIR /app
 
+# Put venv on PATH so bare `python` resolves to the venv interpreter.
+ENV PATH="/app/.venv/bin:$PATH"
+
 # Install all production dependencies including training (no dev group).
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
@@ -85,7 +91,7 @@ USER trader
 # Docker HEALTHCHECK: verify process liveness and DB connectivity.
 # Interval 60s, timeout 10s, 3 retries before marking unhealthy.
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
-    CMD ["/app/.venv/bin/python", "scripts/healthcheck.py"]
+    CMD ["python", "scripts/healthcheck.py"]
 
 # Production entrypoint: APScheduler with cron jobs and stop-price polling.
-CMD ["/app/.venv/bin/python", "scripts/main.py"]
+CMD ["python", "scripts/main.py"]
