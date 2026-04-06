@@ -23,7 +23,7 @@ Type mapping applied:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -780,7 +780,7 @@ def _table_exists(cur: psycopg.Cursor, table_name: str) -> bool:
     return bool(val)
 
 
-def init_postgres_schema(conn: psycopg.Connection) -> None:
+def init_postgres_schema(conn: psycopg.Connection[Any]) -> None:
     """Create all tables, views, and indexes in PostgreSQL.
 
     Fully idempotent — safe to call on every application startup.

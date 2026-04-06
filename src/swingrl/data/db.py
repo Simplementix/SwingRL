@@ -22,7 +22,7 @@ import contextlib
 import os
 import threading
 from collections.abc import Generator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 import structlog
@@ -48,6 +48,7 @@ class DatabaseManager:
     _instance: DatabaseManager | None = None
     _lock: threading.Lock = threading.Lock()
     _initialized: bool = False
+    _pool: ConnectionPool[psycopg.Connection[dict[str, Any]]] | None
 
     def __new__(cls, config: SwingRLConfig | None = None) -> DatabaseManager:
         """Thread-safe singleton creation."""
@@ -76,7 +77,7 @@ class DatabaseManager:
         # Without one (e.g. in tests), _pool stays None and connection()
         # raises immediately instead of waiting for a TCP timeout.
         if self._database_url:
-            self._pool = ConnectionPool(
+            self._pool = ConnectionPool(  # type: ignore[assignment]  # dict_row via kwargs
                 self._database_url,
                 min_size=0,
                 max_size=20,
@@ -106,7 +107,7 @@ class DatabaseManager:
                 cls._instance = None
 
     @contextlib.contextmanager
-    def connection(self) -> Generator[psycopg.Connection, None, None]:
+    def connection(self) -> Generator[psycopg.Connection[dict[str, Any]], None, None]:
         """Yield a connection from the pool.
 
         Auto-commits on clean exit, rolls back on exception.

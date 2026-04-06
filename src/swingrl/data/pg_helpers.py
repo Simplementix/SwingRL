@@ -18,7 +18,7 @@ Usage:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import structlog
@@ -50,7 +50,7 @@ def fetchdf(cursor: psycopg.Cursor) -> pd.DataFrame:
 
 
 def executemany_from_df(
-    conn: psycopg.Connection,
+    conn: psycopg.Connection[Any],
     table: str,
     df: pd.DataFrame,
     columns: list[str],
@@ -111,7 +111,7 @@ def executemany_from_df(
 
 
 def bulk_insert_parquet(
-    conn: psycopg.Connection,
+    conn: psycopg.Connection[Any],
     parquet_path: Path,
     table: str,
     columns: list[str],
