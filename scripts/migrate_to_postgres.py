@@ -158,14 +158,45 @@ def _migrate_sqlite_table(
     col_list = ", ".join(columns)
     insert_sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"  # noqa: S608  # nosec B608
 
+    # Self-referential FKs (e.g. consolidations.superseded_by → consolidations.id)
+    # require two-pass insert: first with FK columns NULLed, then UPDATE to set them.
+    _self_ref_fk_cols = {
+        "consolidations": ["superseded_by", "conflicting_with"],
+    }
+    fk_cols = _self_ref_fk_cols.get(table, [])
+    fk_col_indices: list[int] = []
+    original_rows = rows
+
+    if fk_cols:
+        fk_col_indices = [columns.index(c) for c in fk_cols if c in columns]
+        # NULL out FK columns for initial insert
+        rows = [
+            tuple(None if j in fk_col_indices else v for j, v in enumerate(row)) for row in rows
+        ]
+
     with pg_conn.cursor() as cur:
         for i in range(0, len(rows), BATCH_SIZE):
             batch = rows[i : i + BATCH_SIZE]
             cur.executemany(insert_sql, batch)
 
     pg_conn.commit()
-    log.info("table_migrated", table=table, source="sqlite", rows=len(rows))
-    return len(rows)
+
+    # Second pass: restore self-referential FK values
+    if fk_col_indices and original_rows:
+        id_idx = columns.index("id")
+        with pg_conn.cursor() as cur:
+            for fk_col in fk_cols:
+                fk_idx = columns.index(fk_col)
+                for row in original_rows:
+                    if row[fk_idx] is not None:
+                        cur.execute(
+                            f"UPDATE {table} SET {fk_col} = %s WHERE id = %s",  # noqa: S608  # nosec B608
+                            (row[fk_idx], row[id_idx]),
+                        )
+        pg_conn.commit()
+
+    log.info("table_migrated", table=table, source="sqlite", rows=len(original_rows))
+    return len(original_rows)
 
 
 def main() -> None:
