@@ -274,6 +274,38 @@ def main() -> None:
     else:
         print(f"Memory DB not found at {memory_path}, skipping.")
 
+    # Reset identity sequences to MAX(id) so new inserts don't collide
+    # with migrated rows that carried their original IDs.
+    print("\nResetting identity sequences...")
+    _IDENTITY_TABLES = [
+        "memories",
+        "consolidations",
+        "consolidation_quality",
+        "pattern_presentations",
+        "pattern_outcomes",
+        "llm_audit_log",
+        "inference_outcomes",
+        "data_quarantine",
+        "training_epochs",
+        "meta_decisions",
+        "reward_adjustments",
+        "api_errors",
+    ]
+    with pg_conn.cursor() as cur:
+        for table in _IDENTITY_TABLES:
+            try:
+                seq = cur.execute("SELECT pg_get_serial_sequence(%s, 'id')", (table,)).fetchone()
+                if seq and seq[0]:
+                    max_id = cur.execute(
+                        f"SELECT COALESCE(MAX(id), 0) FROM {table}"  # noqa: S608  # nosec B608
+                    ).fetchone()[0]
+                    if max_id > 0:
+                        cur.execute("SELECT setval(%s, %s)", (seq[0], max_id))
+                        log.info("sequence_reset", table=table, max_id=max_id)
+            except Exception:  # noqa: BLE001
+                log.warning("sequence_reset_skipped", table=table)
+    pg_conn.commit()
+
     # Verify
     print("\n--- Verification ---")
     with pg_conn.cursor() as cur:
