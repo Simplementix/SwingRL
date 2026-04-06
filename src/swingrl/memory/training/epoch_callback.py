@@ -406,7 +406,7 @@ class MemoryEpochCallback(BaseCallback):
             "hmm_regime_confidence": 0.0,
             "notable_event": notable_event,
             "notable_detail": None,
-            "source": "training_epoch:historical",
+            "source": f"training_epoch:{self._env}:{self._algo}",
         }
 
     def _ingest_epoch_snapshot(self, metrics: dict[str, Any]) -> None:
@@ -433,7 +433,7 @@ class MemoryEpochCallback(BaseCallback):
             f"notable_event={metrics['notable_event']} "
             f"is_control_fold={self._is_control_fold}"
         )
-        ok = self._client.ingest_training(text, source="training_epoch:historical")
+        ok = self._client.ingest_training(text, source=f"training_epoch:{self._env}:{self._algo}")
         log.debug(
             "epoch_snapshot_ingested",
             epoch=metrics["epoch"],
@@ -504,7 +504,9 @@ class MemoryEpochCallback(BaseCallback):
             f"weights_after={json.dumps(new_weights)} "
             f"curriculum_window={self._curriculum_window_active}"
         )
-        ok = self._client.ingest_training(text, source="reward_adjustment:historical")
+        ok = self._client.ingest_training(
+            text, source=f"reward_adjustment:{self._env}:{self._algo}"
+        )
         log.info(
             "adjustment_trigger_ingested",
             epoch=self._epoch,
@@ -557,7 +559,9 @@ class MemoryEpochCallback(BaseCallback):
             f"weights_before={json.dumps(adj['weights_before'])} "
             f"weights_after={json.dumps(adj['weights_after'])}"
         )
-        ok = self._client.ingest_training(text, source="reward_adjustment:historical")
+        ok = self._client.ingest_training(
+            text, source=f"reward_adjustment:{self._env}:{self._algo}"
+        )
         log.info(
             "adjustment_outcome_ingested",
             epoch=self._epoch,
