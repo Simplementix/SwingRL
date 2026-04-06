@@ -41,6 +41,7 @@ from swingrl.agents.backtest import (
     store_iteration_results_to_duckdb,
 )
 from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.data.ingest_all import run_pipeline as run_ingestion_pipeline
 from swingrl.data.pg_helpers import fetchdf
 from swingrl.memory.client import MemoryClient
 from swingrl.training.pipeline_helpers import (
@@ -338,6 +339,7 @@ def run_all_iterations(
     models_dir: Path,
     report_path: Path,
     comparison_path: Path,
+    skip_ingest: bool = False,
 ) -> dict[str, Any]:
     """Run baseline + N memory-enhanced training iterations.
 
@@ -354,6 +356,7 @@ def run_all_iterations(
         models_dir: Root models directory.
         report_path: Path for the final training_report.json.
         comparison_path: Path for data/training_comparison.json.
+        skip_ingest: If True, skip automatic data ingestion before each iteration.
 
     Returns:
         Dict summarising all iterations and winners.
@@ -390,6 +393,29 @@ def run_all_iterations(
 
         state["current_iteration"] = i
         save_training_state(state, state_path)
+
+        # --- Data ingestion: pull latest bars + recompute features ---
+        if not skip_ingest:
+            try:
+                ingest_start = time.monotonic()
+                log.info("pre_iteration_ingestion_start", iteration=i, total=total)
+                ingest_rc = run_ingestion_pipeline(cfg, backfill=False)
+                ingest_elapsed = time.monotonic() - ingest_start
+                if ingest_rc == 0:
+                    log.info(
+                        "pre_iteration_ingestion_complete",
+                        iteration=i,
+                        elapsed_seconds=round(ingest_elapsed, 1),
+                    )
+                else:
+                    log.warning(
+                        "pre_iteration_ingestion_verification_failed",
+                        iteration=i,
+                        return_code=ingest_rc,
+                        elapsed_seconds=round(ingest_elapsed, 1),
+                    )
+            except Exception:
+                log.warning("pre_iteration_ingestion_failed", iteration=i, exc_info=True)
 
         # Isolated model directory per iteration
         iter_models_dir = models_dir / "iterations" / f"iter_{i}"
@@ -2716,6 +2742,12 @@ Examples:
         default=_DEFAULT_COMPARISON_PATH,
         help=f"Path to write training comparison JSON (default: {_DEFAULT_COMPARISON_PATH}).",
     )
+    parser.add_argument(
+        "--skip-ingest",
+        action="store_true",
+        default=False,
+        help="Skip automatic data ingestion before each training iteration.",
+    )
     return parser
 
 
@@ -2746,6 +2778,7 @@ def main(argv: list[str] | None = None) -> int:
     report_path = Path(args.report)
     force: bool = args.force
     iterations: int = args.iterations
+    skip_ingest: bool = args.skip_ingest
 
     env_arg: str = args.env
     envs = ["equity", "crypto"] if env_arg == "all" else [env_arg]
@@ -2775,6 +2808,7 @@ def main(argv: list[str] | None = None) -> int:
                 models_dir=models_dir,
                 report_path=report_path,
                 comparison_path=comparison_path,
+                skip_ingest=skip_ingest,
             )
         except Exception:
             log.exception("training_pipeline_iterations_failed")
@@ -2793,6 +2827,17 @@ def main(argv: list[str] | None = None) -> int:
     # ---------------------------------------------------------------------------
     # Single-run mode (--iterations 0, default): existing per-env loop
     # ---------------------------------------------------------------------------
+
+    # --- Data ingestion: pull latest bars + recompute features ---
+    if not skip_ingest:
+        try:
+            log.info("pre_training_ingestion_start")
+            ingest_rc = run_ingestion_pipeline(config, backfill=False)
+            if ingest_rc != 0:
+                log.warning("pre_training_ingestion_verification_failed", return_code=ingest_rc)
+        except Exception:
+            log.warning("pre_training_ingestion_failed", exc_info=True)
+
     report: dict[str, Any] = {
         "generated_at": datetime.now(tz=UTC).isoformat(),
     }
