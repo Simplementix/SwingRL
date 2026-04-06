@@ -63,6 +63,7 @@ _SQLITE_TABLES = [
     "alert_log",
     "inference_outcomes",
     "api_errors",
+    "emergency_flags",
 ]
 
 # Memory service tables (from db/memory.db)

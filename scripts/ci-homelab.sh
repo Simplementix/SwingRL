@@ -44,8 +44,14 @@ else
     docker compose build swingrl-memory
 fi
 
+echo "=== [2.5/6] Create test database ==="
+PG_PASS=$(grep DATABASE_URL .env | sed 's/.*:\/\/swingrl:\([^@]*\)@.*/\1/')
+TEST_DB_URL="postgresql://swingrl:${PG_PASS}@pg16:5432/swingrl_test"
+docker exec pg16 psql -U temporal -d postgres -c "DROP DATABASE IF EXISTS swingrl_test;"
+docker exec pg16 psql -U temporal -d postgres -c "CREATE DATABASE swingrl_test OWNER swingrl;"
+
 echo "=== [3/6] Run tests ==="
-$DEV_COMPOSE run --rm --entrypoint "" swingrl uv run pytest tests/ -v
+$DEV_COMPOSE run --rm --entrypoint "" -e DATABASE_URL="$TEST_DB_URL" swingrl uv run pytest tests/ -v
 
 echo "=== [4/6] Lint + type check ==="
 $DEV_COMPOSE run --rm --entrypoint "" swingrl uv run sh -c \
@@ -59,6 +65,7 @@ docker compose run --rm --no-deps --entrypoint "" swingrl-memory sh -c \
 # (parsed dict returns str|int|None, functions expect str). To be fixed separately.
 
 echo "=== [5/6] Cleanup ==="
+docker exec pg16 psql -U temporal -d postgres -c "DROP DATABASE IF EXISTS swingrl_test;" || true
 $DEV_COMPOSE down
 docker compose down
 docker image prune -f

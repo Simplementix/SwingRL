@@ -234,7 +234,11 @@ def run_pipeline(config: SwingRLConfig, backfill: bool) -> int:
 
     equity_delta = run_equity(config, backfill=backfill)
     crypto_delta = run_crypto(config, backfill=backfill)
-    macro_delta = run_macro(config, backfill=backfill)
+    try:
+        macro_delta = run_macro(config, backfill=backfill)
+    except DataError:
+        log.warning("macro_ingestion_non_fatal", exc_info=True)
+        macro_delta = 0
 
     # Detect and fill crypto gaps from alternate sources (Binance Global)
     gap_results = detect_and_fill_crypto_gaps(config)
