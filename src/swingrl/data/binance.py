@@ -235,6 +235,14 @@ class BinanceIngestor(BaseIngestor):
             start_ms = int(pd.Timestamp(since, tz="UTC").timestamp() * 1000)
 
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        # Cap to last completed 4H bar boundary (exclude current incomplete bar)
+        now_ms = now_ms - (now_ms % FOUR_HOURS_MS)
+
+        # Nothing to fetch if data is already up to date
+        if start_ms >= now_ms:
+            log.info("binance_fetch_skip_up_to_date", symbol=symbol)
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
         all_klines: list[list[str | int]] = []
         current_start = start_ms
 

@@ -98,13 +98,24 @@ class AlpacaIngestor(BaseIngestor):
         end = datetime.now(UTC)
 
         # SIP for historical backfill (full depth back to 2016), IEX for
-        # incremental/trading. Free-tier SIP blocks "recent" data, so cap
-        # end at start-of-today (yesterday's close) for SIP requests.
+        # incremental/trading. Cap end to start-of-today (UTC) so we only
+        # request completed daily bars — today's bar isn't final until
+        # market close (4 PM ET).
         if since == "incremental":
             feed = DataFeed.IEX
         else:
             feed = DataFeed.SIP
-            end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Nothing to fetch if data is already up to date
+        if start >= end:
+            log.info(
+                "alpaca_fetch_skip_up_to_date",
+                symbol=symbol,
+                start=start.isoformat(),
+                end=end.isoformat(),
+            )
+            return pd.DataFrame()
 
         request = StockBarsRequest(
             symbol_or_symbols=symbol,
