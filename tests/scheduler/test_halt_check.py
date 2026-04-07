@@ -20,12 +20,19 @@ pytestmark = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATA
 @pytest.fixture(autouse=True)
 def _clean_emergency_flags() -> None:
     """Truncate emergency_flags before each test to avoid cross-test pollution."""
+    # ⚠️ DANGER: DELETE FROM emergency_flags disabled 2026-04-07 — prod incident.
+    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
+    raise RuntimeError(
+        "_clean_emergency_flags fixture is disabled pending prod-DB guard. "
+        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
+    )
     db_url = os.environ.get("DATABASE_URL", "")
     if not db_url:
         return
     conn = psycopg.connect(db_url, autocommit=True)
     try:
-        conn.execute("DELETE FROM emergency_flags")
+        # conn.execute("DELETE FROM emergency_flags")
+        pass
     except Exception:
         pass  # Table may not exist yet
     finally:

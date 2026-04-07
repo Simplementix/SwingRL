@@ -75,18 +75,24 @@ def db_config(tmp_path: Path) -> SwingRLConfig:
 @pytest.fixture
 def db_manager(db_config: SwingRLConfig) -> DatabaseManager:
     """Create DatabaseManager with schema initialized, reset after test."""
+    # ⚠️ DANGER: TRUNCATE-all-public-tables disabled 2026-04-07 — prod incident.
+    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
+    raise RuntimeError(
+        "db_manager fixture (test_parquet_to_duckdb) is disabled pending prod-DB guard. "
+        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
+    )
     DatabaseManager.reset()
     mgr = DatabaseManager(db_config)
     mgr.init_schema()
     yield mgr  # type: ignore[misc]
     # Truncate all tables for test isolation
-    with mgr.connection() as conn:
-        conn.execute(
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
-            "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
-            "END LOOP; END $$"
-        )
+    # with mgr.connection() as conn:
+    #     conn.execute(
+    #         "DO $$ DECLARE r RECORD; BEGIN "
+    #         "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
+    #         "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
+    #         "END LOOP; END $$"
+    #     )
     DatabaseManager.reset()
 
 

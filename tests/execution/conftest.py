@@ -75,6 +75,12 @@ def mock_db(exec_config: SwingRLConfig) -> Generator[DatabaseManager, None, None
     Resets singleton and initializes schema for clean test isolation.
     Requires DATABASE_URL env var pointing to a test PostgreSQL instance.
     """
+    # ⚠️ DANGER: TRUNCATE-all-public-tables disabled 2026-04-07 — prod incident.
+    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
+    raise RuntimeError(
+        "mock_db fixture (tests/execution/conftest.py) is disabled pending prod-DB guard. "
+        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
+    )
     import os  # noqa: PLC0415
 
     db_url = os.environ.get("DATABASE_URL")
@@ -87,13 +93,13 @@ def mock_db(exec_config: SwingRLConfig) -> Generator[DatabaseManager, None, None
     db.init_schema()
     yield db
     # Truncate all tables for test isolation
-    with db.connection() as conn:
-        conn.execute(
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
-            "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
-            "END LOOP; END $$"
-        )
+    # with db.connection() as conn:
+    #     conn.execute(
+    #         "DO $$ DECLARE r RECORD; BEGIN "
+    #         "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
+    #         "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
+    #         "END LOOP; END $$"
+    #     )
     DatabaseManager.reset()
 
 

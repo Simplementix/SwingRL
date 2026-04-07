@@ -169,11 +169,17 @@ class TestMetaOrchestratorRegimeVector:
 
     def _create_hmm_db(self, tmp_path: Path, row: tuple | None = None) -> str:
         """Create PostgreSQL hmm_state_history table. Returns DATABASE_URL."""
+        # ⚠️ DANGER: DROP TABLE CASCADE disabled 2026-04-07 — prod incident.
+        # See tests/agents/test_backtest.py:_create_backtest_schema for context.
+        raise RuntimeError(
+            "_create_hmm_db is disabled pending prod-DB guard. "
+            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
+        )
         db_url = os.environ.get("DATABASE_URL", "")
         if not db_url:
             pytest.skip("DATABASE_URL not set")
         conn = psycopg.connect(db_url, autocommit=True)
-        conn.execute("DROP TABLE IF EXISTS hmm_state_history CASCADE")
+        # conn.execute("DROP TABLE IF EXISTS hmm_state_history CASCADE")
         conn.execute(
             """
             CREATE TABLE hmm_state_history (
@@ -223,11 +229,15 @@ class TestMetaOrchestratorRegimeVector:
 
     def test_current_regime_vector_handles_null_columns(self, tmp_path: Path) -> None:
         """TRAIN-09: NULL columns treated as 0.33/0.17 defaults."""
+        # ⚠️ DANGER: DROP TABLE CASCADE disabled 2026-04-07 — prod incident.
+        raise RuntimeError(
+            "test_current_regime_vector_handles_null_columns is disabled pending prod-DB guard."
+        )
         db_url = os.environ.get("DATABASE_URL", "")
         if not db_url:
             pytest.skip("DATABASE_URL not set")
         conn = psycopg.connect(db_url, autocommit=True)
-        conn.execute("DROP TABLE IF EXISTS hmm_state_history CASCADE")
+        # conn.execute("DROP TABLE IF EXISTS hmm_state_history CASCADE")
         conn.execute(
             """
             CREATE TABLE hmm_state_history (

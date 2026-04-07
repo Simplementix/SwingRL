@@ -294,6 +294,8 @@ class TestStoreFundamentals:
         conn.commit()
         stored = conn.execute("SELECT * FROM fundamentals").fetchall()
         assert len(stored) == 2
-        conn.execute("DROP TABLE IF EXISTS fundamentals")
+        # ⚠️ DANGER: DROP TABLE disabled 2026-04-07 — prod incident.
+        # See tests/agents/test_backtest.py:_create_backtest_schema for context.
+        # conn.execute("DROP TABLE IF EXISTS fundamentals")
         conn.commit()
         conn.close()

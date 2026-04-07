@@ -510,6 +510,12 @@ class TestEmptyTables:
 
     def test_empty_equity_table_raises(self, equity_env_config: SwingRLConfig) -> None:
         """TRAIN-01: _load_features_prices raises RuntimeError for empty equity table."""
+        # ⚠️ DANGER: DELETE FROM features_equity/ohlcv_daily disabled 2026-04-07 — prod incident.
+        # See tests/agents/test_backtest.py:_create_backtest_schema for context.
+        raise RuntimeError(
+            "test_empty_equity_table_raises is disabled pending prod-DB guard. "
+            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
+        )
         from train import _load_features_prices  # type: ignore[import]
 
         db_url = os.environ["DATABASE_URL"]
@@ -527,8 +533,8 @@ class TestEmptyTables:
             )
         """)
         # Ensure tables are empty
-        conn.execute("DELETE FROM features_equity")
-        conn.execute("DELETE FROM ohlcv_daily")
+        # conn.execute("DELETE FROM features_equity")
+        # conn.execute("DELETE FROM ohlcv_daily")
 
         with pytest.raises((RuntimeError, DataError), match="No data found"):
             _load_features_prices(conn, "equity", equity_env_config)
@@ -536,6 +542,11 @@ class TestEmptyTables:
 
     def test_empty_crypto_table_raises(self, equity_env_config: SwingRLConfig) -> None:
         """TRAIN-02: _load_features_prices raises DataError for empty crypto table."""
+        # ⚠️ DANGER: DELETE FROM features_crypto disabled 2026-04-07 — prod incident.
+        raise RuntimeError(
+            "test_empty_crypto_table_raises is disabled pending prod-DB guard. "
+            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
+        )
         from train import _load_features_prices  # type: ignore[import]
 
         db_url = os.environ["DATABASE_URL"]
@@ -554,7 +565,7 @@ class TestEmptyTables:
             )
         """)
         # Ensure tables are empty
-        conn.execute("DELETE FROM features_crypto")
+        # conn.execute("DELETE FROM features_crypto")
 
         with pytest.raises((RuntimeError, DataError), match="No data found"):
             _load_features_prices(conn, "crypto", equity_env_config)

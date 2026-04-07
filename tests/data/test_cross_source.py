@@ -87,18 +87,24 @@ def cs_config(tmp_path: Path, cs_config_yaml: str) -> Any:
 @pytest.fixture
 def cs_db(cs_config: Any) -> DatabaseManager:
     """Create a DatabaseManager and ensure cleanup after test."""
+    # ⚠️ DANGER: TRUNCATE-all-public-tables disabled 2026-04-07 — prod incident.
+    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
+    raise RuntimeError(
+        "cs_db fixture is disabled pending prod-DB guard. "
+        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
+    )
     DatabaseManager.reset()
     mgr = DatabaseManager(cs_config)
     mgr.init_schema()
     yield mgr  # type: ignore[misc]
     # Truncate all tables for test isolation
-    with mgr.connection() as conn:
-        conn.execute(
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
-            "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
-            "END LOOP; END $$"
-        )
+    # with mgr.connection() as conn:
+    #     conn.execute(
+    #         "DO $$ DECLARE r RECORD; BEGIN "
+    #         "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
+    #         "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
+    #         "END LOOP; END $$"
+    #     )
     DatabaseManager.reset()
 
 
