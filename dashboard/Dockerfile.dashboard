@@ -11,6 +11,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy dashboard code
 COPY dashboard/ /app/dashboard/
 
+# Phase 0.7 — copy ONLY the swingrl modules the dashboard depends on
+# (reporting + metrics). Avoids pulling in torch/SB3/etc which would
+# bloat the image. The dashboard imports compute_iter_deltas, load_*,
+# detect_chronic_failures, etc. from swingrl.reporting.iteration_report.
+COPY src/swingrl/__init__.py /app/src/swingrl/__init__.py
+COPY src/swingrl/py.typed /app/src/swingrl/py.typed
+COPY src/swingrl/reporting/ /app/src/swingrl/reporting/
+COPY src/swingrl/metrics/ /app/src/swingrl/metrics/
+
+# Make swingrl importable
+ENV PYTHONPATH=/app/src
+
 USER trader
 
 # Streamlit config: disable telemetry, headless mode

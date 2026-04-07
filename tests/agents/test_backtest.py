@@ -765,3 +765,112 @@ class TestStoreIterationResultsToDuckdb:
         assert row[0] == pytest.approx(26640.5)
         assert row[1] is True
         conn.close()
+
+    def test_write_does_not_persist_without_autocommit_or_explicit_commit(self) -> None:
+        """REGRESSION: ``store_iteration_results_to_duckdb`` does not call commit().
+
+        Documents the silent rollback bug that was live in train_pipeline.py
+        from the postgres migration through iter 5: the connection was opened
+        WITHOUT ``autocommit=True``, the function never committed, and the
+        ``finally: conn.close()`` rolled back the INSERT.
+
+        This test pins the function's behavior so any future change that
+        adds an internal commit() (which would mask the issue rather than
+        fix it at the call site) is detected.
+        """
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+
+        # First: set up the schema (autocommit so DDL persists)
+        setup_conn = psycopg.connect(db_url, autocommit=True)
+        _create_backtest_schema(setup_conn)
+        setup_conn.close()
+
+        # Open WITHOUT autocommit (the buggy way) and write
+        bug_conn = psycopg.connect(db_url, autocommit=False)
+        try:
+            store_iteration_results_to_duckdb(
+                conn=bug_conn,
+                iteration_number=42,
+                env_name="equity",
+                ensemble_sharpe=1.5,
+                ensemble_mdd=-0.06,
+                gate_passed=True,
+                ensemble_weights={"ppo": 0.5, "a2c": 0.3, "sac": 0.2},
+                all_wf_results={"ppo": [], "a2c": [], "sac": []},
+            )
+        finally:
+            bug_conn.close()  # closes without commit → rollback
+
+        # Reopen and verify the row is GONE — proving the bug
+        verify_conn = psycopg.connect(db_url, autocommit=True)
+        try:
+            row = verify_conn.execute(
+                "SELECT count(*) FROM iteration_results WHERE iteration_number = 42"
+            ).fetchone()
+            assert row[0] == 0, (
+                "Expected 0 rows because the connection was closed without commit, "
+                "proving store_iteration_results_to_duckdb does not commit internally. "
+                "The fix is at the CALL SITE in train_pipeline.py: open the connection "
+                "with autocommit=True."
+            )
+        finally:
+            verify_conn.close()
+
+    def test_write_persists_with_autocommit_true(self) -> None:
+        """The fix: opening the connection with ``autocommit=True`` persists writes."""
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            pytest.skip("DATABASE_URL not set")
+
+        setup_conn = psycopg.connect(db_url, autocommit=True)
+        _create_backtest_schema(setup_conn)
+        setup_conn.close()
+
+        # Open WITH autocommit=True (the fix matching train_pipeline.py:2286)
+        fix_conn = psycopg.connect(db_url, autocommit=True)
+        try:
+            store_iteration_results_to_duckdb(
+                conn=fix_conn,
+                iteration_number=42,
+                env_name="equity",
+                ensemble_sharpe=1.5,
+                ensemble_mdd=-0.06,
+                gate_passed=True,
+                ensemble_weights={"ppo": 0.5, "a2c": 0.3, "sac": 0.2},
+                all_wf_results={"ppo": [], "a2c": [], "sac": []},
+            )
+        finally:
+            fix_conn.close()
+
+        verify_conn = psycopg.connect(db_url, autocommit=True)
+        try:
+            row = verify_conn.execute(
+                "SELECT count(*) FROM iteration_results WHERE iteration_number = 42"
+            ).fetchone()
+            assert row[0] == 1, "Row should persist when connection has autocommit=True"
+        finally:
+            verify_conn.close()
+
+    def test_train_pipeline_iteration_results_uses_autocommit(self) -> None:
+        """REGRESSION (static): train_pipeline.py:run_environment must open the
+        iteration_results connection with autocommit=True. Source-level check
+        catches a future regression even if no live DB is configured.
+        """
+        from pathlib import Path
+
+        train_pipeline_src = (
+            Path(__file__).resolve().parent.parent.parent / "scripts" / "train_pipeline.py"
+        ).read_text()
+
+        # Find the line block that opens conn_ens for iteration_results
+        idx = train_pipeline_src.find("conn_ens = psycopg.connect(database_url")
+        assert idx != -1, "Could not locate the iteration_results connection setup"
+        # Look at the next ~120 chars for the autocommit flag
+        snippet = train_pipeline_src[idx : idx + 200]
+        assert "autocommit=True" in snippet, (
+            "train_pipeline.py:run_environment must open conn_ens with autocommit=True "
+            "to prevent silent INSERT rollback. See "
+            "scripts/migrations/recover_iteration_results.py for the recovery story."
+        )

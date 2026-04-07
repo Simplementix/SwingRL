@@ -170,30 +170,49 @@ CREATE TABLE IF NOT EXISTS backtest_results (
 
 _ITERATION_RESULTS_DDL = """\
 CREATE TABLE IF NOT EXISTS iteration_results (
-    result_id           TEXT PRIMARY KEY,
-    iteration_number    INTEGER NOT NULL,
-    environment         TEXT NOT NULL,
-    ensemble_sharpe     DOUBLE PRECISION,
-    ensemble_mdd        DOUBLE PRECISION,
-    gate_passed         BOOLEAN,
-    ppo_weight          DOUBLE PRECISION,
-    a2c_weight          DOUBLE PRECISION,
-    sac_weight          DOUBLE PRECISION,
-    ppo_mean_sharpe     DOUBLE PRECISION,
-    a2c_mean_sharpe     DOUBLE PRECISION,
-    sac_mean_sharpe     DOUBLE PRECISION,
-    ppo_mean_mdd        DOUBLE PRECISION,
-    a2c_mean_mdd        DOUBLE PRECISION,
-    sac_mean_mdd        DOUBLE PRECISION,
-    total_folds         INTEGER,
-    ppo_hyperparams     TEXT,
-    a2c_hyperparams     TEXT,
-    sac_hyperparams     TEXT,
-    hp_source           TEXT DEFAULT 'baseline',
-    run_type            TEXT DEFAULT 'baseline',
-    wall_clock_s        DOUBLE PRECISION,
-    memory_enabled      BOOLEAN DEFAULT FALSE,
-    created_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    result_id                   TEXT PRIMARY KEY,
+    iteration_number            INTEGER NOT NULL,
+    environment                 TEXT NOT NULL,
+    ensemble_sharpe             DOUBLE PRECISION,
+    ensemble_mdd                DOUBLE PRECISION,
+    gate_passed                 BOOLEAN,
+    ppo_weight                  DOUBLE PRECISION,
+    a2c_weight                  DOUBLE PRECISION,
+    sac_weight                  DOUBLE PRECISION,
+    ppo_mean_sharpe             DOUBLE PRECISION,
+    a2c_mean_sharpe             DOUBLE PRECISION,
+    sac_mean_sharpe             DOUBLE PRECISION,
+    ppo_mean_mdd                DOUBLE PRECISION,
+    a2c_mean_mdd                DOUBLE PRECISION,
+    sac_mean_mdd                DOUBLE PRECISION,
+    total_folds                 INTEGER,
+    ppo_hyperparams             TEXT,
+    a2c_hyperparams             TEXT,
+    sac_hyperparams             TEXT,
+    hp_source                   TEXT DEFAULT 'baseline',
+    run_type                    TEXT DEFAULT 'baseline',
+    wall_clock_s                DOUBLE PRECISION,
+    memory_enabled              BOOLEAN DEFAULT FALSE,
+    -- Capital Preservation Score columns (Phase 0.2 of memory refocus).
+    -- See src/swingrl/metrics/cps.py for formulas. All nullable for backward
+    -- compat with iter 0-5 rows written before this column set existed.
+    cps_v1_multiplicative       DOUBLE PRECISION,
+    cps_v2_additive             DOUBLE PRECISION,
+    cps_v3_sortino              DOUBLE PRECISION,
+    cps_v1_treatment_only       DOUBLE PRECISION,  -- is_control_fold=False subset (null iter 0-2)
+    cps_v1_control_only         DOUBLE PRECISION,  -- is_control_fold=True subset (null iter 0-2)
+    cps_components              TEXT,              -- JSON of statistical inputs
+    cps_formula_version         TEXT,              -- e.g. 'v1,v2,v3' for audit
+    worst_fold_number           INTEGER,
+    worst_fold_mdd              DOUBLE PRECISION,
+    worst_fold_max_single_loss  DOUBLE PRECISION,
+    median_return               DOUBLE PRECISION,
+    mean_winner_sharpe          DOUBLE PRECISION,
+    winners_count               INTEGER,
+    chronic_failure_count       INTEGER,
+    return_regression_delta     DOUBLE PRECISION,  -- max(0, prev_median_return - this_median_return)
+    dedup_rows_dropped          INTEGER,           -- audit: backfill iter 1 dedup count
+    created_at                  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (iteration_number, environment, run_type)
 )
 """

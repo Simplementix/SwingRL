@@ -44,6 +44,9 @@ from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.data.ingest_all import run_pipeline as run_ingestion_pipeline
 from swingrl.data.pg_helpers import fetchdf
 from swingrl.memory.client import MemoryClient
+from swingrl.monitoring.alerter import Alerter
+from swingrl.monitoring.embeds import build_iteration_completion_embed
+from swingrl.reporting.iteration_report import compute_and_persist_iteration_cps
 from swingrl.training.pipeline_helpers import (
     DEFAULT_TIMESTEPS,
     TUNING_GRID,
@@ -193,13 +196,23 @@ def deploy_best_models(
 ) -> None:
     """Copy best iteration models from iterations/ to active/.
 
+    Path layout (verified across iter 0-5): per-iteration models live at
+    ``models/iterations/iter_{N}/active/{env}/{algo}/model.zip``. The
+    ``active/`` subdirectory inside the iteration folder is the canonical
+    location written by the trainer (see swingrl.training.trainer). The
+    legacy path without ``active/`` was a bug introduced before iter 0
+    and silently caused all 12 best_model_file_missing warnings observed
+    in iter 5 — fixed during iter 5 recovery.
+
     Args:
         winners: Dict[env_name][algo_name] -> best_iteration_index.
         models_dir: Root models directory (contains iterations/ and active/).
     """
     for env_name, algo_winners in winners.items():
         for algo_name, iter_idx in algo_winners.items():
-            src_dir = models_dir / "iterations" / f"iter_{iter_idx}" / env_name / algo_name
+            src_dir = (
+                models_dir / "iterations" / f"iter_{iter_idx}" / "active" / env_name / algo_name
+            )
             dst_dir = models_dir / "active" / env_name / algo_name
             dst_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2279,8 +2292,17 @@ def run_environment(
     }
     _evaluate_gate_and_decide(gate_result, ensemble_sharpe, env_name)
 
-    # Deferred PostgreSQL write — ensemble-level iteration results
-    conn_ens = psycopg.connect(database_url, row_factory=dict_row)
+    # Deferred PostgreSQL write — ensemble-level iteration results.
+    #
+    # NOTE: ``autocommit=True`` is REQUIRED here. ``store_iteration_results_to_duckdb``
+    # issues an INSERT but does NOT call ``conn.commit()``. Without autocommit
+    # (the default), the connection sits in transaction mode and the
+    # ``finally: conn_ens.close()`` rolls back the entire INSERT — silently
+    # turning the call into a no-op. This bug existed from the postgres
+    # migration through iter 5 (the iter 0-4 rows in pg16 came from the
+    # one-off migration script which DID commit). Discovered during iter 5
+    # recovery; see scripts/migrations/recover_iteration_results.py.
+    conn_ens = psycopg.connect(database_url, row_factory=dict_row, autocommit=True)
     try:
         store_iteration_results_to_duckdb(
             conn=conn_ens,
@@ -2300,6 +2322,81 @@ def run_environment(
         log.warning("iteration_results_db_write_failed", env_name=env_name, error=str(exc))
     finally:
         conn_ens.close()
+
+    # Phase 0.5 — compute Capital Preservation Score and fire iteration
+    # lifecycle log events. Wrapped in a separate try/except so a CPS write
+    # failure cannot mask the (more critical) ensemble-results write above.
+    try:
+        cps_conn = psycopg.connect(database_url)
+        try:
+            cps_summary = compute_and_persist_iteration_cps(cps_conn, env_name, iteration_number)
+            cps_conn.commit()
+        finally:
+            cps_conn.close()
+
+        log.info(
+            "iteration_completed",
+            env=env_name,
+            iteration=iteration_number,
+            cps_v1=cps_summary["cps_v1_multiplicative"],
+            cps_v2=cps_summary["cps_v2_additive"],
+            cps_v3=cps_summary["cps_v3_sortino"],
+            cps_v1_treatment_only=cps_summary["cps_v1_treatment_only"],
+            cps_v1_control_only=cps_summary["cps_v1_control_only"],
+            cps_v1_delta_vs_prev=cps_summary["cps_v1_delta_vs_prev"],
+            return_delta_vs_prev=cps_summary["return_delta_vs_prev"],
+            worst_mdd_delta_vs_prev=cps_summary["worst_mdd_delta_vs_prev"],
+            median_return=cps_summary["median_return"],
+            mean_winner_sharpe=cps_summary["mean_winner_sharpe"],
+            winners_count=cps_summary["winners_count"],
+            chronic_failure_count=cps_summary["chronic_failure_count"],
+            worst_fold=cps_summary["worst_fold_number"],
+            worst_fold_mdd=cps_summary["worst_fold_mdd"],
+            regression_flag=cps_summary["regression_flag"],
+            gate_pass_rate=float(passed),
+        )
+
+        if cps_summary["regression_flag"]:
+            log.warning(
+                "iteration_regression_detected",
+                env=env_name,
+                iteration=iteration_number,
+                regression_dimensions=cps_summary["regression_dimensions"],
+                cps_v1_delta=cps_summary["cps_v1_delta_vs_prev"],
+                return_delta=cps_summary["return_delta_vs_prev"],
+                worst_mdd_delta=cps_summary["worst_mdd_delta_vs_prev"],
+                cps_v1=cps_summary["cps_v1_multiplicative"],
+            )
+
+        # Phase 0.6 — fire Discord embed with the CPS scorecard. Routed
+        # via the standard Alerter (warning level for regressions, info
+        # otherwise) so it inherits webhook routing + cooldown logic.
+        try:
+            iter_alerter = Alerter(
+                webhook_url=config.alerting.alerts_webhook_url or config.alerting.daily_webhook_url,
+                alerts_webhook_url=config.alerting.alerts_webhook_url,
+                daily_webhook_url=config.alerting.daily_webhook_url,
+                cooldown_minutes=config.alerting.alert_cooldown_minutes,
+            )
+            iter_embed = build_iteration_completion_embed(cps_summary)
+            iter_alerter.send_embed(
+                level="warning" if cps_summary["regression_flag"] else "info",
+                embed=iter_embed,
+            )
+        except Exception as embed_exc:
+            log.warning(
+                "iteration_completion_embed_failed",
+                env_name=env_name,
+                iteration=iteration_number,
+                error=str(embed_exc),
+            )
+    except Exception as exc:
+        log.warning(
+            "cps_compute_or_persist_failed",
+            env_name=env_name,
+            iteration=iteration_number,
+            error=str(exc),
+        )
 
     # Ingest WF performance metrics to memory agent (if enabled)
     _ingest_wf_results_to_memory(

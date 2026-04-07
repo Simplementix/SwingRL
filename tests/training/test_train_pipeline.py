@@ -266,12 +266,21 @@ class TestDeployBestModels:
         envs: list[str] | None = None,
         algos: list[str] | None = None,
     ) -> None:
-        """Create fake model files for a given iteration."""
+        """Create fake model files for a given iteration.
+
+        Layout matches the canonical on-disk path written by the trainer
+        (verified across iter 0-5 in pg/homelab):
+        ``models/iterations/iter_{N}/active/{env}/{algo}/model.zip``.
+        The previous fixture omitted the ``active/`` segment which was
+        the root cause of the iter 5 best_model_file_missing warnings —
+        the test passed with bad fixture data because it matched the bad
+        path in deploy_best_models.
+        """
         envs = envs or ["equity", "crypto"]
         algos = algos or ["ppo", "a2c", "sac"]
         for env in envs:
             for algo in algos:
-                d = tmp_path / "iterations" / f"iter_{iter_idx}" / env / algo
+                d = tmp_path / "iterations" / f"iter_{iter_idx}" / "active" / env / algo
                 d.mkdir(parents=True, exist_ok=True)
                 (d / "model.zip").write_bytes(f"model_iter{iter_idx}_{env}_{algo}".encode())
                 (d / "vec_normalize.pkl").write_bytes(f"vec_iter{iter_idx}_{env}_{algo}".encode())

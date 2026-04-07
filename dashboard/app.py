@@ -26,18 +26,38 @@ st_autorefresh(interval=300_000, key="dashboard_refresh")  # 5-minute refresh
 # ---------------------------------------------------------------------------
 
 
-@st.cache_resource
-def get_pg_conn() -> psycopg.Connection:
-    """Return a cached PostgreSQL connection to the swingrl database.
-
-    Uses Streamlit's cache_resource to reuse the connection across page renders
-    instead of creating a new connection per refresh cycle.
-    """
+def _open_pg_connection() -> psycopg.Connection:
+    """Open a fresh PostgreSQL connection from the configured DATABASE_URL."""
     url = os.environ.get(
         "DATABASE_URL",
         "postgresql://swingrl:changeme@localhost:5432/swingrl",  # pragma: allowlist secret
     )
     return psycopg.connect(url, row_factory=dict_row, autocommit=True)
+
+
+@st.cache_resource
+def _cached_pg_conn() -> psycopg.Connection:
+    """Streamlit cache_resource holder for the singleton connection."""
+    return _open_pg_connection()
+
+
+def get_pg_conn() -> psycopg.Connection:
+    """Return a healthy PostgreSQL connection for the swingrl database.
+
+    Uses Streamlit's cache_resource to reuse the connection across page renders
+    when possible, but transparently reconnects if a previous page closed the
+    cached singleton (which all pages 1-4 do at the end of their render). This
+    self-heal removes a footgun without requiring the consumer pages to change.
+    """
+    conn = _cached_pg_conn()
+    if conn.closed:
+        # Pre-existing pages call ``conn.close()`` at the end of their render,
+        # which closes the cached singleton. The next page load (or this one
+        # after a re-run) gets the closed connection — recover by clearing
+        # the cache and opening a fresh one.
+        _cached_pg_conn.clear()
+        conn = _cached_pg_conn()
+    return conn
 
 
 # ---------------------------------------------------------------------------
