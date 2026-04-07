@@ -1,15 +1,123 @@
-# Phase 21 — Memory Agent Refocus: Context Handoff
+# Phase 19.1 — Memory Agent Refocus: Context Handoff
 
 **Created:** 2026-04-07 ~08:00 ET (snapshot before context clear)
-**Branch:** `gsd/phase-20-production-deployment`
-**Last commits:**
-- `c493bd4 docs(21): Phase 21 handoff doc — context transfer + remaining queue`
-- `c7943bc feat(21): Phase 0 — CPS framework + measurement infrastructure`
-- (pending commit: incident response — test fixture safety + handoff update)
+**Current branch:** `gsd/phase-20-production-deployment` ← WRONG, needs to move (see STEP 0)
+**Correct branch:** `gsd/phase-19.1-memory-agent-infrastructure-and-training`
+**Local commits not yet on the right branch:**
+- `c493bd4 docs(21): Phase 19.1 handoff doc — context transfer + remaining queue` (subject mislabelled `(21)`)
+- `c7943bc feat(21): Phase 0 — CPS framework + measurement infrastructure` (subject mislabelled `(21)`)
+- (one more commit landing with this update — `docs(19.1)` corrective)
 **Original plan file:** `/Users/varunpanchal/.claude/plans/clever-meandering-pinwheel.md`
 
-This document is a complete handoff for resuming Phase 21 work after a
+This document is a complete handoff for resuming Phase 19.1 work after a
 context clear. **Read this top to bottom before doing anything.**
+
+---
+
+# 🎯🎯🎯 STEP 0 — DO THIS FIRST: Move work to phase-19.1, delete phase-20 branch
+
+**Before reading anything else, do this branch consolidation. Until it's done,
+the git state is wrong: 3 commits live on the wrong branch with mislabelled
+subjects.**
+
+## Why
+
+The prior session (me) misidentified the current phase as "Phase 21" (which
+is actually a future phase, `21-discord-alert-suite`). The substantive work
+— memory agent refocus — belongs in **Phase 19.1**
+(`19.1-memory-agent-infrastructure-and-training`). There's already a branch
+for it: `gsd/phase-19.1-memory-agent-infrastructure-and-training`.
+
+The current branch `gsd/phase-20-production-deployment` is stale. Three
+commits sit on it that should have been on the 19.1 branch:
+- `c7943bc` — Phase 0 framework (24 files, 4828 insertions)
+- `c493bd4` — handoff doc (this file)
+- `abc09d7` — incident response + test fixture disables
+
+These commits also have wrong subject prefixes (`(21)` instead of `(19.1)`).
+
+**The commits are local-only** — `gsd/phase-20-production-deployment` has no
+upstream tracking branch, so we can rewrite history safely.
+
+## The exact commands to run
+
+```bash
+cd /Users/varunpanchal/Documents/Projects/Simplementix/SwingRL
+
+# 1. Verify the 3 commits are local-only (safe to rewrite)
+git branch -vv | grep phase-20-production
+# Confirm: NO `[origin/...]` annotation present. If you see one, STOP and ask
+# the user — somebody pushed and you cannot safely rewrite.
+
+# 2. Switch to the correct phase branch
+git checkout gsd/phase-19.1-memory-agent-infrastructure-and-training
+
+# 3. Cherry-pick the 3 commits from phase-20 onto phase-19.1
+git cherry-pick c7943bc c493bd4 abc09d7
+# If conflicts arise (shouldn't, the work is additive), resolve and `git
+# cherry-pick --continue`.
+
+# 4. Reword each cherry-picked commit's subject from "(21)" to "(19.1)"
+#    Easiest: interactive rebase the last 3 commits, set them all to `reword`.
+git rebase -i HEAD~3
+# In the editor, change `pick` to `reword` (or `r`) on all 3 lines, save.
+# For each commit, change "(21)" → "(19.1)" in the subject line.
+# - feat(21): → feat(19.1):
+# - docs(21): → docs(19.1):
+# - fix(21):  → fix(19.1):
+# Save each. Body content stays the same.
+
+# 5. Verify the cherry-picked commits look right
+git log --oneline -5
+# Expect:
+#   <new-sha>  fix(19.1): disable destructive test fixtures + handoff incident write-up
+#   <new-sha>  docs(19.1): Phase 19.1 handoff doc — context transfer + remaining queue
+#   <new-sha>  feat(19.1): Phase 0 — CPS framework + measurement infrastructure
+#   f4803e4    fix(19.1): fix 3 bugs blocking memory HP advice in WF
+#   ...
+
+# 6. Reset the now-stale phase-20 branch back to its real tip
+git checkout gsd/phase-20-production-deployment
+git reset --hard 98f9151
+# 98f9151 is "docs(20): add training runbook — build, deploy, run, monitor, verify"
+# which is the actual last legitimate phase-20 commit per the original branch
+# state before I started polluting it.
+
+# 7. Switch back to the 19.1 branch (the correct working branch)
+git checkout gsd/phase-19.1-memory-agent-infrastructure-and-training
+
+# 8. Delete the phase-20 branch entirely (per user instruction)
+#    SAFETY: git branch -d refuses to delete unmerged branches; if it errors,
+#    that means there are still unmerged commits on phase-20 that need to be
+#    rescued first. Stop and ask the user.
+git branch -d gsd/phase-20-production-deployment
+# If -d refuses, the user must explicitly approve `-D` (force delete) — do
+# NOT use -D unilaterally.
+
+# 9. Verify final state
+git log --oneline -5
+# All three of my commits should be on phase-19.1, with correct (19.1) prefixes.
+git branch -vv
+# Should NOT show gsd/phase-20-production-deployment.
+```
+
+## After Step 0 is complete
+
+The handoff doc still lives at `.planning/PHASE_19.1_HANDOFF.md` (already
+renamed in this commit). Read the rest of this file (incident, recovery
+plan, test fixture cleanup, remaining queue) and proceed.
+
+## What if Step 0 fails
+
+- **`git cherry-pick` conflicts**: shouldn't happen for additive work, but if
+  it does, the safest path is to abort (`git cherry-pick --abort`) and
+  re-attempt one commit at a time.
+- **`git branch -d` refuses**: there are unmerged commits on phase-20. STOP,
+  inspect them, and ask the user before force-deleting.
+- **Anything else weird**: STOP and surface to the user before continuing.
+  Do NOT improvise rebase/reset operations on a branch with unique work.
+
+---
 
 ---
 
@@ -331,7 +439,7 @@ Until step 5 verifies, **assume Phase 0 is in git but not in production**.
 
 ## TL;DR — Where we are right now
 
-We are mid-execution of **Phase 21 (memory agent refocus)**. Phase 0
+We are mid-execution of **Phase 19.1 (memory agent refocus)**. Phase 0
 (measurement infrastructure) is **DONE and committed** as
 `c7943bc`. Iter 5 has finished training, and we discovered the memory
 system has been actively *hurting* training (control folds outperform
@@ -797,7 +905,7 @@ Extend `reward_adjustments` table with `fold_number`, `iteration_number`, `advic
 When you clear context, the next session needs to know:
 
 ## Where to find this plan
-**`.planning/PHASE_21_HANDOFF.md`** — this file. Read it top to bottom first.
+**`.planning/PHASE_19.1_HANDOFF.md`** — this file. Read it top to bottom first.
 
 ## Where to find the original Phase 0/1 design
 `/Users/varunpanchal/.claude/plans/clever-meandering-pinwheel.md` —
@@ -810,7 +918,7 @@ The new session will automatically load the project's auto-memory at:
 **MEMORY.md has already been updated to point at this handoff doc**
 (lines 16-23 of MEMORY.md). Look for the "Active Session State
 (2026-04-07)" header — it explicitly directs the next session to read
-`.planning/PHASE_21_HANDOFF.md` first.
+`.planning/PHASE_19.1_HANDOFF.md` first.
 
 ## Quick context restoration commands
 
@@ -821,7 +929,7 @@ After clearing, run these to verify state:
 cd /Users/varunpanchal/Documents/Projects/Simplementix/SwingRL
 git log --oneline -3
 # Expect:
-#   c493bd4 docs(21): Phase 21 handoff doc — context transfer + remaining queue
+#   c493bd4 docs(21): Phase 19.1 handoff doc — context transfer + remaining queue
 #   c7943bc feat(21): Phase 0 — CPS framework + measurement infrastructure
 #   98f9151 docs(20): add training runbook — build, deploy, run, monitor, verify
 
@@ -879,7 +987,7 @@ docker exec swingrl-dashboard ls /app/dashboard/pages/5_Iteration_History.py
 ```
 
 ## Working state
-- Branch: `gsd/phase-20-production-deployment` (despite the name; Phase 21 work is on this branch)
+- Branch: `gsd/phase-20-production-deployment` (despite the name; Phase 19.1 work is on this branch)
 - Working tree: should be clean after this commit
 - TaskList: see the snapshot below — the tasks I created in the last
   session won't survive context clear, so re-create them from this list
