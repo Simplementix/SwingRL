@@ -243,10 +243,11 @@ patterns are still in the test code).
 - ❌ `iteration_results`: 1 row only (was 12, the 1 row is the test fixture leftover)
 - ❌ `iteration_results` schema: 16 CPS columns missing (Phase 0.2 migration reverted)
 
-## Recovery plan (NOT YET EXECUTED — awaiting user approval)
+## Recovery plan (EXECUTED 2026-04-07 22:04 ET — see top banner)
 
-The next session must do these in order. **Each step requires explicit
-user authorization** because they all touch pg16.
+> **Status update**: Plan A executed — R1, R2, R3, R6, R7 ran successfully against pg16. R4 + R5 (iter 5 rebuild) intentionally skipped per user decision. The original step-by-step plan below is preserved as historical reference; the actual execution differed in two ways: (a) R2 used the simpler `add_cps_columns.py` only — no DROP TABLE was needed because the test fixture had recreated the table with the original 24-column schema, so `ADD COLUMN IF NOT EXISTS` was sufficient; (b) R3 was implemented as a new committed script `scripts/migrations/restore_iter_0_4_from_duckdb.py` (commit `b6ba881`) instead of an ad-hoc one-shot. See the "Recovery completed" section at the top of the incident block for the actual results.
+
+The original plan as written before execution:
 
 ### Step R1: Read-only backup of the duckdb files (zero risk)
 
@@ -487,20 +488,23 @@ Until step 5 verifies, **assume Phase 0 is in git but not in production**.
 
 ## TL;DR — Where we are right now
 
+> **Update 2026-04-07 22:04 ET**: This TL;DR was written before the test-fixture wipe. The "iter 5 fully recovered" claim is no longer accurate — iter 5 was recovered, then re-wiped, then declared lost in Plan A. Iter 0-4 are recovered and CPS-populated as of 2026-04-07 22:04 ET. The new queue is Plan B (test-fixture safety + STEP 0) → then Tasks C/D/QA/B.
+
 We are mid-execution of **Phase 19.1 (memory agent refocus)**. Phase 0
 (measurement infrastructure) is **DONE and committed** as
 `c7943bc`. Iter 5 has finished training, and we discovered the memory
 system has been actively *hurting* training (control folds outperform
 treatment folds by 2.7-5.1× CPS across iter 3, 4, 5). We have **3
-pre-existing bugs fixed**, **iter 5 fully recovered**, and **15
-roadmap-style tasks completed**.
+pre-existing bugs fixed** and Plan A recovery is complete (iter 0-4 only).
 
-Remaining queue (in order, set by user):
+Remaining queue (in order, updated 2026-04-07 22:04 ET):
 1. ~~A — Commit Phase 0 work~~ ✅ done (`c7943bc`)
-2. **C — Fix crypto SAC epoch memory volume bug** ← next
-3. D — Investigate equity `consolidation_skipped_no_memories`
-4. iter5 QA — review memories/patterns, cleanup harmful patterns
-5. B — Phase 1 (prompt + reward weight refocus)
+2. ~~Plan A — pg16 recovery (iter 0-4)~~ ✅ done (`b6ba881` recovery script + `e0d1345` doc update; iter 5 skipped)
+3. **Plan B — STEP 0 branch consolidation + `tests/conftest.py` `pytest_configure` guard + remove the 18 `raise RuntimeError` test fixture disables (over-correction undo)** ← next
+4. C — Fix crypto SAC epoch memory volume bug
+5. D — Investigate equity `consolidation_skipped_no_memories`
+6. iter5 QA — review memories/patterns, cleanup harmful patterns (now mostly moot since iter 5 is lost; the iter 3-4 patterns still warrant review)
+7. B — Phase 1 (prompt + reward weight refocus)
 
 ---
 
@@ -592,19 +596,21 @@ Commit `c7943bc` lands 24 files / 4,828 insertions / 39 deletions.
 
 ## Iter 5 recovery — what was lost, what was recovered
 
+> **Update 2026-04-07 22:04 ET**: This section was written by the prior session BEFORE the test-fixture wipe. The "RECOVERED" claims for `iteration_results` and CPS columns reflect the state after the prior session's first recovery run, **before** they were destroyed a second time by the test fixture. Plan A 2026-04-07 22:04 ET decided to **skip iter 5 entirely** rather than re-recover it. So the current state is: iter 5 backtest_results / iteration_results / CPS values are absent from pg16 by design. The original prior-session bullets are preserved below as historical reference.
+
 ### What we have (verified against pg16)
-- ✅ `backtest_results` for iter 5: 111/111 rows (equity 23×3 + crypto 14×3)
-- ✅ `training_epochs`: 850,430 rows for Apr 6-7
-- ✅ `reward_adjustments`: 149 rows
-- ✅ `meta_decisions`: 6 rows (one per env×algo)
-- ✅ `memories`: 850,748 rows (raw text snapshots)
-- ✅ `pattern_presentations`: 1,835 rows
-- ✅ All 6 model.zip files in `/app/models/iterations/iter_5/active/{env}/{algo}/`
-- ✅ JSON reports: `/app/data/{training_report,training_comparison}.json`
-- ✅ Stage-1 consolidations: 5 patterns (ids 170, 171, 172 are equity; ids 173, 174 are crypto). Verified against pg16 — see "Specific patterns to investigate" section below for full text snippets. One pattern explicitly says **"Control folds for PPO show a mean Sharpe of 3.8606, while treatment folds regress to 2.4861..."** — the LLM independently caught the smoking gun.
-- ✅ `iteration_results` for iter 5: **RECOVERED** via `recover_iteration_results.py` (equity sharpe=2.34 gate_passed; crypto sharpe=4.81 gate_passed — byte-identical to original log)
-- ✅ CPS columns for iter 5: **POPULATED** via backfill (regression flag set for both envs)
-- ✅ `pattern_outcomes` for iter 5: **REPLAYED** via `MemoryClient.record_outcome()` — rows 13 (crypto) + 14 (equity)
+- ⚠ `backtest_results` for iter 5: ~~111/111 rows~~ → **0 rows now** (wiped by test fixture; iter 5 declared lost in Plan A; iter 6 will be a fresh run)
+- ✅ `training_epochs`: 850,430 rows for Apr 6-7 (still intact 2026-04-07 22:04 ET)
+- ✅ `reward_adjustments`: 149 rows (still intact)
+- ✅ `meta_decisions`: 30 rows total (still intact; the per-iter-5 6 are part of the 30)
+- ✅ `memories`: 4,958,918 rows total (still intact — the prior session reported 850,748 which was iter 5 only; cumulative is much larger)
+- ✅ `pattern_presentations`: 1,835 rows (still intact)
+- ✅ All 6 model.zip files in `/app/models/iterations/iter_5/active/{env}/{algo}/` (still intact — could enable a future iter 5 re-run if desired)
+- ✅ JSON reports: `/app/data/{training_report,training_comparison}.json` (still intact — `training_comparison.json` has the full iter 5 walk_forward fold data with 18 columns/fold but missing `max_single_loss` and `is_control_fold` — see Plan A discussion for why this isn't enough for a clean recovery)
+- ✅ Stage-1 consolidations: 5 patterns (ids 170, 171, 172 are equity; ids 173, 174 are crypto). One pattern explicitly says **"Control folds for PPO show a mean Sharpe of 3.8606, while treatment folds regress to 2.4861..."** — the LLM independently caught the smoking gun. (Still intact 2026-04-07 22:04 ET; consolidations table has 84 rows.)
+- ❌ `iteration_results` for iter 5: ~~RECOVERED via `recover_iteration_results.py`~~ → **wiped a second time by the test fixture and not re-recovered in Plan A**. Iter 5 row absent.
+- ❌ CPS columns for iter 5: ~~POPULATED via backfill~~ → **wiped along with the iter 5 row**. Iter 5 absent from CPS entirely.
+- ✅ `pattern_outcomes` for iter 5: **REPLAYED** by the prior session via `MemoryClient.record_outcome()` — rows 13 (crypto) + 14 (equity). Still intact in pg16.
 
 ### What's still missing (and why)
 - ❌ **Stage-2 cross-env consolidations for iter 5**: blocked on the
@@ -764,7 +770,23 @@ To run live DB tests, either:
 
 # REMAINING WORK QUEUE (in order)
 
-## Task C — Fix crypto SAC epoch memory volume bug ⏳ NEXT
+> **Status update 2026-04-07 22:04 ET**: Plan A (pg16 recovery for iter 0-4) is **done** — see top banner. The next item is **Plan B** (test-fixture safety net + STEP 0 branch consolidation), NOT Task C. Task C remains queued after Plan B because the crypto SAC bug fix may need to write/read pg16 and we want the test-fixture safety net in place first.
+
+## Plan B — Test-fixture safety net + STEP 0 ⏳ NEXT (replaces "Task C ⏳ NEXT")
+
+Three tightly-related items in one plan:
+
+1. **STEP 0 — branch consolidation** (5 stranded `(19.1)`-prefixed commits + the 2 new Plan A recovery commits on `gsd/phase-20-production-deployment` → cherry-pick onto `gsd/phase-19.1-memory-agent-infrastructure-and-training`, reword the 3 mislabelled `(21):` subjects, then `git branch -d` the phase-20 branch). See the original STEP 0 section at the very top of this doc for the exact commands. Add the new commits (`b6ba881`, `e0d1345`) to the cherry-pick list.
+2. **`tests/conftest.py` `pytest_configure` guard** — refuse to run pytest if `DATABASE_URL` doesn't end with `_test` or isn't in the safe-name allowlist. This is the structural fix the original incident response should have been (instead of disabling 18 fixtures). Single addition to `tests/conftest.py`, ~25 lines.
+3. **Remove the 18 `raise RuntimeError` disables** in test fixtures (the over-correction). With the conftest guard in place, the per-fixture disables become dead code. Restore the original SQL by uncommenting the lines and deleting the DANGER blocks + raise statements. The 5 still-pending dangerous fixtures (test_shadow_runner, test_promoter, test_stuck_agent, test_wash_sale, test_alerter) are also covered by the conftest guard so they don't need separate disables.
+
+After Plan B:
+- The test suite is safe to run from anywhere with any DATABASE_URL (or none) — the guard catches misuse before any fixture runs.
+- The git history is on the right branch with the right subject prefixes.
+- The 23 currently-disabled or pending-disabled fixtures are restored as proper test code.
+- We can finally run `uv run pytest -q` against a local docker postgres or via `scripts/ci-homelab.sh` without manual intervention.
+
+## Task C — Fix crypto SAC epoch memory volume bug (after Plan B)
 
 ### Symptom
 Crypto SAC iter 5 produced **688,899** epoch memories (out of 850,748
