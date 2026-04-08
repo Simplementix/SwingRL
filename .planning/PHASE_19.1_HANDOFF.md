@@ -17,15 +17,22 @@ context clear. **Read this top to bottom before doing anything.**
 # 🎯🎯🎯 STEP 0 — DO THIS FIRST: Move work to phase-19.1, delete phase-20 branch
 
 **Before reading anything else, do this branch consolidation. Until it's done,
-the git state is wrong: 8 commits live on the wrong branch (3 with mislabelled
-`(21)` subjects, 5 already correctly labelled `(19.1)` but stranded on the
-wrong branch).**
+the git state is wrong: every commit on `gsd/phase-20-production-deployment`
+above `98f9151` belongs on `gsd/phase-19.1-memory-agent-infrastructure-and-training`
+instead. Use `git log 98f9151..gsd/phase-20-production-deployment --oneline`
+to get the authoritative current list — do NOT trust the literal SHA list
+below blindly because handoff-update commits get appended over time and the
+list can drift by 1-2.**
 
-> **Update 2026-04-07 22:04 ET**: This list grew from 3 commits to 8 since the
+> **Update 2026-04-07 22:04 ET**: This list grew from 3 commits to 9+ since the
 > original handoff was written. Plan A added 3 new recovery commits
-> (`b6ba881`, `e0d1345`, `f0bdbcd`) that already use the correct `(19.1)`
-> subject prefix but landed on `phase-20-production-deployment` because Plan A
-> stayed on that branch deliberately (the Phase 0 modules are only on phase-20).
+> (`b6ba881`, `e0d1345`, `f0bdbcd`) plus 2 doc-refresh commits (`b42cb01`
+> and likely 1 more by the time you read this) that already use the correct
+> `(19.1)` subject prefix but landed on `phase-20-production-deployment`
+> because Plan A stayed on that branch deliberately (the Phase 0 modules are
+> only on phase-20). The first 3 commits (`c7943bc`, `c493bd4`, `abc09d7`)
+> still need their `(21)` → `(19.1)` reword. Everything else is already
+> correctly labelled.
 
 ## Why
 
@@ -35,18 +42,25 @@ is actually a future phase, `21-discord-alert-suite`). The substantive work
 (`19.1-memory-agent-infrastructure-and-training`). There's already a branch
 for it: `gsd/phase-19.1-memory-agent-infrastructure-and-training`.
 
-The current branch `gsd/phase-20-production-deployment` is stale. Eight
-commits sit on it that should have been on the 19.1 branch:
+The current branch `gsd/phase-20-production-deployment` is stale. **All
+commits above `98f9151` need to move.** As a snapshot at the time of the
+last handoff refresh, the list looked roughly like this:
 - `c7943bc feat(21):` — Phase 0 framework (24 files, 4828 insertions) — **needs reword to (19.1)**
 - `c493bd4 docs(21):` — original handoff doc — **needs reword to (19.1)**
 - `abc09d7 fix(21):` — incident response + test fixture disables — **needs reword to (19.1)**
 - `652f2a4 docs(19.1):` — handoff rename to PHASE_19.1, add STEP 0 (already correct subject)
 - `34d737f docs(19.1):` — handoff content fixes (already correct subject)
-- `b6ba881 fix(19.1):` — **NEW** Plan A iter 0-4 recovery script (already correct subject)
-- `e0d1345 docs(19.1):` — **NEW** mark recovery complete (already correct subject)
-- `f0bdbcd docs(19.1):` — **NEW** Plan A queue update (already correct subject)
+- `b6ba881 fix(19.1):` — Plan A iter 0-4 recovery script (already correct subject)
+- `e0d1345 docs(19.1):` — Plan A: mark recovery complete (already correct subject)
+- `f0bdbcd docs(19.1):` — Plan A queue update (already correct subject)
+- `b42cb01 docs(19.1):` — handoff refresh for context clear (already correct subject)
+- ...plus any handoff-refresh commits made after this snapshot.
 
-The 3 oldest need their subjects reworded; the 5 newer ones do not.
+The first 3 (`c7943bc`, `c493bd4`, `abc09d7`) need their subjects reworded
+from `(21)` to `(19.1)`. Every newer commit already uses `(19.1)` and only
+needs cherry-picking, no reword.
+
+**Always re-derive the actual current list with `git log 98f9151..HEAD --oneline` before doing the cherry-pick.**
 
 **The commits are local-only** — `gsd/phase-20-production-deployment` has no
 upstream tracking branch, so we can rewrite history safely.
@@ -56,26 +70,33 @@ upstream tracking branch, so we can rewrite history safely.
 ```bash
 cd /Users/varunpanchal/Documents/Projects/Simplementix/SwingRL
 
-# 1. Verify the 8 commits are local-only (safe to rewrite)
+# 1. Verify the commits are local-only (safe to rewrite)
 git branch -vv | grep phase-20-production
 # Confirm: NO `[origin/...]` annotation present. If you see one, STOP and ask
 # the user — somebody pushed and you cannot safely rewrite.
 
+# 1b. Get the authoritative current commit list (do NOT trust the SHA list above)
+git log 98f9151..gsd/phase-20-production-deployment --oneline
+# Note the count — call it N — and confirm the first 3 (oldest, at the bottom)
+# are c7943bc / c493bd4 / abc09d7. If any commit in the list is unfamiliar,
+# STOP and inspect before proceeding.
+
 # 2. Switch to the correct phase branch
 git checkout gsd/phase-19.1-memory-agent-infrastructure-and-training
 
-# 3. Cherry-pick all 8 commits from phase-20 onto phase-19.1, in order
-git cherry-pick c7943bc c493bd4 abc09d7 652f2a4 34d737f b6ba881 e0d1345 f0bdbcd
+# 3. Cherry-pick the entire range from phase-20 onto phase-19.1
+git cherry-pick 98f9151..gsd/phase-20-production-deployment
+# Range syntax avoids the off-by-1 trap from listing literal SHAs.
 # If conflicts arise (shouldn't, the work is additive), resolve and `git
 # cherry-pick --continue`. Most likely conflict point: PHASE_19.1_HANDOFF.md
 # if phase-19.1 already has a stale copy — keep the phase-20 version.
 
 # 4. Reword the 3 mislabelled subjects from "(21)" to "(19.1)"
-#    The 3 oldest cherry-picked commits need reword; the 5 newer ones do NOT.
-#    Easiest: interactive rebase the last 8 commits, mark only the 3 oldest as `reword`.
-git rebase -i HEAD~8
+#    Only the 3 OLDEST cherry-picked commits need reword; everything else is
+#    already correctly labelled. Use the count N from step 1b for the rebase depth.
+git rebase -i HEAD~$N    # substitute N for the count from step 1b
 # In the editor, change `pick` to `reword` (or `r`) on the THREE oldest (top
-# of the list, since rebase shows oldest-first). Leave the 5 newer ones as
+# of the list, since rebase shows oldest-first). Leave all newer commits as
 # `pick`. Save.
 # For each rewording stop, change "(21)" → "(19.1)" in the subject line:
 #   - feat(21): → feat(19.1):
@@ -83,19 +104,10 @@ git rebase -i HEAD~8
 #   - fix(21):  → fix(19.1):
 # Body content stays the same.
 
-# 5. Verify the cherry-picked commits look right
-git log --oneline -10
-# Expect (top = newest):
-#   <new>  docs(19.1): update handoff with Plan A completion + Plan B as next queue item
-#   <new>  docs(19.1): mark iter 0-4 recovery complete; iter 5 skipped per decision
-#   <new>  fix(19.1): add iter 0-4 recovery script restoring backtest_results from duckdb backup
-#   <new>  docs(19.1): handoff content fixes — STEP 0 + Phase 21 → 19.1 rename
-#   <new>  docs(19.1): rename handoff to PHASE_19.1, add STEP 0 branch consolidation
-#   <new>  fix(19.1): disable destructive test fixtures + handoff incident write-up
-#   <new>  docs(19.1): Phase 19.1 handoff doc — context transfer + remaining queue
-#   <new>  feat(19.1): Phase 0 — CPS framework + measurement infrastructure
-#   f4803e4  fix(19.1): fix 3 bugs blocking memory HP advice in WF
-#   ...
+# 5. Verify the result
+git log --oneline -12
+# Expect: every commit above f4803e4 should now have a (19.1): subject prefix
+# and no (21) prefixes. The original 3 will have new SHAs after the reword.
 
 # 6. Reset the now-stale phase-20 branch back to its real tip
 git checkout gsd/phase-20-production-deployment
@@ -1016,22 +1028,18 @@ The new session will automatically load the project's auto-memory at:
 After clearing, run these to verify state. **Updated 2026-04-07 22:04 ET to reflect Plan A completion.**
 
 ```bash
-# 1. Check git is at the right commits (8 commits stranded on phase-20)
+# 1. Check git is at the right commits (multiple stranded on phase-20)
 cd /Users/varunpanchal/Documents/Projects/Simplementix/SwingRL
 git branch --show-current
 # Expect: gsd/phase-20-production-deployment
-git log --oneline -10
-# Expect (top = newest):
-#   f0bdbcd  docs(19.1): update handoff with Plan A completion + Plan B as next queue item
-#   e0d1345  docs(19.1): mark iter 0-4 recovery complete; iter 5 skipped per decision
-#   b6ba881  fix(19.1): add iter 0-4 recovery script restoring backtest_results from duckdb backup
-#   34d737f  docs(19.1): handoff content fixes — STEP 0 + Phase 21 → 19.1 rename
-#   652f2a4  docs(19.1): rename handoff to PHASE_19.1, add STEP 0 branch consolidation
-#   abc09d7  fix(21): disable destructive test fixtures + handoff incident write-up
-#   c493bd4  docs(21): Phase 19.1 handoff doc — context transfer + remaining queue
-#   c7943bc  feat(21): Phase 0 — CPS framework + measurement infrastructure
-#   98f9151  docs(20): add training runbook — build, deploy, run, monitor, verify
-#   ...
+git log 98f9151..HEAD --oneline
+# Expect a list of commits, all with (19.1) or (21) subject prefixes.
+# The first 3 oldest are c7943bc / c493bd4 / abc09d7 with (21) subjects
+# (these will need reword in Plan B's STEP 0). Everything newer should
+# already have (19.1) subjects. The exact count and SHAs of the newest
+# few commits depends on how many handoff-refresh commits were appended.
+# As a sanity check, the script `scripts/migrations/restore_iter_0_4_from_duckdb.py`
+# (commit `b6ba881` at the time of last refresh) MUST exist on disk.
 
 # 2. Check working tree is clean
 git status
