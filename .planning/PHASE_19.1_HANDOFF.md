@@ -121,7 +121,55 @@ plan, test fixture cleanup, remaining queue) and proceed.
 
 ---
 
-# 🚨🚨🚨 INCIDENT 2026-04-07 ~07:55 ET — PRODUCTION DATA WIPED — RECOVERY PENDING
+# 🚨🚨🚨 INCIDENT 2026-04-07 ~07:55 ET — PRODUCTION DATA WIPED — RECOVERY COMPLETE (iter 0-4)
+
+## ✅ Recovery completed 2026-04-07 22:04 ET (Plan A executed)
+
+**Status: pg16 restored to known-good state for iter 0-4. Iter 5 declared lost per user decision.**
+
+What ran:
+- **R1** ✅ Verified duckdb backup intact (10 iteration_results, 564 backtest_results, 43 cols) and snapshotted pg16 pre-recovery state
+- **R2a** ✅ Surgical DELETE of the lone iter=42 baseline test fixture leftover
+- **R2b** ✅ Re-applied `add_cps_columns.py` migration (idempotent ADD COLUMN IF NOT EXISTS) — 16 columns added, iteration_results now 40 cols
+- **R3** ✅ New script `scripts/migrations/restore_iter_0_4_from_duckdb.py` (commit `b6ba881`) restored 564 backtest_results + 10 iteration_results from `/app/data/db_backup_pre_postgres/market_data.ddb` via column intersection. Dry-run + real run both clean.
+- **R4** ⏭ SKIPPED — iter 5 from training logs. Per user decision: training_iter5.log\* mostly rotated (only 12 of 111 fold_complete events on disk), training_comparison.json missing `max_single_loss` and `is_control_fold`.
+- **R5** ⏭ SKIPPED — iter 5 iteration_results recovery (depends on R4)
+- **R6** ✅ Ran `backfill_cps_history.py --max-iter 4` — all 10 iteration_results rows now have CPS columns populated
+- **R7** ✅ Final verification: every CPS value matches the handoff baseline byte-for-byte
+
+State after recovery (pg16):
+| Table | Rows | Notes |
+|---|---|---|
+| `iteration_results` | 10 (iter 0-4 × {equity, crypto}) | 40 columns (24 base + 16 CPS), all CPS populated |
+| `backtest_results` | 564 (iter 0-4) | iter 1 equity has 78 rows incl. 9 restart-with-fixes dupes |
+| `training_epochs` | 850,430 | UNTOUCHED |
+| `memories` | 4,958,918 | UNTOUCHED |
+| `meta_decisions` | 30 | UNTOUCHED |
+| `reward_adjustments` | 149 | UNTOUCHED |
+| `consolidations` | 84 | UNTOUCHED |
+
+Smoking-gun harm chart still works (treatment vs control, iter 3-4):
+| Env | Iter | Treatment v1 | Control v1 | Harm ratio |
+|---|---|---|---|---|
+| equity | 3 | 0.01233 | 0.03427 | **2.78×** |
+| equity | 4 | 0.01485 | 0.04071 | **2.74×** |
+| crypto | 3 | 0.08161 | 0.28397 | **3.48×** |
+| crypto | 4 | 0.08318 | 0.42063 | **5.06×** |
+
+What is gone (and won't be recovered):
+- ❌ Iter 5 backtest_results (111 rows) — sources too lossy, accepted loss
+- ❌ Iter 5 iteration_results (2 rows) — depends on iter 5 backtest_results
+- ❌ Iter 5 CPS values (would have been backfilled from above)
+- ✅ The 6 iter 5 model.zip files in `/app/models/iterations/iter_5/active/...` are still on disk if a future re-run is desired
+
+What's still pending (Plan B):
+- STEP 0 — branch consolidation (5 stranded commits + 1 new recovery commit on phase-20 → move to phase-19.1 + reword `(21)` → `(19.1)`)
+- `tests/conftest.py` `pytest_configure` guard (the structural fix — refuse to run pytest when DATABASE_URL doesn't end with `_test`)
+- Remove the 18 `raise RuntimeError` disables from test fixtures (over-correction; the conftest guard makes them obsolete)
+- The 5 still-pending dangerous test fixtures (covered by the conftest guard once it lands)
+- Tasks C/D/QA/B from the original handoff queue
+
+---
 
 ## What I (Claude) did
 
