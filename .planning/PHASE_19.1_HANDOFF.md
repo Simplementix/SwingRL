@@ -17,8 +17,15 @@ context clear. **Read this top to bottom before doing anything.**
 # 🎯🎯🎯 STEP 0 — DO THIS FIRST: Move work to phase-19.1, delete phase-20 branch
 
 **Before reading anything else, do this branch consolidation. Until it's done,
-the git state is wrong: 3 commits live on the wrong branch with mislabelled
-subjects.**
+the git state is wrong: 8 commits live on the wrong branch (3 with mislabelled
+`(21)` subjects, 5 already correctly labelled `(19.1)` but stranded on the
+wrong branch).**
+
+> **Update 2026-04-07 22:04 ET**: This list grew from 3 commits to 8 since the
+> original handoff was written. Plan A added 3 new recovery commits
+> (`b6ba881`, `e0d1345`, `f0bdbcd`) that already use the correct `(19.1)`
+> subject prefix but landed on `phase-20-production-deployment` because Plan A
+> stayed on that branch deliberately (the Phase 0 modules are only on phase-20).
 
 ## Why
 
@@ -28,13 +35,18 @@ is actually a future phase, `21-discord-alert-suite`). The substantive work
 (`19.1-memory-agent-infrastructure-and-training`). There's already a branch
 for it: `gsd/phase-19.1-memory-agent-infrastructure-and-training`.
 
-The current branch `gsd/phase-20-production-deployment` is stale. Three
+The current branch `gsd/phase-20-production-deployment` is stale. Eight
 commits sit on it that should have been on the 19.1 branch:
-- `c7943bc` — Phase 0 framework (24 files, 4828 insertions)
-- `c493bd4` — handoff doc (this file)
-- `abc09d7` — incident response + test fixture disables
+- `c7943bc feat(21):` — Phase 0 framework (24 files, 4828 insertions) — **needs reword to (19.1)**
+- `c493bd4 docs(21):` — original handoff doc — **needs reword to (19.1)**
+- `abc09d7 fix(21):` — incident response + test fixture disables — **needs reword to (19.1)**
+- `652f2a4 docs(19.1):` — handoff rename to PHASE_19.1, add STEP 0 (already correct subject)
+- `34d737f docs(19.1):` — handoff content fixes (already correct subject)
+- `b6ba881 fix(19.1):` — **NEW** Plan A iter 0-4 recovery script (already correct subject)
+- `e0d1345 docs(19.1):` — **NEW** mark recovery complete (already correct subject)
+- `f0bdbcd docs(19.1):` — **NEW** Plan A queue update (already correct subject)
 
-These commits also have wrong subject prefixes (`(21)` instead of `(19.1)`).
+The 3 oldest need their subjects reworded; the 5 newer ones do not.
 
 **The commits are local-only** — `gsd/phase-20-production-deployment` has no
 upstream tracking branch, so we can rewrite history safely.
@@ -44,7 +56,7 @@ upstream tracking branch, so we can rewrite history safely.
 ```bash
 cd /Users/varunpanchal/Documents/Projects/Simplementix/SwingRL
 
-# 1. Verify the 3 commits are local-only (safe to rewrite)
+# 1. Verify the 8 commits are local-only (safe to rewrite)
 git branch -vv | grep phase-20-production
 # Confirm: NO `[origin/...]` annotation present. If you see one, STOP and ask
 # the user — somebody pushed and you cannot safely rewrite.
@@ -52,28 +64,37 @@ git branch -vv | grep phase-20-production
 # 2. Switch to the correct phase branch
 git checkout gsd/phase-19.1-memory-agent-infrastructure-and-training
 
-# 3. Cherry-pick the 3 commits from phase-20 onto phase-19.1
-git cherry-pick c7943bc c493bd4 abc09d7
+# 3. Cherry-pick all 8 commits from phase-20 onto phase-19.1, in order
+git cherry-pick c7943bc c493bd4 abc09d7 652f2a4 34d737f b6ba881 e0d1345 f0bdbcd
 # If conflicts arise (shouldn't, the work is additive), resolve and `git
-# cherry-pick --continue`.
+# cherry-pick --continue`. Most likely conflict point: PHASE_19.1_HANDOFF.md
+# if phase-19.1 already has a stale copy — keep the phase-20 version.
 
-# 4. Reword each cherry-picked commit's subject from "(21)" to "(19.1)"
-#    Easiest: interactive rebase the last 3 commits, set them all to `reword`.
-git rebase -i HEAD~3
-# In the editor, change `pick` to `reword` (or `r`) on all 3 lines, save.
-# For each commit, change "(21)" → "(19.1)" in the subject line.
-# - feat(21): → feat(19.1):
-# - docs(21): → docs(19.1):
-# - fix(21):  → fix(19.1):
-# Save each. Body content stays the same.
+# 4. Reword the 3 mislabelled subjects from "(21)" to "(19.1)"
+#    The 3 oldest cherry-picked commits need reword; the 5 newer ones do NOT.
+#    Easiest: interactive rebase the last 8 commits, mark only the 3 oldest as `reword`.
+git rebase -i HEAD~8
+# In the editor, change `pick` to `reword` (or `r`) on the THREE oldest (top
+# of the list, since rebase shows oldest-first). Leave the 5 newer ones as
+# `pick`. Save.
+# For each rewording stop, change "(21)" → "(19.1)" in the subject line:
+#   - feat(21): → feat(19.1):
+#   - docs(21): → docs(19.1):
+#   - fix(21):  → fix(19.1):
+# Body content stays the same.
 
 # 5. Verify the cherry-picked commits look right
-git log --oneline -5
-# Expect:
-#   <new-sha>  fix(19.1): disable destructive test fixtures + handoff incident write-up
-#   <new-sha>  docs(19.1): Phase 19.1 handoff doc — context transfer + remaining queue
-#   <new-sha>  feat(19.1): Phase 0 — CPS framework + measurement infrastructure
-#   f4803e4    fix(19.1): fix 3 bugs blocking memory HP advice in WF
+git log --oneline -10
+# Expect (top = newest):
+#   <new>  docs(19.1): update handoff with Plan A completion + Plan B as next queue item
+#   <new>  docs(19.1): mark iter 0-4 recovery complete; iter 5 skipped per decision
+#   <new>  fix(19.1): add iter 0-4 recovery script restoring backtest_results from duckdb backup
+#   <new>  docs(19.1): handoff content fixes — STEP 0 + Phase 21 → 19.1 rename
+#   <new>  docs(19.1): rename handoff to PHASE_19.1, add STEP 0 branch consolidation
+#   <new>  fix(19.1): disable destructive test fixtures + handoff incident write-up
+#   <new>  docs(19.1): Phase 19.1 handoff doc — context transfer + remaining queue
+#   <new>  feat(19.1): Phase 0 — CPS framework + measurement infrastructure
+#   f4803e4  fix(19.1): fix 3 bugs blocking memory HP advice in WF
 #   ...
 
 # 6. Reset the now-stale phase-20 branch back to its real tip
@@ -95,8 +116,8 @@ git branch -d gsd/phase-20-production-deployment
 # NOT use -D unilaterally.
 
 # 9. Verify final state
-git log --oneline -5
-# All three of my commits should be on phase-19.1, with correct (19.1) prefixes.
+git log --oneline -10
+# All eight cherry-picked commits should be on phase-19.1 with (19.1) prefixes.
 git branch -vv
 # Should NOT show gsd/phase-20-production-deployment.
 ```
@@ -992,36 +1013,48 @@ The new session will automatically load the project's auto-memory at:
 
 ## Quick context restoration commands
 
-After clearing, run these to verify state:
+After clearing, run these to verify state. **Updated 2026-04-07 22:04 ET to reflect Plan A completion.**
 
 ```bash
-# 1. Check git is at the right commits (TWO commits this session)
+# 1. Check git is at the right commits (8 commits stranded on phase-20)
 cd /Users/varunpanchal/Documents/Projects/Simplementix/SwingRL
-git log --oneline -3
-# Expect:
-#   c493bd4 docs(21): Phase 19.1 handoff doc — context transfer + remaining queue
-#   c7943bc feat(21): Phase 0 — CPS framework + measurement infrastructure
-#   98f9151 docs(20): add training runbook — build, deploy, run, monitor, verify
+git branch --show-current
+# Expect: gsd/phase-20-production-deployment
+git log --oneline -10
+# Expect (top = newest):
+#   f0bdbcd  docs(19.1): update handoff with Plan A completion + Plan B as next queue item
+#   e0d1345  docs(19.1): mark iter 0-4 recovery complete; iter 5 skipped per decision
+#   b6ba881  fix(19.1): add iter 0-4 recovery script restoring backtest_results from duckdb backup
+#   34d737f  docs(19.1): handoff content fixes — STEP 0 + Phase 21 → 19.1 rename
+#   652f2a4  docs(19.1): rename handoff to PHASE_19.1, add STEP 0 branch consolidation
+#   abc09d7  fix(21): disable destructive test fixtures + handoff incident write-up
+#   c493bd4  docs(21): Phase 19.1 handoff doc — context transfer + remaining queue
+#   c7943bc  feat(21): Phase 0 — CPS framework + measurement infrastructure
+#   98f9151  docs(20): add training runbook — build, deploy, run, monitor, verify
+#   ...
 
 # 2. Check working tree is clean
 git status
 # Expect: nothing to commit, working tree clean
 
-# 3. Verify the test suite still passes (always activate venv first)
-source .venv/bin/activate
-uv run pytest -q
-# Expect: 975 passed, 390 skipped, 0 failed (49 sec wall time)
+# 3. DO NOT run the test suite yet — the 18 disabled fixtures are still
+#    raising RuntimeError. Plan B's first step is the conftest guard +
+#    removing those disables. Until then, `uv run pytest -q` will show many
+#    new errors. Skip the pytest sanity check until after Plan B.
 
-# 4. Verify pg16 has the recovered iter 5 rows
+# 4. Verify pg16 has the recovered iter 0-4 rows (Plan A result)
 ssh homelab "docker exec swingrl python3 -c '
 import os, psycopg
 conn = psycopg.connect(os.environ[\"DATABASE_URL\"], autocommit=True)
 cur = conn.cursor()
-cur.execute(\"SELECT iteration_number, environment, cps_v1_multiplicative, ensemble_sharpe FROM iteration_results WHERE iteration_number IN (4, 5) ORDER BY iteration_number, environment\")
-for r in cur.fetchall():
-    print(r)
+cur.execute(\"SELECT iteration_number, environment, ROUND(cps_v1_multiplicative::numeric, 5), ROUND(ensemble_sharpe::numeric, 3) FROM iteration_results ORDER BY iteration_number, environment\")
+for r in cur.fetchall(): print(r)
+print(\"---\")
+cur.execute(\"SELECT count(*) FROM backtest_results\")
+print(\"backtest_results:\", cur.fetchone()[0])
 '"
-# Expect 4 rows: iter 4-5 × equity+crypto, all with non-NULL CPS values
+# Expect 10 iteration_results rows (iter 0-4 × {equity, crypto}) all with
+# non-NULL CPS values, and 564 backtest_results rows. NO iter 5 rows.
 
 # 5. Verify dashboard is healthy and the new page exists
 curl -s -o /dev/null -w 'HTTP %{http_code}\n' http://172.184.1.5:8501/Iteration_History
@@ -1031,14 +1064,14 @@ curl -s -o /dev/null -w 'HTTP %{http_code}\n' http://172.184.1.5:8501/Iteration_
 ssh homelab "docker exec swingrl bash -c 'find /app/models/active -name model.zip | wc -l'"
 # Expect: 6
 
-# 7. CHECK CONTAINER DEPLOYMENT STATE — this is the critical one
+# 7. CHECK CONTAINER DEPLOYMENT STATE
 ssh homelab "
 echo '=== swingrl container train_pipeline.py state (Phase 0.5/bug fixes) ==='
 docker exec swingrl grep -c 'compute_and_persist_iteration_cps' /app/scripts/train_pipeline.py
 docker exec swingrl grep -c 'autocommit=True' /app/scripts/train_pipeline.py
 echo
-echo '=== swingrl container reporting/metrics modules (docker cp deployed) ==='
-docker exec swingrl bash -c 'ls /app/src/swingrl/reporting/ /app/src/swingrl/metrics/ 2>&1'
+echo '=== swingrl container Phase 0 modules + scripts (all via docker cp) ==='
+docker exec swingrl bash -c 'ls /app/src/swingrl/reporting/iteration_report.py /app/src/swingrl/metrics/cps.py /app/scripts/migrations/add_cps_columns.py /app/scripts/backfill_cps_history.py 2>&1'
 echo
 echo '=== swingrl-dashboard container Iteration History page ==='
 docker exec swingrl-dashboard ls /app/dashboard/pages/5_Iteration_History.py
@@ -1046,34 +1079,51 @@ docker exec swingrl-dashboard ls /app/dashboard/pages/5_Iteration_History.py
 # Expected results:
 #   - swingrl train_pipeline.py compute_and_persist count: 0 (NOT yet rebuilt)
 #   - swingrl train_pipeline.py autocommit count: 0 (NOT yet rebuilt)
-#   - swingrl /app/src/swingrl/reporting/iteration_report.py exists (via docker cp)
-#   - swingrl /app/src/swingrl/metrics/cps.py exists (via docker cp)
-#   - swingrl-dashboard 5_Iteration_History.py exists (via docker cp)
+#   - swingrl /app/src/swingrl/reporting/iteration_report.py exists (via docker cp by prior session)
+#   - swingrl /app/src/swingrl/metrics/cps.py exists (via docker cp by prior session)
+#   - swingrl /app/scripts/migrations/add_cps_columns.py exists (via docker cp during Plan A 2026-04-07 22:02 ET)
+#   - swingrl /app/scripts/backfill_cps_history.py exists (via docker cp during Plan A 2026-04-07 22:02 ET)
+#   - swingrl-dashboard 5_Iteration_History.py exists (via docker cp by prior session)
+#
+# All the docker-cp'd files survive container restart but NOT container
+# recreation. Plan B's container rebuild step (when scheduled) will replace
+# them with image-baked copies. Until then, do NOT run docker compose
+# down/up/build/recreate.
 #
 # If train_pipeline.py counts are >0, the swingrl image has been rebuilt
 # (good — the deploy step is done and iter 6 is safe to run)
 # If they're still 0, the deploy step has NOT been done yet — see the
-# "Required deploy steps before iter 6" section at the top of this doc.
+# "Required deploy steps before iter 6" section.
 ```
 
 ## Working state
-- Branch: `gsd/phase-20-production-deployment` (despite the name; Phase 19.1 work is on this branch)
-- Working tree: should be clean after this commit
-- TaskList: see the snapshot below — the tasks I created in the last
-  session won't survive context clear, so re-create them from this list
+- Branch: `gsd/phase-20-production-deployment` (despite the name; Phase 19.1 work is on this branch — Plan B's STEP 0 will move it all to phase-19.1)
+- Working tree: clean as of 2026-04-07 22:04 ET (after `f0bdbcd`)
+- pg16: iter 0-4 fully restored (10 iteration_results rows + 564 backtest_results rows + all CPS columns populated). Iter 5 absent by design.
+- TaskList: see the snapshot below — the tasks I created in the last session won't survive context clear, so re-create them from this list.
+
+## Plan A artifacts (to find or reference in the next session)
+- **Plan file**: `/Users/varunpanchal/.claude/plans/delegated-skipping-umbrella.md` — the approved Plan A spec, includes commit messages, R1-R7 step details, and rationale for skipping iter 5
+- **New committed script**: `scripts/migrations/restore_iter_0_4_from_duckdb.py` (commit `b6ba881`, 213 lines) — idempotent, ON CONFLICT DO NOTHING, --source/--max-iter/--dry-run flags
+- **Updated handoff doc**: this file, with status banners on the recovery section, TL;DR, iter 5 section, and remaining queue
+- **Side-effect**: `add_cps_columns.py` and `backfill_cps_history.py` were docker-cp'd into the swingrl container at `/app/scripts/migrations/` and `/app/scripts/` so the recovery could run. They are NOT in the swingrl image.
 
 ## Tasks to recreate in next session
 The TaskCreate state doesn't persist across context clears. Re-create
-these in priority order:
+these in priority order. **Updated 2026-04-07 22:04 ET to reflect Plan A done.**
 
-1. **Task C** — Fix crypto SAC epoch memory volume bug (status: pending)
-2. **Task D** — Investigate equity consolidation_skipped_no_memories (status: pending)
-3. **Iter 5 QA** — Review memories and patterns, cleanup harmful patterns (status: pending)
-4. **Task B / Phase 1.1** — LLM context enrichment in epoch_callback + meta_orchestrator (status: pending)
-5. **Phase 1.2** — New fold_context.py helper module (status: pending)
-6. **Phase 1.3** — Prompt updates in query.py (status: pending)
-7. **Phase 1.4** — Reward weight rebalance across 4 files (status: pending)
-8. **Phase 1.5** — Per-fold attribution in reward_adjustments (status: pending)
+1. **Plan B** — Test-fixture safety net + STEP 0 branch consolidation. Three sub-items:
+   - STEP 0 — cherry-pick all 8 phase-20 commits onto phase-19.1, reword the 3 oldest `(21)` subjects to `(19.1)`, delete phase-20
+   - Add `pytest_configure` guard to `tests/conftest.py` (refuse `DATABASE_URL` not ending in `_test`)
+   - Remove all 18 `raise RuntimeError` disables in test fixtures (the over-correction; conftest guard makes them obsolete)
+2. **Task C** — Fix crypto SAC epoch memory volume bug
+3. **Task D** — Investigate equity consolidation_skipped_no_memories
+4. **Iter 3-4 pattern QA** — Review memories and patterns from iter 3-4, cleanup harmful patterns (iter 5 patterns are gone with the iter 5 data; the 5 stage-1 consolidations from iter 5 in pg16 with ids 170-174 are still there and worth reviewing in the QA pass)
+5. **Task B / Phase 1.1** — LLM context enrichment in epoch_callback + meta_orchestrator
+6. **Phase 1.2** — New fold_context.py helper module
+7. **Phase 1.3** — Prompt updates in query.py
+8. **Phase 1.4** — Reward weight rebalance across 4 files
+9. **Phase 1.5** — Per-fold attribution in reward_adjustments
 
 ---
 
