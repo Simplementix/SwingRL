@@ -40,14 +40,6 @@ pytestmark = pytest.mark.skipif(
 
 def _make_pg_conn() -> MagicMock:
     """Create a mock PostgreSQL connection with required tables via DatabaseManager."""
-    # ⚠️ DANGER: helper does CREATE TABLE IF NOT EXISTS + paired _cleanup_pg_conn
-    # below issues DELETE FROM ohlcv_daily/ohlcv_4h/macro_features. Disabled
-    # 2026-04-07 — prod incident.
-    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-    raise RuntimeError(
-        "_make_pg_conn (test_verification) is disabled pending prod-DB guard. "
-        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-    )
     import psycopg  # noqa: PLC0415
     from psycopg.rows import dict_row  # noqa: PLC0415
 
@@ -96,12 +88,9 @@ def _cleanup_pg_conn(conn: object) -> None:
     Uses DELETE instead of TRUNCATE to avoid AccessExclusiveLock deadlocks
     when multiple connections are active in the same test session.
     """
-    # ⚠️ DANGER: DELETE FROM ohlcv_daily/ohlcv_4h/macro_features disabled
-    # 2026-04-07 — prod incident.
-    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-    # conn.execute("DELETE FROM ohlcv_daily")
-    # conn.execute("DELETE FROM ohlcv_4h")
-    # conn.execute("DELETE FROM macro_features")
+    conn.execute("DELETE FROM ohlcv_daily")
+    conn.execute("DELETE FROM ohlcv_4h")
+    conn.execute("DELETE FROM macro_features")
     conn.close()
 
 

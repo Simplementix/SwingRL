@@ -7,6 +7,8 @@ Scope rules:
 
 from __future__ import annotations
 
+import os
+import re
 import textwrap
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -20,6 +22,42 @@ import pytest
 
 from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.data.db import DatabaseManager
+
+# ---------------------------------------------------------------------------
+# Database safety guard
+# ---------------------------------------------------------------------------
+# Refuse to run pytest if DATABASE_URL points at a non-test database.
+# Test fixtures DROP/TRUNCATE/DELETE production tables — running them against
+# the production ``swingrl`` database wipes data.  The CI script
+# ``scripts/ci-homelab.sh`` overrides DATABASE_URL to ``swingrl_test`` before
+# invoking pytest; this guard catches anyone who runs pytest manually without
+# that override.
+
+_SAFE_DB_NAMES = {"swingrl_test"}
+_DB_NAME_RE = re.compile(r"/([^/?]+)(?:\?|$)")
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Refuse to run if DATABASE_URL points at a non-test database."""
+    db_url = os.environ.get("DATABASE_URL", "").strip()
+    if not db_url:
+        return  # No DB configured — tests that need one will skip.
+    match = _DB_NAME_RE.search(db_url)
+    if not match:
+        pytest.exit(
+            f"DATABASE_URL has no parseable database name; refusing to run pytest. Got: {db_url!r}",
+            returncode=2,
+        )
+    db_name = match.group(1)
+    if db_name in _SAFE_DB_NAMES or db_name.endswith("_test"):
+        return
+    pytest.exit(
+        f"REFUSING TO RUN: DATABASE_URL points at database {db_name!r}, which is "
+        f"not a test database. Test fixtures DROP/TRUNCATE/DELETE production tables. "
+        f"Use a database name in {sorted(_SAFE_DB_NAMES)} or one ending in '_test'. "
+        f"In CI, scripts/ci-homelab.sh overrides DATABASE_URL automatically.",
+        returncode=2,
+    )
 
 
 @pytest.fixture(autouse=True)

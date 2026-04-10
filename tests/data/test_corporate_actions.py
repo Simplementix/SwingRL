@@ -81,12 +81,6 @@ def ca_config(tmp_path: Path, ca_config_yaml: str) -> Any:
 @pytest.fixture
 def ca_db(ca_config: Any) -> DatabaseManager:
     """Create a DatabaseManager with schema and ensure cleanup."""
-    # ⚠️ DANGER: TRUNCATE-all-public-tables disabled 2026-04-07 — prod incident.
-    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-    raise RuntimeError(
-        "ca_db fixture is disabled pending prod-DB guard. "
-        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-    )
     DatabaseManager.reset()
     mgr = DatabaseManager(ca_config)
     mgr.init_schema()

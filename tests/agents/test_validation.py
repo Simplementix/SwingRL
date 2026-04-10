@@ -146,16 +146,9 @@ class TestDuckDBDDL:
     @pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
     def test_model_metadata_table_created(self) -> None:
         """TRAIN-12: model_metadata table exists after schema init."""
-        # ⚠️ DANGER: DROP TABLE disabled 2026-04-07 — see prod-incident note in
-        # tests/agents/test_backtest.py:_create_backtest_schema for context.
-        # This test must be run via scripts/ci-homelab.sh against swingrl_test.
-        raise RuntimeError(
-            "test_model_metadata_table_created is disabled pending prod-DB guard. "
-            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-        )
         db_url = os.environ["DATABASE_URL"]
         conn = psycopg.connect(db_url, autocommit=True)
-        # conn.execute("DROP TABLE IF EXISTS model_metadata")
+        conn.execute("DROP TABLE IF EXISTS model_metadata")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS model_metadata (
                 model_id TEXT PRIMARY KEY,
@@ -191,14 +184,9 @@ class TestDuckDBDDL:
     @pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
     def test_backtest_results_table_created(self) -> None:
         """TRAIN-12: backtest_results table exists after schema init."""
-        # ⚠️ DANGER: DROP TABLE CASCADE disabled 2026-04-07 — prod incident.
-        raise RuntimeError(
-            "test_backtest_results_table_created is disabled pending prod-DB guard. "
-            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-        )
         db_url = os.environ["DATABASE_URL"]
         conn = psycopg.connect(db_url, autocommit=True)
-        # conn.execute("DROP TABLE IF EXISTS backtest_results CASCADE")
+        conn.execute("DROP TABLE IF EXISTS backtest_results CASCADE")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS backtest_results (
                 result_id TEXT PRIMARY KEY,
@@ -242,16 +230,11 @@ class TestDuckDBDDL:
     @pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
     def test_db_init_schema_creates_tables(self) -> None:
         """TRAIN-12: DatabaseManager.init_schema creates both tables in PostgreSQL."""
-        # ⚠️ DANGER: DROP TABLE CASCADE disabled 2026-04-07 — prod incident.
-        raise RuntimeError(
-            "test_db_init_schema_creates_tables is disabled pending prod-DB guard. "
-            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-        )
         db_url = os.environ["DATABASE_URL"]
         conn = psycopg.connect(db_url, autocommit=True)
 
-        # conn.execute("DROP TABLE IF EXISTS model_metadata CASCADE")
-        # conn.execute("DROP TABLE IF EXISTS backtest_results CASCADE")
+        conn.execute("DROP TABLE IF EXISTS model_metadata CASCADE")
+        conn.execute("DROP TABLE IF EXISTS backtest_results CASCADE")
 
         # Execute the same DDL that init_schema would run
         conn.execute("""

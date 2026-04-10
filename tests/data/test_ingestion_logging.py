@@ -148,12 +148,6 @@ def db_config(tmp_path: Path) -> SwingRLConfig:
 @pytest.fixture
 def db_manager(db_config: SwingRLConfig) -> DatabaseManager:
     """Create DatabaseManager with schema initialized, reset before and after test."""
-    # ⚠️ DANGER: DELETE FROM + TRUNCATE-all-public-tables disabled 2026-04-07 — prod incident.
-    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-    raise RuntimeError(
-        "db_manager fixture (test_ingestion_logging) is disabled pending prod-DB guard. "
-        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-    )
     DatabaseManager.reset()  # Clear stale singleton from prior test files
     mgr = DatabaseManager(db_config)
     mgr.init_schema()

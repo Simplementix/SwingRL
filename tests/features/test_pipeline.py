@@ -103,14 +103,6 @@ class _DbManagerShim:
 @pytest.fixture
 def seeded_duckdb() -> Any:
     """PostgreSQL connection with OHLCV, macro data, and feature schema."""
-    # ⚠️ DANGER: this fixture issues DELETE FROM features_equity, features_crypto,
-    # hmm_state_history, ohlcv_daily, ohlcv_4h, macro_features. Disabled
-    # 2026-04-07 — prod incident.
-    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-    raise RuntimeError(
-        "seeded_duckdb fixture is disabled pending prod-DB guard. "
-        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-    )
     from psycopg.rows import dict_row  # noqa: PLC0415
 
     db_url = os.environ.get("DATABASE_URL", "")

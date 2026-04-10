@@ -36,12 +36,6 @@ pytestmark = pytest.mark.skipif(
 
 def _make_pg_conn() -> object:
     """Create a PostgreSQL connection with ohlcv_4h and ohlcv_daily tables."""
-    # ⚠️ DANGER: TRUNCATE ohlcv_4h, ohlcv_daily disabled 2026-04-07 — prod incident.
-    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-    raise RuntimeError(
-        "_make_pg_conn is disabled pending prod-DB guard. "
-        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-    )
     import psycopg  # noqa: PLC0415
     from psycopg.rows import dict_row  # noqa: PLC0415
 
@@ -59,7 +53,7 @@ def _make_pg_conn() -> object:
         "  low DOUBLE PRECISION, close DOUBLE PRECISION, volume DOUBLE PRECISION, "
         "  PRIMARY KEY (symbol, date))"
     )
-    # conn.execute("TRUNCATE TABLE ohlcv_4h, ohlcv_daily CASCADE")
+    conn.execute("TRUNCATE TABLE ohlcv_4h, ohlcv_daily CASCADE")
     return conn
 
 
@@ -110,9 +104,7 @@ def _insert_equity_rows(
 
 def _cleanup_pg_conn(conn: object) -> None:
     """Truncate tables and close connection."""
-    # ⚠️ DANGER: TRUNCATE disabled 2026-04-07 — prod incident.
-    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-    # conn.execute("TRUNCATE TABLE ohlcv_4h, ohlcv_daily CASCADE")  # type: ignore[union-attr]
+    conn.execute("TRUNCATE TABLE ohlcv_4h, ohlcv_daily CASCADE")  # type: ignore[union-attr]
     conn.close()  # type: ignore[union-attr]
 
 

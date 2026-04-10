@@ -200,26 +200,8 @@ class TestFoldResult:
 
 def _create_backtest_schema(conn: Any) -> None:
     """Create backtest_results and iteration_results tables in PostgreSQL."""
-    # ⚠️ DANGER: DROP TABLE statements commented out 2026-04-07.
-    # INCIDENT: these statements destroyed iter 0-5 production data when this
-    # fixture was run inside the swingrl container against production pg16
-    # (DATABASE_URL was the production swingrl DB, not swingrl_test).
-    # The CI safety net (scripts/ci-homelab.sh creates a temporary swingrl_test
-    # DB and overrides DATABASE_URL for the test run) was bypassed by running
-    # tests directly via `docker exec swingrl pytest`. See commit d144e1d for
-    # the original CI isolation fix and the prior incident it addressed.
-    # DO NOT UNCOMMENT without adding a database-name guard that refuses to
-    # run when DATABASE_URL points at a database named 'swingrl' (production).
-    # raise RuntimeError as described in the followup task is the right fix.
-    # conn.execute("DROP TABLE IF EXISTS backtest_results")
-    # conn.execute("DROP TABLE IF EXISTS iteration_results")
-    raise RuntimeError(
-        "_create_backtest_schema is disabled pending a production-DB guard. "
-        "See tests/agents/test_backtest.py:_create_backtest_schema for context. "
-        "Tests using this fixture must be run via scripts/ci-homelab.sh which "
-        "creates a temporary swingrl_test database, OR with a local docker "
-        "postgres + DATABASE_URL pointing at the local instance."
-    )
+    conn.execute("DROP TABLE IF EXISTS backtest_results")
+    conn.execute("DROP TABLE IF EXISTS iteration_results")
     conn.execute("""
         CREATE TABLE backtest_results (
             result_id TEXT PRIMARY KEY,

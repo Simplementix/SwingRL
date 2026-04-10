@@ -189,12 +189,6 @@ class TestGetLatestTrades:
     @pytest.fixture()
     def trade_db(self) -> Any:
         """Create a PostgreSQL connection with trade_log table."""
-        # ⚠️ DANGER: DELETE FROM trade_log disabled 2026-04-07 — prod incident.
-        # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-        raise RuntimeError(
-            "trade_db fixture is disabled pending prod-DB guard. "
-            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-        )
         import psycopg
         from psycopg.rows import dict_row
 
@@ -218,7 +212,7 @@ class TestGetLatestTrades:
             )
             """
         )
-        # conn.execute("DELETE FROM trade_log")
+        conn.execute("DELETE FROM trade_log")
         conn.commit()
         return conn
 

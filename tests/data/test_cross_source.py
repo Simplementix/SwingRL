@@ -87,12 +87,6 @@ def cs_config(tmp_path: Path, cs_config_yaml: str) -> Any:
 @pytest.fixture
 def cs_db(cs_config: Any) -> DatabaseManager:
     """Create a DatabaseManager and ensure cleanup after test."""
-    # ⚠️ DANGER: TRUNCATE-all-public-tables disabled 2026-04-07 — prod incident.
-    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-    raise RuntimeError(
-        "cs_db fixture is disabled pending prod-DB guard. "
-        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-    )
     DatabaseManager.reset()
     mgr = DatabaseManager(cs_config)
     mgr.init_schema()

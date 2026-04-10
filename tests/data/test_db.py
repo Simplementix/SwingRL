@@ -77,16 +77,6 @@ def db_config(tmp_path: Path, db_config_yaml: str) -> load_config:
 @pytest.fixture
 def db_manager(db_config: object) -> object:
     """Create a DatabaseManager and ensure cleanup after test."""
-    # ⚠️ DANGER: TRUNCATE-all-tables disabled 2026-04-07 — prod incident.
-    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-    # This fixture would TRUNCATE every table in the public schema, including
-    # production training data, if DATABASE_URL pointed at the production
-    # swingrl database. Run via scripts/ci-homelab.sh which isolates against
-    # swingrl_test.
-    raise RuntimeError(
-        "db_manager fixture is disabled pending prod-DB guard. "
-        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-    )
     from swingrl.data.db import DatabaseManager
 
     DatabaseManager.reset()

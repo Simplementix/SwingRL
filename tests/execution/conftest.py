@@ -75,12 +75,6 @@ def mock_db(exec_config: SwingRLConfig) -> Generator[DatabaseManager, None, None
     Resets singleton and initializes schema for clean test isolation.
     Requires DATABASE_URL env var pointing to a test PostgreSQL instance.
     """
-    # ⚠️ DANGER: TRUNCATE-all-public-tables disabled 2026-04-07 — prod incident.
-    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-    raise RuntimeError(
-        "mock_db fixture (tests/execution/conftest.py) is disabled pending prod-DB guard. "
-        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-    )
     import os  # noqa: PLC0415
 
     db_url = os.environ.get("DATABASE_URL")

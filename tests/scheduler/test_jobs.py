@@ -32,13 +32,6 @@ from swingrl.scheduler.jobs import (
 @pytest.fixture(autouse=True)
 def _clean_test_tables() -> None:
     """Truncate test-affected tables before each test to avoid cross-test pollution."""
-    # ⚠️ DANGER: DELETE FROM emergency_flags/portfolio_snapshots disabled
-    # 2026-04-07 — prod incident.
-    # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-    raise RuntimeError(
-        "_clean_test_tables (test_jobs) is disabled pending prod-DB guard. "
-        "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-    )
     db_url = os.environ.get("DATABASE_URL", "")
     if not db_url:
         return

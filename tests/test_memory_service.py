@@ -439,19 +439,13 @@ class TestConsolidation:
             sys.modules.pop(mod_name, None)
         import db as memory_db_module
 
-        # ⚠️ DANGER: TRUNCATE-memory-tables disabled 2026-04-07 — prod incident.
-        # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-        raise RuntimeError(
-            "_clean_memory_tables fixture is disabled pending prod-DB guard. "
-            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-        )
         memory_db_module.init_db()
         with memory_db_module.get_connection() as conn:
-            # conn.execute(
-            #     "TRUNCATE consolidation_sources, pattern_presentations, "
-            #     "consolidation_quality, pattern_outcomes, consolidations, memories "
-            #     "CASCADE"
-            # )
+            conn.execute(
+                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "consolidation_quality, pattern_outcomes, consolidations, memories "
+                "CASCADE"
+            )
             conn.commit()
 
     def test_consolidate_triggers_and_returns_count(
@@ -607,19 +601,13 @@ class TestConsolidationArchiving:
             sys.modules.pop(mod_name, None)
         import db as memory_db_module
 
-        # ⚠️ DANGER: TRUNCATE-memory-tables disabled 2026-04-07 — prod incident.
-        # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-        raise RuntimeError(
-            "_clean_memory_tables fixture is disabled pending prod-DB guard. "
-            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-        )
         memory_db_module.init_db()
         with memory_db_module.get_connection() as conn:
-            # conn.execute(
-            #     "TRUNCATE consolidation_sources, pattern_presentations, "
-            #     "consolidation_quality, pattern_outcomes, consolidations, memories "
-            #     "CASCADE"
-            # )
+            conn.execute(
+                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "consolidation_quality, pattern_outcomes, consolidations, memories "
+                "CASCADE"
+            )
             conn.commit()
 
     def test_consolidate_does_not_archive_on_llm_failure(
@@ -838,19 +826,13 @@ class TestUnarchiveMechanism:
             sys.modules.pop(mod_name, None)
         import db as memory_db_module
 
-        # ⚠️ DANGER: TRUNCATE-memory-tables disabled 2026-04-07 — prod incident.
-        # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-        raise RuntimeError(
-            "_clean_memory_tables fixture is disabled pending prod-DB guard. "
-            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-        )
         memory_db_module.init_db()
         with memory_db_module.get_connection() as conn:
-            # conn.execute(
-            #     "TRUNCATE consolidation_sources, pattern_presentations, "
-            #     "consolidation_quality, pattern_outcomes, consolidations, memories "
-            #     "CASCADE"
-            # )
+            conn.execute(
+                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "consolidation_quality, pattern_outcomes, consolidations, memories "
+                "CASCADE"
+            )
             conn.commit()
 
     def test_unarchive_resets_flag(self, memory_db_env: str) -> None:
@@ -1076,19 +1058,13 @@ class TestDBFunctions:
             sys.modules.pop(mod_name, None)
         import db as memory_db_module
 
-        # ⚠️ DANGER: TRUNCATE-memory-tables disabled 2026-04-07 — prod incident.
-        # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-        raise RuntimeError(
-            "_clean_memory_tables fixture is disabled pending prod-DB guard. "
-            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-        )
         memory_db_module.init_db()
         with memory_db_module.get_connection() as conn:
-            # conn.execute(
-            #     "TRUNCATE consolidation_sources, pattern_presentations, "
-            #     "consolidation_quality, pattern_outcomes, consolidations, memories "
-            #     "CASCADE"
-            # )
+            conn.execute(
+                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "consolidation_quality, pattern_outcomes, consolidations, memories "
+                "CASCADE"
+            )
             conn.commit()
 
     def test_insert_consolidation_with_new_fields(self, memory_db_env: str) -> None:
@@ -2017,13 +1993,6 @@ class TestTrainingTelemetryDDL:
         from swingrl.data.postgres_schema import init_postgres_schema
 
         str(tmp_path / "test.ddb")  # type: ignore[arg-type]
-        # ⚠️ DANGER: TRUNCATE training_epochs, meta_decisions, reward_adjustments
-        # disabled 2026-04-07 — prod incident.
-        # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-        raise RuntimeError(
-            "test_telemetry_tables_insertable is disabled pending prod-DB guard. "
-            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-        )
         db_url = os.environ.get("DATABASE_URL", "")
         if not db_url:
             pytest.skip("DATABASE_URL not set")
@@ -2031,7 +2000,7 @@ class TestTrainingTelemetryDDL:
         try:
             init_postgres_schema(conn)
             # Truncate to ensure isolation from prior test runs
-            # conn.execute("TRUNCATE training_epochs, meta_decisions, reward_adjustments")
+            conn.execute("TRUNCATE training_epochs, meta_decisions, reward_adjustments")
             # Insert into training_epochs
             conn.execute(
                 "INSERT INTO training_epochs (run_id, epoch, algo, env, rolling_sharpe, rolling_mdd) "
@@ -2074,19 +2043,13 @@ class TestRetrievalEfficiency:
         """
         import db as memory_db_module
 
-        # ⚠️ DANGER: TRUNCATE-memory-tables disabled 2026-04-07 — prod incident.
-        # See tests/agents/test_backtest.py:_create_backtest_schema for context.
-        raise RuntimeError(
-            "_clean_memory_tables fixture is disabled pending prod-DB guard. "
-            "Run via scripts/ci-homelab.sh which isolates against swingrl_test."
-        )
         memory_db_module.init_db()
         with memory_db_module.get_connection() as conn:
-            # conn.execute(
-            #     "TRUNCATE consolidation_sources, pattern_presentations, "
-            #     "consolidation_quality, pattern_outcomes, consolidations, memories "
-            #     "CASCADE"
-            # )
+            conn.execute(
+                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "consolidation_quality, pattern_outcomes, consolidations, memories "
+                "CASCADE"
+            )
             conn.commit()
 
     def test_parse_query_context(self, memory_db_env: str) -> None:
