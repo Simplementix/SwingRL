@@ -1081,95 +1081,126 @@ def _format_outlier_events(
     return result
 
 
+_EPOCH_METRIC_KEYS = (
+    "epoch",
+    "mean_reward",
+    "policy_loss",
+    "value_loss",
+    "entropy_loss",
+    "approx_kl",
+    "rolling_sharpe_500",
+    "rolling_mdd_500",
+    "rolling_win_rate_500",
+)
+
+
+def _parse_epoch_memory(
+    text: str,
+) -> tuple[str | None, dict[str, float], dict[str, str], tuple[float, str] | None]:
+    """Parse a single epoch memory text into lightweight components.
+
+    Extracts run_id, numeric metrics, fold metadata, and optional reward weight
+    entry from the raw text.  Used during pagination to discard text immediately
+    and keep only the small parsed representation in memory.
+
+    Args:
+        text: Raw epoch memory text (e.g. ``"run_id=crypto_sac_fold3 epoch=40000 ..."``)
+
+    Returns:
+        Tuple of ``(run_id, metrics, meta, weight_entry)`` where:
+        - run_id: Algo-fold identifier, or ``None`` if unparseable.
+        - metrics: Dict of metric-name to float (empty if no metrics found).
+        - meta: Dict with ``algo`` and ``env`` keys (empty if run_id is None).
+        - weight_entry: ``(epoch_num, weights_json)`` tuple, or ``None``.
+    """
+    import re  # noqa: PLC0415
+
+    run_id_m = re.search(r"run_id=(\S+)", text)
+    if not run_id_m:
+        return None, {}, {}, None
+    run_id = run_id_m.group(1)
+
+    metrics: dict[str, float] = {}
+    for key in _EPOCH_METRIC_KEYS:
+        m = re.search(rf"{key}=([0-9.e+-]+)", text)
+        if m:
+            try:
+                metrics[key] = float(m.group(1))
+            except ValueError:
+                pass
+
+    algo_m = re.search(r"algo=(\S+)", text)
+    env_m = re.search(r"env=(\S+)", text)
+    meta = {
+        "algo": algo_m.group(1) if algo_m else "unknown",
+        "env": env_m.group(1) if env_m else "unknown",
+    }
+
+    weight_entry: tuple[float, str] | None = None
+    weights_m = re.search(r"reward_weights=(\{[^}]+\})", text)
+    if weights_m:
+        epoch_num = metrics.get("epoch", 0.0)
+        weight_entry = (epoch_num, weights_m.group(1))
+
+    return run_id, metrics, meta, weight_entry
+
+
 def _aggregate_epoch_summaries(
-    memories: list[dict[str, Any]],
+    memories: list[dict[str, Any]] | None = None,
     outcome_lookup: dict[tuple[str, int], dict[str, Any]] | None = None,
+    *,
+    pre_parsed_folds: dict[str, list[dict[str, float]]] | None = None,
+    pre_parsed_meta: dict[str, dict[str, str]] | None = None,
+    pre_parsed_weights: dict[str, list[tuple[float, str]]] | None = None,
 ) -> list[str]:
-    """Aggregate raw epoch memories into per-fold statistical summaries.
+    """Aggregate epoch memories into per-fold statistical summaries.
 
-    Groups memories by run_id (algo_fold), computes robust statistics for each
-    fold (5-number summary, IQM, trend slopes, temporal windows, IQR-based
-    outlier detection, skewness), and returns human-readable summary strings
-    suitable for a single LLM consolidation call.
-
-    Args:
-        memories: List of epoch snapshot memory dicts.
-        outcome_lookup: Optional mapping of ``(run_id, epoch_triggered)`` to
-            REWARD_ADJUSTMENT_OUTCOME data (sharpe_delta, mdd_delta, effective,
-            weights_before, weights_after).  When provided, each detected weight
-            change is enriched with per-dimension labels and measured effectiveness.
-
-    Each summary includes:
-    - Fold metadata with N, cadence, and confidence label
-    - Extended stats (mean/IQM/Q1/median/Q3/min/max/last + trend) per metric
-    - Temporal trajectory (early/mid/late window means)
-    - IQR-based outlier detection with up to N extreme events
-    - Reward weight trajectory with pre/post sharpe deltas
+    Accepts either raw memory dicts (``memories``) or pre-parsed data from
+    stream-parsing during pagination (``pre_parsed_*`` kwargs).  The pre-parsed
+    path avoids holding all raw text in memory — critical for large volumes
+    (600k+ epoch memories).
 
     Args:
-        memories: List of memory dicts with 'text' field containing epoch data.
+        memories: Raw epoch memory dicts (legacy path).  Ignored when
+            ``pre_parsed_folds`` is provided.
+        outcome_lookup: Mapping of ``(run_id, epoch_triggered)`` to
+            REWARD_ADJUSTMENT_OUTCOME data for enriching weight change events.
+        pre_parsed_folds: Per-fold parsed metrics from ``_parse_epoch_memory``.
+        pre_parsed_meta: Per-fold metadata from ``_parse_epoch_memory``.
+        pre_parsed_weights: Per-fold weight trajectories from ``_parse_epoch_memory``.
 
     Returns:
         List of summary strings, one per fold (algo_fold combination).
     """
-    import re
     from collections import defaultdict
 
     agg_cfg = _AGGREGATION_CONFIG
     max_events = agg_cfg["max_outlier_events"]
 
-    # Parse metrics from memory text into per-fold groups
-    folds: dict[str, list[dict[str, float]]] = defaultdict(list)
-    fold_meta: dict[str, dict[str, str]] = {}
-    # Track (epoch_number, weight_json) pairs for pre/post delta analysis
-    fold_weights: dict[str, list[tuple[float, str]]] = defaultdict(list)
+    if pre_parsed_folds is not None:
+        # Fast path: data already parsed during pagination
+        folds = pre_parsed_folds
+        fold_meta = pre_parsed_meta or {}
+        fold_weights = pre_parsed_weights or defaultdict(list)
+    else:
+        # Legacy path: parse from raw memory dicts
+        folds = defaultdict(list)
+        fold_meta = {}
+        fold_weights = defaultdict(list)
 
-    for mem in memories:
-        text = mem.get("text", "")
-
-        run_id_m = re.search(r"run_id=(\S+)", text)
-        if not run_id_m:
-            continue
-        run_id = run_id_m.group(1)
-
-        metrics: dict[str, float] = {}
-        for key in (
-            "epoch",
-            "mean_reward",
-            "policy_loss",
-            "value_loss",
-            "entropy_loss",
-            "approx_kl",
-            "rolling_sharpe_500",
-            "rolling_mdd_500",
-            "rolling_win_rate_500",
-        ):
-            m = re.search(rf"{key}=([0-9.e+-]+)", text)
-            if m:
-                try:
-                    metrics[key] = float(m.group(1))
-                except ValueError:
-                    pass
-
-        if metrics:
-            folds[run_id].append(metrics)
-        else:
-            log.debug("epoch_memory_no_metrics_parsed", run_id=run_id)
-
-        # Capture metadata once per fold
-        if run_id not in fold_meta:
-            algo_m = re.search(r"algo=(\S+)", text)
-            env_m = re.search(r"env=(\S+)", text)
-            fold_meta[run_id] = {
-                "algo": algo_m.group(1) if algo_m else "unknown",
-                "env": env_m.group(1) if env_m else "unknown",
-            }
-
-        # Track reward weight changes with epoch association
-        weights_m = re.search(r"reward_weights=(\{[^}]+\})", text)
-        if weights_m:
-            epoch_num = metrics.get("epoch", 0.0)
-            fold_weights[run_id].append((epoch_num, weights_m.group(1)))
+        for mem in memories or []:
+            text = mem.get("text", "")
+            run_id, metrics, meta, weight_entry = _parse_epoch_memory(text)
+            if not run_id:
+                continue
+            if metrics:
+                folds[run_id].append(metrics)
+            else:
+                log.debug("epoch_memory_no_metrics_parsed", run_id=run_id)
+            if run_id not in fold_meta:
+                fold_meta[run_id] = meta
+            if weight_entry:
+                fold_weights[run_id].append(weight_entry)
 
     # Build summaries per fold
     summaries: list[str] = []
@@ -1741,10 +1772,21 @@ class ConsolidateAgent:
         phase_b_total_created = 0
         phase_b_any = False
 
-        # Collect ALL epoch/reward/run memory IDs and texts for this env
-        # Uses OFFSET-based pagination — no archiving during fetch so memories
-        # are preserved if the LLM call fails.
-        all_phase_b: list[dict[str, Any]] = []
+        # Stream-parse epoch memories during pagination to avoid holding all
+        # raw text in memory.  With 600k+ epoch memories the text alone can
+        # exceed the container's memory limit.  Only lightweight parsed metrics
+        # (floats) and memory IDs persist across chunks; raw text is GC'd after
+        # each 10k-row page.
+        from collections import defaultdict  # noqa: PLC0415
+
+        all_ids_b: list[int] = []
+        epoch_count = 0
+        total_phase_b_count = 0
+        folds: dict[str, list[dict[str, float]]] = defaultdict(list)
+        fold_meta: dict[str, dict[str, str]] = {}
+        fold_weights: dict[str, list[tuple[float, str]]] = defaultdict(list)
+        reward_memories: list[dict[str, Any]] = []
+
         for prefix in ("training_epoch", "reward_adjustment", "cross_iteration"):
             offset = 0
             _FETCH_CHUNK = 10_000
@@ -1757,15 +1799,36 @@ class ConsolidateAgent:
                 )
                 if not candidates:
                     break
-                filtered = [m for m in candidates if f"env={env_name}" in m.get("text", "")]
-                all_phase_b.extend(filtered)
+                for m in candidates:
+                    text = m.get("text", "")
+                    if f"env={env_name}" not in text:
+                        continue
+                    all_ids_b.append(m["id"])
+                    total_phase_b_count += 1
+                    source = m.get("source", "")
+                    if source.startswith("training_epoch") or (
+                        not source and "EPOCH" in text.upper()
+                    ):
+                        run_id, metrics, meta, weight_entry = _parse_epoch_memory(text)
+                        epoch_count += 1
+                        if run_id and metrics:
+                            folds[run_id].append(metrics)
+                        elif run_id:
+                            log.debug("epoch_memory_no_metrics_parsed", run_id=run_id)
+                        if run_id and run_id not in fold_meta and meta:
+                            fold_meta[run_id] = meta
+                        if run_id and weight_entry:
+                            fold_weights[run_id].append(weight_entry)
+                    else:
+                        reward_memories.append(m)
+                # chunk goes out of scope here — text strings eligible for GC
                 if len(candidates) < _FETCH_CHUNK:
-                    break  # No more pages
+                    break
                 offset += _FETCH_CHUNK
 
-        if not all_phase_b:
+        if total_phase_b_count == 0:
             total_created += phase_b_total_created
-            if not phase_a and not all_phase_b:
+            if not phase_a:
                 log.info("consolidation_skipped_no_memories", env_name=env_name)
                 return 0
 
@@ -1777,31 +1840,17 @@ class ConsolidateAgent:
             return total_created
 
         phase_b_any = True
-        all_ids_b = [m["id"] for m in all_phase_b]
 
         log.info(
             "consolidation_stage1_epoch_aggregating",
             env_name=env_name,
-            total_memories=len(all_phase_b),
+            total_memories=total_phase_b_count,
+            epoch_memories=epoch_count,
+            reward_memories=len(reward_memories),
         )
 
-        # Tier 1: Local statistical aggregation (no LLM)
-        # Split epoch memories from reward adjustment memories by source tag
-        epoch_memories = [
-            m for m in all_phase_b if m.get("source", "").startswith("training_epoch")
-        ]
-        reward_memories = [
-            m for m in all_phase_b if m.get("source", "").startswith("reward_adjustment")
-        ]
-        # If source tags not available, fall back to text content matching
-        if not epoch_memories and not reward_memories:
-            epoch_memories = [m for m in all_phase_b if "EPOCH" in m.get("text", "").upper()]
-            reward_memories = [
-                m for m in all_phase_b if "REWARD_ADJUSTMENT" in m.get("text", "").upper()
-            ]
-
         # Build outcome lookup for fold-level effectiveness enrichment
-        # Maps (run_id, epoch_triggered) → {sharpe_delta, mdd_delta, effective, ...}
+        # Maps (run_id, epoch_triggered) -> {sharpe_delta, mdd_delta, effective, ...}
         import re  # noqa: PLC0415 — local import matches existing pattern in this file
 
         outcome_lookup: dict[tuple[str, int], dict[str, Any]] = {}
@@ -1826,14 +1875,19 @@ class ConsolidateAgent:
                 "weights_after": aw_m.group(1) if aw_m else "",
             }
 
-        fold_summaries = _aggregate_epoch_summaries(epoch_memories, outcome_lookup)
+        fold_summaries = _aggregate_epoch_summaries(
+            outcome_lookup=outcome_lookup,
+            pre_parsed_folds=folds,
+            pre_parsed_meta=fold_meta,
+            pre_parsed_weights=fold_weights,
+        )
         reward_summaries = _summarize_reward_adjustments(reward_memories, env_name)
 
         # Combine into single prompt with global preamble
         parts = []
         if fold_summaries:
             preamble = (
-                f"AGGREGATION NOTE: {len(epoch_memories)} raw epoch memories reduced "
+                f"AGGREGATION NOTE: {epoch_count} raw epoch memories reduced "
                 f"to {len(fold_summaries)} fold summaries.\n"
                 f"Small-N folds (PPO, ~4 snapshots) have lower statistical confidence "
                 f"than large-N folds (A2C/SAC, ~17 snapshots).\n"
@@ -1878,7 +1932,7 @@ class ConsolidateAgent:
             for pattern in result.get("patterns", []):
                 row_id = await self._dedup_and_insert(
                     pattern=pattern,
-                    source_count=len(all_phase_b),
+                    source_count=total_phase_b_count,
                     stage=1,
                     env_name=env_name,
                     memory_ids=all_ids_b[:1000],  # Link first 1000 as sample
