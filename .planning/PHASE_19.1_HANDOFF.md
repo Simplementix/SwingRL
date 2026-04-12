@@ -1,12 +1,8 @@
 # Phase 19.1 — Memory Agent Refocus: Context Handoff
 
 **Created:** 2026-04-07 ~08:00 ET (snapshot before context clear)
-**Current branch:** `gsd/phase-20-production-deployment` ← WRONG, needs to move (see STEP 0)
-**Correct branch:** `gsd/phase-19.1-memory-agent-infrastructure-and-training`
-**Local commits not yet on the right branch:**
-- `c493bd4 docs(21): Phase 19.1 handoff doc — context transfer + remaining queue` (subject mislabelled `(21)`)
-- `c7943bc feat(21): Phase 0 — CPS framework + measurement infrastructure` (subject mislabelled `(21)`)
-- (one more commit landing with this update — `docs(19.1)` corrective)
+**Last updated:** 2026-04-12 ET
+**Current branch:** `gsd/phase-19.1-memory-agent-infrastructure-and-training` ✅ (STEP 0 complete)
 **Original plan file:** `/Users/varunpanchal/.claude/plans/clever-meandering-pinwheel.md`
 
 This document is a complete handoff for resuming Phase 19.1 work after a
@@ -14,15 +10,13 @@ context clear. **Read this top to bottom before doing anything.**
 
 ---
 
-# 🎯🎯🎯 STEP 0 — DO THIS FIRST: Move work to phase-19.1, delete phase-20 branch
+# ✅ STEP 0 — COMPLETE: Branch consolidated to phase-19.1 (Plan B, `c7b6eef`, 2026-04-10)
 
-**Before reading anything else, do this branch consolidation. Until it's done,
-the git state is wrong: every commit on `gsd/phase-20-production-deployment`
-above `98f9151` belongs on `gsd/phase-19.1-memory-agent-infrastructure-and-training`
-instead. Use `git log 98f9151..gsd/phase-20-production-deployment --oneline`
-to get the authoritative current list — do NOT trust the literal SHA list
-below blindly because handoff-update commits get appended over time and the
-list can drift by 1-2.**
+~~**Before reading anything else, do this branch consolidation.**~~
+**DONE.** All commits cherry-picked from `gsd/phase-20-production-deployment`
+onto `gsd/phase-19.1-memory-agent-infrastructure-and-training`, 3 `(21):`
+subjects reworded to `(19.1):`, phase-20 branch deleted. The section below
+is preserved as historical reference only.
 
 > **Update 2026-04-07 22:04 ET**: This list grew from 3 commits to 9+ since the
 > original handoff was written. Plan A added 3 new recovery commits
@@ -521,7 +515,7 @@ Until step 5 verifies, **assume Phase 0 is in git but not in production**.
 
 ## TL;DR — Where we are right now
 
-> **Update 2026-04-07 22:04 ET**: This TL;DR was written before the test-fixture wipe. The "iter 5 fully recovered" claim is no longer accurate — iter 5 was recovered, then re-wiped, then declared lost in Plan A. Iter 0-4 are recovered and CPS-populated as of 2026-04-07 22:04 ET. The new queue is Plan B (test-fixture safety + STEP 0) → then Tasks C/D/QA/B.
+> **Update 2026-04-12 ET**: Plan A (pg16 recovery), Plan B (branch consolidation + conftest guard), Task C (consolidation OOM), and Task D (Phase B env-prefix bug) are all **DONE**. Next: iter 3-4 pattern QA → Phase 1 prompt+reward refocus. Test suite: 975 passed, 391 skipped, 0 failed.
 
 We are mid-execution of **Phase 19.1 (memory agent refocus)**. Phase 0
 (measurement infrastructure) is **DONE and committed** as
@@ -541,7 +535,9 @@ Remaining queue (in order, updated 2026-04-12 ET):
 
 ### Newly discovered issues (not in original queue)
 8. **Turbulence column bug** — `src/swingrl/execution/pipeline.py:537` queries `SELECT ... ORDER BY turbulence FROM features_crypto` but no `turbulence` column exists in the table schema (`postgres_schema.py`). Turbulence is computed on-the-fly, never stored. The query silently fails and returns `0.0`, meaning turbulence crash protection has **never worked**. Non-blocking but should be fixed before live trading.
-9. **Container deployment** — Phase 0 code is in git but NOT in the running swingrl container image. The `train_pipeline.py` autocommit fix, deploy path fix, and CPS wiring are NOT live. Container must be rebuilt before iter 6. See "Required deploy steps before iter 6" section above.
+9. **Container deployment (swingrl)** — Phase 0 code is in git but NOT in the running swingrl container image. The `train_pipeline.py` autocommit fix, deploy path fix, and CPS wiring are NOT live. Container must be rebuilt before iter 6. See "Required deploy steps before iter 6" section above.
+10. **Container deployment (swingrl-memory)** — Task D fix (`d4d718f`) is in git but NOT in the running swingrl-memory container. The `services/memory/Dockerfile` bakes source into the image (`COPY --chown=trader:trader . .`); no source bind mount in docker-compose. Until rebuilt, consolidation will still use bare prefixes and equity consolidation will still fail. Rebuild: `docker compose build swingrl-memory && docker compose up -d swingrl-memory`. Only swingrl-memory needs recreation; swingrl and swingrl-dashboard are unaffected.
+11. **SAC epoch cadence bug (root cause of 688k memories)** — Task C fixed the OOM symptom (stream-parsing), but the root cause of WHY crypto SAC wrote 688k memories instead of ~350 was NOT investigated. The epoch cadence (40000 steps) may not be enforced correctly for SAC's off-policy callback pattern. Non-blocking for consolidation (Task C handles the volume), but the excess writes waste DB space and slow pagination. Worth investigating before iter 6.
 
 ---
 
@@ -773,9 +769,9 @@ the Dockerfile changes that ARE in git.
 
 ## Test status
 
-- **Full suite collected: 1365 tests** (was ~1260 before Phase 0)
-- **Last full run: 975 passed, 390 skipped, 0 failed** (Apr 7, 49 sec wall time)
-- The 390 skipped are mostly live-DB tests that need `DATABASE_URL` set
+- **Full suite collected: 1366 tests** (was ~1260 before Phase 0; +1 for Task D regression test)
+- **Last full run: 975 passed, 391 skipped, 0 failed** (Apr 12, 53 sec wall time)
+- The 391 skipped are mostly live-DB tests that need `DATABASE_URL` set
   pointing at a running postgres
 - **~106 NEW tests added in Phase 0** across 7 test files (verified
   via `pytest --collect-only` on 2026-04-07):
@@ -807,9 +803,9 @@ To run live DB tests, either:
 
 # REMAINING WORK QUEUE (in order)
 
-> **Status update 2026-04-07 22:04 ET**: Plan A (pg16 recovery for iter 0-4) is **done** — see top banner. The next item is **Plan B** (test-fixture safety net + STEP 0 branch consolidation), NOT Task C. Task C remains queued after Plan B because the crypto SAC bug fix may need to write/read pg16 and we want the test-fixture safety net in place first.
+> **Status update 2026-04-12 ET**: Plan A, Plan B, Task C, and Task D are all **DONE**. Next: iter 3-4 pattern QA → Phase 1.
 
-## Plan B — Test-fixture safety net + STEP 0 ⏳ NEXT (replaces "Task C ⏳ NEXT")
+## ~~Plan B — Test-fixture safety net + STEP 0~~ ✅ DONE (`c7b6eef`, 2026-04-10)
 
 Three tightly-related items in one plan:
 
@@ -823,9 +819,11 @@ After Plan B:
 - The 23 currently-disabled or pending-disabled fixtures are restored as proper test code.
 - We can finally run `uv run pytest -q` against a local docker postgres or via `scripts/ci-homelab.sh` without manual intervention.
 
-## Task C — Fix crypto SAC epoch memory volume bug (after Plan B)
+## ~~Task C — Fix crypto SAC epoch memory volume bug~~ ✅ DONE (`3177ce0`, 2026-04-11)
 
-### Symptom
+> **Root cause:** Phase B consolidation loaded all epoch memories into a single Python list before parsing. With 688k memories at ~5KB text each, peak usage hit ~3.4 GB vs the 1 GB container limit, causing OOM. Fixed by stream-parsing each 10k-row chunk via `_parse_epoch_memory()`, keeping only lightweight metrics (~80B per memory). Peak memory: ~3.4 GB → ~160 MB. The 688k memories are legitimate data — the fix handles the volume, not deletes data. **Note:** the SAC cadence bug itself (why 688k memories were written instead of ~350) was NOT investigated — that's a separate issue for a future phase.
+
+### Symptom (historical)
 Crypto SAC iter 5 produced **688,899** epoch memories (out of 850,748
 total memories for Apr 6-7). The configured cadence is 40000 steps.
 With 1M timesteps per fold and 14 folds, expected ~350 snapshots, not
@@ -879,39 +877,21 @@ consolidation aggregation, blocking Stage-2 cross-env consolidation.
 
 ---
 
-## Task D — Investigate equity `consolidation_skipped_no_memories`
+## ~~Task D — Fix equity `consolidation_skipped_no_memories`~~ ✅ DONE (`d4d718f`, 2026-04-12)
 
-### Symptom
+> **Root cause:** Phase B of `run_stage1()` used bare source prefixes (`"training_epoch"`, `"reward_adjustment"`, `"cross_iteration"`) causing the SQL LIKE query to return ALL environments globally, then relied on a fragile client-side text filter (`f"env={env_name}" not in text`) to discard wrong-env rows. With 688k crypto SAC + 18k equity rows ordered by `created_at DESC`, equity pagination was starved — most pages contained crypto rows that were discarded, and the loop could exit with `total_phase_b_count=0`.
+>
+> **Fix:** Changed to env-qualified prefixes (`f"training_epoch:{env_name}"`, `f"reward_adjustment:{env_name}"`) matching Phase A's existing pattern. All three production writers already embed env in the source tag. Dropped `cross_iteration` from Phase B entirely (Phase A already handles it; Phase B was accidentally archiving preserved-on-failure rows). Removed the now-redundant client-side text filter.
+>
+> **Additional fix:** Updated two stale test fixtures from `source="training_epoch:historical"` to production-shaped tags. Added `TestPhaseBEnvIsolation` regression test proving equity consolidation does not consume or archive crypto memories.
+>
+> **Confirmed hypothesis:** H3 (source filter is wrong) — validated. The connection to Task C was exactly as predicted: crypto found too many (global scan), equity found zero (starved by crypto's volume in the same global scan).
+
+### Symptom (historical)
 When the memory service tried to consolidate iter 5 equity at 03:07:50
 (and again on the manual replay), it logged `consolidation_skipped_no_memories
 env_name=equity`. But pg16 contains ~18,617 equity epoch memories from
 Apr 6-7.
-
-### Question
-Why does the consolidator think there are no equity memories? Possible:
-- **H1:** Already-consolidated marker — the service tracks which memory
-  IDs have been consolidated and skips them. Iter 4 may have processed
-  all equity memories, leaving none unprocessed for iter 5.
-- **H2:** Date filter excludes them — the consolidator may filter by
-  `created_at` and the iter 5 equity memories are outside the window.
-- **H3:** Source filter is wrong — the consolidator looks for source
-  patterns like `training_epoch:equity:*` and isn't matching.
-
-### Investigation plan
-1. Read the memory service consolidation code at
-   `services/memory/memory_agents/consolidate.py` (or similar).
-2. Look for "no memories" log emit and trace back to the query.
-3. Run that exact query against pg16 to see what it returns for equity.
-4. Compare against the crypto query path which DID find 831k memories
-   (and crashed). What's different about equity?
-
-### Connection to Task C
-Tasks C and D are likely linked. The crypto path finds **too many**
-memories and the equity path finds **zero**. Either:
-- The consolidator's source filter is broken (matches crypto sac
-  but not equity)
-- OR the iter 5 equity memories were marked processed by an earlier
-  consolidation
 
 ---
 
@@ -1029,30 +1009,23 @@ The new session will automatically load the project's auto-memory at:
 
 ## Quick context restoration commands
 
-After clearing, run these to verify state. **Updated 2026-04-07 22:04 ET to reflect Plan A completion.**
+After clearing, run these to verify state. **Updated 2026-04-12 ET.**
 
 ```bash
-# 1. Check git is at the right commits (multiple stranded on phase-20)
+# 1. Check git branch and recent commits
 cd /Users/varunpanchal/Documents/Projects/Simplementix/SwingRL
 git branch --show-current
-# Expect: gsd/phase-20-production-deployment
-git log 98f9151..HEAD --oneline
-# Expect a list of commits, all with (19.1) or (21) subject prefixes.
-# The first 3 oldest are c7943bc / c493bd4 / abc09d7 with (21) subjects
-# (these will need reword in Plan B's STEP 0). Everything newer should
-# already have (19.1) subjects. The exact count and SHAs of the newest
-# few commits depends on how many handoff-refresh commits were appended.
-# As a sanity check, the script `scripts/migrations/restore_iter_0_4_from_duckdb.py`
-# (commit `b6ba881` at the time of last refresh) MUST exist on disk.
+# Expect: gsd/phase-19.1-memory-agent-infrastructure-and-training
+git log --oneline -5
+# Expect: d4d718f (Task D fix) at HEAD, 3177ce0 (Task C) below, c7b6eef (Plan B) below that
 
 # 2. Check working tree is clean
 git status
 # Expect: nothing to commit, working tree clean
 
-# 3. DO NOT run the test suite yet — the 18 disabled fixtures are still
-#    raising RuntimeError. Plan B's first step is the conftest guard +
-#    removing those disables. Until then, `uv run pytest -q` will show many
-#    new errors. Skip the pytest sanity check until after Plan B.
+# 3. Run the test suite (safe now — conftest guard from Plan B protects pg16)
+source .venv/bin/activate && uv run pytest -q
+# Expect: 975 passed, 391 skipped, 0 failed
 
 # 4. Verify pg16 has the recovered iter 0-4 rows (Plan A result)
 ssh homelab "docker exec swingrl python3 -c '
@@ -1078,12 +1051,12 @@ ssh homelab "docker exec swingrl bash -c 'find /app/models/active -name model.zi
 
 # 7. CHECK CONTAINER DEPLOYMENT STATE
 ssh homelab "
-echo '=== swingrl container train_pipeline.py state (Phase 0.5/bug fixes) ==='
+echo '=== swingrl container train_pipeline.py (Phase 0.5/bug fixes) ==='
 docker exec swingrl grep -c 'compute_and_persist_iteration_cps' /app/scripts/train_pipeline.py
 docker exec swingrl grep -c 'autocommit=True' /app/scripts/train_pipeline.py
 echo
-echo '=== swingrl container Phase 0 modules + scripts (all via docker cp) ==='
-docker exec swingrl bash -c 'ls /app/src/swingrl/reporting/iteration_report.py /app/src/swingrl/metrics/cps.py /app/scripts/migrations/add_cps_columns.py /app/scripts/backfill_cps_history.py 2>&1'
+echo '=== swingrl-memory container (Task D env-prefix fix) ==='
+docker exec swingrl-memory grep -c 'training_epoch:' /app/memory_agents/consolidate.py
 echo
 echo '=== swingrl-dashboard container Iteration History page ==='
 docker exec swingrl-dashboard ls /app/dashboard/pages/5_Iteration_History.py
@@ -1091,28 +1064,25 @@ docker exec swingrl-dashboard ls /app/dashboard/pages/5_Iteration_History.py
 # Expected results:
 #   - swingrl train_pipeline.py compute_and_persist count: 0 (NOT yet rebuilt)
 #   - swingrl train_pipeline.py autocommit count: 0 (NOT yet rebuilt)
-#   - swingrl /app/src/swingrl/reporting/iteration_report.py exists (via docker cp by prior session)
-#   - swingrl /app/src/swingrl/metrics/cps.py exists (via docker cp by prior session)
-#   - swingrl /app/scripts/migrations/add_cps_columns.py exists (via docker cp during Plan A 2026-04-07 22:02 ET)
-#   - swingrl /app/scripts/backfill_cps_history.py exists (via docker cp during Plan A 2026-04-07 22:02 ET)
+#   - swingrl-memory consolidate.py training_epoch: count: depends on rebuild state
+#     If 0: Task D fix NOT deployed — need `docker compose build swingrl-memory && docker compose up -d swingrl-memory`
+#     If >0: Task D fix is deployed
 #   - swingrl-dashboard 5_Iteration_History.py exists (via docker cp by prior session)
 #
-# All the docker-cp'd files survive container restart but NOT container
-# recreation. Plan B's container rebuild step (when scheduled) will replace
-# them with image-baked copies. Until then, do NOT run docker compose
-# down/up/build/recreate.
-#
-# If train_pipeline.py counts are >0, the swingrl image has been rebuilt
-# (good — the deploy step is done and iter 6 is safe to run)
-# If they're still 0, the deploy step has NOT been done yet — see the
-# "Required deploy steps before iter 6" section.
+# Three containers need rebuilds before iter 6:
+#   1. swingrl — Phase 0 wiring (autocommit fix, deploy path fix, CPS wiring)
+#   2. swingrl-memory — Task D fix (env-qualified Phase B prefixes)
+#   3. swingrl-dashboard — Phase 0 dashboard page (currently via docker cp)
+# See "Required deploy steps before iter 6" section and "Newly discovered issues" #10.
 ```
 
 ## Working state
-- Branch: `gsd/phase-20-production-deployment` (despite the name; Phase 19.1 work is on this branch — Plan B's STEP 0 will move it all to phase-19.1)
-- Working tree: clean as of 2026-04-07 22:04 ET (after `f0bdbcd`)
+- Branch: `gsd/phase-19.1-memory-agent-infrastructure-and-training` (STEP 0 complete)
+- Latest commit: `d4d718f fix(19.1): filter Phase B consolidation by env-qualified source prefix`
+- Working tree: clean as of 2026-04-12 ET
 - pg16: iter 0-4 fully restored (10 iteration_results rows + 564 backtest_results rows + all CPS columns populated). Iter 5 absent by design.
-- TaskList: see the snapshot below — the tasks I created in the last session won't survive context clear, so re-create them from this list.
+- Test suite: 975 passed, 391 skipped, 0 failed (53 sec)
+- TaskList: see the snapshot below — tasks don't survive context clear, re-create from this list.
 
 ## Plan A artifacts (to find or reference in the next session)
 - **Plan file**: `/Users/varunpanchal/.claude/plans/delegated-skipping-umbrella.md` — the approved Plan A spec, includes commit messages, R1-R7 step details, and rationale for skipping iter 5
@@ -1122,15 +1092,12 @@ docker exec swingrl-dashboard ls /app/dashboard/pages/5_Iteration_History.py
 
 ## Tasks to recreate in next session
 The TaskCreate state doesn't persist across context clears. Re-create
-these in priority order. **Updated 2026-04-07 22:04 ET to reflect Plan A done.**
+these in priority order. **Updated 2026-04-12 ET.**
 
-1. **Plan B** — Test-fixture safety net + STEP 0 branch consolidation. Three sub-items:
-   - STEP 0 — cherry-pick all 8 phase-20 commits onto phase-19.1, reword the 3 oldest `(21)` subjects to `(19.1)`, delete phase-20
-   - Add `pytest_configure` guard to `tests/conftest.py` (refuse `DATABASE_URL` not ending in `_test`)
-   - Remove all 18 `raise RuntimeError` disables in test fixtures (the over-correction; conftest guard makes them obsolete)
-2. **Task C** — Fix crypto SAC epoch memory volume bug
-3. **Task D** — Investigate equity consolidation_skipped_no_memories
-4. **Iter 3-4 pattern QA** — Review memories and patterns from iter 3-4, cleanup harmful patterns (iter 5 patterns are gone with the iter 5 data; the 5 stage-1 consolidations from iter 5 in pg16 with ids 170-174 are still there and worth reviewing in the QA pass)
+1. ~~**Plan B**~~ ✅ done (`c7b6eef`, 2026-04-10)
+2. ~~**Task C**~~ ✅ done (`3177ce0`, 2026-04-11)
+3. ~~**Task D**~~ ✅ done (`d4d718f`, 2026-04-12)
+4. **Iter 3-4 pattern QA** — Review memories and patterns from iter 3-4, cleanup harmful patterns (iter 5 patterns in `consolidations` table ids 170-174 are still there and worth reviewing). See "Task — Iter 5 QA" section above for investigation plan and SQL. ← NEXT
 5. **Task B / Phase 1.1** — LLM context enrichment in epoch_callback + meta_orchestrator
 6. **Phase 1.2** — New fold_context.py helper module
 7. **Phase 1.3** — Prompt updates in query.py
@@ -1259,16 +1226,14 @@ invasive work.**
    `llm_audit_log.iteration_number` cleanup so the selector has a
    clean view of training history.
 
-2. **Test suite gap**: I should have run the full test suite with a
-   docker postgres for live integration tests before committing. We
-   have 390 skipped tests that may be hiding regressions. **Should
-   the next session spin up a docker postgres locally and run the
-   live tests as a backstop before doing more invasive work?**
-   **Recommendation**: yes, do this immediately after context restore
-   and before starting Task C. Wins are: catches any regression in
-   the Phase 0 work that the unit tests didn't catch, and validates
-   the recover_iteration_results.py / backfill_cps_history.py paths
-   end-to-end against a postgres other than pg16.
+2. **Test suite gap**: ~~I should have run the full test suite with a
+   docker postgres for live integration tests before committing.~~
+   **Partially resolved:** Plan B added a `pytest_configure` guard so
+   tests are safe to run with any DATABASE_URL. The full suite runs
+   975 passed / 391 skipped / 0 failed without DATABASE_URL. The 391
+   skipped tests still need a docker postgres to exercise. **Still
+   recommended** before Phase 1: spin up local docker postgres, set
+   DATABASE_URL, run full suite to validate live-DB paths.
 
 3. **Pre-existing `llm_audit_log.iteration_number` NULL issue**: 801
    historical rows have NULL iteration_number. Out of scope for Phase
@@ -1277,21 +1242,16 @@ invasive work.**
    as a tracked todo, fix during a future cleanup pass — not blocking
    for Phase 1.
 
-4. **Crypto SAC memory volume bug — fix vs. delete-and-fix**: When we
-   fix the bug in Task C, do we delete the existing 688k bad memories
-   from pg16? They're junk per-step snapshots that bloat the table
-   and (more importantly) keep causing the memory service OOM if
-   anything tries to consolidate them. **Recommendation**: yes,
-   DELETE them with the SQL below AFTER the bug is fixed AND verified
-   in a controlled test (because deleting 688k rows is irreversible
-   without a backup):
-   ```sql
-   -- Run inside swingrl container with psycopg + autocommit=True
-   DELETE FROM memories
-   WHERE source = 'training_epoch:crypto:sac'
-     AND created_at >= '2026-04-06'
-     AND created_at <= '2026-04-07';
-   ```
+4. **Crypto SAC memory volume — delete or keep?**: Task C fixed the
+   OOM (stream-parsing), so the 688k memories no longer crash
+   consolidation. Task D fixed the cross-env pollution, so they no
+   longer starve equity pagination. **The 688k memories are now
+   harmless in place** — consolidation handles the volume and
+   filters to the correct env. However, they still slow pagination
+   and waste ~3.4 GB of table space. **Updated recommendation**:
+   keep them for now (they're legitimate iter 5 data per the project
+   memory `feedback_crypto_memories_not_junk.md`), but consider
+   archiving or sampling them during the iter 3-4 pattern QA pass.
 
 5. **🆕 Deploy Phase 0 to production**: The swingrl image needs to be
    rebuilt before iter 6 can benefit from any of the train_pipeline.py
@@ -1315,7 +1275,7 @@ invasive work.**
 
 # END OF HANDOFF
 
-Last updated: 2026-04-07 ~08:00 ET, before context clear.
-Author: Claude (current session, opus-4-6-1m).
-Next session: read this top to bottom, then check the
+Last updated: 2026-04-12 ET.
+Author: Claude (opus-4-6-1m).
+Next session: read this top to bottom, then check the remaining queue.
 [Resuming After Context Clear](#resuming-after-context-clear) section.
