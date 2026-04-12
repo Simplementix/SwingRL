@@ -712,7 +712,7 @@ class TestConsolidationArchiving:
                     f"rolling_mdd_500=-{i % 20}.0 approx_kl=0.00{i % 3} "
                     f"reward_weights={{}} notable_event=None"
                 ),
-                source="training_epoch:historical",
+                source="training_epoch:equity:ppo",
             )
 
         mock_response = {
@@ -779,7 +779,7 @@ class TestConsolidationArchiving:
                     f"rolling_mdd_500=-5.0 approx_kl=0.001 "
                     f"reward_weights={{}} notable_event=None"
                 ),
-                source="training_epoch:historical",
+                source="training_epoch:equity:a2c",
             )
 
         async def _mock_call_llm_with_retry(
@@ -3184,3 +3184,118 @@ class TestCrossIterationSourcePrefix:
             )
 
         assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Phase B env-qualified prefix isolation (Task D regression test)
+# ---------------------------------------------------------------------------
+
+
+class TestPhaseBEnvIsolation:
+    """Phase B must only fetch memories for the requested env, not cross-env."""
+
+    def test_equity_consolidation_ignores_crypto_memories(
+        self, api_client: Any, auth_headers: dict[str, str]
+    ) -> None:
+        """Task D regression: equity Phase B must not consume or archive crypto memories."""
+        import db as memory_db_module
+
+        # Phase A needs at least one memory so the consolidation doesn't
+        # short-circuit before reaching Phase B.
+        memory_db_module.insert_memory(
+            text="WF RESULTS: equity ppo fold0 sharpe=2.5 mdd=-5.0",
+            source="walk_forward:equity:ppo",
+        )
+
+        # 3 equity epoch memories — should be consumed by Phase B
+        for i in range(3):
+            memory_db_module.insert_memory(
+                text=(
+                    f"EPOCH SNAPSHOT: run_id=equity_ppo_fold{i} algo=PPO env=equity "
+                    f"epoch={i} mean_reward=0.50 rolling_sharpe_500=1.5 "
+                    f"rolling_mdd_500=-3.0 approx_kl=0.001 "
+                    f"reward_weights={{}} notable_event=None"
+                ),
+                source="training_epoch:equity:ppo",
+            )
+
+        # 3 crypto epoch memories — must NOT be consumed or archived
+        for i in range(3):
+            memory_db_module.insert_memory(
+                text=(
+                    f"EPOCH SNAPSHOT: run_id=crypto_sac_fold{i} algo=SAC env=crypto "
+                    f"epoch={i} mean_reward=0.30 rolling_sharpe_500=0.8 "
+                    f"rolling_mdd_500=-10.0 approx_kl=0.002 "
+                    f"reward_weights={{}} notable_event=None"
+                ),
+                source="training_epoch:crypto:sac",
+            )
+
+        # 1 crypto reward_adjustment — also must NOT be touched
+        memory_db_module.insert_memory(
+            text=(
+                "REWARD_ADJUSTMENT_OUTCOME: run_id=crypto_sac_fold0 env=crypto "
+                "epoch_triggered=5 post_adjustment_sharpe_delta=0.01 "
+                "post_adjustment_mdd_delta=-0.5 adjustment_effective=True "
+                "weights_before={} weights_after={}"
+            ),
+            source="reward_adjustment:crypto:sac",
+        )
+
+        mock_response = {
+            "patterns": [
+                {
+                    "pattern_text": "PPO equity shows stable sharpe",
+                    "category": "iteration_progression",
+                    "affected_algos": ["ppo"],
+                    "affected_envs": ["equity"],
+                    "actionable_implication": "Continue current approach",
+                    "confidence": 0.6,
+                    "evidence": "sharpe ~1.5 across folds",
+                },
+            ],
+        }
+
+        async def _mock_llm(self_arg: Any, text: str, **kwargs: Any) -> dict[str, Any]:
+            # The LLM should never see crypto data during an equity consolidation
+            assert "env=crypto" not in text, "Phase B leaked crypto memories into equity LLM input"
+            return mock_response
+
+        with patch(
+            "memory_agents.consolidate.ConsolidateAgent._call_llm_with_retry",
+            _mock_llm,
+        ):
+            response = api_client.post(
+                "/consolidate",
+                json={"env_name": "equity"},
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200  # noqa: PLR2004
+
+        # Crypto memories must still be unarchived
+        with memory_db_module.get_connection() as conn:
+            crypto_unarchived = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM memories "
+                "WHERE source LIKE 'training_epoch:crypto:%%' AND archived = 0"
+            ).fetchone()["cnt"]
+            crypto_reward_unarchived = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM memories "
+                "WHERE source LIKE 'reward_adjustment:crypto:%%' AND archived = 0"
+            ).fetchone()["cnt"]
+        assert crypto_unarchived == 3, (
+            f"Crypto epoch memories should be untouched, got {crypto_unarchived} unarchived"
+        )
+        assert crypto_reward_unarchived == 1, (
+            f"Crypto reward memory should be untouched, got {crypto_reward_unarchived} unarchived"
+        )
+
+        # Equity epoch memories should be archived (consumed by Phase B)
+        with memory_db_module.get_connection() as conn:
+            equity_unarchived = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM memories "
+                "WHERE source LIKE 'training_epoch:equity:%%' AND archived = 0"
+            ).fetchone()["cnt"]
+        assert equity_unarchived == 0, (
+            f"Equity epoch memories should be archived, got {equity_unarchived} unarchived"
+        )

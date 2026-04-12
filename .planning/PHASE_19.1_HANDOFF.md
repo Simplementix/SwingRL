@@ -530,14 +530,18 @@ system has been actively *hurting* training (control folds outperform
 treatment folds by 2.7-5.1× CPS across iter 3, 4, 5). We have **3
 pre-existing bugs fixed** and Plan A recovery is complete (iter 0-4 only).
 
-Remaining queue (in order, updated 2026-04-07 22:04 ET):
+Remaining queue (in order, updated 2026-04-12 ET):
 1. ~~A — Commit Phase 0 work~~ ✅ done (`c7943bc`)
 2. ~~Plan A — pg16 recovery (iter 0-4)~~ ✅ done (`b6ba881` recovery script + `e0d1345` doc update; iter 5 skipped)
-3. **Plan B — STEP 0 branch consolidation + `tests/conftest.py` `pytest_configure` guard + remove the 18 `raise RuntimeError` test fixture disables (over-correction undo)** ← next
-4. C — Fix crypto SAC epoch memory volume bug
-5. D — Investigate equity `consolidation_skipped_no_memories`
-6. iter5 QA — review memories/patterns, cleanup harmful patterns (now mostly moot since iter 5 is lost; the iter 3-4 patterns still warrant review)
+3. ~~Plan B — STEP 0 branch consolidation + `pytest_configure` guard + remove 26 fixture disables~~ ✅ done 2026-04-10 (`c7b6eef`). Renamed `gsd/phase-20-production-deployment` → `gsd/phase-19.1-memory-agent-infrastructure-and-training`, rewrote 3 `(21):` subjects to `(19.1):`, added `pytest_configure` DB safety guard to `tests/conftest.py`, restored all 26 disabled test fixtures. 975 passed, 390 skipped, 0 failed.
+4. ~~C — Fix consolidation OOM on 688k epoch memories~~ ✅ done 2026-04-11 (`3177ce0`). Stream-parse epoch memories during pagination instead of accumulating all in memory. Peak usage ~3.4 GB → ~160 MB. The 688k memories are legitimate iter 5 data — the fix handles the volume, not deletes data.
+5. ~~D — Fix equity `consolidation_skipped_no_memories`~~ ✅ done 2026-04-12. Phase B used bare source prefixes (`training_epoch`, `reward_adjustment`, `cross_iteration`) causing global cross-env pagination + client-side text filter. Changed to env-qualified prefixes (`training_epoch:{env}`, `reward_adjustment:{env}`) matching Phase A's pattern. Dropped `cross_iteration` from Phase B (Phase A already handles it; Phase B was accidentally archiving preserved-on-failure rows). 975 passed, 391 skipped, 0 failed.
+6. **iter 3-4 pattern QA** — review memories/patterns, cleanup harmful patterns (iter 5 patterns still in `consolidations` table ids 170-174, worth reviewing) ← next
 7. B — Phase 1 (prompt + reward weight refocus)
+
+### Newly discovered issues (not in original queue)
+8. **Turbulence column bug** — `src/swingrl/execution/pipeline.py:537` queries `SELECT ... ORDER BY turbulence FROM features_crypto` but no `turbulence` column exists in the table schema (`postgres_schema.py`). Turbulence is computed on-the-fly, never stored. The query silently fails and returns `0.0`, meaning turbulence crash protection has **never worked**. Non-blocking but should be fixed before live trading.
+9. **Container deployment** — Phase 0 code is in git but NOT in the running swingrl container image. The `train_pipeline.py` autocommit fix, deploy path fix, and CPS wiring are NOT live. Container must be rebuilt before iter 6. See "Required deploy steps before iter 6" section above.
 
 ---
 

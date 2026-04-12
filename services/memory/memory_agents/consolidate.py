@@ -1787,7 +1787,17 @@ class ConsolidateAgent:
         fold_weights: dict[str, list[tuple[float, str]]] = defaultdict(list)
         reward_memories: list[dict[str, Any]] = []
 
-        for prefix in ("training_epoch", "reward_adjustment", "cross_iteration"):
+        # Use env-qualified prefixes so the SQL WHERE clause filters to
+        # this environment at the database level.  The bare prefixes used
+        # previously caused pagination starvation when one env had orders-
+        # of-magnitude more memories (e.g. 688k crypto SAC vs 18k equity).
+        # cross_iteration is intentionally omitted — Phase A already
+        # fetches and archives those; including them here would silently
+        # archive rows that Phase A preserved on LLM failure.
+        for prefix in (
+            f"training_epoch:{env_name}",
+            f"reward_adjustment:{env_name}",
+        ):
             offset = 0
             _FETCH_CHUNK = 10_000
             while True:
@@ -1801,8 +1811,6 @@ class ConsolidateAgent:
                     break
                 for m in candidates:
                     text = m.get("text", "")
-                    if f"env={env_name}" not in text:
-                        continue
                     all_ids_b.append(m["id"])
                     total_phase_b_count += 1
                     source = m.get("source", "")
