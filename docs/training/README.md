@@ -14,7 +14,7 @@ Living reference cards for SwingRL training. Thin, scannable, source-of-truth fo
 ### Tier 1 — Foundation
 
 - [x] [rl-environments.md](rl-environments.md) — Obs/action/reward/episode per env
-- [ ] feature-catalog.md — Every feature: source, dtype, range, normalization, which env consumes it
+- [x] [feature-catalog.md](feature-catalog.md) — Every feature: source, dtype, range, normalization, which env consumes it
 - [ ] reward-shaping.md — Reward formula, penalties, memory-driven adjustments, yaml weights
 - [ ] agent-architecture.md — PPO/A2C/SAC configs, ensemble weights, epoch cadence
 
