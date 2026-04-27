@@ -111,7 +111,7 @@ Box, `low=-1.0, high=+1.0, dtype=float32, shape=(n_assets + 1,)`. Last element i
 
 ## Reward (summary)
 
-Full reward shaping doc: `docs/training/reward-shaping.md` *(not yet written)*.
+Full reward shaping doc: [`docs/training/reward-shaping.md`](reward-shaping.md).
 
 Short form:
 
