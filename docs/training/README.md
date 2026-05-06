@@ -20,7 +20,7 @@ Living reference cards for SwingRL training. Thin, scannable, source-of-truth fo
 
 ### Tier 2 — Training loop
 
-- [ ] training-data-capture.md — Per pg16 table: who writes, when, cardinality, readers
+- [x] [training-data-capture.md](training-data-capture.md) — Per pg16 table: who writes, when, cardinality, readers
 - [ ] memory-system.md — Memory types, consolidation phases, LLM chain, retrieval, known issues
 - [ ] training-pipeline.md — Iteration lifecycle, walk-forward structure, entry points
 - [ ] validation-promotion.md — Sharpe/MDD gates, shadow → active → archive flow
