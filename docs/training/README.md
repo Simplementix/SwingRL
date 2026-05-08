@@ -28,7 +28,7 @@ Living reference cards for SwingRL training. Thin, scannable, source-of-truth fo
 
 ### Tier 3
 
-- [x] [hyperparameter-tuning.md](hyperparameter-tuning.md) `PENDING` — LLM-driven HP selection, bounds, history (folds `.planning/research/hp-tuning-reference.md`)
+- [x] [hyperparameter-tuning.md](hyperparameter-tuning.md) `5c21de1` — LLM-driven HP selection, bounds, history (folds `.planning/research/hp-tuning-reference.md`)
 
 ## Related
 
