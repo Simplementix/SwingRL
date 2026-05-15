@@ -17,7 +17,7 @@ Living reference for SwingRL's pg16 schema. Source-of-truth for every table's pu
 | [Market data & features](#market-data--features-10-tables) | 10 | `data/`, `features/` |
 | [Training & evaluation](#training--evaluation-6-tables) | 6 | `training/`, `agents/backtest.py`, `memory/training/` |
 | [Memory system](#memory-system-7-tables) | 7 | `services/memory/` |
-| [Live trading & observability](#live-trading--observability-13-tables) | 13 | `execution/`, `risk/`, `safety/`, `shadow/`, `alerts/`, `monitoring/` |
+| [Live trading & observability](#live-trading--observability-13-tables) | 13 | `execution/`, `execution/risk/`, `scheduler/`, `shadow/`, `monitoring/` |
 
 ## Market data & features (10 tables)
 
@@ -37,9 +37,9 @@ Living reference for SwingRL's pg16 schema. Source-of-truth for every table's pu
 
 ### `macro_features`
 - **Purpose:** FRED macro series (VIXCLS, T10Y2Y, DFF, CPIAUCSL, UNRATE) with `release_date` for look-ahead-bias prevention. PK `(date, series_id)`. (`postgres_schema.py:69-77`)
-- **Writers:** **HONEST GAP** — no INSERT/`executemany` for this table found in `src/`. The ingestor contract names it (`data/base.py:34-37`) but no concrete FRED writer was located in `src/swingrl/data/`. May exist in `scripts/` or a service outside the search scope.
+- **Writers:** `data/fred.py:47::FREDIngestor` registers `_duckdb_table = "macro_features"` (L58). Writes flow via inherited `BaseIngestor.run()` → `data/base.py:383::executemany_from_df(..., on_conflict="DO NOTHING")` after Parquet sync. Macro-specific column mapping at `data/base.py:377-380`.
 - **Cardinality cadence:** 1 row per `(date, series_id)`. Total UNKNOWN.
-- **Readers:** `training/data_loader.py:48-51`; `features/pipeline.py:427-431`; `features/macro.py:44-66` (LATERAL JOIN); `safety/emergency.py:450`.
+- **Readers:** `training/data_loader.py:48-51`; `features/pipeline.py:427-431`; `features/macro.py:44-66` (LATERAL JOIN); `execution/emergency.py:450`.
 
 ### `data_quarantine`
 - **Purpose:** Validation-failed rows quarantined during ingestion (raw JSON + reason). PK `id` IDENTITY. (`postgres_schema.py:79-89`)
@@ -79,7 +79,7 @@ Living reference for SwingRL's pg16 schema. Source-of-truth for every table's pu
 
 ### `hmm_state_history`
 - **Purpose:** Persisted HMM regime probabilities `(p_bull, p_bear, p_crisis, log_likelihood)` per refit. PK `(environment, date)`. Note `p_crisis` is **stored but not exposed** to the agent's observation (only `p_bull, p_bear` are — see `feature-catalog.md`). (`postgres_schema.py:282-297`)
-- **Writers:** `features/hmm_regime.py:314-319::store_hmm_state()` — fires per HMM refit. Refit cadence per env (proxy symbol window) not traced here.
+- **Writers:** `features/hmm_regime.py:293::store_hmm_state()` (INSERT at `:317-321`) — fires per HMM refit. Refit cadence per env (proxy symbol window) not traced here.
 - **Cardinality cadence:** 1 row per `(environment, date)` per refit. Total UNKNOWN.
 - **Readers:** `training/data_loader.py:89-103`; `features/pipeline.py:469-482`; `memory/training/meta_orchestrator.py:406`.
 
@@ -87,7 +87,7 @@ Living reference for SwingRL's pg16 schema. Source-of-truth for every table's pu
 
 ### `model_metadata`
 - **Purpose:** Trained-model artifacts: paths, version, training window, `converged_at_step`, `ensemble_weight`, `validation_sharpe`. PK `model_id` (TEXT). (`postgres_schema.py:105-121`)
-- **Writers:** `scripts/train_pipeline.py:1640::_write_model_metadata()` (idempotent INSERT … ON CONFLICT DO UPDATE; non-fatal); `scripts/train.py:488` (legacy path, same pattern).
+- **Writers:** `scripts/train_pipeline.py:1612::_write_model_metadata()` (idempotent INSERT … ON CONFLICT DO UPDATE; non-fatal); `scripts/train.py:488` (legacy path, same pattern).
 - **Cardinality cadence:** ~6 rows per training cycle (3 algos × 2 envs). Total UNKNOWN.
 - **Readers:** `execution/pipeline.py:422` (loads `algorithm`, `ensemble_weight` per inference cycle).
 - **Honest gaps:** `validation_sharpe` always written as `None` — purpose unverified; no other writer found.
@@ -95,19 +95,19 @@ Living reference for SwingRL's pg16 schema. Source-of-truth for every table's pu
 ### `backtest_results`
 - **Purpose:** Per-fold backtest metrics (IS + OOS Sharpe/Sortino/Calmar/MDD, profit factor, trade stats, regime context, overfitting class). PK `result_id` (UUID, TEXT). 41 columns. (`postgres_schema.py:124-169`)
 - **Writers:**
-  - `agents/backtest.py:614::_store_result()` — plain INSERT, fires per fold (baseline walk-forward).
-  - `agents/backtest.py:801::store_fold_results_to_postgres()` — richer iteration-N row including regime context (`hmm_p_bull/bear`, `vix_mean`, `yield_spread_mean`), in-sample surrogates, overfitting gap/class, dates, `is_control_fold` flag.
+  - `agents/backtest.py:598::_store_results()` — plain INSERT, fires per fold (baseline walk-forward).
+  - `agents/backtest.py:724::store_fold_results_to_duckdb()` — richer iteration-N row including regime context (`hmm_p_bull/bear`, `vix_mean`, `yield_spread_mean`), in-sample surrogates, overfitting gap/class, dates, `is_control_fold` flag. (Function name says duckdb but actually writes pg16; legacy name kept.)
 - **Cardinality cadence:** 1 row per `(iteration, environment, algorithm, fold_number)`. Per-iteration count varies by walk-forward fold count. Total UNKNOWN — historical reference: per memory, **564 backtest_results rows for iter 0-4** as of 2026-04-07.
-- **Readers:** `reporting/iteration_report.py:140::load_fold_history()` (dedup'd latest per fold for CPS computation), `iteration_report.py:753` (pre-dedup count for audit column).
+- **Readers:** `reporting/iteration_report.py:114::load_fold_history()` (dedup'd latest per fold for CPS computation), `iteration_report.py:753` (pre-dedup count for audit column).
 - **Honest gaps:** No DDL index on `(environment, iteration_number)` despite being a frequent query filter.
 
 ### `iteration_results`
 - **Purpose:** Iteration-level ensemble row: ensemble Sharpe/MDD, gate pass/fail, per-algo weights & means, hyperparams JSON, CPS v1/v2/v3 scores, worst-fold markers, regression deltas. Composite uniqueness `(iteration_number, environment, run_type)` enables `ON CONFLICT DO UPDATE` for re-runs. 55 columns. (`postgres_schema.py:171-222`)
 - **Writers:**
-  - `agents/backtest.py:945::store_iteration_results_to_duckdb()` — base row with ensemble metrics, gate, weights, hyperparams, wall-clock, `memory_enabled`. (Function name says duckdb but actually writes pg16; legacy name kept.)
-  - `reporting/iteration_report.py:644::persist_iteration_cps()` — UPDATE-then-INSERT pass that fills CPS columns (`cps_v1_multiplicative`, treatment/control splits, components JSON, worst-fold markers, regression delta, dedup audit).
+  - `agents/backtest.py:882::store_iteration_results_to_duckdb()` — base row with ensemble metrics, gate, weights, hyperparams, wall-clock, `memory_enabled`. (Function name says duckdb but actually writes pg16; legacy name kept.)
+  - `reporting/iteration_report.py:612::persist_iteration_cps()` — UPDATE-then-INSERT pass that fills CPS columns (`cps_v1_multiplicative`, treatment/control splits, components JSON, worst-fold markers, regression delta, dedup audit).
 - **Cardinality cadence:** 1 row per `(iteration_number, environment, run_type)`. Total UNKNOWN — historical reference: per memory, **10 rows for iter 0-4 × {equity, crypto}** as of 2026-04-07.
-- **Readers:** `reporting/iteration_report.py:104::load_iteration_results()` (full SELECT for last N iters); `:772` (median_return for CPS v3 baseline); `:880` (CPS v1 + worst_fold_mdd for regression deltas).
+- **Readers:** `reporting/iteration_report.py:90::load_iteration_history()` (full SELECT for last N iters); `:772` (median_return for CPS v3 baseline); `:880` (CPS v1 + worst_fold_mdd for regression deltas).
 - **Honest gaps:** UPDATE path in `persist_iteration_cps` does not touch `created_at` — CPS recompute timestamp is implicit / unobservable.
 
 ### `training_epochs`
@@ -183,70 +183,70 @@ The memory subsystem lives largely in `services/memory/` (FastAPI service in its
 
 ### `trades`
 - **Purpose:** Persistent log of all fills (live + simulated) with commission/slippage/`trade_type`. PK `trade_id` (TEXT). Index `idx_trades_symbol_env` (`postgres_schema.py:743`). (`postgres_schema.py:365-380`)
-- **Writers:** `execution/fill_processor.py:87,125::_record_trade()` (post-fill); `:115::record_adjustment()` (`trade_type='adjustment'`).
+- **Writers:** `execution/fill_processor.py:115::_record_trade()` (post-fill, INSERT at `:125`); `:64::record_adjustment()` (`trade_type='adjustment'`, INSERT at `:87`).
 - **Cardinality cadence:** 1 row per fill event. Total UNKNOWN.
-- **Readers:** `execution/position_tracker.py:276::days_since_trade()`.
+- **Readers:** `execution/risk/position_tracker.py:263::_days_since_trade()`.
 - **Status:** Active in live execution path.
 
 ### `positions`
 - **Purpose:** Active portfolio per `(symbol, environment)`: quantity, weighted-average cost basis, unrealized P&L, stop/TP. PK composite. Index `idx_positions_symbol_env` (`postgres_schema.py:744`). (`postgres_schema.py:382-396`)
-- **Writers:** `execution/fill_processor.py:176-244::_update_position()` (INSERT new buy / UPSERT averaging / UPSERT on sell / DELETE on sell-to-zero); `execution/reconciliation.py:213` (broker reconciliation); `paper/binance_sim.py:166` (liquidations).
+- **Writers:** `execution/fill_processor.py:145::_update_position()` (INSERT new buy / UPSERT averaging / UPSERT on sell / DELETE on sell-to-zero); `execution/reconciliation.py:213` (broker reconciliation); `execution/adapters/binance_sim.py:166` (liquidations).
 - **Cardinality cadence:** ≤ 1 active row per `(symbol, env)`. Total UNKNOWN.
-- **Readers:** `execution/position_tracker.py:87`; `execution/fill_processor.py:167`; `safety/stop_polling.py:82`; `paper/binance_sim.py:128`; `execution/reconciliation.py:245`.
+- **Readers:** `execution/risk/position_tracker.py:87`; `execution/fill_processor.py:167`; `scheduler/stop_polling.py:82`; `execution/adapters/binance_sim.py:128`; `execution/reconciliation.py:245`.
 - **Status:** Active — core live state.
 
 ### `risk_decisions`
 - **Purpose:** Per-order audit of risk-rule evaluations (proposed action vs. final, rule triggered, reason). PK `decision_id` (TEXT). (`postgres_schema.py:398-409`)
-- **Writers:** `risk/risk_manager.py:277::_record_decision()` — fires per order check.
+- **Writers:** `execution/risk/risk_manager.py:273::_record_decision()` — fires per order check.
 - **Cardinality cadence:** 1 row per risk evaluation. Total UNKNOWN.
 - **Readers:** **no readers found in src/**. Compliance audit table.
 
 ### `portfolio_snapshots`
 - **Purpose:** Time-series of portfolio total / cash / P&L / high-water-mark / drawdown. PK `(timestamp, environment)`. Index `idx_portfolio_snapshots_env_ts` DESC (`postgres_schema.py:751`). (`postgres_schema.py:411-424`)
-- **Writers:** `execution/position_tracker.py:184::record_snapshot()` — fires on scheduled snapshot calls.
+- **Writers:** `execution/risk/position_tracker.py:162::record_snapshot()` — fires on scheduled snapshot calls.
 - **Cardinality cadence:** 1 row per snapshot per env. Cadence depends on scheduler config (likely hourly or per cycle — not traced here).
-- **Readers:** `execution/position_tracker.py:60,105,133`; `shadow/promoter.py:197,232`; `safety/emergency.py:457`; `scheduler/jobs.py:204,268`; `monitoring/stuck_agent.py:49,64`.
+- **Readers:** `execution/risk/position_tracker.py:60,105,133`; `shadow/promoter.py:197,232`; `execution/emergency.py:457`; `scheduler/jobs.py:204,268`; `monitoring/stuck_agent.py:49,64`.
 - **Status:** Active — observability + emergency + shadow inputs.
 
 ### `circuit_breaker_events`
 - **Purpose:** Each CB trigger logged with `triggered_at`, `trigger_type`, `value`, `threshold`, `reason`, `resumed_at` (NULL until resume). PK `event_id` (TEXT). Index `idx_cb_env_resumed` (`postgres_schema.py:745`). (`postgres_schema.py:461-471`)
-- **Writers:** `safety/circuit_breaker.py:196::_trigger()` — fires on threshold breach. Resume not explicitly logged; the `resumed_at` column is updated elsewhere or remains NULL (path not traced).
+- **Writers:** `execution/risk/circuit_breaker.py:189::_trigger()` — fires on threshold breach. Resume not explicitly logged; the `resumed_at` column is updated elsewhere or remains NULL (path not traced).
 - **Cardinality cadence:** 1 row per trigger. Total UNKNOWN.
-- **Readers:** `safety/circuit_breaker.py:214::_latest_event()` (cooldown elapsed check); `shadow/promoter.py:384` (counts CB events during shadow period).
+- **Readers:** `execution/risk/circuit_breaker.py:210::_latest_event()` (cooldown elapsed check); `shadow/promoter.py:384` (counts CB events during shadow period).
 - **Status:** Active — critical safety mechanism.
 
 ### `emergency_flags`
 - **Purpose:** Runtime kill-switch flags (currently only `'halt'`): `active`, `set_at`, `set_by`, `reason`. PK `flag_name` (TEXT). (`postgres_schema.py:537-549`)
-- **Writers:** `safety/halt_check.py:90::set_halt()` (UPSERT active=1); `:108::clear_halt()` (UPDATE active=0).
+- **Writers:** `scheduler/halt_check.py:75::set_halt()` (UPSERT active=1); `:100::clear_halt()` (UPDATE active=0).
 - **Cardinality cadence:** 1 row per flag (currently 1 flag total).
-- **Readers:** `safety/halt_check.py:63::check_halt()`.
+- **Readers:** `scheduler/halt_check.py:49::is_halted()`.
 - **Status:** Active — emergency kill switch.
 
 ### `wash_sale_tracker`
 - **Purpose:** Equity tax compliance. Records loss-sale windows; `triggered` flag flipped on violation. PK `(symbol, sale_date)`. (`postgres_schema.py:450-459`)
-- **Writers:** `tax/wash_sale.py:48::record_wash_sale_window()` (INSERT … ON CONFLICT … DO UPDATE).
+- **Writers:** `monitoring/wash_sale.py:28::record_realized_loss()` (INSERT at `:48`, ON CONFLICT … DO UPDATE).
 - **Cardinality cadence:** 1 row per loss sale per symbol. Total UNKNOWN.
-- **Readers:** `tax/wash_sale.py:95::scan_wash_sales()` (active-window check on each buy fill).
+- **Readers:** `monitoring/wash_sale.py:66::scan_wash_sales()` (active-window check on each buy fill).
 - **Status:** Active — equity tax rule path.
 
 ### `alert_log`
 - **Purpose:** Audit of every alert sent (level, title, `message_hash` for dedup, `sent` flag). PK `alert_id` (TEXT). (`postgres_schema.py:506-515`)
-- **Writers:** `alerts/alerter.py:314::_record_alert()` per `send_alert()` call.
+- **Writers:** `monitoring/alerter.py:314::_record_alert()` per `send_alert()` call.
 - **Cardinality cadence:** 1 row per alert event. Total UNKNOWN.
 - **Readers:** **no readers found in src/**. Audit-only.
 
 ### `api_errors`
 - **Purpose:** Broker API failure log (broker, status_code, endpoint, error). PK `id` IDENTITY. (`postgres_schema.py:526-535`)
-- **Writers:** `paper/binance_sim.py:283` — INSERT on price-fetch failure after max retries. **Honest gap:** no writer found for live-broker (Alpaca / Binance.US live) failures — only the simulator currently writes here. Whether live brokers should also feed this table is unclear from code.
+- **Writers:** `execution/adapters/binance_sim.py:283` — INSERT on price-fetch failure after max retries. **Honest gap:** no writer found for live-broker (Alpaca / Binance.US live) failures — only the simulator currently writes here. Whether live brokers should also feed this table is unclear from code.
 - **Cardinality cadence:** 1 row per detected API failure. Total UNKNOWN.
-- **Readers:** `safety/emergency.py:494` (recent-error count for emergency-ban check).
+- **Readers:** `execution/emergency.py:494` (recent-error count for emergency-ban check).
 - **Status:** Active for paper / sim path; production wiring unverified.
 
 ### `inference_outcomes`
 - **Purpose:** Per-inference health flag (`had_nan`, `environment`, `timestamp`). PK `id` IDENTITY. (`postgres_schema.py:517-524`)
 - **Writers:** `execution/pipeline.py:186::run_inference()` — INSERT after each inference cycle.
 - **Cardinality cadence:** 1 row per inference. Total UNKNOWN.
-- **Readers:** `safety/emergency.py:478` (NaN-rate emergency check).
+- **Readers:** `execution/emergency.py:478` (NaN-rate emergency check).
 - **Status:** Active.
 
 ### `shadow_trades`
@@ -361,10 +361,11 @@ PG connection knobs are sourced from `config/swingrl.yaml` `database.*` and `.en
 | Feature writers | `src/swingrl/features/pipeline.py`, `src/swingrl/features/hmm_regime.py`, `src/swingrl/features/fundamentals.py` |
 | Training-side writers | `src/swingrl/agents/backtest.py`, `src/swingrl/memory/training/epoch_callback.py`, `src/swingrl/memory/training/meta_orchestrator.py`, `scripts/train_pipeline.py` |
 | Reporting / CPS readers | `src/swingrl/reporting/iteration_report.py` |
-| Live-trading writers | `src/swingrl/execution/{fill_processor.py, position_tracker.py, pipeline.py, reconciliation.py}`, `src/swingrl/risk/risk_manager.py`, `src/swingrl/safety/{circuit_breaker.py, halt_check.py, emergency.py, stop_polling.py}`, `src/swingrl/tax/wash_sale.py`, `src/swingrl/shadow/{shadow_runner.py, promoter.py}`, `src/swingrl/alerts/alerter.py`, `src/swingrl/paper/binance_sim.py`, `src/swingrl/scheduler/jobs.py`, `src/swingrl/monitoring/stuck_agent.py` |
+| Live-trading writers | `src/swingrl/execution/{fill_processor.py, pipeline.py, reconciliation.py, emergency.py}`, `src/swingrl/execution/risk/{risk_manager.py, position_tracker.py, circuit_breaker.py}`, `src/swingrl/execution/adapters/binance_sim.py`, `src/swingrl/scheduler/{halt_check.py, stop_polling.py, jobs.py}`, `src/swingrl/shadow/{shadow_runner.py, promoter.py}`, `src/swingrl/monitoring/{alerter.py, stuck_agent.py, wash_sale.py}` |
 | Memory-service writers / readers | `services/memory/db.py`, `services/memory/routers/*.py`, `services/memory/memory_agents/{consolidate,query,ingest}.py` |
 | Memory thin-client | `src/swingrl/memory/client.py` |
 
 ## Changelog
 
 - **2026-04-16** — Initial version.
+- **2026-05-15** — Wholesale path-citation cleanup. Fixed every `safety/*` (directory doesn't exist), `tax/*`, `alerts/*`, `paper/*`, `risk/*` (sans `execution/`) reference. Corrected line numbers and function names in `agents/backtest.py` (L598 `_store_results`, L724 `store_fold_results_to_duckdb`, L882 `store_iteration_results_to_duckdb`), `reporting/iteration_report.py` (L90 `load_iteration_history`, L114 `load_fold_history`, L612 `persist_iteration_cps`), `features/hmm_regime.py` (L293), `scripts/train_pipeline.py` (L1612), `execution/fill_processor.py` (L64/L115 labels were swapped), `execution/risk/position_tracker.py` (L162, L263 private `_days_since_trade`), `execution/risk/risk_manager.py` (L273), `monitoring/wash_sale.py` (L28 `record_realized_loss`, L66 `scan_wash_sales`). Resolved `macro_features` HONEST GAP — writer is `FREDIngestor` via `base.py:383`. Function rename: `check_halt()` → `is_halted()`.

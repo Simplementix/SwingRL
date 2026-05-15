@@ -231,6 +231,8 @@ All four must pass — fail-closed. **All thresholds are hardcoded** (not yaml-t
 
 `GateResult` (`validation.py:18-31`) carries `passed`, `failures: list[str]`, and `details` (per-gate `{value, threshold, passed}`).
 
+`max_drawdown` returns a positive fraction (`metrics.py:149-166`, e.g. `0.0756` = 7.56% drawdown), so the `0.15` MDD threshold is absolute — the gate fails when drawdown ≥ 15%, not when a signed value is more negative.
+
 ### `diagnose_overfitting(is_sharpe, oos_sharpe)` (`validation.py:33-76`)
 
 `gap = 1 − (OOS / IS)`. Classification:
@@ -403,3 +405,4 @@ Cadence enforcement details and notable-event thresholds are in [`reward-shaping
 ## Changelog
 
 - **2026-04-16** — Initial version.
+- **2026-05-08** — Clarified MDD sign convention in validation gates section (positive-stored, absolute threshold).

@@ -76,7 +76,13 @@ The set of HPs the LLM can actually move through to SB3 = **intersection of the 
 | `gradient_steps` | — | — | ✅ | |
 | `target_entropy` | — | — | ✅ | |
 
-**Dead keys** (in `_VALID_HP_KEYS` client whitelist but never offered by the service schema, so the LLM has no path to set them): PPO `n_steps`, `gae_lambda`, `vf_coef`; A2C `n_steps`, `vf_coef`; SAC `tau`, `learning_starts`. These keep their hardcoded `HYPERPARAMS` defaults always.
+### Dead keys (in whitelist but unreachable via LLM)
+
+These keys are in `_VALID_HP_KEYS` (`meta_orchestrator.py:56-80`) but **not** in the service schema (`_ALGO_HP_FIELDS`, `query.py:849-873`), so the LLM has no path to set them. They keep their hardcoded `HYPERPARAMS` defaults always:
+
+- **PPO:** `n_steps`, `gae_lambda`, `vf_coef`
+- **A2C:** `n_steps`, `vf_coef`
+- **SAC:** `tau`, `learning_starts`
 
 ## Bounds & clamping rules
 
@@ -299,6 +305,7 @@ Hardcoded: 5 min → 15 min → 60 min → rest-of-UTC-day.
 |----------|------:|----------|
 | `MIN_TRAINING_PROGRESS` | 0.20 | `bounds.py:97` |
 | `MAX_EPOCHS` | 200 | `bounds.py:98` |
+| Backup provider for HP-tuning query | OpenRouter (NVIDIA when primary IS OpenRouter) | `query.py:174` — not yaml-tunable. See Known issues for rationale. |
 
 ## Invariants
 
@@ -343,3 +350,4 @@ Hardcoded: 5 min → 15 min → 60 min → rest-of-UTC-day.
 ## Changelog
 
 - **2026-05-07** — Initial version.
+- **2026-05-15** — Promoted "Dead keys" to its own subsection above the reachability table. Added hardcoded-backup-provider row to Hardcoded values table (also remains in Known issues for context).

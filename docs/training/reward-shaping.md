@@ -28,7 +28,7 @@ reward        = sharpe_reward − risk_penalty
 **Timing (important):**
 
 - `daily_return = (new_value − prev_value) / prev_value` — computed post-rebalance at new prices (`base.py:212-214`). Sharpe observes the post-trade return.
-- `peak_value` is updated to `max(peak_value, new_value)` **before** the penalty is computed (`base.py:217`). On a fresh peak the drawdown penalty drops to zero immediately.
+- `peak_value` is updated to `max(peak_value, new_value)` **before** the penalty is computed (`base.py:217`). On a fresh peak the drawdown penalty drops to zero immediately. Scope is **episode-level** — initialized to `initial_amount` at `base.py:115` and reset on each `env.reset()` at `:152`; it persists across steps within an episode but never crosses episode boundaries.
 - `prev_value` is bumped to `new_value` at the end of `step()` (`base.py:255`).
 
 ### Rolling Sharpe (`envs/rewards.py`)
@@ -51,8 +51,8 @@ penalty = Σ_i position_penalty_coeff × max(0, w_i − max_position_size)²    
         + drawdown_penalty_coeff × max(0, drawdown − max_drawdown_pct)       # linear
 ```
 
-- Position limit is per-env: `equity.max_position_size=0.25`, `crypto.max_position_size=0.50`.
-- Drawdown limit is per-env: `equity.max_drawdown_pct=0.10`, `crypto.max_drawdown_pct=0.12`.
+- Position limit is per-env: `equity.max_position_size=0.25`, `crypto.max_position_size=0.50` (schema: `config/schema.py:54, 98`; read at `envs/base.py:74, 82`).
+- Drawdown limit is per-env: `equity.max_drawdown_pct=0.10`, `crypto.max_drawdown_pct=0.12` (schema: `config/schema.py:55, 99`; read at `envs/base.py:75, 83`; applied at `base.py:345-352`).
 - Drawdown term gated on `peak_value > 0` (`base.py:349`). Penalty is always ≥ 0.
 
 ## Reward components dict
@@ -300,3 +300,4 @@ Both tables are consumed by analysis notebooks / dashboards; `reward_adjustments
 ## Changelog
 
 - **2026-04-16** — Initial version.
+- **2026-05-15** — Added file:line citations for `max_position_size` / `max_drawdown_pct` defaults (schema + read sites). Clarified `peak_value` scope as episode-level (reset on `env.reset()`).
