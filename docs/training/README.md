@@ -18,19 +18,19 @@ Living reference cards for SwingRL training. Thin, scannable, source-of-truth fo
 
 - [x] [rl-environments.md](rl-environments.md) `b811dc1` — Obs/action/reward/episode per env
 - [x] [feature-catalog.md](feature-catalog.md) `60ac088` — Every feature: source, dtype, range, normalization, which env consumes it
-- [x] [reward-shaping.md](reward-shaping.md) `de0ed8c` — Reward formula, penalties, memory-driven adjustments, yaml weights
-- [x] [agent-architecture.md](agent-architecture.md) `17caae0` — PPO/A2C/SAC configs, ensemble weights, epoch cadence
+- [x] [reward-shaping.md](reward-shaping.md) `5707cd8` — Reward formula, penalties, memory-driven adjustments, yaml weights
+- [x] [agent-architecture.md](agent-architecture.md) `5707cd8` — PPO/A2C/SAC configs, ensemble weights, epoch cadence
 
 ### Tier 2 — Training loop
 
-- [x] [training-data-capture.md](training-data-capture.md) `b297636` — Per pg16 table: who writes, when, cardinality, readers
+- [x] [training-data-capture.md](training-data-capture.md) `5707cd8` — Per pg16 table: who writes, when, cardinality, readers
 - [x] [memory-system.md](memory-system.md) `ef35984` — Memory types, consolidation phases, LLM chain, retrieval, known issues
 - [x] [training-pipeline.md](training-pipeline.md) `32d38e8` — Iteration lifecycle, walk-forward structure, entry points
 - [x] [validation-promotion.md](validation-promotion.md) `b980a88` — Sharpe/MDD gates, shadow → active → archive flow
 
 ### Tier 3
 
-- [x] [hyperparameter-tuning.md](hyperparameter-tuning.md) `5c21de1` — LLM-driven HP selection, bounds, history (folds `.planning/research/hp-tuning-reference.md`)
+- [x] [hyperparameter-tuning.md](hyperparameter-tuning.md) `5707cd8` — LLM-driven HP selection, bounds, history (folds `.planning/research/hp-tuning-reference.md`)
 
 ## Cross-cutting topics
 
