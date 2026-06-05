@@ -10,13 +10,15 @@ Phases: 1 Foundation → 2 DX → 3 Data → 4 Storage → 5 Features → 6 Envs
 
 ## Git Workflow — Per Phase (Closeout Checklist)
 
-1. **Start of phase execution** (Claude): Create feature branch `gsd/phase-{N}-{slug}` from `main`.
+1. **Start of phase execution** (Claude): Create feature branch `swingrl/<N>-<slug>` from `main`
+   (e.g. `swingrl/19.2.0-test-foundation`). The legacy `gsd/` prefix is retired — see
+   `.planning/V1.1_EXECUTION_PLAN.md` for the active branch strategy.
 2. **All phase commits** go to the feature branch.
 3. **After verification passes** (Claude): Fix ROADMAP.md checkbox (`- [x]`) and push the feature branch to origin.
-4. **Run homelab CI** (Claude): SSH into homelab and run CI. Must pass before PR creation.
+4. **Run homelab CI** (Claude): pull the dev branch into the `~/swingrl` live checkout and run CI there. `~/swingrl` is the homelab production runtime (training/inference data + models live there); this is also the CI bed. Must pass before PR creation.
 
    ```bash
-   ssh homelab "cd ~/swingrl && git fetch origin && git checkout {branch} && git pull origin {branch} && bash scripts/ci-homelab.sh --no-cache"
+   cd ~/swingrl && git fetch origin && git checkout {branch} && git pull origin {branch} && bash scripts/ci-homelab.sh --no-cache
    ```
 
 5. **CI passes → Create PR** (Claude): Create PR to `main` with phase summary. Only after CI passes.

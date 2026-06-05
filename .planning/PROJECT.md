@@ -1,5 +1,12 @@
 # SwingRL
 
+> **Status (2026-06-05 ET):** v1.1 in progress. The Postgres migration, memory infra, CPS
+> framework, and `docs/training/` set live on the work branch
+> (`gsd/phase-19.1-memory-agent-infrastructure-and-training`, 249 commits ahead of `main`) —
+> **not yet merged to `main`**. Active sequencing and live stage status:
+> [`V1.1_EXECUTION_PLAN.md`](V1.1_EXECUTION_PLAN.md). The "Database" note below describes the
+> v1.0 SQLite+DuckDB layout; production has since migrated to PostgreSQL (pg16).
+
 ## What This Is
 
 An automated reinforcement learning swing trading system deploying PPO/A2C/SAC Sharpe-weighted ensembles across US equities (8 ETFs, daily bars) and cryptocurrency (BTC/ETH, 4-hour bars). Runs as a hands-off, capital-preserving paper trading platform for a solo operator on a two-machine architecture: M1 Mac for training and an always-on homelab server for production inference and execution via Docker.
@@ -113,4 +120,4 @@ Capital preservation through disciplined, automated risk management — the syst
 - Comprehensive operator runbook with detailed walkthroughs
 
 ---
-*Last updated: 2026-03-10 after v1.1 milestone start*
+*Last updated: 2026-06-05 ET — v1.1 mid-flight; see [`V1.1_EXECUTION_PLAN.md`](V1.1_EXECUTION_PLAN.md) for live status. (Prior update: 2026-03-10, v1.1 start.)*

@@ -34,9 +34,14 @@
 
 **Milestone Goal:** SwingRL runs hands-off on the homelab in paper trading mode with automated retraining, Discord alerts, and complete operator documentation.
 
+> **Active execution tracker:** [`V1.1_EXECUTION_PLAN.md`](V1.1_EXECUTION_PLAN.md) is the canonical
+> source for current stage/status. Phases 19.1 and 19.2 below are mid-flight and re-sequenced there
+> (minimal test-safety floor → training refocus → full architecture hardening).
+
 - [x] **Phase 18: Data Ingestion** - Populate homelab DuckDB with maximum historical depth, aligned observation vectors (completed 2026-03-11)
 - [x] **Phase 19: Model Training** - Train and validate PPO/A2C/SAC ensemble on homelab CPU, pass all walk-forward gates (completed 2026-03-13)
-- [x] **Phase 19.1: Memory Agent Infrastructure and Training** - Deploy Ollama + memory service, run 6 training iterations with best-model deployment (completed 2026-03-15)
+- [~] **Phase 19.1: Memory Agent Infrastructure and Training** - Initial infra completed 2026-03-15; **REOPENED** for the memory-agent refocus + Postgres migration (memory empirically harming training 2.7–5.1× CPS). Tracked as Stage 2 in the execution plan.
+- [~] **Phase 19.2: Testing Foundation & Database Isolation** - INSERTED 2026-05-19. Four-layer test/DB-safety hardening, re-sequenced so the minimal safety floor lands first and the full repository refactor follows the training refocus. Stages 1 & 3 in the execution plan.
 - [ ] **Phase 20: Production Deployment** - Docker stack running on homelab with paper trading firing on schedule
 - [ ] **Phase 21: Discord Alert Suite** - Full alert coverage wired and smoke-tested across all severity channels
 - [ ] **Phase 22: Automated Retraining** - Equity monthly + crypto biweekly retraining with validated shadow promotion
@@ -196,7 +201,8 @@ Plans:
 | 17. Doc Housekeeping | v1.0 | 1/1 | Complete | 2026-03-10 |
 | 18. Data Ingestion | v1.1 | 2/2 | Complete | 2026-03-11 |
 | 19. Model Training | v1.1 | 3/3 | Complete | 2026-03-13 |
-| 19.1. Memory Agent Infra | v1.1 | 4/4 | Complete | 2026-03-15 |
+| 19.1. Memory Agent Infra | v1.1 | 4/4 | Reopened — see exec plan (Stage 2) | 2026-03-15 (initial) |
+| 19.2. Testing Foundation | v1.1 | 0/TBD | In progress — see exec plan (Stages 1, 3) | - |
 | 20. Production Deployment | v1.1 | 0/5 | Planned | - |
 | 21. Discord Alert Suite | v1.1 | 0/3 | Planned | - |
 | 22. Automated Retraining | v1.1 | 0/4 | Planned | - |
