@@ -7,8 +7,6 @@ Scope rules:
 
 from __future__ import annotations
 
-import os
-import re
 import textwrap
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -22,40 +20,33 @@ import pytest
 
 from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.data.db import DatabaseManager
+from tests.db_guard import SAFE_DB_NAMES, classify_db_url, resolve_target_db_url
 
 # ---------------------------------------------------------------------------
 # Database safety guard
 # ---------------------------------------------------------------------------
-# Refuse to run pytest if DATABASE_URL points at a non-test database.
-# Test fixtures DROP/TRUNCATE/DELETE production tables — running them against
-# the production ``swingrl`` database wipes data.  The CI script
-# ``scripts/ci-homelab.sh`` overrides DATABASE_URL to ``swingrl_test`` before
-# invoking pytest; this guard catches anyone who runs pytest manually without
-# that override.
-
-_SAFE_DB_NAMES = {"swingrl_test"}
-_DB_NAME_RE = re.compile(r"/([^/?]+)(?:\?|$)")
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Refuse to run if DATABASE_URL points at a non-test database."""
-    db_url = os.environ.get("DATABASE_URL", "").strip()
-    if not db_url:
-        return  # No DB configured — tests that need one will skip.
-    match = _DB_NAME_RE.search(db_url)
-    if not match:
+    """Refuse to run the suite unless the *resolved* DB target is a test database.
+
+    Resolves the target the same way DatabaseManager does (env DATABASE_URL, then
+    config.system.database_url), so a blank env var with a production URL in YAML
+    config cannot slip past the guard.
+    """
+    verdict, db_name = classify_db_url(resolve_target_db_url())
+    if verdict in {"blank", "safe"}:
+        return
+    if verdict == "unparseable":
         pytest.exit(
-            f"DATABASE_URL has no parseable database name; refusing to run pytest. Got: {db_url!r}",
+            "Resolved database URL has no parseable database name; refusing to run pytest.",
             returncode=2,
         )
-    db_name = match.group(1)
-    if db_name in _SAFE_DB_NAMES or db_name.endswith("_test"):
-        return
     pytest.exit(
-        f"REFUSING TO RUN: DATABASE_URL points at database {db_name!r}, which is "
-        f"not a test database. Test fixtures DROP/TRUNCATE/DELETE production tables. "
-        f"Use a database name in {sorted(_SAFE_DB_NAMES)} or one ending in '_test'. "
-        f"In CI, scripts/ci-homelab.sh overrides DATABASE_URL automatically.",
+        f"REFUSING TO RUN: resolved database {db_name!r} is not a test database. "
+        f"Test fixtures TRUNCATE/DELETE tables. Use a name in "
+        f"{sorted(SAFE_DB_NAMES)} or one ending in '_test'. In CI, "
+        f"scripts/ci-homelab.sh overrides DATABASE_URL automatically.",
         returncode=2,
     )
 
