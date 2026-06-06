@@ -22,6 +22,9 @@ from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.data.db import DatabaseManager
 from tests.db_guard import SAFE_DB_NAMES, classify_db_url, resolve_target_db_url
 
+# Autouse fixture — imported so it registers globally (wipes test DB after each test).
+from tests.fixtures.db_cleanup import wipe_db_after_test  # noqa: F401
+
 # ---------------------------------------------------------------------------
 # Database safety guard
 # ---------------------------------------------------------------------------
