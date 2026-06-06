@@ -91,14 +91,6 @@ def cs_db(cs_config: Any) -> DatabaseManager:
     mgr = DatabaseManager(cs_config)
     mgr.init_schema()
     yield mgr  # type: ignore[misc]
-    # Truncate all tables for test isolation
-    # with mgr.connection() as conn:
-    #     conn.execute(
-    #         "DO $$ DECLARE r RECORD; BEGIN "
-    #         "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
-    #         "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
-    #         "END LOOP; END $$"
-    #     )
     DatabaseManager.reset()
 
 

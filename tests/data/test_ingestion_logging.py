@@ -151,19 +151,7 @@ def db_manager(db_config: SwingRLConfig) -> DatabaseManager:
     DatabaseManager.reset()  # Clear stale singleton from prior test files
     mgr = DatabaseManager(db_config)
     mgr.init_schema()
-    # Truncate before test to clear stale data from prior test files
-    # with mgr.connection() as conn:
-    #     conn.execute("DELETE FROM data_ingestion_log")
-    #     conn.execute("DELETE FROM data_quarantine")
     yield mgr  # type: ignore[misc]
-    # Truncate all tables for test isolation
-    # with mgr.connection() as conn:
-    #     conn.execute(
-    #         "DO $$ DECLARE r RECORD; BEGIN "
-    #         "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
-    #         "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
-    #         "END LOOP; END $$"
-    #     )
     DatabaseManager.reset()
 
 
