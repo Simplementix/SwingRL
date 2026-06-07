@@ -1433,7 +1433,7 @@ def _aggregate_epoch_summaries(
     log.info(
         "epoch_summaries_aggregated",
         fold_count=len(summaries),
-        total_memories=len(memories),
+        total_memories=len(memories or []),
     )
     return summaries
 
