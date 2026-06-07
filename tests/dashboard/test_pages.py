@@ -6,6 +6,7 @@ import ast
 import importlib.util
 import os
 import sys
+from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -187,7 +188,7 @@ class TestGetLatestTrades:
     """Test get_latest_trades helper with PostgreSQL."""
 
     @pytest.fixture()
-    def trade_db(self) -> Any:
+    def trade_db(self) -> Generator[Any, None, None]:
         """Create a PostgreSQL connection with trade_log table."""
         import psycopg
         from psycopg.rows import dict_row
@@ -214,7 +215,10 @@ class TestGetLatestTrades:
         )
         conn.execute("DELETE FROM trade_log")
         conn.commit()
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def test_get_latest_trades_returns_limit(self, trade_db: Any) -> None:
         """PAPER-15: get_latest_trades returns at most `limit` rows ordered by timestamp DESC."""
