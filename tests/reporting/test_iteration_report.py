@@ -18,6 +18,7 @@ DATABASE_URL set.
 from __future__ import annotations
 
 import os
+from collections.abc import Generator
 
 import pandas as pd
 import psycopg
@@ -806,12 +807,26 @@ class TestComputeIterationCps:
 
 
 @pytest.fixture
-def pg_conn() -> psycopg.Connection:
+def pg_conn() -> Generator[psycopg.Connection, None, None]:
     """Open a Postgres connection or skip if DATABASE_URL unset."""
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
         pytest.skip("DATABASE_URL not set; skipping live Postgres test")
-    return psycopg.connect(db_url)
+    conn = psycopg.connect(db_url)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _skip_unless_rows(conn: psycopg.Connection, table: str) -> None:
+    """Skip the test when ``table`` has no rows (no live iteration data present)."""
+    try:
+        count = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # nosec B608 - constant table name
+    except psycopg.errors.UndefinedTable:
+        pytest.skip(f"{table} not present; no live iteration data")
+    if not count:
+        pytest.skip(f"{table} empty; no live iteration data")
 
 
 class TestLoadIterationHistoryLive:
@@ -839,6 +854,7 @@ class TestLoadFoldHistoryLive:
 
     def test_iter1_dedups_to_23_folds_per_algo(self, pg_conn: psycopg.Connection) -> None:
         """Iter 1 equity A2C had 29 raw rows; dedup should yield 23 distinct folds."""
+        _skip_unless_rows(pg_conn, "backtest_results")
         df = load_fold_history(pg_conn, env="equity")
         iter1_a2c = df[(df["iteration_number"] == 1) & (df["algorithm"] == "a2c")]
         # Each fold_number should appear exactly once
@@ -848,6 +864,7 @@ class TestLoadFoldHistoryLive:
 
     def test_iter1_picks_post_fix_row(self, pg_conn: psycopg.Connection) -> None:
         """Iter 1 A2C fold 0 must pick the later (post-fix) row, sharpe ≈ 0.794."""
+        _skip_unless_rows(pg_conn, "backtest_results")
         df = load_fold_history(pg_conn, env="equity")
         row = df[
             (df["iteration_number"] == 1) & (df["algorithm"] == "a2c") & (df["fold_number"] == 0)
@@ -863,6 +880,7 @@ class TestComputeAndPersistIterationCpsLive:
     def test_persists_and_returns_summary(self, pg_conn: psycopg.Connection) -> None:
         """Running the orchestrator on iter 4 equity should return a summary
         with non-null CPS values and persist them to iteration_results."""
+        _skip_unless_rows(pg_conn, "backtest_results")
         from swingrl.reporting.iteration_report import compute_and_persist_iteration_cps
 
         result = compute_and_persist_iteration_cps(pg_conn, env="equity", iteration=4)
@@ -877,6 +895,7 @@ class TestComputeAndPersistIterationCpsLive:
 
     def test_idempotent_re_run(self, pg_conn: psycopg.Connection) -> None:
         """Running the orchestrator twice produces the same persisted values."""
+        _skip_unless_rows(pg_conn, "backtest_results")
         from swingrl.reporting.iteration_report import compute_and_persist_iteration_cps
 
         first = compute_and_persist_iteration_cps(pg_conn, env="equity", iteration=4)
@@ -891,6 +910,7 @@ class TestComputeAndPersistIterationCpsLive:
 
     def test_iter1_dedup_count_reported_in_summary(self, pg_conn: psycopg.Connection) -> None:
         """Iter 1 equity should report dedup_rows_dropped=9 in the summary."""
+        _skip_unless_rows(pg_conn, "backtest_results")
         from swingrl.reporting.iteration_report import compute_and_persist_iteration_cps
 
         result = compute_and_persist_iteration_cps(pg_conn, env="equity", iteration=1)
@@ -899,6 +919,7 @@ class TestComputeAndPersistIterationCpsLive:
 
     def test_iter0_summary_has_no_deltas(self, pg_conn: psycopg.Connection) -> None:
         """Iter 0 has no prior iteration; all delta fields must be None."""
+        _skip_unless_rows(pg_conn, "backtest_results")
         from swingrl.reporting.iteration_report import compute_and_persist_iteration_cps
 
         result = compute_and_persist_iteration_cps(pg_conn, env="equity", iteration=0)

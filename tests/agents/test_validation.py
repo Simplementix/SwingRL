@@ -16,6 +16,7 @@ from swingrl.agents.validation import (
     check_validation_gates,
     diagnose_overfitting,
 )
+from swingrl.data.postgres_schema import init_postgres_schema
 
 # ---------------------------------------------------------------------------
 # diagnose_overfitting
@@ -187,34 +188,17 @@ class TestDuckDBDDL:
         db_url = os.environ["DATABASE_URL"]
         conn = psycopg.connect(db_url, autocommit=True)
         conn.execute("DROP TABLE IF EXISTS backtest_results CASCADE")
+        # Use the canonical schema so the table always matches production DDL.
+        init_postgres_schema(conn)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS backtest_results (
-                result_id TEXT PRIMARY KEY,
-                model_id TEXT NOT NULL,
-                environment TEXT NOT NULL,
-                algorithm TEXT NOT NULL,
-                fold_number INTEGER NOT NULL,
-                fold_type TEXT NOT NULL,
-                train_start_idx INTEGER,
-                train_end_idx INTEGER,
-                test_start_idx INTEGER,
-                test_end_idx INTEGER,
-                sharpe DOUBLE PRECISION,
-                sortino DOUBLE PRECISION,
-                calmar DOUBLE PRECISION,
-                mdd DOUBLE PRECISION,
-                profit_factor DOUBLE PRECISION,
-                win_rate DOUBLE PRECISION,
-                total_trades INTEGER,
-                avg_drawdown DOUBLE PRECISION,
-                max_dd_duration INTEGER,
-                final_portfolio_value DOUBLE PRECISION,
-                total_return DOUBLE PRECISION,
-                created_at TIMESTAMP DEFAULT current_timestamp
-            )
-        """)
-        conn.execute("""
-            INSERT INTO backtest_results VALUES (
+            INSERT INTO backtest_results (
+                result_id, model_id, environment, algorithm,
+                fold_number, fold_type,
+                train_start_idx, train_end_idx, test_start_idx, test_end_idx,
+                sharpe, sortino, calmar, mdd, profit_factor, win_rate,
+                total_trades, avg_drawdown, max_dd_duration,
+                final_portfolio_value, total_return, created_at
+            ) VALUES (
                 'result-001', 'model-001', 'equity', 'PPO',
                 1, 'walk_forward', 0, 500, 500, 750,
                 1.2, 1.5, 2.0, 0.08, 1.8, 0.55, 42,
@@ -236,50 +220,8 @@ class TestDuckDBDDL:
         conn.execute("DROP TABLE IF EXISTS model_metadata CASCADE")
         conn.execute("DROP TABLE IF EXISTS backtest_results CASCADE")
 
-        # Execute the same DDL that init_schema would run
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS model_metadata (
-                model_id TEXT PRIMARY KEY,
-                environment TEXT NOT NULL,
-                algorithm TEXT NOT NULL,
-                version TEXT NOT NULL,
-                training_start_date TEXT,
-                training_end_date TEXT,
-                total_timesteps INTEGER,
-                converged_at_step INTEGER,
-                validation_sharpe DOUBLE PRECISION,
-                ensemble_weight DOUBLE PRECISION,
-                model_path TEXT NOT NULL,
-                vec_normalize_path TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT current_timestamp
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS backtest_results (
-                result_id TEXT PRIMARY KEY,
-                model_id TEXT NOT NULL,
-                environment TEXT NOT NULL,
-                algorithm TEXT NOT NULL,
-                fold_number INTEGER NOT NULL,
-                fold_type TEXT NOT NULL,
-                train_start_idx INTEGER,
-                train_end_idx INTEGER,
-                test_start_idx INTEGER,
-                test_end_idx INTEGER,
-                sharpe DOUBLE PRECISION,
-                sortino DOUBLE PRECISION,
-                calmar DOUBLE PRECISION,
-                mdd DOUBLE PRECISION,
-                profit_factor DOUBLE PRECISION,
-                win_rate DOUBLE PRECISION,
-                total_trades INTEGER,
-                avg_drawdown DOUBLE PRECISION,
-                max_dd_duration INTEGER,
-                final_portfolio_value DOUBLE PRECISION,
-                total_return DOUBLE PRECISION,
-                created_at TIMESTAMP DEFAULT current_timestamp
-            )
-        """)
+        # Use the canonical init function so this test stays in sync with production DDL.
+        init_postgres_schema(conn)
 
         tables = conn.execute(
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
