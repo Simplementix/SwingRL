@@ -1,6 +1,6 @@
-"""Cross-source price validation: Alpaca (DuckDB) vs yfinance.
+"""Cross-source price validation: Alpaca (PostgreSQL) vs yfinance.
 
-Compares closing prices stored in DuckDB ohlcv_daily with yfinance reference
+Compares closing prices stored in PostgreSQL ohlcv_daily with yfinance reference
 data. Discrepancies beyond $0.05 tolerance are logged as warnings. Used by
 DataValidator Step 12 for equity cross-source consistency checks.
 """
@@ -38,7 +38,7 @@ class CrossSourceResult:
 
 
 class CrossSourceValidator:
-    """Compare Alpaca closing prices in DuckDB with yfinance as reference."""
+    """Compare Alpaca closing prices in PostgreSQL with yfinance as reference."""
 
     def __init__(self, db: DatabaseManager, config: SwingRLConfig) -> None:
         self._db = db
@@ -50,7 +50,7 @@ class CrossSourceValidator:
         lookback_days: int = 7,
         as_of_date: date | None = None,
     ) -> list[CrossSourceResult]:
-        """Compare DuckDB ohlcv_daily prices with yfinance for recent dates.
+        """Compare ohlcv_daily prices with yfinance for recent dates.
 
         Args:
             symbols: List of equity symbols to validate. Defaults to config equity symbols.
@@ -63,23 +63,27 @@ class CrossSourceValidator:
         if symbols is None:
             symbols = list(self._config.equity.symbols)
 
-        # Query DuckDB for recent closing prices
+        # Query PostgreSQL for recent closing prices
         end_date = as_of_date if as_of_date is not None else date.today()
         start_date = end_date - timedelta(days=lookback_days)
 
         alpaca_data: dict[str, dict[date, float]] = {}
-        with self._db.duckdb() as cursor:
-            rows = cursor.execute(
+        with self._db.connection() as conn:
+            rows = conn.execute(
                 "SELECT symbol, date, close FROM ohlcv_daily "
-                "WHERE symbol IN (SELECT UNNEST(?::TEXT[])) "
-                "AND date >= ? AND date <= ? "
+                "WHERE symbol = ANY(%s) "
+                "AND date >= %s AND date <= %s "
                 "ORDER BY symbol, date",
-                [symbols, str(start_date), str(end_date)],
+                [symbols, start_date, end_date],
             ).fetchall()
             for row in rows:
-                sym = row[0]
-                dt = row[1] if isinstance(row[1], date) else date.fromisoformat(str(row[1]))
-                close = float(row[2])
+                sym = row["symbol"]
+                dt = (
+                    row["date"]
+                    if isinstance(row["date"], date)
+                    else date.fromisoformat(str(row["date"]))
+                )
+                close = float(row["close"])
                 alpaca_data.setdefault(sym, {})[dt] = close
 
         # Download yfinance data

@@ -6,18 +6,23 @@ compare_features applies Sharpe-based acceptance, and CLI parses arguments.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import numpy as np
 import pandas as pd
+import psycopg
 import pytest
 
 from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.data.postgres_schema import init_postgres_schema
 from swingrl.features.pipeline import FeaturePipeline, compare_features
-from swingrl.features.schema import init_feature_schema
+
+pytestmark = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
 
 
 @pytest.fixture
@@ -48,8 +53,7 @@ logging:
   level: INFO
   json_logs: false
 system:
-  duckdb_path: data/db/market_data.ddb
-  sqlite_path: data/db/trading_ops.db
+  database_url: "{DATABASE_URL}"
 alerting:
   alert_cooldown_minutes: 30
   consecutive_failures_before_alert: 3
@@ -62,45 +66,87 @@ features:
   hmm_n_inits: 10
   hmm_ridge: 1e-4
 """
+    db_url = os.environ.get(
+        "DATABASE_URL", "postgresql://test:test@localhost:5432/swingrl_test"
+    )  # pragma: allowlist secret
     config_file = tmp_path / "swingrl.yaml"
-    config_file.write_text(yaml_content)
+    config_file.write_text(yaml_content.replace("{DATABASE_URL}", db_url))
     return load_config(config_file)
+
+
+class _DbManagerShim:
+    """Lightweight shim that wraps a raw psycopg.Connection as a DatabaseManager.
+
+    FeaturePipeline calls ``self._db.connection()`` to get a context manager
+    that yields a connection.  Tests also call ``seeded_duckdb.execute(...)``
+    directly, so we proxy attribute access to the underlying connection.
+    """
+
+    def __init__(self, conn: psycopg.Connection) -> None:
+        self._conn = conn
+
+    @contextmanager
+    def connection(self) -> Generator[psycopg.Connection, None, None]:
+        """Yield the underlying connection (no pool — single test connection)."""
+        yield self._conn
+
+    # Proxy common Connection methods so tests can do seeded_duckdb.execute(...)
+    def execute(self, *args: Any, **kwargs: Any) -> Any:
+        """Delegate to the underlying connection."""
+        return self._conn.execute(*args, **kwargs)
+
+    def commit(self) -> None:
+        """Delegate to the underlying connection."""
+        self._conn.commit()
 
 
 @pytest.fixture
 def seeded_duckdb() -> Any:
-    """In-memory DuckDB with OHLCV, macro data, and feature schema."""
-    conn = duckdb.connect(":memory:")
+    """PostgreSQL connection with OHLCV, macro data, and feature schema."""
+    from psycopg.rows import dict_row  # noqa: PLC0415
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    conn = psycopg.connect(db_url, autocommit=False, row_factory=dict_row)
 
     # Create base tables
     conn.execute("""
-        CREATE TABLE ohlcv_daily (
+        CREATE TABLE IF NOT EXISTS ohlcv_daily (
             symbol TEXT, date DATE,
-            open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
-            volume BIGINT, adjusted_close DOUBLE,
+            open DOUBLE PRECISION, high DOUBLE PRECISION,
+            low DOUBLE PRECISION, close DOUBLE PRECISION,
+            volume BIGINT, adjusted_close DOUBLE PRECISION,
             fetched_at TIMESTAMP DEFAULT current_timestamp,
             PRIMARY KEY (symbol, date)
         )
     """)
     conn.execute("""
-        CREATE TABLE ohlcv_4h (
+        CREATE TABLE IF NOT EXISTS ohlcv_4h (
             symbol TEXT, datetime TIMESTAMP,
-            open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
-            volume DOUBLE, source TEXT,
+            open DOUBLE PRECISION, high DOUBLE PRECISION,
+            low DOUBLE PRECISION, close DOUBLE PRECISION,
+            volume DOUBLE PRECISION, source TEXT,
             fetched_at TIMESTAMP DEFAULT current_timestamp,
             PRIMARY KEY (symbol, datetime)
         )
     """)
     conn.execute("""
-        CREATE TABLE macro_features (
+        CREATE TABLE IF NOT EXISTS macro_features (
             date DATE, series_id TEXT,
-            value DOUBLE, release_date DATE,
+            value DOUBLE PRECISION, release_date DATE,
             PRIMARY KEY (date, series_id)
         )
     """)
 
     # Init feature schema
-    init_feature_schema(conn)
+    init_postgres_schema(conn)
+
+    # Clean ALL data from prior test runs (source + computed) so ON CONFLICT DO NOTHING
+    # doesn't silently skip this fixture's carefully seeded data (e.g. SPY bull/bear regime)
+    for tbl in ("features_equity", "features_crypto", "hmm_state_history"):
+        conn.execute(f"DELETE FROM {tbl}")  # noqa: S608
+    for tbl in ("ohlcv_daily", "ohlcv_4h", "macro_features"):
+        conn.execute(f"DELETE FROM {tbl}")  # noqa: S608
+    conn.commit()
 
     # Seed equity OHLCV data (300 bars per symbol for warmup)
     rng = np.random.default_rng(42)
@@ -118,7 +164,8 @@ def seeded_duckdb() -> Any:
             close = base + rng.normal(0, 2, 300).cumsum()
         for i, dt in enumerate(dates):
             conn.execute(
-                "INSERT INTO ohlcv_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO ohlcv_daily VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT DO NOTHING",
                 [
                     symbol,
                     dt.date(),
@@ -139,7 +186,8 @@ def seeded_duckdb() -> Any:
         close = base + rng.normal(0, 50, 450).cumsum()
         for i, dt in enumerate(crypto_dates):
             conn.execute(
-                "INSERT INTO ohlcv_4h VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO ohlcv_4h VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT DO NOTHING",
                 [
                     symbol,
                     dt.to_pydatetime(),
@@ -166,11 +214,13 @@ def seeded_duckdb() -> Any:
         vals = base_val + rng.normal(0, std, 600).cumsum() * 0.01
         for i, dt in enumerate(macro_dates):
             conn.execute(
-                "INSERT INTO macro_features VALUES (?, ?, ?, ?)",
+                "INSERT INTO macro_features VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
                 [dt.date(), series_id, vals[i], dt.date()],
             )
 
-    yield conn
+    conn.commit()
+    shim = _DbManagerShim(conn)
+    yield shim
     conn.close()
 
 
@@ -190,7 +240,9 @@ class TestFeaturePipelineEquity:
         """FEAT-11: Pipeline writes rows to features_equity DuckDB table."""
         pipeline = FeaturePipeline(pipeline_config, seeded_duckdb)
         pipeline.compute_equity()
-        count = seeded_duckdb.execute("SELECT COUNT(*) FROM features_equity").fetchone()[0]
+        count = seeded_duckdb.execute("SELECT COUNT(*) AS cnt FROM features_equity").fetchone()[
+            "cnt"
+        ]
         assert count > 0
 
     def test_equity_stores_hmm_state(
@@ -200,8 +252,8 @@ class TestFeaturePipelineEquity:
         pipeline = FeaturePipeline(pipeline_config, seeded_duckdb)
         pipeline.compute_equity()
         count = seeded_duckdb.execute(
-            "SELECT COUNT(*) FROM hmm_state_history WHERE environment = 'equity'"
-        ).fetchone()[0]
+            "SELECT COUNT(*) AS cnt FROM hmm_state_history WHERE environment = 'equity'"
+        ).fetchone()["cnt"]
         assert count > 0
 
 
@@ -221,7 +273,9 @@ class TestFeaturePipelineCrypto:
         """FEAT-11: Pipeline writes rows to features_crypto DuckDB table."""
         pipeline = FeaturePipeline(pipeline_config, seeded_duckdb)
         pipeline.compute_crypto()
-        count = seeded_duckdb.execute("SELECT COUNT(*) FROM features_crypto").fetchone()[0]
+        count = seeded_duckdb.execute("SELECT COUNT(*) AS cnt FROM features_crypto").fetchone()[
+            "cnt"
+        ]
         assert count > 0
 
 
@@ -231,24 +285,28 @@ class TestObservationIntegration:
     def test_get_equity_observation(
         self, pipeline_config: SwingRLConfig, seeded_duckdb: Any
     ) -> None:
-        """FEAT-11: Pipeline produces (156,) equity observation."""
+        """FEAT-11: Pipeline produces (164,) equity observation."""
         pipeline = FeaturePipeline(pipeline_config, seeded_duckdb)
         pipeline.compute_equity()
         # Get last date from features_equity
-        last_date = seeded_duckdb.execute("SELECT MAX(date) FROM features_equity").fetchone()[0]
+        last_date = seeded_duckdb.execute(
+            "SELECT MAX(date) AS max_date FROM features_equity"
+        ).fetchone()["max_date"]
         obs = pipeline.get_observation("equity", str(last_date))
-        assert obs.shape == (156,)
+        assert obs.shape == (164,)
         assert not np.any(np.isnan(obs))
 
     def test_get_crypto_observation(
         self, pipeline_config: SwingRLConfig, seeded_duckdb: Any
     ) -> None:
-        """FEAT-11: Pipeline produces (45,) crypto observation."""
+        """FEAT-11: Pipeline produces (47,) crypto observation."""
         pipeline = FeaturePipeline(pipeline_config, seeded_duckdb)
         pipeline.compute_crypto()
-        last_dt = seeded_duckdb.execute("SELECT MAX(datetime) FROM features_crypto").fetchone()[0]
+        last_dt = seeded_duckdb.execute(
+            "SELECT MAX(datetime) AS max_dt FROM features_crypto"
+        ).fetchone()["max_dt"]
         obs = pipeline.get_observation("crypto", str(last_dt))
-        assert obs.shape == (45,)
+        assert obs.shape == (47,)
         assert not np.any(np.isnan(obs))
 
 

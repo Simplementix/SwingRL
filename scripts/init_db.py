@@ -1,7 +1,7 @@
-"""Initialize SwingRL databases (DuckDB + SQLite).
+"""Initialize SwingRL PostgreSQL database.
 
-Creates both databases with all tables, indexes, and views defined by
-DatabaseManager.init_schema(). Idempotent — safe to run multiple times.
+Creates all tables, indexes, and views defined by DatabaseManager.init_schema().
+Idempotent — safe to run multiple times.
 
 Usage:
     uv run python scripts/init_db.py
@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         0 on success, 1 on error.
     """
-    parser = argparse.ArgumentParser(description="Initialize SwingRL DuckDB and SQLite databases.")
+    parser = argparse.ArgumentParser(description="Initialize SwingRL PostgreSQL database.")
     parser.add_argument(
         "--config",
         type=str,
@@ -49,30 +49,24 @@ def main(argv: list[str] | None = None) -> int:
         db = DatabaseManager(config)
         db.init_schema()
 
-        # Verify DuckDB tables
-        with db.duckdb() as cursor:
-            tables = cursor.execute("SHOW TABLES").fetchall()
-            duckdb_tables = [row[0] for row in tables]
-        log.info("duckdb_tables_created", tables=duckdb_tables, count=len(duckdb_tables))
-
-        # Verify SQLite tables and run integrity check
-        with db.sqlite() as conn:
+        # Verify PostgreSQL tables
+        with db.connection() as conn:
             rows = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
             ).fetchall()
-            sqlite_tables = [row["name"] for row in rows]
+            pg_tables = [row[0] for row in rows]
 
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()
-            if integrity[0] != "ok":
-                log.error("sqlite_integrity_failed", result=integrity[0])
+            # Basic connectivity check
+            result = conn.execute("SELECT 1").fetchone()
+            if result is None or result[0] != 1:
+                log.error("pg_connectivity_failed")
                 return 1
 
-        log.info("sqlite_tables_created", tables=sqlite_tables, count=len(sqlite_tables))
-        log.info("sqlite_integrity_check", result="ok")
+        log.info("pg_tables_created", tables=pg_tables, count=len(pg_tables))
+        log.info("pg_connectivity_check", result="ok")
 
-        print(f"DuckDB: {len(duckdb_tables)} tables created at {config.system.duckdb_path}")
-        print(f"SQLite: {len(sqlite_tables)} tables created at {config.system.sqlite_path}")
-        print("Integrity check: PASSED")
+        print(f"PostgreSQL: {len(pg_tables)} tables created at {config.system.database_url}")
+        print("Connectivity check: PASSED")
 
         db.close()
         return 0

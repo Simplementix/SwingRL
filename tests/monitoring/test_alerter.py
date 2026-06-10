@@ -5,6 +5,7 @@ DATA-13: Alert infrastructure for ingestion failures, circuit breakers, daily su
 
 from __future__ import annotations
 
+import os
 import textwrap
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -31,12 +32,14 @@ def webhook_url() -> str:
 
 @pytest.fixture
 def db_manager(tmp_path: Path) -> DatabaseManager:
-    """Provide a DatabaseManager with real SQLite for alert_log tests."""
+    """Provide a DatabaseManager with real PostgreSQL for alert_log tests."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        pytest.skip("DATABASE_URL not set — no PostgreSQL available")
     config_yaml = textwrap.dedent(f"""\
         trading_mode: paper
         system:
-          duckdb_path: {tmp_path}/market.ddb
-          sqlite_path: {tmp_path}/ops.db
+          database_url: "{db_url}"
     """)
     config_file = tmp_path / "swingrl.yaml"
     config_file.write_text(config_yaml)
@@ -44,6 +47,9 @@ def db_manager(tmp_path: Path) -> DatabaseManager:
     DatabaseManager.reset()
     db = DatabaseManager(config)
     db.init_schema()
+    # Clean stale data from prior test runs
+    with db.connection() as conn:
+        conn.execute("DELETE FROM alert_log")
     yield db
     DatabaseManager.reset()
 
@@ -380,7 +386,7 @@ class TestAlertLog:
 
         alerter_with_db.send_alert("critical", "Log Test", "log msg")
 
-        with db_manager.sqlite() as conn:
+        with db_manager.connection() as conn:
             rows = conn.execute("SELECT * FROM alert_log").fetchall()
             assert len(rows) == 1
             row = dict(rows[0])
@@ -409,7 +415,7 @@ class TestAlertLog:
         alerter_with_db.send_alert("critical", "Cooldown Test", "msg")
         alerter_with_db.send_alert("critical", "Cooldown Test", "msg")
 
-        with db_manager.sqlite() as conn:
+        with db_manager.connection() as conn:
             rows = conn.execute("SELECT * FROM alert_log ORDER BY timestamp").fetchall()
             assert len(rows) == 2
             sent_values = [dict(r)["sent"] for r in rows]

@@ -83,9 +83,9 @@ class TestTradeRecording:
         """Buy fill inserts a row in the trades table."""
         processor.process(buy_fill)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             row = conn.execute(
-                "SELECT * FROM trades WHERE trade_id = ?", (buy_fill.trade_id,)
+                "SELECT * FROM trades WHERE trade_id = %s", (buy_fill.trade_id,)
             ).fetchone()
 
         assert row is not None
@@ -112,7 +112,7 @@ class TestTradeRecording:
             reason="reconciliation",
         )
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             row = conn.execute("SELECT * FROM trades WHERE trade_type = 'adjustment'").fetchone()
 
         assert row is not None
@@ -132,9 +132,9 @@ class TestPositionManagement:
         """First buy creates a new position row."""
         processor.process(buy_fill)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             pos = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("SPY", "equity"),
             ).fetchone()
 
@@ -153,9 +153,9 @@ class TestPositionManagement:
         processor.process(buy_fill)
         processor.process(second_buy_fill)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             pos = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("SPY", "equity"),
             ).fetchone()
 
@@ -174,9 +174,9 @@ class TestPositionManagement:
         processor.process(buy_fill)
         processor.process(sell_fill)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             pos = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("SPY", "equity"),
             ).fetchone()
 
@@ -205,9 +205,9 @@ class TestPositionManagement:
         )
         processor.process(full_sell)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             pos = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("SPY", "equity"),
             ).fetchone()
 
@@ -222,9 +222,9 @@ class TestPositionManagement:
         """Position last_price updates on each fill."""
         processor.process(buy_fill)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             pos = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("SPY", "equity"),
             ).fetchone()
 
@@ -265,9 +265,9 @@ class TestStopTPPersistence:
 
         processor.process(fill, sized_order=sized_order)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             pos = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("BTCUSDT", "crypto"),
             ).fetchone()
 
@@ -296,9 +296,9 @@ class TestStopTPPersistence:
 
         processor.process(fill)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             pos = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("SPY", "equity"),
             ).fetchone()
 
@@ -359,9 +359,9 @@ class TestStopTPPersistence:
         processor.process(fill1, sized_order=sized_order1)
         processor.process(fill2, sized_order=sized_order2)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             pos = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("BTCUSDT", "crypto"),
             ).fetchone()
 
@@ -413,9 +413,9 @@ class TestStopTPPersistence:
         )
         processor.process(partial_sell)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             pos = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("BTCUSDT", "crypto"),
             ).fetchone()
 
@@ -467,9 +467,9 @@ class TestStopTPPersistence:
         )
         processor.process(full_sell)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             pos = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("BTCUSDT", "crypto"),
             ).fetchone()
 
@@ -506,9 +506,9 @@ class TestStopTPPersistence:
 
         processor.process(fill, sized_order=sized_order)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             pos = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("ETHUSDT", "crypto"),
             ).fetchone()
 

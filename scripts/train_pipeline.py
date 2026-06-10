@@ -1,0 +1,2990 @@
+"""Full training pipeline orchestration CLI.
+
+Orchestrates walk-forward validation, ensemble gate, tuning rounds, final
+deployment training, and JSON report generation for all 6 algo/env combos.
+
+Key invariants:
+- Walk-forward uses FULL history. Final training uses RECENT data only.
+- Ensemble gate and weight computation are PER-ENVIRONMENT.
+- Per-fold gate results are informational; only ensemble gate blocks deployment.
+- PostgreSQL connection opened/closed per-algo unit (not held for entire pipeline).
+
+Usage:
+    python scripts/train_pipeline.py --env all
+    python scripts/train_pipeline.py --env equity
+    python scripts/train_pipeline.py --env crypto --force
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import multiprocessing
+import os
+import shutil
+import sys
+import threading
+import time
+import urllib.request
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import psycopg
+import structlog
+from psycopg.rows import dict_row
+
+from swingrl.agents.backtest import (
+    store_fold_results_to_duckdb,
+    store_iteration_results_to_duckdb,
+)
+from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.data.ingest_all import run_pipeline as run_ingestion_pipeline
+from swingrl.data.pg_helpers import fetchdf
+from swingrl.memory.client import MemoryClient
+from swingrl.monitoring.alerter import Alerter
+from swingrl.monitoring.embeds import build_iteration_completion_embed
+from swingrl.reporting.iteration_report import compute_and_persist_iteration_cps
+from swingrl.training.pipeline_helpers import (
+    DEFAULT_TIMESTEPS,
+    TUNING_GRID,
+    check_ensemble_gate,
+    compute_ensemble_weights_from_wf,
+    decide_final_timesteps,
+    slice_recent,
+)
+from swingrl.utils.exceptions import ModelError
+from swingrl.utils.logging import configure_logging
+
+log = structlog.get_logger(__name__)
+
+# Algorithm order (equity first, then crypto — sequential per spec)
+ALGO_NAMES: list[str] = ["ppo", "a2c", "sac"]
+
+# Tuning round 1 triggers when baseline ensemble Sharpe is below this threshold
+_TUNING_SHARPE_THRESHOLD: float = 0.5
+
+# Default paths for multi-iteration state and comparison report
+_DEFAULT_STATE_PATH: str = "data/training_state.json"
+_DEFAULT_COMPARISON_PATH: str = "data/training_comparison.json"
+
+# Memory service health check endpoint
+_MEMORY_HEALTH_ENDPOINT: str = "/health"
+
+# Pipeline version for model metadata tagging
+_PIPELINE_VERSION: str = "1.1.0"
+
+
+# ---------------------------------------------------------------------------
+# Multi-iteration training state helpers
+# ---------------------------------------------------------------------------
+
+
+def save_training_state(state: dict[str, Any], path: Path) -> None:
+    """Atomically write training state to JSON file.
+
+    Uses write-to-temp-then-rename pattern (POSIX atomic) to survive power outages.
+
+    Args:
+        state: Training state dict to serialize.
+        path: Destination path for the JSON state file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2, default=str))
+    os.replace(str(tmp), str(path))
+    log.debug("training_state_saved", path=str(path))
+
+
+def load_training_state(path: Path) -> dict[str, Any]:
+    """Load training state from JSON, returning defaults if file is absent.
+
+    Args:
+        path: Path to training_state.json.
+
+    Returns:
+        State dict with 'completed_iterations' (list) and 'current_iteration' (int).
+    """
+    if not path.exists():
+        return {"completed_iterations": [], "current_iteration": 0}
+    try:
+        return json.loads(path.read_text())  # type: ignore[no-any-return]
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("training_state_load_failed", path=str(path), error=str(exc))
+        return {"completed_iterations": [], "current_iteration": 0}
+
+
+# ---------------------------------------------------------------------------
+# Best-model selection and deployment
+# ---------------------------------------------------------------------------
+
+
+def select_best_per_algo_env(
+    state: dict[str, Any],
+) -> dict[str, dict[str, int]]:
+    """Select best iteration per algo x env by Sortino ratio (Calmar as tiebreak).
+
+    Looks at final_training per-algo Sortino/Calmar. Falls back to ensemble Sharpe
+    if per-algo metrics are missing.
+
+    Args:
+        state: Training state dict from load_training_state().
+
+    Returns:
+        Dict[env_name][algo_name] -> best_iteration_index.
+    """
+    envs = ["equity", "crypto"]
+    algos = ["ppo", "a2c", "sac"]
+
+    # best[env][algo] = {"iter": int, "sortino": float, "calmar": float}
+    best: dict[str, dict[str, dict[str, Any]]] = {e: {} for e in envs}
+
+    for key, iter_data in state.items():
+        if not str(key).startswith("iteration_") or not str(key).endswith("_result"):
+            continue
+        # key format: "iteration_N_result"
+        parts = str(key).split("_")
+        try:
+            idx = int(parts[1])
+        except (IndexError, ValueError):
+            continue
+
+        for env_name in envs:
+            env_result = iter_data.get(env_name, {}) if isinstance(iter_data, dict) else {}
+            final_training = (
+                env_result.get("final_training", {}) if isinstance(env_result, dict) else {}
+            )
+            ensemble_sharpe: float = 0.0
+            if isinstance(env_result, dict) and "ensemble_gate" in env_result:
+                ensemble_sharpe = float(env_result["ensemble_gate"].get("sharpe", 0.0))
+
+            for algo_name in algos:
+                ft = final_training.get(algo_name, {}) if isinstance(final_training, dict) else {}
+                sortino = float(ft.get("sortino", ensemble_sharpe)) if isinstance(ft, dict) else 0.0
+                calmar = float(ft.get("calmar", 0.0)) if isinstance(ft, dict) else 0.0
+
+                current = best[env_name].get(algo_name)
+                if current is None:
+                    best[env_name][algo_name] = {"iter": idx, "sortino": sortino, "calmar": calmar}
+                elif sortino > current["sortino"] or (
+                    sortino == current["sortino"] and calmar > current["calmar"]
+                ):
+                    best[env_name][algo_name] = {"iter": idx, "sortino": sortino, "calmar": calmar}
+
+    # If state has no iteration results, fall back to completed_iterations list
+    for env_name in envs:
+        for algo_name in algos:
+            if algo_name not in best[env_name]:
+                # Default to first completed iteration
+                completed = state.get("completed_iterations", [])
+                best[env_name][algo_name] = {
+                    "iter": completed[0] if completed else 0,
+                    "sortino": 0.0,
+                    "calmar": 0.0,
+                }
+
+    return {
+        env: {algo: v["iter"] for algo, v in algos_map.items()} for env, algos_map in best.items()
+    }
+
+
+def deploy_best_models(
+    winners: dict[str, dict[str, int]],
+    models_dir: Path,
+) -> None:
+    """Copy best iteration models from iterations/ to active/.
+
+    Path layout (verified across iter 0-5): per-iteration models live at
+    ``models/iterations/iter_{N}/active/{env}/{algo}/model.zip``. The
+    ``active/`` subdirectory inside the iteration folder is the canonical
+    location written by the trainer (see swingrl.training.trainer). The
+    legacy path without ``active/`` was a bug introduced before iter 0
+    and silently caused all 12 best_model_file_missing warnings observed
+    in iter 5 — fixed during iter 5 recovery.
+
+    Args:
+        winners: Dict[env_name][algo_name] -> best_iteration_index.
+        models_dir: Root models directory (contains iterations/ and active/).
+    """
+    for env_name, algo_winners in winners.items():
+        for algo_name, iter_idx in algo_winners.items():
+            src_dir = (
+                models_dir / "iterations" / f"iter_{iter_idx}" / "active" / env_name / algo_name
+            )
+            dst_dir = models_dir / "active" / env_name / algo_name
+            dst_dir.mkdir(parents=True, exist_ok=True)
+
+            for filename in ["model.zip", "vec_normalize.pkl"]:
+                src = src_dir / filename
+                dst = dst_dir / filename
+                if src.exists():
+                    shutil.copy2(str(src), str(dst))
+                    log.info(
+                        "best_model_deployed",
+                        env=env_name,
+                        algo=algo_name,
+                        iter=iter_idx,
+                        file=filename,
+                    )
+                else:
+                    log.warning(
+                        "best_model_file_missing",
+                        env=env_name,
+                        algo=algo_name,
+                        iter=iter_idx,
+                        file=filename,
+                        src=str(src),
+                    )
+
+
+def write_comparison_report(
+    state: dict[str, Any],
+    report_path: Path,
+    winners: dict[str, dict[str, int]],
+) -> None:
+    """Write data/training_comparison.json with per-iteration metrics.
+
+    Args:
+        state: Training state dict.
+        report_path: Output path for the comparison JSON.
+        winners: Best iteration per algo x env (from select_best_per_algo_env).
+    """
+    report: dict[str, Any] = {
+        "generated_at": datetime.now(tz=UTC).isoformat(),
+        "winners": winners,
+    }
+
+    for key, iter_data in state.items():
+        if not str(key).startswith("iteration_") or not str(key).endswith("_result"):
+            continue
+        parts = str(key).split("_")
+        try:
+            idx = int(parts[1])
+        except (IndexError, ValueError):
+            continue
+
+        iter_key = f"iteration_{idx}"
+        is_memory = idx > 0
+        report[iter_key] = {
+            "memory_enabled": is_memory,
+            "results": iter_data,
+        }
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2, default=str))
+    log.info("comparison_report_written", path=str(report_path))
+
+
+# ---------------------------------------------------------------------------
+# Memory service health helpers
+# ---------------------------------------------------------------------------
+
+
+def check_memory_service_health(base_url: str, timeout: float = 5.0) -> bool:
+    """Check if the swingrl-memory service is healthy.
+
+    Args:
+        base_url: Base URL of the memory service (e.g. "http://localhost:8889").
+        timeout: HTTP request timeout in seconds.
+
+    Returns:
+        True if /health returns HTTP 200, False otherwise.
+    """
+    url = base_url.rstrip("/") + _MEMORY_HEALTH_ENDPOINT
+    try:
+        req = urllib.request.Request(url)  # noqa: S310  # nosec B310
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310
+            return resp.status == 200  # type: ignore[no-any-return]
+    except Exception:
+        return False
+
+
+def wait_for_memory_service(
+    base_url: str,
+    poll_interval: float = 30.0,
+    max_retries: int = 60,
+) -> bool:
+    """Poll memory service health endpoint until healthy or retries exhausted.
+
+    Fail-open: returns False after exhausting retries so the caller can
+    skip memory features instead of blocking indefinitely.
+
+    Args:
+        base_url: Base URL of the memory service.
+        poll_interval: Seconds between health polls.
+        max_retries: Maximum number of poll attempts (default 60 ~30 min at 30s intervals).
+
+    Returns:
+        True if the service became healthy, False if retries were exhausted.
+    """
+    log.warning("memory_service_unhealthy_polling_start", base_url=base_url)
+    for attempt in range(1, max_retries + 1):
+        if check_memory_service_health(base_url):
+            log.info("memory_service_healthy", base_url=base_url)
+            return True
+        log.warning(
+            "memory_service_unhealthy_retrying",
+            base_url=base_url,
+            retry_in_s=poll_interval,
+            attempt=attempt,
+            max_retries=max_retries,
+        )
+        time.sleep(poll_interval)
+    log.warning(
+        "memory_service_unhealthy_retries_exhausted",
+        base_url=base_url,
+        max_retries=max_retries,
+    )
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Multi-iteration orchestration
+# ---------------------------------------------------------------------------
+
+
+def run_all_iterations(
+    base_config: SwingRLConfig,
+    iterations: int,
+    state_path: Path,
+    models_dir: Path,
+    report_path: Path,
+    comparison_path: Path,
+    skip_ingest: bool = False,
+) -> dict[str, Any]:
+    """Run baseline + N memory-enhanced training iterations.
+
+    Iteration 0 = baseline (memory disabled).
+    Iterations 1..N = memory-enhanced (memory + meta_training enabled).
+
+    State is persisted atomically to state_path between iterations so training
+    can resume after power outages.
+
+    Args:
+        base_config: Base SwingRLConfig (deep-copied per iteration).
+        iterations: Number of memory-enhanced iterations (0 = baseline only).
+        state_path: Path for data/training_state.json (atomic writes).
+        models_dir: Root models directory.
+        report_path: Path for the final training_report.json.
+        comparison_path: Path for data/training_comparison.json.
+        skip_ingest: If True, skip automatic data ingestion before each iteration.
+
+    Returns:
+        Dict summarising all iterations and winners.
+    """
+    state = load_training_state(state_path)
+    total = iterations + 1  # 0..N inclusive
+
+    for i in range(total):
+        if i in state.get("completed_iterations", []):
+            log.info("iteration_skipped_checkpointed", iteration=i, total=total)
+            continue
+
+        iter_start = time.monotonic()
+
+        # Deep-copy config and configure memory per iteration
+        cfg = base_config.model_copy(deep=True)
+        if i == 0:
+            # Baseline: memory disabled
+            cfg.memory_agent.enabled = False
+            cfg.memory_agent.meta_training = False
+            log.info("iteration_start_baseline", iteration=i, total=total)
+        else:
+            # Memory-enhanced
+            cfg.memory_agent.enabled = True
+            cfg.memory_agent.meta_training = True
+            log.info("iteration_start_memory", iteration=i, total=total)
+            # Wait for memory service before running memory iterations
+            if not check_memory_service_health(cfg.memory_agent.base_url):
+                memory_ok = wait_for_memory_service(cfg.memory_agent.base_url)
+                if not memory_ok:
+                    log.warning("memory_service_unavailable_falling_back_to_baseline", iteration=i)
+                    cfg.memory_agent.enabled = False
+                    cfg.memory_agent.meta_training = False
+
+        state["current_iteration"] = i
+        save_training_state(state, state_path)
+
+        # --- Data ingestion: pull latest bars + recompute features ---
+        if not skip_ingest:
+            try:
+                ingest_start = time.monotonic()
+                log.info("pre_iteration_ingestion_start", iteration=i, total=total)
+                ingest_rc = run_ingestion_pipeline(cfg, backfill=False)
+                ingest_elapsed = time.monotonic() - ingest_start
+                if ingest_rc == 0:
+                    log.info(
+                        "pre_iteration_ingestion_complete",
+                        iteration=i,
+                        elapsed_seconds=round(ingest_elapsed, 1),
+                    )
+                else:
+                    log.warning(
+                        "pre_iteration_ingestion_verification_failed",
+                        iteration=i,
+                        return_code=ingest_rc,
+                        elapsed_seconds=round(ingest_elapsed, 1),
+                    )
+            except Exception:
+                log.warning("pre_iteration_ingestion_failed", iteration=i, exc_info=True)
+
+        # Isolated model directory per iteration
+        iter_models_dir = models_dir / "iterations" / f"iter_{i}"
+
+        iter_result: dict[str, Any] = {}
+        for env_name in ["equity", "crypto"]:
+            # Check for per-env checkpoint from a previous partial run
+            partial_key = f"iteration_{i}_env_{env_name}"
+            if partial_key in state:
+                log.info(
+                    "iteration_env_resumed_from_checkpoint",
+                    iteration=i,
+                    env=env_name,
+                )
+                iter_result[env_name] = state[partial_key]
+                continue
+
+            try:
+                env_result = run_environment(
+                    env_name=env_name,
+                    config=cfg,
+                    models_dir=iter_models_dir,
+                    force=True,  # Always force within iterations — each has own directory
+                    report={},
+                    iteration_number=i,
+                )
+                iter_result[env_name] = env_result
+                # Checkpoint per-env immediately so we can resume on crash
+                state[partial_key] = env_result
+                save_training_state(state, state_path)
+            except Exception as exc:
+                log.error(
+                    "iteration_env_failed_retry",
+                    iteration=i,
+                    env=env_name,
+                    error=str(exc),
+                )
+                # Retry once
+                try:
+                    env_result = run_environment(
+                        env_name=env_name,
+                        config=cfg,
+                        models_dir=iter_models_dir,
+                        force=True,
+                        report={},
+                        iteration_number=i,
+                    )
+                    iter_result[env_name] = env_result
+                    # Checkpoint per-env on retry success too
+                    state[partial_key] = env_result
+                    save_training_state(state, state_path)
+                except Exception as exc2:
+                    # Chain original exception for full traceback context
+                    exc2.__cause__ = exc
+                    log.error(
+                        "iteration_env_failed_skip",
+                        iteration=i,
+                        env=env_name,
+                        error=str(exc2),
+                        original_error=str(exc),
+                    )
+                    iter_result[env_name] = {
+                        "error": str(exc2),
+                        "original_error": str(exc),
+                    }
+
+        # Save full iteration results and clean up per-env checkpoints
+        state[f"iteration_{i}_result"] = iter_result
+        state.pop(f"iteration_{i}_env_equity", None)
+        state.pop(f"iteration_{i}_env_crypto", None)
+
+        # Only mark complete if at least one env succeeded (no "error" key)
+        any_success = any("error" not in v for v in iter_result.values())
+        if any_success:
+            completed = state.get("completed_iterations", [])
+            completed.append(i)
+            state["completed_iterations"] = completed
+        else:
+            log.warning(
+                "iteration_not_checkpointed_all_envs_failed",
+                iteration=i,
+                total=total,
+            )
+
+        save_training_state(state, state_path)
+
+        iter_elapsed = time.monotonic() - iter_start
+        log.info(
+            "iteration_complete",
+            iteration=i,
+            total=total,
+            elapsed_seconds=round(iter_elapsed, 1),
+            elapsed_hours=round(iter_elapsed / 3600, 2),
+        )
+
+        # Ingest cross-iteration HP comparison memory (iter 1+ only).
+        # Queries PostgreSQL iteration_results (all env connections closed at this point)
+        # and ingests to memory service for consolidation to pick up.
+        if i > 0:
+            try:
+                api_key_ci = getattr(cfg.memory_agent, "api_key", "")
+                if api_key_ci:
+                    ci_client = MemoryClient(
+                        base_url=cfg.memory_agent.base_url,
+                        default_timeout=cfg.memory_agent.timeout_sec,
+                        api_key=api_key_ci,
+                    )
+                    _ingest_cross_iteration_comparison(
+                        db_path=cfg.system.database_url,
+                        iteration=i,
+                        state=state,
+                        memory_client=ci_client,
+                    )
+            except Exception as exc:
+                log.warning(
+                    "cross_iteration_comparison_failed",
+                    iteration=i,
+                    error=str(exc),
+                )
+
+        # Consolidate memories + record outcomes after EVERY iteration (including
+        # baseline iteration 0). Baseline WF data must be consolidated into patterns
+        # before iteration 1 starts so the meta-trainer has context to work with.
+        try:
+            api_key = getattr(cfg.memory_agent, "api_key", "")
+            memory_client = MemoryClient(
+                base_url=cfg.memory_agent.base_url,
+                default_timeout=cfg.memory_agent.timeout_sec,
+                api_key=api_key,
+            )
+            # Stage 1 per-env + Stage 2 cross-env consolidation
+            # Use configured timeout (LLM consolidation can take 30+ minutes)
+            consolidate_timeout = float(
+                getattr(cfg.memory_agent.consolidation, "timeout_sec", 1800.0)
+            )
+            memory_client.consolidate(timeout=consolidate_timeout)
+            log.info("memory_consolidated", after_iteration=i)
+
+            # Record iteration outcomes for pattern effectiveness tracking
+            if api_key:
+                for env_name in ["equity", "crypto"]:
+                    env_result = iter_result.get(env_name, {})
+                    if isinstance(env_result, dict) and "error" not in env_result:
+                        gate = env_result.get("ensemble_gate", {})
+                        memory_client.record_outcome(
+                            iteration=i,
+                            env_name=env_name,
+                            gate_passed=gate.get("passed"),
+                            sharpe=gate.get("sharpe"),
+                            mdd=gate.get("mdd"),
+                            timeout=10.0,
+                        )
+        except Exception as exc:
+            log.warning("memory_post_iteration_failed", iteration=i, error=str(exc))
+
+    # Select best per algo x env by Sortino (Calmar tiebreak)
+    winners = select_best_per_algo_env(state)
+    log.info("best_models_selected", winners=winners)
+
+    # Deploy winners to models/active/
+    deploy_best_models(winners, models_dir)
+
+    # Write comparison report
+    write_comparison_report(state, comparison_path, winners)
+
+    # Build final summary
+    final_report: dict[str, Any] = {
+        "generated_at": datetime.now(tz=UTC).isoformat(),
+        "total_iterations": total,
+        "winners": winners,
+        "comparison_report": str(comparison_path),
+    }
+    _write_json_report(final_report, report_path)
+
+    return final_report
+
+
+# ---------------------------------------------------------------------------
+# Feature loading (delegated to proper module)
+# ---------------------------------------------------------------------------
+
+
+# Re-export from the proper module so tests can patch train_pipeline._load_features_prices
+def _load_features_prices(
+    conn: Any,
+    env_name: str,
+    config: SwingRLConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load features and prices from PostgreSQL.
+
+    Delegates to the canonical implementation in swingrl.training.data_loader.
+
+    Args:
+        conn: Active PostgreSQL connection.
+        env_name: Environment name ("equity" or "crypto").
+        config: Validated SwingRLConfig.
+
+    Returns:
+        Tuple of (features_array, prices_array) both float32.
+    """
+    from swingrl.training.data_loader import load_features_prices  # noqa: PLC0415
+
+    return load_features_prices(conn, env_name, config)
+
+
+# ---------------------------------------------------------------------------
+# Core pipeline helpers
+# ---------------------------------------------------------------------------
+
+
+def _check_algo_checkpoint(env_name: str, algo_name: str, models_dir: Path) -> bool:
+    """Check if a trained model already exists for this algo/env.
+
+    Args:
+        env_name: Environment name.
+        algo_name: Algorithm name.
+        models_dir: Models root directory.
+
+    Returns:
+        True if model.zip exists (checkpoint present).
+    """
+    model_path = models_dir / "active" / env_name / algo_name / "model.zip"
+    return model_path.exists()
+
+
+def _verify_deployment(env_name: str, models_dir: Path) -> None:
+    """Verify model.zip + vec_normalize.pkl exist for all 3 algos.
+
+    Args:
+        env_name: Environment name.
+        models_dir: Models root directory.
+
+    Raises:
+        ModelError: If any required file is missing.
+    """
+    for algo in ALGO_NAMES:
+        model_path = models_dir / "active" / env_name / algo / "model.zip"
+        vec_path = models_dir / "active" / env_name / algo / "vec_normalize.pkl"
+
+        if not model_path.exists():
+            msg = f"Deployment check failed: model.zip missing for {env_name}/{algo}"
+            log.error("deployment_file_missing", path=str(model_path))
+            raise ModelError(msg)
+
+        if not vec_path.exists():
+            msg = f"Deployment check failed: vec_normalize.pkl missing for {env_name}/{algo}"
+            log.error("deployment_file_missing", path=str(vec_path))
+            raise ModelError(msg)
+
+    log.info("deployment_verified", env_name=env_name)
+
+
+def _serialize_fold(f: Any) -> dict[str, Any]:
+    """Serialize a FoldResult to a dict for JSON state persistence.
+
+    Includes full OOS + IS metrics, overfitting, convergence, and ranges
+    so training_state.json serves as a rich secondary backup.
+
+    Args:
+        f: FoldResult instance.
+
+    Returns:
+        Dict with all fold data suitable for JSON serialization.
+    """
+    return {
+        "fold": f.fold_number,
+        "train_range": f.train_range,
+        "test_range": f.test_range,
+        "oos_sharpe": f.out_of_sample_metrics.get("sharpe"),
+        "oos_sortino": f.out_of_sample_metrics.get("sortino"),
+        "oos_calmar": f.out_of_sample_metrics.get("calmar"),
+        "oos_mdd": f.out_of_sample_metrics.get("mdd"),
+        "oos_profit_factor": f.out_of_sample_metrics.get("profit_factor"),
+        "oos_win_rate": f.out_of_sample_metrics.get("win_rate"),
+        "oos_total_trades": f.out_of_sample_metrics.get("total_trades"),
+        "oos_total_return": f.out_of_sample_metrics.get("total_return"),
+        "is_sharpe": f.in_sample_metrics.get("sharpe"),
+        "is_sortino": f.in_sample_metrics.get("sortino"),
+        "is_mdd": f.in_sample_metrics.get("mdd"),
+        "overfitting_gap": f.overfitting.get("gap"),
+        "overfitting_class": f.overfitting.get("classification"),
+        "gate_passed": f.gate_result.passed,
+        "converged_at_step": f.converged_at_step,
+    }
+
+
+def _evaluate_gate_and_decide(
+    gate_result: dict[str, Any],
+    baseline_sharpe: float,
+    env_name: str,
+) -> dict[str, Any]:
+    """Evaluate ensemble gate and decide whether to deploy or block.
+
+    Args:
+        gate_result: Dict with 'passed', 'sharpe', 'mdd' from check_ensemble_gate.
+        baseline_sharpe: Baseline OOS Sharpe (used to decide if tuning is needed).
+        env_name: Environment name (for logging).
+
+    Returns:
+        Dict with 'deploy' bool and diagnostic info.
+    """
+    passed = gate_result.get("passed", False)
+    sharpe = gate_result.get("sharpe", 0.0)
+    mdd = gate_result.get("mdd", -1.0)
+
+    if passed:
+        log.info(
+            "ensemble_gate_passed",
+            env_name=env_name,
+            sharpe=round(float(sharpe), 4),
+            mdd=round(float(mdd), 4),
+        )
+        return {"deploy": True, "sharpe": sharpe, "mdd": mdd, "tuning_triggered": False}
+
+    log.warning(
+        "ensemble_gate_failed",
+        env_name=env_name,
+        sharpe=round(float(sharpe), 4),
+        mdd=round(float(mdd), 4),
+    )
+    return {
+        "deploy": False,
+        "sharpe": sharpe,
+        "mdd": mdd,
+        "tuning_triggered": baseline_sharpe < _TUNING_SHARPE_THRESHOLD,
+    }
+
+
+def _ingest_cross_iteration_comparison(
+    db_path: Path,
+    iteration: int,
+    state: dict[str, Any],
+    memory_client: Any,
+) -> None:
+    """Generate and ingest cross-iteration HP comparison memories.
+
+    Queries PostgreSQL ``iteration_results`` for the baseline (iter 0), current, previous,
+    and best-per-env iterations.  Builds a rolling-window comparison text per env and
+    ingests to the memory service with source ``cross_iteration:{env_name}``.
+
+    The comparison includes ensemble-level deltas, per-algo sharpe/mdd deltas, HP
+    change details, and zero-adjustment fold counts for HP attribution.
+
+    Args:
+        db_path: PostgreSQL database URL.
+        iteration: Current iteration number (must be >0).
+        state: Training state dict with ``iteration_N_result`` entries.
+        memory_client: MemoryClient instance for ingestion.
+    """
+    database_url = os.environ.get("DATABASE_URL", str(db_path))
+    conn = psycopg.connect(database_url, row_factory=dict_row)
+    try:
+        for env_name in ("equity", "crypto"):
+            # Fetch baseline (iter 0) and current iteration
+            baseline = fetchdf(
+                conn.execute(
+                    "SELECT * FROM iteration_results WHERE iteration_number = 0 AND environment = %s",
+                    [env_name],
+                )
+            )
+            current = fetchdf(
+                conn.execute(
+                    "SELECT * FROM iteration_results WHERE iteration_number = %s AND environment = %s",
+                    [iteration, env_name],
+                )
+            )
+
+            if baseline.empty or current.empty:
+                log.info(
+                    "cross_iteration_skip_missing_data",
+                    iteration=iteration,
+                    env=env_name,
+                )
+                continue
+
+            b = baseline.iloc[0]
+            c = current.iloc[0]
+
+            # Build comparison text
+            b_sharpe = float(b["ensemble_sharpe"])
+            c_sharpe = float(c["ensemble_sharpe"])
+            sharpe_delta = c_sharpe - b_sharpe
+            pct = sharpe_delta / b_sharpe * 100 if b_sharpe else 0
+
+            lines = [
+                f"ITERATION HP COMPARISON: iteration={iteration} env={env_name}",
+                "",
+                f"VS BASELINE (iteration 0, hp_source={b.get('hp_source', 'baseline')}):",
+                f"  ensemble: sharpe {b_sharpe:.4f}->{c_sharpe:.4f} ({pct:+.1f}%), "
+                f"mdd {float(b['ensemble_mdd']):.4f}->{float(c['ensemble_mdd']):.4f}, "
+                f"gate {'PASS' if b.get('gate_passed') else 'FAIL'}"
+                f"->{'PASS' if c.get('gate_passed') else 'FAIL'}",
+            ]
+
+            for algo in ("ppo", "a2c", "sac"):
+                b_s = float(b.get(f"{algo}_mean_sharpe", 0))
+                c_s = float(c.get(f"{algo}_mean_sharpe", 0))
+                b_m = float(b.get(f"{algo}_mean_mdd", 0))
+                c_m = float(c.get(f"{algo}_mean_mdd", 0))
+                sd = c_s - b_s
+                sp = sd / b_s * 100 if b_s else 0
+                hp_json = c.get(f"{algo}_hyperparams") or ""
+                hp_str = f"hp_changes: {hp_json}" if hp_json else "hp_changes: baseline (none)"
+
+                # Count zero-adjustment folds from state result
+                iter_result = state.get(f"iteration_{iteration}_result", {})
+                env_result = iter_result.get(env_name, {})
+                wf_folds = env_result.get("walk_forward", {}).get(algo, [])
+                total_folds = len(wf_folds)
+
+                lines.append(
+                    f"  {algo.upper()}: sharpe {b_s:.4f}->{c_s:.4f} ({sp:+.1f}%), "
+                    f"mdd {b_m:.4f}->{c_m:.4f}, "
+                    f"weight {float(b.get(f'{algo}_weight', 0)):.1%}"
+                    f"->{float(c.get(f'{algo}_weight', 0)):.1%}"
+                )
+                lines.append(f"    {hp_str}")
+                if total_folds:
+                    lines.append(f"    total_folds={total_folds}")
+
+            # Fetch all iterations for dynamic comparisons
+            all_iters = fetchdf(
+                conn.execute(
+                    "SELECT * FROM iteration_results WHERE environment = %s ORDER BY iteration_number",
+                    [env_name],
+                )
+            )
+
+            if len(all_iters) > 1:
+                best_iter = int(
+                    all_iters.loc[all_iters["ensemble_sharpe"].idxmax(), "iteration_number"]
+                )
+                worst_iter = int(
+                    all_iters.loc[all_iters["ensemble_sharpe"].idxmin(), "iteration_number"]
+                )
+                best_sharpe = float(
+                    all_iters.loc[all_iters["ensemble_sharpe"].idxmax(), "ensemble_sharpe"]
+                )
+                worst_sharpe = float(
+                    all_iters.loc[all_iters["ensemble_sharpe"].idxmin(), "ensemble_sharpe"]
+                )
+
+                # --- VS PREVIOUS: only if there is a non-baseline previous ---
+                if iteration >= 2:
+                    prev_df = all_iters[all_iters["iteration_number"] == iteration - 1]
+                    if not prev_df.empty:
+                        p = prev_df.iloc[0]
+                        p_sharpe = float(p["ensemble_sharpe"])
+                        pd = c_sharpe - p_sharpe
+                        pp = pd / p_sharpe * 100 if p_sharpe else 0
+                        lines.append("")
+                        lines.append(f"VS PREVIOUS (iteration {iteration - 1}):")
+                        lines.append(
+                            f"  ensemble: sharpe {p_sharpe:.4f}->{c_sharpe:.4f} ({pp:+.1f}%)"
+                        )
+                        for algo in ("ppo", "a2c", "sac"):
+                            col = f"{algo}_mean_sharpe"
+                            ps = float(p.get(col, 0))
+                            cs = float(c.get(col, 0))
+                            if ps:
+                                ad = cs - ps
+                                ap = ad / ps * 100
+                                lines.append(
+                                    f"  {algo.upper()}: sharpe {ps:.4f}->{cs:.4f} ({ap:+.1f}%)"
+                                )
+
+                # --- VS BEST ENSEMBLE: only if best is not current, baseline, or previous ---
+                prev_iter = iteration - 1 if iteration >= 2 else None
+                best_already_shown = (
+                    best_iter == iteration or best_iter == 0 or best_iter == prev_iter
+                )
+                if not best_already_shown:
+                    bd = c_sharpe - best_sharpe
+                    bp = bd / best_sharpe * 100 if best_sharpe else 0
+                    best_hp_source = all_iters.loc[
+                        all_iters["iteration_number"] == best_iter, "hp_source"
+                    ].iloc[0]
+                    lines.append("")
+                    lines.append(
+                        f"VS BEST ENSEMBLE (iteration {best_iter}, hp_source={best_hp_source}):"
+                    )
+                    lines.append(
+                        f"  ensemble: sharpe {best_sharpe:.4f}->{c_sharpe:.4f} ({bp:+.1f}%)"
+                    )
+
+                # --- VS WORST ENSEMBLE: only if worst is not current, baseline, previous, or best ---
+                worst_already_shown = (
+                    worst_iter == iteration
+                    or worst_iter == 0
+                    or worst_iter == prev_iter
+                    or worst_iter == best_iter
+                )
+                if not worst_already_shown:
+                    wd = c_sharpe - worst_sharpe
+                    wp = wd / worst_sharpe * 100 if worst_sharpe else 0
+                    worst_hp_source = all_iters.loc[
+                        all_iters["iteration_number"] == worst_iter, "hp_source"
+                    ].iloc[0]
+                    lines.append("")
+                    lines.append(
+                        f"VS WORST ENSEMBLE (iteration {worst_iter}, hp_source={worst_hp_source}):"
+                    )
+                    lines.append(
+                        f"  ensemble: sharpe {worst_sharpe:.4f}->{c_sharpe:.4f} ({wp:+.1f}%)"
+                    )
+
+                # --- VS BEST/WORST PER-ALGO: show non-current best and worst per algo ---
+                algo_comparison_lines: list[str] = []
+                for algo in ("ppo", "a2c", "sac"):
+                    col = f"{algo}_mean_sharpe"
+                    hp_col = f"{algo}_hyperparams"
+                    if col not in all_iters.columns:
+                        continue
+
+                    best_algo_iter = int(all_iters.loc[all_iters[col].idxmax(), "iteration_number"])
+                    best_algo_s = float(all_iters[col].max())
+                    best_algo_hp = all_iters.loc[all_iters[col].idxmax()].get(hp_col) or "baseline"
+
+                    worst_algo_iter = int(
+                        all_iters.loc[all_iters[col].idxmin(), "iteration_number"]
+                    )
+                    worst_algo_s = float(all_iters[col].min())
+                    worst_algo_hp = all_iters.loc[all_iters[col].idxmin()].get(hp_col) or "baseline"
+
+                    # Only show best if current is NOT the best for this algo
+                    if best_algo_iter != iteration:
+                        algo_comparison_lines.append(
+                            f"  {algo.upper()} best: iter {best_algo_iter} "
+                            f"sharpe={best_algo_s:.4f} hp={best_algo_hp}"
+                        )
+                    # Only show worst if current is NOT the worst and different from best
+                    if worst_algo_iter != iteration and worst_algo_iter != best_algo_iter:
+                        algo_comparison_lines.append(
+                            f"  {algo.upper()} worst: iter {worst_algo_iter} "
+                            f"sharpe={worst_algo_s:.4f} hp={worst_algo_hp}"
+                        )
+
+                if algo_comparison_lines:
+                    lines.append("")
+                    lines.append("VS BEST/WORST PER-ALGO:")
+                    lines.extend(algo_comparison_lines)
+
+            text = "\n".join(lines)
+            ok = memory_client.ingest_training(
+                text=text,
+                source=f"cross_iteration:{env_name}",
+                timeout=10.0,
+            )
+            log.info(
+                "cross_iteration_comparison_ingested",
+                iteration=iteration,
+                env=env_name,
+                chars=len(text),
+                ok=ok,
+            )
+    finally:
+        conn.close()
+
+
+def _ingest_wf_results_to_memory(
+    config: SwingRLConfig,
+    env_name: str,
+    all_wf_results: dict[str, list[Any]],
+    ensemble_weights: dict[str, float],
+    gate_result: dict[str, Any],
+    features: np.ndarray | None = None,
+    dates: np.ndarray | None = None,
+    iteration_number: int = 0,
+    total_timesteps: int = 0,
+    hp_overrides: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    """Ingest enriched walk-forward performance metrics to memory agent.
+
+    Sends one memory per algo with fold-level detail (including date range,
+    regime context, trade quality, IS/OOS metrics), plus one ensemble summary.
+    Source tags use format walk_forward:{env_name}:{algo} for proper filtering.
+
+    Args:
+        config: SwingRLConfig with memory_agent section.
+        env_name: Environment name.
+        all_wf_results: Dict mapping algo name to list of FoldResult.
+        ensemble_weights: Ensemble weights from OOS Sharpe.
+        gate_result: Ensemble gate pass/fail result.
+        features: Full feature array for extracting regime/macro context per fold.
+        dates: Date strings aligned with features array indices.
+        iteration_number: Current training iteration (0=baseline).
+        total_timesteps: Training timesteps per fold.
+    """
+    mem_cfg = getattr(config, "memory_agent", None)
+    if not mem_cfg:
+        return
+    # Always ingest WF results if API key is configured, even during
+    # baseline iterations (memory_agent.enabled=False). Baseline results
+    # give the memory agent a comparison point for memory-enhanced runs.
+    api_key = getattr(mem_cfg, "api_key", "")
+    if not api_key:
+        return
+
+    try:
+        import numpy as np
+
+        from swingrl.agents.backtest import ENV_PARAMS
+        from swingrl.memory.client import MemoryClient
+
+        client = MemoryClient(
+            base_url=mem_cfg.base_url,
+            default_timeout=mem_cfg.timeout_sec,
+            api_key=api_key,
+        )
+
+        # Compute HMM/macro feature indices from env config
+        # Equity: [n_symbols*15 : +6 macro, +2 hmm, +1 turb]
+        # Crypto: [n_symbols*13 : +6 macro, +2 hmm, +1 turb]
+        if env_name == "equity":
+            n_symbols = len(config.equity.symbols)
+            per_asset = 15
+            env_symbols = config.equity.symbols
+        else:
+            n_symbols = len(config.crypto.symbols)
+            per_asset = 13
+            env_symbols = config.crypto.symbols
+        macro_start = n_symbols * per_asset
+        hmm_start = macro_start + 6  # after 6 macro features
+        turb_idx = hmm_start + 2  # after 2 HMM probs
+
+        # WF parameters for ensemble summary (Category 5)
+        wf_params = ENV_PARAMS.get(env_name, {})
+
+        # Per-algo ingestion with fold-level detail
+        for algo_name, folds in all_wf_results.items():
+            if not folds:
+                continue
+
+            sharpes = [f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds]
+            mdds = [f.out_of_sample_metrics.get("mdd", 0.0) for f in folds]
+            sortinos = [f.out_of_sample_metrics.get("sortino", 0.0) for f in folds]
+            pfs = [f.out_of_sample_metrics.get("profit_factor", 0.0) for f in folds]
+            win_rates = [f.out_of_sample_metrics.get("win_rate", 0.0) for f in folds]
+            total_trades = [int(f.out_of_sample_metrics.get("total_trades", 0)) for f in folds]
+            calmars = [f.out_of_sample_metrics.get("calmar", 0.0) for f in folds]
+            rachevs = [f.out_of_sample_metrics.get("rachev", 0.0) for f in folds]
+            gate_pass_count = sum(1 for f in folds if f.gate_result.passed)
+
+            # Category 6: Per-trade max_single_loss and best_single_trade
+            all_trade_pnls: list[float] = []
+            for f in folds:
+                for trade in f.trades:
+                    pnl_val = trade.get("pnl", trade.get("profit", 0.0))
+                    if pnl_val is not None:
+                        all_trade_pnls.append(float(pnl_val))
+            max_single_loss = min(all_trade_pnls) if all_trade_pnls else 0.0
+            best_single_trade = max(all_trade_pnls) if all_trade_pnls else 0.0
+
+            # Collect per-fold advice stats
+            fold_advice_stats: dict[int, dict[str, Any]] = {}
+            for f in folds:
+                if f.advice_stats is not None:
+                    fold_advice_stats[f.fold_number] = f.advice_stats
+
+            # Build fold detail lines with date range and regime context
+            fold_lines: list[str] = []
+            for f in folds:
+                oos = f.out_of_sample_metrics
+                ovf = f.overfitting
+                test_start, test_end = f.test_range
+                train_start, train_end = f.train_range
+
+                # Category 2: Train range context
+                train_ctx = f"train_bars={train_end - train_start} "
+                if dates is not None and train_start < len(dates) and train_end <= len(dates):
+                    train_ctx += f"train_period={dates[train_start]}..{dates[train_end - 1]} "
+
+                # Date range context (test period)
+                date_ctx = ""
+                if dates is not None and test_start < len(dates) and test_end <= len(dates):
+                    date_ctx = f"period={dates[test_start]}..{dates[test_end - 1]} "
+
+                # Regime/macro context from features array (with min/max — Category 3)
+                regime_ctx = ""
+                if features is not None and test_end <= len(features):
+                    test_features = features[test_start:test_end]
+                    hmm_cols = test_features[:, hmm_start : hmm_start + 2]
+                    macro_cols = test_features[:, macro_start : macro_start + 6]
+                    turb_col = test_features[:, turb_idx]
+
+                    mean_hmm = hmm_cols.mean(axis=0)
+                    mean_macro = macro_cols.mean(axis=0)
+                    mean_turb = float(turb_col.mean())
+
+                    # Category 3: HMM min/max
+                    min_hmm = hmm_cols.min(axis=0)
+                    max_hmm = hmm_cols.max(axis=0)
+                    # Category 3: Macro min/max
+                    min_macro = macro_cols.min(axis=0)
+                    max_macro = macro_cols.max(axis=0)
+                    # Category 3: Turbulence max (peak stress)
+                    turb_max = float(turb_col.max())
+
+                    regime_ctx = (
+                        f"p_bull={mean_hmm[0]:.3f} p_bear={mean_hmm[1]:.3f} "
+                        f"p_bull_min={min_hmm[0]:.3f} p_bull_max={max_hmm[0]:.3f} "
+                        f"p_bear_min={min_hmm[1]:.3f} p_bear_max={max_hmm[1]:.3f} "
+                        f"vix={mean_macro[0]:.3f} vix_min={min_macro[0]:.3f} vix_max={max_macro[0]:.3f} "
+                        f"yield_spread={mean_macro[1]:.3f} yield_spread_min={min_macro[1]:.3f} yield_spread_max={max_macro[1]:.3f} "
+                        f"rate_direction={mean_macro[2]:.3f} rate_direction_min={min_macro[2]:.3f} rate_direction_max={max_macro[2]:.3f} "
+                        f"fed_funds={mean_macro[3]:.3f} fed_funds_min={min_macro[3]:.3f} fed_funds_max={max_macro[3]:.3f} "
+                        f"cpi_yoy={mean_macro[4]:.3f} cpi_yoy_min={min_macro[4]:.3f} cpi_yoy_max={max_macro[4]:.3f} "
+                        f"unemployment={mean_macro[5]:.3f} unemployment_min={min_macro[5]:.3f} unemployment_max={max_macro[5]:.3f} "
+                        f"turbulence={mean_turb:.3f} turbulence_max={turb_max:.3f} "
+                    )
+
+                # In-sample metrics for overfit analysis
+                ins = f.in_sample_metrics
+                ins_ctx = (
+                    f"is_sharpe={ins.get('sharpe', 0.0):.4f} "
+                    f"is_mdd={ins.get('mdd', 0.0):.4f} "
+                    f"is_sortino={ins.get('sortino', 0.0):.4f} "
+                    f"is_profit_factor={ins.get('profit_factor', 0.0):.4f} "
+                    f"is_win_rate={ins.get('win_rate', 0.0):.4f} "
+                )
+
+                # Category 2: Gate failures list
+                gate_failures = ""
+                if hasattr(f.gate_result, "failures") and f.gate_result.failures:
+                    gate_failures = f"gate_failures={','.join(f.gate_result.failures)} "
+
+                # Advice stats for this fold
+                advice_ctx = ""
+                fa = fold_advice_stats.get(f.fold_number)
+                if fa:
+                    advice_ctx = (
+                        f"advice_calls={fa.get('advice_calls', 0)} "
+                        f"advice_succeeded={fa.get('advice_succeeded', 0)} "
+                        f"advice_timed_out={fa.get('advice_timed_out', 0)} "
+                        f"advice_provider={fa.get('advice_provider_used', 'none')} "
+                    )
+
+                _ctrl_tag = "[CTRL] " if f.is_control_fold else "[TREATMENT] "
+                fold_lines.append(
+                    f"fold={f.fold_number} {_ctrl_tag}{train_ctx}{date_ctx}{regime_ctx}"
+                    f"sharpe={oos.get('sharpe', 0.0):.4f} "
+                    f"mdd={oos.get('mdd', 0.0):.4f} "
+                    f"sortino={oos.get('sortino', 0.0):.4f} "
+                    f"profit_factor={oos.get('profit_factor', 0.0):.4f} "
+                    f"win_rate={oos.get('win_rate', 0.0):.4f} "
+                    f"trades={int(oos.get('total_trades', 0))} "
+                    # Category 1: Additional OOS metrics
+                    f"calmar={oos.get('calmar', 0.0):.4f} "
+                    f"rachev={oos.get('rachev', 0.0):.4f} "
+                    f"avg_drawdown={oos.get('avg_drawdown', 0.0):.4f} "
+                    f"max_dd_duration={int(oos.get('max_dd_duration', 0))} "
+                    f"total_return={oos.get('total_return', 0.0):.4f} "
+                    f"avg_win={oos.get('avg_win', 0.0):.4f} "
+                    f"avg_loss={oos.get('avg_loss', 0.0):.4f} "
+                    f"trade_freq_per_week={oos.get('trade_frequency_per_week', 0.0):.4f} "
+                    f"{ins_ctx}"
+                    f"gate={'PASS' if f.gate_result.passed else 'FAIL'} "
+                    f"{gate_failures}"
+                    f"overfit_class={ovf.get('classification', 'unknown')} "
+                    f"overfit_gap={ovf.get('gap', 0.0):.4f} "
+                    f"{advice_ctx}"
+                )
+
+            # Hyperparameters actually used (baseline merged with any override)
+            from swingrl.training.trainer import HYPERPARAMS
+
+            hp = HYPERPARAMS.get(algo_name, {}).copy()
+            algo_hp_override = (hp_overrides or {}).get(algo_name)
+            if algo_hp_override:
+                hp.update(algo_hp_override)
+            hp_parts = [f"{k}={v}" for k, v in hp.items()]
+            if algo_name == "sac":
+                hp_parts.append(f"buffer_size={config.training.sac_buffer_size}")
+            hp_str = " ".join(hp_parts)
+            hp_source = "memory_advised" if algo_hp_override else "baseline"
+
+            # Control vs Treatment summary (if both groups exist)
+            ctrl_sharpes = [
+                f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds if f.is_control_fold
+            ]
+            treat_sharpes = [
+                f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds if not f.is_control_fold
+            ]
+            ctrl_mdds = [
+                f.out_of_sample_metrics.get("mdd", 0.0) for f in folds if f.is_control_fold
+            ]
+            treat_mdds = [
+                f.out_of_sample_metrics.get("mdd", 0.0) for f in folds if not f.is_control_fold
+            ]
+            ctrl_summary = ""
+            if ctrl_sharpes and treat_sharpes:
+                ctrl_folds_list = sorted(f.fold_number for f in folds if f.is_control_fold)
+                c_s = float(np.mean(ctrl_sharpes))
+                t_s = float(np.mean(treat_sharpes))
+                c_m = float(np.mean(ctrl_mdds))
+                t_m = float(np.mean(treat_mdds))
+                ctrl_summary = (
+                    f"\nCONTROL vs TREATMENT: ctrl_folds={ctrl_folds_list} "
+                    f"ctrl_mean_sharpe={c_s:.4f} treatment_mean_sharpe={t_s:.4f} "
+                    f"delta={t_s - c_s:+.4f} "
+                    f"ctrl_mean_mdd={c_m:.4f} treatment_mean_mdd={t_m:.4f}"
+                )
+
+            # Advice success rate warning for treatment folds
+            treatment_folds_stats = [
+                fold_advice_stats[f.fold_number]
+                for f in folds
+                if not f.is_control_fold and f.fold_number in fold_advice_stats
+            ]
+            if treatment_folds_stats:
+                total_calls = sum(s.get("advice_calls", 0) for s in treatment_folds_stats)
+                total_succeeded = sum(s.get("advice_succeeded", 0) for s in treatment_folds_stats)
+                if total_calls > 0:
+                    success_rate = total_succeeded / total_calls
+                    if success_rate < 0.5:
+                        log.warning(
+                            "low_treatment_advice_success_rate",
+                            algo=algo_name,
+                            env=env_name,
+                            success_rate=f"{success_rate:.1%}",
+                            total_calls=total_calls,
+                            total_succeeded=total_succeeded,
+                        )
+                        ctrl_summary += (
+                            f"\nWARNING: treatment advice success rate "
+                            f"{success_rate:.1%} < 50% "
+                            f"(calls={total_calls} succeeded={total_succeeded})"
+                        )
+
+            # Category 4: iteration_number and total_timesteps in header
+            algo_text = (
+                f"WALK-FORWARD ALGO RESULTS: env={env_name} algo={algo_name.upper()} "
+                f"iteration={iteration_number} total_timesteps={total_timesteps} "
+                f"memory_enabled={mem_cfg.enabled} hp_source={hp_source} "
+                f"hyperparams: {hp_str}\n"
+                f"folds={len(folds)} passed_gate={gate_pass_count}/{len(folds)} "
+                f"mean_sharpe={float(np.mean(sharpes)):.4f} "
+                f"mean_mdd={float(np.mean(mdds)):.4f} "
+                f"mean_sortino={float(np.mean(sortinos)):.4f} "
+                f"mean_profit_factor={float(np.mean(pfs)):.4f} "
+                f"mean_win_rate={float(np.mean(win_rates)):.4f} "
+                f"mean_trades={float(np.mean(total_trades)):.1f} "
+                f"ensemble_weight={ensemble_weights.get(algo_name, 0.0):.4f} "
+                # Category 6: per-trade extremes
+                f"max_single_loss={max_single_loss:.4f} "
+                f"best_single_trade={best_single_trade:.4f}\n"
+                + "\n".join(fold_lines)
+                + ctrl_summary
+            )
+
+            # Updated source tag: walk_forward:{env_name}:{algo}
+            client.ingest_training(algo_text, source=f"walk_forward:{env_name}:{algo_name}")
+            log.info(
+                "wf_algo_results_ingested",
+                env_name=env_name,
+                algo_name=algo_name,
+                folds=len(folds),
+                gate_pass_count=gate_pass_count,
+            )
+
+        # Ensemble summary with per-algo detail + overall regime context
+        algo_summaries = []
+        for algo_name, folds in all_wf_results.items():
+            if not folds:
+                continue
+            sharpes = [f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds]
+            mdds = [f.out_of_sample_metrics.get("mdd", 0.0) for f in folds]
+            sortinos = [f.out_of_sample_metrics.get("sortino", 0.0) for f in folds]
+            pfs = [f.out_of_sample_metrics.get("profit_factor", 0.0) for f in folds]
+            win_rates = [f.out_of_sample_metrics.get("win_rate", 0.0) for f in folds]
+            calmars = [f.out_of_sample_metrics.get("calmar", 0.0) for f in folds]
+            rachevs = [f.out_of_sample_metrics.get("rachev", 0.0) for f in folds]
+            gate_pass_count = sum(1 for f in folds if f.gate_result.passed)
+            # Category 5: Fold Sharpe variance, best/worst fold, conditional Sharpe
+            sharpe_var = float(np.var(sharpes)) if len(sharpes) > 1 else 0.0
+            best_fold_sharpe = float(np.max(sharpes)) if sharpes else 0.0
+            worst_fold_sharpe = float(np.min(sharpes)) if sharpes else 0.0
+            # Bear/Bull conditional Sharpe (filter by mean p_bear > 0.5)
+            bear_sharpes: list[float] = []
+            bull_sharpes: list[float] = []
+            if features is not None:
+                for f in folds:
+                    test_start, test_end = f.test_range
+                    if test_end <= len(features):
+                        mean_p_bear = float(features[test_start:test_end, hmm_start + 1].mean())
+                        s = f.out_of_sample_metrics.get("sharpe", 0.0)
+                        if mean_p_bear > 0.5:
+                            bear_sharpes.append(s)
+                        else:
+                            bull_sharpes.append(s)
+            bear_cond_sharpe = float(np.mean(bear_sharpes)) if bear_sharpes else 0.0
+            bull_cond_sharpe = float(np.mean(bull_sharpes)) if bull_sharpes else 0.0
+
+            algo_summaries.append(
+                f"{algo_name.upper()}(sharpe={float(np.mean(sharpes)):.4f} "
+                f"mdd={float(np.mean(mdds)):.4f} "
+                f"sortino={float(np.mean(sortinos)):.4f} "
+                f"profit_factor={float(np.mean(pfs)):.4f} "
+                f"win_rate={float(np.mean(win_rates)):.4f} "
+                # Category 5: per-algo calmar + rachev
+                f"calmar={float(np.mean(calmars)):.4f} "
+                f"rachev={float(np.mean(rachevs)):.4f} "
+                f"gate={gate_pass_count}/{len(folds)} "
+                f"weight={ensemble_weights.get(algo_name, 0.0):.4f} "
+                f"sharpe_var={sharpe_var:.4f} "
+                f"best_fold_sharpe={best_fold_sharpe:.4f} "
+                f"worst_fold_sharpe={worst_fold_sharpe:.4f} "
+                f"bear_sharpe={bear_cond_sharpe:.4f} "
+                f"bull_sharpe={bull_cond_sharpe:.4f})"
+            )
+
+        # Overall data period and regime context
+        period_ctx = ""
+        if dates is not None and len(dates) > 0:
+            period_ctx = f"data_period={dates[0]}..{dates[-1]} bars={len(dates)} "
+        regime_summary = ""
+        if features is not None:
+            overall_hmm = features[:, hmm_start : hmm_start + 2].mean(axis=0)
+            overall_macro = features[:, macro_start : macro_start + 6].mean(axis=0)
+            regime_summary = (
+                f"overall_p_bull={overall_hmm[0]:.3f} overall_p_bear={overall_hmm[1]:.3f} "
+                f"overall_vix={overall_macro[0]:.3f} overall_yield_spread={overall_macro[1]:.3f} "
+            )
+
+        # Category 5: WF parameters and env config
+        wf_ctx = (
+            f"wf_test_bars={wf_params.get('test_bars', 0)} "
+            f"wf_min_train_bars={wf_params.get('min_train_bars', 0)} "
+            f"wf_embargo_bars={wf_params.get('embargo_bars', 0)} "
+            f"symbols={','.join(env_symbols)} "
+            f"initial_amount={config.environment.initial_amount:.0f} "
+        )
+
+        summary_text = (
+            f"WALK-FORWARD ENSEMBLE: env={env_name} "
+            f"iteration={iteration_number} total_timesteps={total_timesteps} "
+            f"memory_enabled={mem_cfg.enabled} {period_ctx}{regime_summary}{wf_ctx}"
+            f"ensemble_sharpe={gate_result.get('sharpe', 0.0):.4f} "
+            f"ensemble_mdd={gate_result.get('mdd', 0.0):.4f} "
+            f"ensemble_gate_passed={gate_result.get('passed', False)}\n"
+            + " | ".join(algo_summaries)
+        )
+
+        # Updated source tag: walk_forward:{env_name}:ensemble
+        client.ingest_training(summary_text, source=f"walk_forward:{env_name}:ensemble")
+        log.info("wf_ensemble_ingested", env_name=env_name)
+
+    except Exception as exc:
+        log.debug("wf_results_memory_ingest_failed", env_name=env_name, error=str(exc))
+
+
+def _ingest_trading_patterns_to_memory(
+    config: SwingRLConfig,
+    env_name: str,
+    all_wf_results: dict[str, list[Any]],
+    features: np.ndarray | None = None,
+    iteration_number: int = 0,
+    hp_overrides: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    """Extract per-asset trade stats with macro correlations and ingest to memory.
+
+    Computes regime-conditioned and macro-conditioned trade breakdowns from
+    round-trip trade data in FoldResult.trades. Feeds consolidation categories:
+    trade_quality, live_position, live_trade_veto, live_risk_thresholds,
+    live_cycle_gate, macro_transition.
+
+    Args:
+        config: SwingRL configuration.
+        env_name: Environment name ('equity' or 'crypto').
+        all_wf_results: Dict mapping algo names to lists of FoldResult.
+        features: Full feature array (bars x features). None if unavailable.
+        iteration_number: Current meta-training iteration (0 = baseline).
+    """
+    mem_cfg = getattr(config, "memory_agent", None)
+    if not mem_cfg:
+        return
+    api_key = getattr(mem_cfg, "api_key", "")
+    if not api_key:
+        return
+
+    try:
+        from swingrl.memory.client import MemoryClient
+
+        client = MemoryClient(
+            base_url=mem_cfg.base_url,
+            default_timeout=mem_cfg.timeout_sec,
+            api_key=api_key,
+        )
+    except Exception as exc:
+        log.warning("trading_pattern_memory_client_failed", error=str(exc))
+        return
+
+    # Symbol list for the environment
+    if env_name == "equity":
+        n_symbols = len(config.equity.symbols)
+        per_asset = 15
+        env_symbols = config.equity.symbols
+    else:
+        n_symbols = len(config.crypto.symbols)
+        per_asset = 13
+        env_symbols = config.crypto.symbols
+
+    # Feature indices: [tech_per_asset * n_symbols | 6 macro | 2 HMM | 1 turb]
+    macro_start = n_symbols * per_asset
+    hmm_start = macro_start + 6  # after 6 macro features
+
+    def _asset_stats(
+        trades: list[dict[str, Any]],
+        symbols: list[str],
+    ) -> list[str]:
+        """Compute per-asset trade statistics."""
+        from collections import defaultdict
+
+        by_asset: dict[int, list[float]] = defaultdict(list)
+        for t in trades:
+            by_asset[int(t["asset_idx"])].append(float(t["pnl"]))
+
+        lines: list[str] = []
+        for idx, pnls in sorted(by_asset.items()):
+            sym = symbols[idx] if idx < len(symbols) else f"asset_{idx}"
+            n = len(pnls)
+            wins = sum(1 for p in pnls if p > 0)
+            wr = wins / n if n > 0 else 0.0
+            avg = sum(pnls) / n if n > 0 else 0.0
+            worst = min(pnls) if pnls else 0.0
+            best = max(pnls) if pnls else 0.0
+            lines.append(
+                f"  {sym}: trades={n} win={wr:.3f} avg_pnl={avg:.4f}"
+                f" max_loss={worst:.4f} best={best:.4f}"
+            )
+        return lines
+
+    def _group_stats(trades: list[dict[str, Any]]) -> str:
+        """Compute aggregate stats for a group of trades."""
+        if not trades:
+            return "trades=0"
+        pnls = [float(t["pnl"]) for t in trades]
+        n = len(pnls)
+        wins = sum(1 for p in pnls if p > 0)
+        wr = wins / n if n > 0 else 0.0
+        avg = sum(pnls) / n if n > 0 else 0.0
+        return f"trades={n} win={wr:.3f} avg_pnl={avg:.4f}"
+
+    for algo_name, folds in all_wf_results.items():
+        if not folds:
+            continue
+
+        # Collect all round-trip trades across OOS folds
+        all_trades: list[dict[str, Any]] = []
+        bull_trades: list[dict[str, Any]] = []
+        bear_trades: list[dict[str, Any]] = []
+        # Macro-conditioned accumulators
+        high_vix_trades: list[dict[str, Any]] = []
+        low_vix_trades: list[dict[str, Any]] = []
+        neg_yield_trades: list[dict[str, Any]] = []
+        rate_hike_trades: list[dict[str, Any]] = []
+
+        for fold in folds:
+            fold_trades = getattr(fold, "trades", None) or []
+            all_trades.extend(fold_trades)
+
+            # Classify fold by regime and macro using features
+            if features is not None and hasattr(fold, "test_range"):
+                try:
+                    test_start, test_end = fold.test_range
+                except (TypeError, ValueError):
+                    continue
+                if test_end <= len(features):
+                    fold_features = features[test_start:test_end]
+                    mean_p_bear = float(fold_features[:, hmm_start + 1].mean())
+
+                    if mean_p_bear > 0.5:
+                        bear_trades.extend(fold_trades)
+                    else:
+                        bull_trades.extend(fold_trades)
+
+                    # Macro conditions (6 features at macro_start)
+                    macro_feats = fold_features[:, macro_start : macro_start + 6]
+                    mean_vix = float(macro_feats[:, 0].mean())
+                    mean_yield = float(macro_feats[:, 1].mean())
+                    mean_fed_change = float(macro_feats[:, 3].mean())
+
+                    if mean_vix > 1.5:
+                        high_vix_trades.extend(fold_trades)
+                    elif mean_vix < -0.5:
+                        low_vix_trades.extend(fold_trades)
+                    if mean_yield < 0:
+                        neg_yield_trades.extend(fold_trades)
+                    if mean_fed_change > 0.0025:
+                        rate_hike_trades.extend(fold_trades)
+
+        if not all_trades:
+            log.warning(
+                "trading_patterns_skipped_no_trades",
+                env_name=env_name,
+                algo_name=algo_name,
+                fold_count=len(folds),
+            )
+            continue
+
+        algo_hp_override = (hp_overrides or {}).get(algo_name)
+        hp_source = "memory_advised" if algo_hp_override else "baseline"
+        parts: list[str] = [
+            f"TRADING PATTERNS: env={env_name} algo={algo_name.upper()}"
+            f" iteration={iteration_number} hp_source={hp_source}",
+            f"Per-asset OOS trade stats ({len(folds)} folds):",
+        ]
+        parts.extend(_asset_stats(all_trades, env_symbols))
+
+        if bull_trades or bear_trades:
+            parts.append("Regime breakdown:")
+            parts.append(f"  bull_folds: {_group_stats(bull_trades)}")
+            parts.append(f"  bear_folds: {_group_stats(bear_trades)}")
+
+        macro_lines: list[str] = []
+        if high_vix_trades:
+            macro_lines.append(f"  high_vix(>1.5\u03c3): {_group_stats(high_vix_trades)}")
+        if low_vix_trades:
+            macro_lines.append(f"  low_vix(<-0.5\u03c3): {_group_stats(low_vix_trades)}")
+        if neg_yield_trades:
+            macro_lines.append(f"  neg_yield_spread: {_group_stats(neg_yield_trades)}")
+        if rate_hike_trades:
+            macro_lines.append(f"  rate_hike(>25bp/90d): {_group_stats(rate_hike_trades)}")
+        if macro_lines:
+            parts.append("Macro-conditioned trades:")
+            parts.extend(macro_lines)
+
+        # Per-fold trade summary with [CTRL]/[TREATMENT] tags
+        fold_trade_lines: list[str] = []
+        for fold in folds:
+            fold_trades = getattr(fold, "trades", None) or []
+            n = len(fold_trades)
+            if n == 0:
+                continue
+            pnls = [float(t["pnl"]) for t in fold_trades]
+            wins = sum(1 for p in pnls if p > 0)
+            wr = wins / n if n > 0 else 0.0
+            avg = sum(pnls) / n if n > 0 else 0.0
+            tag = "[CTRL]" if fold.is_control_fold else "[TREATMENT]"
+            fold_trade_lines.append(
+                f"  fold={fold.fold_number} {tag} trades={n} win={wr:.3f} avg_pnl={avg:.4f}"
+            )
+        if fold_trade_lines:
+            parts.append("Per-fold trade stats:")
+            parts.extend(fold_trade_lines)
+
+        pattern_text = "\n".join(parts)
+
+        try:
+            client.ingest_training(
+                pattern_text,
+                source=f"trading_pattern:{env_name}:{algo_name}",
+            )
+            log.info(
+                "trading_patterns_ingested",
+                env_name=env_name,
+                algo_name=algo_name,
+                total_trades=len(all_trades),
+            )
+        except Exception as exc:
+            log.warning(
+                "trading_pattern_ingest_failed",
+                env_name=env_name,
+                algo_name=algo_name,
+                error=str(exc),
+            )
+
+
+def _write_json_report(report: dict[str, Any], report_path: Path) -> None:
+    """Write training report to JSON file.
+
+    Args:
+        report: Report dict to serialize.
+        report_path: Output path for the JSON file.
+    """
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2, default=str))
+    log.info("json_report_written", path=str(report_path))
+
+
+def _write_model_metadata(
+    conn: Any,
+    env_name: str,
+    algo_name: str,
+    model_path: Path,
+    vec_normalize_path: Path,
+    total_timesteps: int,
+    converged_at: int | None,
+    ensemble_weight: float | None,
+) -> None:
+    """Write model metadata to PostgreSQL model_metadata table.
+
+    Args:
+        conn: PostgreSQL connection.
+        env_name: Environment name.
+        algo_name: Algorithm name.
+        model_path: Path to saved model.zip.
+        vec_normalize_path: Path to vec_normalize.pkl.
+        total_timesteps: Total training timesteps.
+        converged_at: Step at which training converged (or None).
+        ensemble_weight: Ensemble weight for this algo (or None).
+    """
+    date_str = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+    model_id = f"{env_name}-v{_PIPELINE_VERSION}-{algo_name}-{date_str}"
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO model_metadata (
+                model_id, environment, algorithm, version,
+                training_start_date, training_end_date,
+                total_timesteps, converged_at_step,
+                validation_sharpe, ensemble_weight,
+                model_path, vec_normalize_path
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (model_id) DO UPDATE SET
+                environment = EXCLUDED.environment,
+                algorithm = EXCLUDED.algorithm,
+                version = EXCLUDED.version,
+                training_start_date = EXCLUDED.training_start_date,
+                training_end_date = EXCLUDED.training_end_date,
+                total_timesteps = EXCLUDED.total_timesteps,
+                converged_at_step = EXCLUDED.converged_at_step,
+                validation_sharpe = EXCLUDED.validation_sharpe,
+                ensemble_weight = EXCLUDED.ensemble_weight,
+                model_path = EXCLUDED.model_path,
+                vec_normalize_path = EXCLUDED.vec_normalize_path
+            """,
+            [
+                model_id,
+                env_name,
+                algo_name,
+                f"v{_PIPELINE_VERSION}",
+                date_str,
+                date_str,
+                total_timesteps,
+                converged_at,
+                None,
+                ensemble_weight,
+                str(model_path),
+                str(vec_normalize_path),
+            ],
+        )
+    except Exception as exc:
+        # Log and continue — metadata write failure is non-fatal
+        log.warning("model_metadata_write_failed", error=str(exc), algo=algo_name)
+
+
+# ---------------------------------------------------------------------------
+# Parallelization workers (top-level for picklability with ProcessPoolExecutor)
+# ---------------------------------------------------------------------------
+
+
+def _reconstruct_config(config_dict: dict[str, Any]) -> SwingRLConfig:
+    """Reconstruct SwingRLConfig from a dict in a worker process.
+
+    load_config() produces an unpicklable local class (_ConfigWithYaml).
+    Serialize config to dict in the parent and reconstruct in each worker.
+    """
+    return SwingRLConfig(**config_dict)
+
+
+def _run_wf_for_algo(
+    env_name: str,
+    algo_name: str,
+    config_dict: dict[str, Any],
+    features: np.ndarray,
+    prices: np.ndarray,
+    models_dir: Path,
+    timesteps: int,
+    hp_override: dict[str, Any] | None = None,
+    memory_enabled: bool = False,
+    fold_queue: multiprocessing.Queue | None = None,
+    advice_enabled: bool = True,
+    control_fold_indices: set[int] | None = None,
+    iteration: int | None = None,
+) -> tuple[str, list[Any]]:
+    """Run walk-forward validation for one algo. Top-level for serialization.
+
+    Args:
+        env_name: Environment name.
+        algo_name: Algorithm name.
+        config_dict: SwingRLConfig serialized as dict (avoids serialization issues).
+        features: Full feature array.
+        prices: Full price array.
+        models_dir: Models root directory.
+        timesteps: Training timesteps per fold.
+        hp_override: Memory-advised hyperparameter overrides (iter 1+).
+        memory_enabled: When True, construct a MemoryClient inside this subprocess
+            and pass it to the backtester for epoch-level memory ingestion.
+        fold_queue: Optional multiprocessing.Queue for real-time per-fold PostgreSQL
+            writes. Each completed fold is enqueued as (algo_name, FoldResult).
+        advice_enabled: When True, enable LLM epoch advice and reward weight
+            adjustments. When False, only capture epoch memories (no advice).
+        iteration: Training iteration number for pattern presentation tracking.
+
+    Returns:
+        Tuple of (algo_name, fold_results_list).
+    """
+    from swingrl.agents.backtest import WalkForwardBacktester
+
+    config = _reconstruct_config(config_dict)
+
+    # Construct MemoryClient inside subprocess to avoid serialization boundary
+    memory_client = None
+    if memory_enabled:
+        try:
+            mem_cfg = config.memory_agent
+            memory_client = MemoryClient(
+                base_url=mem_cfg.base_url,
+                default_timeout=mem_cfg.meta_training_timeout_sec,
+                api_key=mem_cfg.api_key,
+            )
+            log.info("wf_memory_client_created", env=env_name, algo=algo_name)
+        except Exception as exc:
+            log.warning("wf_memory_client_create_failed", error=str(exc))
+
+    log.info(
+        "pipeline_wf_started",
+        env_name=env_name,
+        algo=algo_name,
+        pid=os.getpid(),
+        hp_override=bool(hp_override),
+        memory_enabled=memory_enabled,
+        advice_enabled=advice_enabled,
+    )
+
+    backtester = WalkForwardBacktester(config=config, db=None)
+    folds = backtester.run(
+        env_name=env_name,
+        algo_name=algo_name,
+        features=features,
+        prices=prices,
+        models_dir=models_dir,
+        total_timesteps=timesteps,
+        hyperparams_override=hp_override,
+        memory_client=memory_client,
+        fold_queue=fold_queue,
+        advice_enabled=advice_enabled,
+        control_fold_indices=control_fold_indices,
+        iteration=iteration,
+    )
+
+    log.info("pipeline_wf_complete", env_name=env_name, algo=algo_name, fold_count=len(folds))
+    return (algo_name, folds)
+
+
+def _ingest_run_summaries_to_memory(
+    config: SwingRLConfig,
+    env_name: str,
+    all_wf_results: dict[str, list[Any]],
+    ensemble_weights: dict[str, float],
+    gate_result: dict[str, Any],
+    iteration_number: int = 0,
+    hp_overrides: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    """Ingest per-algo training run summaries with real WF metrics to memory.
+
+    Called after walk-forward evaluation completes so that final Sharpe, MDD,
+    and Sortino values are available (unlike the meta orchestrator which only
+    has convergence info at training time).
+
+    Args:
+        config: Validated SwingRLConfig.
+        env_name: Environment name.
+        all_wf_results: Per-algo walk-forward fold results.
+        ensemble_weights: Per-algo ensemble weights.
+        gate_result: Ensemble gate result dict.
+        iteration_number: Training iteration number.
+        hp_overrides: Per-algo HP overrides used (None for baseline).
+    """
+    mem_cfg = getattr(config, "memory_agent", None)
+    if not mem_cfg or not getattr(mem_cfg, "api_key", ""):
+        return
+
+    try:
+        from swingrl.memory.client import MemoryClient  # noqa: PLC0415
+
+        client = MemoryClient(
+            base_url=mem_cfg.base_url,
+            default_timeout=mem_cfg.timeout_sec,
+            api_key=mem_cfg.api_key,
+        )
+
+        hp_source = "memory_advised" if iteration_number > 0 and hp_overrides else "baseline"
+
+        for algo_name in ALGO_NAMES:
+            folds = all_wf_results.get(algo_name, [])
+            if not folds:
+                continue
+
+            # Compute per-algo mean OOS metrics from fold results
+            sharpe_vals = [f.out_of_sample_metrics.get("sharpe", 0.0) for f in folds]
+            mdd_vals = [f.out_of_sample_metrics.get("mdd", 0.0) for f in folds]
+            sortino_vals = [f.out_of_sample_metrics.get("sortino", 0.0) for f in folds]
+            return_vals = [f.out_of_sample_metrics.get("total_return", 0.0) for f in folds]
+            n = len(folds)
+
+            mean_sharpe = sum(sharpe_vals) / n if n else 0.0
+            mean_mdd = sum(mdd_vals) / n if n else 0.0
+            mean_sortino = sum(sortino_vals) / n if n else 0.0
+            mean_return = sum(return_vals) / n if n else 0.0
+
+            # HP details
+            algo_hp = (hp_overrides or {}).get(algo_name, {})
+            hp_str = json.dumps(algo_hp) if algo_hp else "baseline"
+
+            # Gate pass rate for this algo
+            gate_passed = sum(1 for f in folds if f.gate_result.passed)
+
+            # Convergence info
+            early_stopped = sum(1 for f in folds if f.converged_at_step is not None)
+
+            summary = (
+                f"TRAINING RUN SUMMARY: algo={algo_name.upper()} env={env_name} "
+                f"iteration={iteration_number} hp_source={hp_source}\n"
+                f"  final_sharpe={mean_sharpe:.4f} final_mdd={mean_mdd:.4f} "
+                f"final_sortino={mean_sortino:.4f} final_return={mean_return:.4f}\n"
+                f"  folds={n} gate_passed={gate_passed}/{n} "
+                f"early_stopped={early_stopped}/{n}\n"
+                f"  ensemble_weight={ensemble_weights.get(algo_name, 0.0):.4f} "
+                f"ensemble_sharpe={gate_result.get('sharpe', 0.0):.4f} "
+                f"ensemble_mdd={gate_result.get('mdd', 0.0):.4f} "
+                f"ensemble_gate={'PASS' if gate_result.get('passed') else 'FAIL'}\n"
+                f"  hyperparams={hp_str}"
+            )
+
+            client.ingest_training(summary, source=f"training_run:{env_name}")
+            log.info(
+                "run_summary_ingested",
+                algo=algo_name,
+                env=env_name,
+                iteration=iteration_number,
+                mean_sharpe=round(mean_sharpe, 4),
+            )
+    except Exception as exc:
+        log.warning("run_summary_ingestion_failed", env=env_name, error=str(exc))
+
+
+def _train_final_algo(
+    env_name: str,
+    algo_name: str,
+    config_dict: dict[str, Any],
+    features: np.ndarray,
+    prices: np.ndarray,
+    models_dir: Path,
+    logs_dir: Path,
+    timesteps: int,
+    hp_override: dict[str, Any] | None,
+    use_meta: bool,
+    iteration_number: int = 0,
+) -> tuple[str, dict[str, Any]]:
+    """Train final deployment model for one algo. Top-level for picklability.
+
+    Args:
+        env_name: Environment name.
+        algo_name: Algorithm name.
+        config: SwingRLConfig.
+        features: Recent feature array for final training.
+        prices: Recent price array for final training.
+        models_dir: Models root directory.
+        logs_dir: Logs directory.
+        timesteps: Training timesteps.
+        hp_override: Optional hyperparameter overrides from tuning.
+        use_meta: Whether to use MetaTrainingOrchestrator.
+        iteration_number: Current training iteration (0=baseline).
+
+    Returns:
+        Tuple of (algo_name, result_dict) with training metadata.
+    """
+    from swingrl.training.trainer import TrainingOrchestrator
+
+    config = _reconstruct_config(config_dict)
+    t_start = time.monotonic()
+
+    orchestrator = TrainingOrchestrator(
+        config=config,
+        models_dir=models_dir,
+        logs_dir=logs_dir,
+    )
+
+    if use_meta:
+        from swingrl.memory.client import MemoryClient
+        from swingrl.memory.training.meta_orchestrator import MetaTrainingOrchestrator
+
+        client = MemoryClient(
+            base_url=config.memory_agent.base_url,
+            default_timeout=config.memory_agent.timeout_sec,
+            api_key=config.memory_agent.api_key,
+        )
+        meta = MetaTrainingOrchestrator(config=config, memory_client=client)
+        train_result = meta.run(
+            env_name=env_name,
+            algo_name=algo_name,
+            trainer=orchestrator,
+            features=features,
+            prices=prices,
+            total_timesteps=timesteps,
+            hyperparams_override=hp_override,
+            iteration=iteration_number,
+        )
+    else:
+        train_result = orchestrator.train(
+            env_name=env_name,
+            algo_name=algo_name,
+            features=features,
+            prices=prices,
+            total_timesteps=timesteps,
+            hyperparams_override=hp_override,
+            iteration=iteration_number,
+        )
+
+    wall_algo = time.monotonic() - t_start
+
+    result_dict = {
+        "timesteps": timesteps,
+        "wall_clock_s": round(wall_algo, 1),
+        "converged_at": train_result.converged_at_step,
+        "model_path": str(train_result.model_path),
+        "vec_normalize_path": str(train_result.vec_normalize_path),
+    }
+
+    log.info(
+        "pipeline_algo_trained",
+        env_name=env_name,
+        algo=algo_name,
+        timesteps=timesteps,
+        wall_s=round(wall_algo, 1),
+        pid=os.getpid(),
+    )
+
+    return (algo_name, result_dict)
+
+
+# ---------------------------------------------------------------------------
+# Background fold writer (real-time per-fold PostgreSQL writes)
+# ---------------------------------------------------------------------------
+
+
+def _fold_writer(
+    queue: multiprocessing.Queue,
+    db_path: Path,
+    env_name: str,
+    iteration_number: int,
+    run_type: str,
+    features: np.ndarray,
+    dates: np.ndarray,
+    n_symbols: int,
+    per_asset: int,
+) -> None:
+    """Background writer thread that reads FoldResults from queue and writes to PostgreSQL.
+
+    Runs in a threading.Thread (not subprocess) in the main process.
+    Exits when sentinel None is received.
+    """
+    database_url = os.environ.get("DATABASE_URL", str(db_path))
+    conn = psycopg.connect(database_url, row_factory=dict_row)
+    written = 0
+    try:
+        while True:
+            item = queue.get()
+            if item is None:
+                break
+            algo_name, fold_result = item
+            try:
+                store_fold_results_to_duckdb(
+                    conn=conn,
+                    fold_results=[fold_result],
+                    env_name=env_name,
+                    algo_name=algo_name,
+                    iteration_number=iteration_number,
+                    run_type=run_type,
+                    features=features,
+                    dates=dates,
+                    n_symbols=n_symbols,
+                    per_asset=per_asset,
+                )
+                conn.commit()
+                written += 1
+                log.info(
+                    "fold_written_to_db",
+                    algo=algo_name,
+                    fold=fold_result.fold_number,
+                    env=env_name,
+                    iteration=iteration_number,
+                    total_written=written,
+                )
+            except Exception as exc:
+                conn.rollback()
+                log.error(
+                    "fold_write_failed",
+                    algo=algo_name,
+                    fold=fold_result.fold_number,
+                    error=str(exc),
+                )
+    finally:
+        # Verify row count
+        try:
+            row_count = conn.execute(
+                "SELECT count(1) FROM backtest_results"
+                " WHERE iteration_number = %s AND environment = %s",
+                [iteration_number, env_name],
+            ).fetchone()[0]
+            log.info(
+                "pg_fold_writer_done",
+                env=env_name,
+                iteration=iteration_number,
+                rows_written=written,
+                verified_rows=row_count,
+            )
+        except Exception:
+            log.info(
+                "pg_fold_writer_done",
+                env=env_name,
+                iteration=iteration_number,
+                rows_written=written,
+            )
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-environment training flow
+# ---------------------------------------------------------------------------
+
+
+def run_environment(
+    env_name: str,
+    config: SwingRLConfig,
+    models_dir: Path,
+    force: bool,
+    report: dict[str, Any],
+    report_path: Path | None = None,
+    iteration_number: int = 0,
+) -> dict[str, Any]:
+    """Run the full training pipeline for one environment.
+
+    Flow:
+    1. Load features + prices from PostgreSQL
+    2. Walk-forward validation for each algo (or skip if checkpointed)
+    3. Compute ensemble weights from real OOS Sharpe
+    4. Check ensemble gate
+    5. Trigger tuning rounds if gate fails AND baseline Sharpe < 0.5
+    6. Train final deployment models on RECENT data
+    7. Verify deployment files exist
+    8. Write model metadata to PostgreSQL
+    9. Update report dict and optionally write to disk
+
+    Args:
+        env_name: Environment name ("equity" or "crypto").
+        config: Validated SwingRLConfig.
+        models_dir: Models root directory.
+        force: Re-run even if checkpoints exist.
+        report: Shared report dict to update (mutated in-place).
+        report_path: Optional path to write JSON report after completion.
+
+    Returns:
+        Dict with 'ensemble_gate', 'ensemble_weights', 'walk_forward' keys.
+    """
+    from swingrl.agents.backtest import WalkForwardBacktester
+    from swingrl.training.trainer import TrainingOrchestrator
+
+    env_start = time.monotonic()
+    database_url = os.environ.get("DATABASE_URL", "") or config.system.database_url
+
+    log.info("pipeline_env_started", env_name=env_name)
+
+    # Load full features + prices (used for walk-forward) + dates for memory ingestion
+    conn = psycopg.connect(database_url, row_factory=dict_row)
+    try:
+        features_full, prices_full = _load_features_prices(conn, env_name, config)
+        # Load dates for memory ingestion context (maps feature indices to calendar dates)
+        if env_name == "equity":
+            dates_df = fetchdf(conn.execute("SELECT DISTINCT date FROM ohlcv_daily ORDER BY date"))
+            dates_array = np.array([str(d)[:10] for d in dates_df["date"].values])
+        else:
+            dates_df = fetchdf(
+                conn.execute("SELECT DISTINCT datetime FROM ohlcv_4h ORDER BY datetime")
+            )
+            dates_array = np.array([str(d)[:10] for d in dates_df["datetime"].values])
+        # Trim to match feature array length (INNER JOIN may reduce rows)
+        dates_array = dates_array[: len(features_full)]
+    finally:
+        conn.close()
+
+    log.info(
+        "features_loaded",
+        env_name=env_name,
+        bars=len(features_full),
+        feature_dim=features_full.shape[1],
+    )
+
+    # Slice recent data (used for final deployment training)
+    features_recent, prices_recent = slice_recent(features_full, prices_full, env_name)
+
+    # -------------------------------------------------------------------
+    # Walk-forward validation for each algo
+    # -------------------------------------------------------------------
+    all_wf_results: dict[str, list[Any]] = {}
+    tuning_best_params: dict[str, dict[str, Any]] = {}
+
+    # Determine which algos need WF (not checkpointed)
+    algos_to_run: list[str] = []
+    for algo_name in ALGO_NAMES:
+        if not force and _check_algo_checkpoint(env_name, algo_name, models_dir):
+            log.info("pipeline_checkpoint_skip", env_name=env_name, algo=algo_name)
+            all_wf_results[algo_name] = []
+        else:
+            algos_to_run.append(algo_name)
+
+    # Query memory-adjusted HP for WF (memory-enhanced iterations only)
+    wf_hp_overrides: dict[str, dict[str, Any]] = {}
+    if algos_to_run and iteration_number > 0:
+        mem_cfg = getattr(config, "memory_agent", None)
+        if mem_cfg and mem_cfg.enabled and mem_cfg.meta_training:
+            try:
+                from swingrl.memory.training.meta_orchestrator import (  # noqa: PLC0415
+                    MetaTrainingOrchestrator,
+                )
+
+                wf_client = MemoryClient(
+                    base_url=mem_cfg.base_url,
+                    default_timeout=mem_cfg.timeout_sec,
+                    api_key=getattr(mem_cfg, "api_key", ""),
+                )
+                wf_meta = MetaTrainingOrchestrator(
+                    config=config,
+                    memory_client=wf_client,
+                )
+                for algo in algos_to_run:
+                    hp = wf_meta.query_hyperparams(env_name, algo, iteration=iteration_number)
+                    if hp:
+                        wf_hp_overrides[algo] = hp
+            except Exception as exc:
+                log.warning(
+                    "wf_memory_hp_query_failed",
+                    env_name=env_name,
+                    iteration=iteration_number,
+                    error=str(exc),
+                )
+
+    # Always capture raw epoch memories if memory service API key is configured
+    wf_memory_capture = hasattr(config, "memory_agent") and bool(
+        getattr(config.memory_agent, "api_key", "")
+    )
+    # Only enable LLM advice (epoch advice + reward adjustments) for iter 1+
+    wf_memory_advice = iteration_number > 0 and wf_memory_capture and config.memory_agent.enabled
+
+    # Compute n_symbols and per_asset for PostgreSQL fold writes
+    if env_name == "equity":
+        _n_symbols = len(config.equity.symbols)
+        _per_asset = 15
+    else:
+        _n_symbols = len(config.crypto.symbols)
+        _per_asset = 13
+
+    if algos_to_run:
+        max_workers = min(3, len(algos_to_run))
+        log.info(
+            "pipeline_wf_parallel_start",
+            env_name=env_name,
+            algos=algos_to_run,
+            max_workers=max_workers,
+            memory_hp_algos=list(wf_hp_overrides.keys()),
+            memory_capture=wf_memory_capture,
+            memory_advice=wf_memory_advice,
+        )
+
+        # Start background writer thread for real-time per-fold PostgreSQL writes
+        # Use Manager().Queue() — proxy objects are picklable across ProcessPoolExecutor
+        manager = multiprocessing.Manager()
+        fold_queue = manager.Queue()
+        writer_thread = threading.Thread(
+            target=_fold_writer,
+            args=(
+                fold_queue,
+                database_url,
+                env_name,
+                iteration_number,
+                "baseline",
+                features_full,
+                dates_array,
+                _n_symbols,
+                _per_asset,
+            ),
+            daemon=True,
+        )
+        writer_thread.start()
+
+        # Read control fold indices from config for scientific measurement
+        _ctrl_raw = (
+            config.memory_agent.control_folds_equity
+            if env_name == "equity"
+            else config.memory_agent.control_folds_crypto
+        )
+        _ctrl_indices: set[int] | None = set(_ctrl_raw) if _ctrl_raw else None
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _run_wf_for_algo,
+                    env_name,
+                    algo,
+                    config.model_dump(),
+                    features_full,
+                    prices_full,
+                    models_dir,
+                    DEFAULT_TIMESTEPS[env_name],
+                    wf_hp_overrides.get(algo),
+                    wf_memory_capture,
+                    fold_queue,
+                    wf_memory_advice,
+                    _ctrl_indices,
+                    iteration_number,
+                ): algo
+                for algo in algos_to_run
+            }
+            for future in as_completed(futures):
+                algo_name = futures[future]
+                try:
+                    algo_name_result, folds = future.result()
+                    all_wf_results[algo_name_result] = folds
+                except Exception:  # noqa: BLE001
+                    log.error("walk_forward_failed", algo=algo_name, exc_info=True)
+                    continue
+
+        # Signal writer thread to finish and wait for it
+        fold_queue.put(None)
+        writer_thread.join(timeout=30)
+        manager.shutdown()
+
+    # If all algos were checkpointed, skip ensemble computation
+    has_wf_data = any(len(v) > 0 for v in all_wf_results.values())
+
+    if not has_wf_data:
+        log.info("pipeline_all_checkpointed", env_name=env_name)
+        result = {
+            "ensemble_gate": {"passed": True, "sharpe": 0.0, "mdd": 0.0},
+            "ensemble_weights": {},
+            "walk_forward": {k: [] for k in ALGO_NAMES},
+            "tuning_rounds": [],
+            "wall_clock_total_s": round(time.monotonic() - env_start, 1),
+        }
+        report[env_name] = result
+        if report_path:
+            _write_json_report(report, report_path)
+        return result
+
+    # -------------------------------------------------------------------
+    # Ensemble gate and weights
+    # -------------------------------------------------------------------
+    ensemble_weights = compute_ensemble_weights_from_wf(config, all_wf_results, env_name)
+    passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(
+        all_wf_results,
+        ensemble_weights=ensemble_weights,
+    )
+
+    gate_result = {
+        "passed": passed,
+        "sharpe": float(ensemble_sharpe),
+        "mdd": float(ensemble_mdd),
+    }
+    _evaluate_gate_and_decide(gate_result, ensemble_sharpe, env_name)
+
+    # Deferred PostgreSQL write — ensemble-level iteration results.
+    #
+    # NOTE: ``autocommit=True`` is REQUIRED here. ``store_iteration_results_to_duckdb``
+    # issues an INSERT but does NOT call ``conn.commit()``. Without autocommit
+    # (the default), the connection sits in transaction mode and the
+    # ``finally: conn_ens.close()`` rolls back the entire INSERT — silently
+    # turning the call into a no-op. This bug existed from the postgres
+    # migration through iter 5 (the iter 0-4 rows in pg16 came from the
+    # one-off migration script which DID commit). Discovered during iter 5
+    # recovery; see scripts/migrations/recover_iteration_results.py.
+    conn_ens = psycopg.connect(database_url, row_factory=dict_row, autocommit=True)
+    try:
+        store_iteration_results_to_duckdb(
+            conn=conn_ens,
+            iteration_number=iteration_number,
+            env_name=env_name,
+            ensemble_sharpe=ensemble_sharpe,
+            ensemble_mdd=ensemble_mdd,
+            gate_passed=passed,
+            ensemble_weights=ensemble_weights,
+            all_wf_results=all_wf_results,
+            run_type="baseline",
+            wall_clock_s=time.monotonic() - env_start,
+            memory_enabled=wf_memory_capture,
+            hp_overrides=wf_hp_overrides if iteration_number > 0 else None,
+        )
+    except Exception as exc:
+        log.warning("iteration_results_db_write_failed", env_name=env_name, error=str(exc))
+    finally:
+        conn_ens.close()
+
+    # Phase 0.5 — compute Capital Preservation Score and fire iteration
+    # lifecycle log events. Wrapped in a separate try/except so a CPS write
+    # failure cannot mask the (more critical) ensemble-results write above.
+    try:
+        cps_conn = psycopg.connect(database_url)
+        try:
+            cps_summary = compute_and_persist_iteration_cps(cps_conn, env_name, iteration_number)
+            cps_conn.commit()
+        finally:
+            cps_conn.close()
+
+        log.info(
+            "iteration_completed",
+            env=env_name,
+            iteration=iteration_number,
+            cps_v1=cps_summary["cps_v1_multiplicative"],
+            cps_v2=cps_summary["cps_v2_additive"],
+            cps_v3=cps_summary["cps_v3_sortino"],
+            cps_v1_treatment_only=cps_summary["cps_v1_treatment_only"],
+            cps_v1_control_only=cps_summary["cps_v1_control_only"],
+            cps_v1_delta_vs_prev=cps_summary["cps_v1_delta_vs_prev"],
+            return_delta_vs_prev=cps_summary["return_delta_vs_prev"],
+            worst_mdd_delta_vs_prev=cps_summary["worst_mdd_delta_vs_prev"],
+            median_return=cps_summary["median_return"],
+            mean_winner_sharpe=cps_summary["mean_winner_sharpe"],
+            winners_count=cps_summary["winners_count"],
+            chronic_failure_count=cps_summary["chronic_failure_count"],
+            worst_fold=cps_summary["worst_fold_number"],
+            worst_fold_mdd=cps_summary["worst_fold_mdd"],
+            regression_flag=cps_summary["regression_flag"],
+            gate_pass_rate=float(passed),
+        )
+
+        if cps_summary["regression_flag"]:
+            log.warning(
+                "iteration_regression_detected",
+                env=env_name,
+                iteration=iteration_number,
+                regression_dimensions=cps_summary["regression_dimensions"],
+                cps_v1_delta=cps_summary["cps_v1_delta_vs_prev"],
+                return_delta=cps_summary["return_delta_vs_prev"],
+                worst_mdd_delta=cps_summary["worst_mdd_delta_vs_prev"],
+                cps_v1=cps_summary["cps_v1_multiplicative"],
+            )
+
+        # Phase 0.6 — fire Discord embed with the CPS scorecard. Routed
+        # via the standard Alerter (warning level for regressions, info
+        # otherwise) so it inherits webhook routing + cooldown logic.
+        try:
+            iter_alerter = Alerter(
+                webhook_url=config.alerting.alerts_webhook_url or config.alerting.daily_webhook_url,
+                alerts_webhook_url=config.alerting.alerts_webhook_url,
+                daily_webhook_url=config.alerting.daily_webhook_url,
+                cooldown_minutes=config.alerting.alert_cooldown_minutes,
+            )
+            iter_embed = build_iteration_completion_embed(cps_summary)
+            iter_alerter.send_embed(
+                level="warning" if cps_summary["regression_flag"] else "info",
+                embed=iter_embed,
+            )
+        except Exception as embed_exc:
+            log.warning(
+                "iteration_completion_embed_failed",
+                env_name=env_name,
+                iteration=iteration_number,
+                error=str(embed_exc),
+            )
+    except Exception as exc:
+        log.warning(
+            "cps_compute_or_persist_failed",
+            env_name=env_name,
+            iteration=iteration_number,
+            error=str(exc),
+        )
+
+    # Ingest WF performance metrics to memory agent (if enabled)
+    _ingest_wf_results_to_memory(
+        config,
+        env_name,
+        all_wf_results,
+        ensemble_weights,
+        gate_result,
+        features=features_full,
+        dates=dates_array,
+        iteration_number=iteration_number,
+        total_timesteps=DEFAULT_TIMESTEPS[env_name],
+        hp_overrides=wf_hp_overrides if iteration_number > 0 else None,
+    )
+    _ingest_trading_patterns_to_memory(
+        config,
+        env_name,
+        all_wf_results,
+        features=features_full,
+        iteration_number=iteration_number,
+        hp_overrides=wf_hp_overrides if iteration_number > 0 else None,
+    )
+    _ingest_run_summaries_to_memory(
+        config,
+        env_name,
+        all_wf_results,
+        ensemble_weights,
+        gate_result,
+        iteration_number=iteration_number,
+        hp_overrides=wf_hp_overrides if iteration_number > 0 else None,
+    )
+
+    tuning_rounds: list[dict[str, Any]] = []
+
+    # -------------------------------------------------------------------
+    # Tuning rounds (if gate fails AND baseline Sharpe < 0.5)
+    # -------------------------------------------------------------------
+    if not passed and ensemble_sharpe < _TUNING_SHARPE_THRESHOLD:
+        log.info(
+            "pipeline_tuning_round1_start",
+            env_name=env_name,
+            baseline_sharpe=round(ensemble_sharpe, 4),
+        )
+
+        # Round 1: PPO variants
+        best_ppo_folds: list[Any] = []
+        best_ppo_sharpe = ensemble_sharpe
+        best_ppo_params: dict[str, Any] = {}
+
+        orchestrator_r1 = TrainingOrchestrator(
+            config=config,
+            models_dir=models_dir,
+            logs_dir=Path(config.paths.logs_dir),
+        )
+
+        for variant_params in TUNING_GRID.get(1, {}).get("ppo", []):
+            orchestrator_r1.train(
+                env_name=env_name,
+                algo_name="ppo",
+                features=features_full,
+                prices=prices_full,
+                total_timesteps=DEFAULT_TIMESTEPS[env_name],
+                hyperparams_override=variant_params,
+            )
+            backtester_v = WalkForwardBacktester(config=config, db=None)
+            folds_v = backtester_v.run(
+                env_name=env_name,
+                algo_name="ppo",
+                features=features_full,
+                prices=prices_full,
+                models_dir=models_dir,
+                total_timesteps=DEFAULT_TIMESTEPS[env_name],
+            )
+            _, ppo_sharpe, _ = check_ensemble_gate({"ppo": folds_v})
+            if ppo_sharpe > best_ppo_sharpe:
+                best_ppo_sharpe = ppo_sharpe
+                best_ppo_folds = folds_v
+                best_ppo_params = variant_params
+
+        if best_ppo_params:
+            tuning_best_params["ppo"] = best_ppo_params
+
+        tuning_rounds.append(
+            {
+                "round": 1,
+                "algo": "ppo",
+                "best_sharpe": round(best_ppo_sharpe, 4),
+                "best_params": best_ppo_params,
+            }
+        )
+
+        # Deferred PostgreSQL write — tuning round 1 fold results
+        if best_ppo_folds:
+            conn_t1 = psycopg.connect(database_url, row_factory=dict_row)
+            try:
+                store_fold_results_to_duckdb(
+                    conn=conn_t1,
+                    fold_results=best_ppo_folds,
+                    env_name=env_name,
+                    algo_name="ppo",
+                    iteration_number=iteration_number,
+                    run_type="tuning_r1",
+                    features=features_full,
+                    dates=dates_array,
+                    n_symbols=_n_symbols,
+                    per_asset=_per_asset,
+                )
+            except Exception as exc:
+                log.warning("tuning_r1_db_write_failed", error=str(exc))
+            finally:
+                conn_t1.close()
+
+        # Recompute gate after tuning round 1
+        if best_ppo_folds:
+            tuned_wf_results = {**all_wf_results, "ppo": best_ppo_folds}
+            tuned_weights = compute_ensemble_weights_from_wf(config, tuned_wf_results, env_name)
+            passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(
+                tuned_wf_results,
+                ensemble_weights=tuned_weights,
+            )
+            gate_result = {
+                "passed": passed,
+                "sharpe": float(ensemble_sharpe),
+                "mdd": float(ensemble_mdd),
+            }
+
+        # Round 2: A2C + SAC variants (if still failing)
+        if not passed:
+            log.info("pipeline_tuning_round2_start", env_name=env_name)
+
+            for algo_r2, variants in TUNING_GRID.get(2, {}).items():
+                best_sharpe_r2 = 0.0
+                best_params_r2: dict[str, Any] = {}
+                best_folds_r2: list[Any] = []
+
+                for variant_params in variants:
+                    orchestrator_r2 = TrainingOrchestrator(
+                        config=config,
+                        models_dir=models_dir,
+                        logs_dir=Path(config.paths.logs_dir),
+                    )
+                    orchestrator_r2.train(
+                        env_name=env_name,
+                        algo_name=algo_r2,
+                        features=features_full,
+                        prices=prices_full,
+                        total_timesteps=DEFAULT_TIMESTEPS[env_name],
+                        hyperparams_override=variant_params,
+                    )
+                    backtester_r2 = WalkForwardBacktester(config=config, db=None)
+                    folds_r2 = backtester_r2.run(
+                        env_name=env_name,
+                        algo_name=algo_r2,
+                        features=features_full,
+                        prices=prices_full,
+                        models_dir=models_dir,
+                    )
+                    _, sharpe_r2, _ = check_ensemble_gate({algo_r2: folds_r2})
+                    if sharpe_r2 > best_sharpe_r2:
+                        best_sharpe_r2 = sharpe_r2
+                        best_params_r2 = variant_params
+                        best_folds_r2 = folds_r2
+
+                if best_params_r2:
+                    tuning_best_params[algo_r2] = best_params_r2
+
+                # Deferred PostgreSQL write — tuning round 2 fold results
+                if best_folds_r2:
+                    conn_t2 = psycopg.connect(database_url, row_factory=dict_row)
+                    try:
+                        store_fold_results_to_duckdb(
+                            conn=conn_t2,
+                            fold_results=best_folds_r2,
+                            env_name=env_name,
+                            algo_name=algo_r2,
+                            iteration_number=iteration_number,
+                            run_type="tuning_r2",
+                            features=features_full,
+                            dates=dates_array,
+                            n_symbols=_n_symbols,
+                            per_asset=_per_asset,
+                        )
+                    except Exception as exc:
+                        log.warning("tuning_r2_db_write_failed", error=str(exc))
+                    finally:
+                        conn_t2.close()
+
+                tuning_rounds.append(
+                    {
+                        "round": 2,
+                        "algo": algo_r2,
+                        "best_sharpe": round(best_sharpe_r2, 4),
+                        "best_params": best_params_r2,
+                    }
+                )
+
+            # Final gate check after both rounds (weight-proportional)
+            ensemble_weights = compute_ensemble_weights_from_wf(config, all_wf_results, env_name)
+            passed, ensemble_sharpe, ensemble_mdd = check_ensemble_gate(
+                all_wf_results,
+                ensemble_weights=ensemble_weights,
+            )
+            gate_result = {
+                "passed": passed,
+                "sharpe": float(ensemble_sharpe),
+                "mdd": float(ensemble_mdd),
+            }
+
+    # -------------------------------------------------------------------
+    # Gate block (both tuning rounds exhausted and still failing)
+    # -------------------------------------------------------------------
+    if not gate_result["passed"] and ensemble_sharpe < _TUNING_SHARPE_THRESHOLD:
+        log.error(
+            "pipeline_deployment_blocked",
+            env_name=env_name,
+            ensemble_sharpe=round(ensemble_sharpe, 4),
+            ensemble_mdd=round(ensemble_mdd, 4),
+        )
+        # Write diagnostic report and return failure result
+        result = {
+            "ensemble_gate": gate_result,
+            "ensemble_weights": ensemble_weights,
+            "walk_forward": {
+                k: [_serialize_fold(f) for f in folds] for k, folds in all_wf_results.items()
+            },
+            "tuning_rounds": tuning_rounds,
+            "wall_clock_total_s": round(time.monotonic() - env_start, 1),
+        }
+        report[env_name] = result
+        if report_path:
+            _write_json_report(report, report_path)
+        return result
+
+    # -------------------------------------------------------------------
+    # Final deployment training (RECENT data only)
+    # -------------------------------------------------------------------
+    log.info(
+        "pipeline_final_training_start",
+        env_name=env_name,
+        recent_bars=len(features_recent),
+    )
+
+    final_training: dict[str, dict[str, Any]] = {}
+
+    use_meta = bool(
+        getattr(config, "memory_agent", None)
+        and config.memory_agent.enabled
+        and config.memory_agent.meta_training
+    )
+
+    # Prepare per-algo timesteps and overrides
+    algo_configs: dict[str, tuple[int, dict[str, Any] | None]] = {}
+    for algo_name in ALGO_NAMES:
+        ts = DEFAULT_TIMESTEPS[env_name]
+        if all_wf_results.get(algo_name):
+            last_fold = all_wf_results[algo_name][-1] if all_wf_results[algo_name] else None
+            if last_fold is not None:
+                from swingrl.training.trainer import TrainingResult
+
+                # WalkForwardBacktester.run() returns FoldResult which does not
+                # carry per-fold convergence data, so converged_at_step stays None.
+                # decide_final_timesteps treats None as "not converged" and
+                # escalates to 2x — this is the safe/correct default.
+                last_fold_result = last_fold
+                # Extract converged_at_step if fold carries it (future-proof)
+                converged_step = getattr(last_fold_result, "converged_at_step", None)
+                dummy_result = TrainingResult(
+                    model_path=models_dir / "active" / env_name / algo_name / "model.zip",
+                    vec_normalize_path=models_dir
+                    / "active"
+                    / env_name
+                    / algo_name
+                    / "vec_normalize.pkl",
+                    env_name=env_name,
+                    algo_name=algo_name,
+                    converged_at_step=converged_step,
+                    total_timesteps=ts,
+                )
+                ts = decide_final_timesteps(env_name, dummy_result)
+        algo_configs[algo_name] = (ts, tuning_best_params.get(algo_name))
+
+    # Train all 3 algos in parallel
+    max_workers = min(3, len(ALGO_NAMES))
+    log.info(
+        "pipeline_final_training_parallel",
+        env_name=env_name,
+        algos=ALGO_NAMES,
+        max_workers=max_workers,
+    )
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _train_final_algo,
+                env_name,
+                algo_name,
+                config.model_dump(),
+                features_recent,
+                prices_recent,
+                models_dir,
+                Path(config.paths.logs_dir),
+                algo_configs[algo_name][0],
+                algo_configs[algo_name][1],
+                use_meta,
+            ): algo_name
+            for algo_name in ALGO_NAMES
+        }
+        for future in as_completed(futures):
+            algo_name = futures[future]
+            try:
+                _, result_dict = future.result()
+                final_training[algo_name] = result_dict
+            except Exception:  # noqa: BLE001
+                log.error("final_training_failed", algo=algo_name, exc_info=True)
+                continue
+
+    # Deferred PostgreSQL writes — sequential after all parallel training completes
+    conn = psycopg.connect(database_url, row_factory=dict_row)
+    try:
+        for algo_name in ALGO_NAMES:
+            if algo_name in final_training:
+                _write_model_metadata(
+                    conn=conn,
+                    env_name=env_name,
+                    algo_name=algo_name,
+                    model_path=Path(final_training[algo_name]["model_path"]),
+                    vec_normalize_path=Path(final_training[algo_name]["vec_normalize_path"]),
+                    total_timesteps=final_training[algo_name]["timesteps"],
+                    converged_at=final_training[algo_name]["converged_at"],
+                    ensemble_weight=ensemble_weights.get(algo_name),
+                )
+    finally:
+        conn.close()
+
+    # -------------------------------------------------------------------
+    # Verify deployment files
+    # -------------------------------------------------------------------
+    _verify_deployment(env_name=env_name, models_dir=models_dir)
+
+    # -------------------------------------------------------------------
+    # Build result + update report
+    # -------------------------------------------------------------------
+    wall_total = time.monotonic() - env_start
+
+    result = {
+        "walk_forward": {
+            k: [_serialize_fold(f) for f in folds] for k, folds in all_wf_results.items()
+        },
+        "ensemble_weights": ensemble_weights,
+        "ensemble_gate": gate_result,
+        "tuning_rounds": tuning_rounds,
+        "final_training": final_training,
+        "wall_clock_total_s": round(wall_total, 1),
+    }
+
+    report[env_name] = result
+    if report_path:
+        _write_json_report(report, report_path)
+
+    log.info(
+        "pipeline_env_complete",
+        env_name=env_name,
+        gate_passed=gate_result["passed"],
+        ensemble_sharpe=round(float(gate_result["sharpe"]), 4),
+        wall_s=round(wall_total, 1),
+    )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for the training pipeline CLI.
+
+    Returns:
+        Configured ArgumentParser.
+    """
+    parser = argparse.ArgumentParser(
+        description="SwingRL full training pipeline: walk-forward -> ensemble -> deploy.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Examples:
+  python scripts/train_pipeline.py --env all
+  python scripts/train_pipeline.py --env equity --force
+  python scripts/train_pipeline.py --env crypto --config config/swingrl.yaml
+""",
+    )
+    parser.add_argument(
+        "--env",
+        choices=["equity", "crypto", "all"],
+        default="all",
+        help="Environment to train (default: all — sequential equity then crypto).",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config/swingrl.yaml",
+        help="Path to config YAML (default: config/swingrl.yaml).",
+    )
+    parser.add_argument(
+        "--models-dir",
+        type=str,
+        default="models",
+        help="Root directory for model storage (default: models).",
+    )
+    parser.add_argument(
+        "--report",
+        type=str,
+        default="data/training_report.json",
+        help="Path to write JSON training report (default: data/training_report.json).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Re-run even if checkpoints exist.",
+    )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=0,
+        help=(
+            "Number of memory-enhanced iterations after baseline (default: 0 = baseline only). "
+            "When N > 0: runs iteration 0 (baseline, memory off) then N iterations with memory on."
+        ),
+    )
+    parser.add_argument(
+        "--state-path",
+        type=str,
+        default=_DEFAULT_STATE_PATH,
+        help=f"Path to training state JSON for resume support (default: {_DEFAULT_STATE_PATH}).",
+    )
+    parser.add_argument(
+        "--comparison-path",
+        type=str,
+        default=_DEFAULT_COMPARISON_PATH,
+        help=f"Path to write training comparison JSON (default: {_DEFAULT_COMPARISON_PATH}).",
+    )
+    parser.add_argument(
+        "--skip-ingest",
+        action="store_true",
+        default=False,
+        help="Skip automatic data ingestion before each training iteration.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the full training pipeline.
+
+    Args:
+        argv: Command-line arguments (default: sys.argv[1:]).
+
+    Returns:
+        Exit code (0 = success, 1 = deployment blocked or error).
+    """
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    config = load_config(args.config)
+    # Persist training logs to file for post-hoc analysis (iter 4 logs were lost)
+    log_dir = Path("logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    iter_log_file = log_dir / f"training_iter{args.iterations}.log"
+    configure_logging(
+        json_logs=config.logging.json_logs,
+        log_level=config.logging.level,
+        log_file=iter_log_file,
+    )
+
+    models_dir = Path(args.models_dir)
+    report_path = Path(args.report)
+    force: bool = args.force
+    iterations: int = args.iterations
+    skip_ingest: bool = args.skip_ingest
+
+    env_arg: str = args.env
+    envs = ["equity", "crypto"] if env_arg == "all" else [env_arg]
+
+    log.info(
+        "training_pipeline_started",
+        envs=envs,
+        models_dir=str(models_dir),
+        report=str(report_path),
+        force=force,
+        iterations=iterations,
+    )
+
+    start_time = time.monotonic()
+
+    # ---------------------------------------------------------------------------
+    # Multi-iteration mode (--iterations N > 0): hand off to run_all_iterations()
+    # ---------------------------------------------------------------------------
+    if iterations > 0:
+        state_path = Path(args.state_path)
+        comparison_path = Path(args.comparison_path)
+        try:
+            run_all_iterations(
+                base_config=config,
+                iterations=iterations,
+                state_path=state_path,
+                models_dir=models_dir,
+                report_path=report_path,
+                comparison_path=comparison_path,
+                skip_ingest=skip_ingest,
+            )
+        except Exception:
+            log.exception("training_pipeline_iterations_failed")
+            return 1
+
+        elapsed = time.monotonic() - start_time
+        log.info(
+            "training_pipeline_complete",
+            envs=envs,
+            elapsed_seconds=round(elapsed, 1),
+            iterations=iterations,
+            success=True,
+        )
+        return 0
+
+    # ---------------------------------------------------------------------------
+    # Single-run mode (--iterations 0, default): existing per-env loop
+    # ---------------------------------------------------------------------------
+
+    # --- Data ingestion: pull latest bars + recompute features ---
+    if not skip_ingest:
+        try:
+            log.info("pre_training_ingestion_start")
+            ingest_rc = run_ingestion_pipeline(config, backfill=False)
+            if ingest_rc != 0:
+                log.warning("pre_training_ingestion_verification_failed", return_code=ingest_rc)
+        except Exception:
+            log.warning("pre_training_ingestion_failed", exc_info=True)
+
+    report: dict[str, Any] = {
+        "generated_at": datetime.now(tz=UTC).isoformat(),
+    }
+
+    overall_success = True
+
+    for env_name in envs:
+        try:
+            env_result = run_environment(
+                env_name=env_name,
+                config=config,
+                models_dir=models_dir,
+                force=force,
+                report=report,
+                report_path=report_path,
+            )
+
+            gate = env_result.get("ensemble_gate", {})
+            if not gate.get("passed", False):
+                log.error(
+                    "pipeline_deployment_blocked_summary",
+                    env_name=env_name,
+                    sharpe=gate.get("sharpe"),
+                    mdd=gate.get("mdd"),
+                )
+                overall_success = False
+
+        except ModelError as exc:
+            log.error("pipeline_model_error", env_name=env_name, error=str(exc))
+            overall_success = False
+        except Exception:
+            log.exception("pipeline_unexpected_error", env_name=env_name)
+            overall_success = False
+
+    elapsed = time.monotonic() - start_time
+    _write_json_report(report, report_path)
+
+    log.info(
+        "training_pipeline_complete",
+        envs=envs,
+        elapsed_seconds=round(elapsed, 1),
+        success=overall_success,
+    )
+
+    return 0 if overall_success else 1
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        log.info("training_pipeline_interrupted")
+        sys.exit(130)

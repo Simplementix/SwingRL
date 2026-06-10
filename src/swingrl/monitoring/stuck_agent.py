@@ -35,7 +35,7 @@ def check_stuck_agents(db: DatabaseManager) -> list[dict[str, object]]:
     equal to total_value, the environment is considered stuck.
 
     Args:
-        db: DatabaseManager providing SQLite connection.
+        db: DatabaseManager providing PostgreSQL connection.
 
     Returns:
         List of alert dicts with environment, consecutive_cash_cycles,
@@ -43,12 +43,12 @@ def check_stuck_agents(db: DatabaseManager) -> list[dict[str, object]]:
     """
     alerts: list[dict[str, object]] = []
 
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         for env, threshold in _THRESHOLDS.items():
             rows = conn.execute(
                 "SELECT cash_balance, total_value FROM portfolio_snapshots "
-                "WHERE environment = ? ORDER BY timestamp DESC LIMIT ?",
-                (env, threshold),
+                "WHERE environment = %s ORDER BY timestamp DESC LIMIT %s",
+                [env, threshold],
             ).fetchall()
 
             if len(rows) < threshold:
@@ -62,9 +62,9 @@ def check_stuck_agents(db: DatabaseManager) -> list[dict[str, object]]:
             # Query last non-cash snapshot date for diagnostics
             last_action_row = conn.execute(
                 "SELECT timestamp FROM portfolio_snapshots "
-                "WHERE environment = ? AND abs(cash_balance - total_value) >= 0.01 "
+                "WHERE environment = %s AND abs(cash_balance - total_value) >= 0.01 "
                 "ORDER BY timestamp DESC LIMIT 1",
-                (env,),
+                [env],
             ).fetchone()
 
             last_action_date: str | None = None

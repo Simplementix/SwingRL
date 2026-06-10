@@ -85,25 +85,24 @@ class TestBackupConfig:
     def test_backup_defaults_load(self, tmp_config: Path) -> None:
         """HARD-02: BackupConfig loads with sensible defaults."""
         config = load_config(tmp_config)
-        assert config.backup.sqlite_retention_days == 14
-        assert config.backup.duckdb_rotate is False
+        assert config.backup.backup_retention_days == 14
         assert config.backup.backup_dir == "backups/"
         assert config.backup.offsite_host == ""
         assert config.backup.offsite_path == ""
 
     def test_backup_retention_days_minimum(self, tmp_path: Path) -> None:
-        """HARD-02: sqlite_retention_days < 1 raises ValidationError."""
+        """HARD-02: backup_retention_days < 1 raises ValidationError."""
         bad_yaml = tmp_path / "bad_backup.yaml"
         bad_yaml.write_text(
             textwrap.dedent("""\
                 trading_mode: paper
                 backup:
-                  sqlite_retention_days: 0
+                  backup_retention_days: 0
             """)
         )
         with pytest.raises(ValidationError) as exc_info:
             load_config(bad_yaml)
-        assert "sqlite_retention_days" in str(exc_info.value)
+        assert "backup_retention_days" in str(exc_info.value)
 
     def test_backup_negative_retention_raises(self, tmp_path: Path) -> None:
         """HARD-02: Negative retention days raise ValidationError."""
@@ -112,12 +111,12 @@ class TestBackupConfig:
             textwrap.dedent("""\
                 trading_mode: paper
                 backup:
-                  sqlite_retention_days: -5
+                  backup_retention_days: -5
             """)
         )
         with pytest.raises(ValidationError) as exc_info:
             load_config(bad_yaml)
-        assert "sqlite_retention_days" in str(exc_info.value)
+        assert "backup_retention_days" in str(exc_info.value)
 
 
 class TestShadowConfig:
@@ -231,8 +230,7 @@ def test_all_new_sections_load_from_yaml(tmp_path: Path) -> None:
         textwrap.dedent("""\
             trading_mode: paper
             backup:
-              sqlite_retention_days: 7
-              duckdb_rotate: true
+              backup_retention_days: 7
               backup_dir: /app/backups/
             shadow:
               equity_eval_days: 15
@@ -250,8 +248,7 @@ def test_all_new_sections_load_from_yaml(tmp_path: Path) -> None:
         """)
     )
     config = load_config(full_yaml)
-    assert config.backup.sqlite_retention_days == 7
-    assert config.backup.duckdb_rotate is True
+    assert config.backup.backup_retention_days == 7
     assert config.shadow.equity_eval_days == 15
     assert config.shadow.auto_promote is False
     assert config.sentiment.enabled is True

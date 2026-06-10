@@ -12,23 +12,28 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import pickle  # nosec B403 -- required for SB3 VecNormalize serialization
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
+import torch
 from stable_baselines3 import A2C, PPO, SAC
 from stable_baselines3.common.callbacks import EvalCallback
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 from swingrl.config.schema import SwingRLConfig
 from swingrl.envs.crypto import CryptoTradingEnv
 from swingrl.envs.equity import StockTradingEnv
 from swingrl.training.callbacks import ConvergenceCallback
 from swingrl.utils.exceptions import ModelError
+
+if TYPE_CHECKING:
+    from swingrl.memory.client import MemoryClient
 
 log = structlog.get_logger(__name__)
 
@@ -49,7 +54,7 @@ HYPERPARAMS: dict[str, dict[str, Any]] = {
         "learning_rate": 0.0007,
         "n_steps": 5,
         "gamma": 0.99,
-        "gae_lambda": 1.0,
+        "gae_lambda": 0.92,  # was 1.0 (pure MC); 0.92 balances bias/variance for n_steps=5
         "ent_coef": 0.01,
         "vf_coef": 0.5,
     },
@@ -58,9 +63,8 @@ HYPERPARAMS: dict[str, dict[str, Any]] = {
         "batch_size": 256,
         "tau": 0.005,
         "gamma": 0.99,
-        "ent_coef": "auto",
+        "ent_coef": "auto_0.1",  # was "auto" (alpha=1.0 drowns reward signal); 0.1 start
         "learning_starts": 10_000,
-        "buffer_size": 1_000_000,
     },
 }
 
@@ -88,6 +92,7 @@ class TrainingResult:
     algo_name: str
     converged_at_step: int | None
     total_timesteps: int
+    advice_stats: dict[str, Any] | None = None
 
 
 class TrainingOrchestrator:
@@ -113,6 +118,14 @@ class TrainingOrchestrator:
         self._models_dir = models_dir
         self._logs_dir = logs_dir
 
+        # Limit PyTorch intra-op threads to avoid oversubscription when
+        # running multiple parallel envs via SubprocVecEnv or parallel algos.
+        n_envs = config.training.n_envs
+        cpu_count = os.cpu_count() or 4
+        torch_threads = max(1, cpu_count // max(n_envs, 2))
+        torch.set_num_threads(torch_threads)
+        log.info("torch_threads_set", threads=torch_threads, cpu_count=cpu_count, n_envs=n_envs)
+
     def train(
         self,
         env_name: str,
@@ -120,6 +133,13 @@ class TrainingOrchestrator:
         features: np.ndarray,
         prices: np.ndarray,
         total_timesteps: int = 1_000_000,
+        hyperparams_override: dict[str, Any] | None = None,
+        memory_client: MemoryClient | None = None,
+        run_id: str | None = None,
+        initial_reward_weights: dict[str, float] | None = None,
+        advice_enabled: bool = True,
+        is_control_fold: bool = False,
+        iteration: int | None = None,
     ) -> TrainingResult:
         """Train an SB3 algorithm on the specified environment.
 
@@ -133,6 +153,23 @@ class TrainingOrchestrator:
             features: Feature array for the environment.
             prices: Price array for the environment.
             total_timesteps: Total training timesteps.
+            hyperparams_override: Optional dict of hyperparameter overrides to
+                merge on top of HYPERPARAMS[algo_name]. Override values win.
+                Used by meta-training tuning rounds to test alternate configs.
+            memory_client: Optional MemoryClient. When provided, wraps the
+                training env in MemoryVecRewardWrapper and attaches
+                MemoryEpochCallback to ingest epoch snapshots and apply
+                LLM-guided reward weight adjustments. Fail-open: if None,
+                training proceeds without memory integration.
+            run_id: Training run identifier for memory tagging (e.g.
+                "equity_ppo_20260318T120000Z"). Auto-generated if None.
+            advice_enabled: When True, MemoryEpochCallback queries the LLM for
+                epoch advice and applies reward weight adjustments. When False,
+                epoch snapshots are still captured but no advice is requested.
+                Defaults to True. Set to False for iteration 0 (baseline).
+            is_control_fold: When True, tags epoch snapshots with control fold
+                status for scientific measurement of reward shaping impact.
+            iteration: Training iteration number for pattern presentation tracking.
 
         Returns:
             TrainingResult with paths and metadata.
@@ -148,15 +185,79 @@ class TrainingOrchestrator:
             total_timesteps=total_timesteps,
         )
 
-        # Create wrapped environment
-        vec_env = self._create_env(env_name, features, prices)
+        # Create wrapped environment.
+        # When memory_client is provided, insert MemoryVecRewardWrapper BETWEEN
+        # the base VecEnv and VecNormalize so shaped rewards get normalized:
+        #   Base → MemoryVecRewardWrapper → VecNormalize
+        memory_wrapper = None
+        if memory_client is not None:
+            try:
+                from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
 
-        # Create eval environment (separate instance for EvalCallback)
-        eval_vec_env = self._create_env(env_name, features, prices)
+                vec_env = self._create_env(
+                    env_name,
+                    features,
+                    prices,
+                    skip_vec_normalize=True,
+                )
+                from swingrl.agents.backtest import ENV_PARAMS  # noqa: PLC0415
+
+                periods = ENV_PARAMS[env_name]["periods_per_year"]
+                memory_wrapper = MemoryVecRewardWrapper(
+                    vec_env,
+                    initial_weights=initial_reward_weights,
+                    periods_per_year=int(periods),
+                )
+                vec_env = VecNormalize(
+                    memory_wrapper,
+                    norm_obs=True,
+                    norm_reward=True,
+                )
+                log.info("memory_reward_wrapper_attached", env_name=env_name, algo_name=algo_name)
+            except Exception as exc:
+                log.warning("memory_reward_wrapper_failed", error=str(exc))
+                memory_wrapper = None
+                vec_env = self._create_env(env_name, features, prices)
+        else:
+            vec_env = self._create_env(env_name, features, prices)
+
+        # Create eval environment (separate instance for EvalCallback).
+        # Uses DummyVecEnv(1) — eval runs 5 sequential inference episodes,
+        # no parallelism benefit. Saves ~1.8 GB vs SubprocVecEnv(n_envs).
+        # When memory wrapper is active, mirror the train env stack:
+        #   Base → MemoryVecRewardWrapper → VecNormalize
+        eval_vec_env: VecNormalize | DummyVecEnv
+        if memory_wrapper is not None:
+            eval_base = self._create_eval_env(
+                env_name,
+                features,
+                prices,
+                skip_vec_normalize=True,
+            )
+            from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
+
+            periods = ENV_PARAMS[env_name]["periods_per_year"]
+            eval_memory_wrapper = MemoryVecRewardWrapper(
+                eval_base,
+                initial_weights=initial_reward_weights,
+                periods_per_year=int(periods),
+            )
+            eval_vec_env = VecNormalize(
+                eval_memory_wrapper,
+                norm_obs=True,
+                norm_reward=True,
+            )
+        else:
+            eval_vec_env = self._create_eval_env(env_name, features, prices)
 
         # Instantiate algorithm with locked hyperparams
         algo_cls = ALGO_MAP[algo_name]
         params = HYPERPARAMS[algo_name].copy()
+        # SAC buffer_size from config — not hardcoded in HYPERPARAMS.
+        if algo_name == "sac":
+            params["buffer_size"] = self._config.training.sac_buffer_size
+        if hyperparams_override:
+            params.update(hyperparams_override)
         seed = SEED_MAP[algo_name]
 
         tb_log = str(self._logs_dir / "tensorboard")
@@ -192,72 +293,193 @@ class TrainingOrchestrator:
             verbose=0,
         )
 
-        # Train
-        model.learn(
-            total_timesteps=total_timesteps,
-            callback=eval_cb,
-        )
+        # Optionally attach MemoryEpochCallback for per-epoch memory ingestion
+        callbacks: list[Any] = [eval_cb]
+        if memory_client is not None and memory_wrapper is not None:
+            try:
+                from swingrl.memory.training.epoch_callback import MemoryEpochCallback
 
-        # Save model and VecNormalize
-        model_path, vec_path = self._save_model(model, vec_env, env_name, algo_name)
+                effective_run_id = run_id or f"{env_name}_{algo_name}"
+                memory_cb = MemoryEpochCallback(
+                    memory_client=memory_client,
+                    wrapper=memory_wrapper,
+                    run_id=effective_run_id,
+                    algo=algo_name.upper(),
+                    env=env_name,
+                    verbose=0,
+                    advice_enabled=advice_enabled,
+                    is_control_fold=is_control_fold,
+                    iteration=iteration,
+                    database_url=self._config.system.database_url,
+                )
+                callbacks.append(memory_cb)
+                log.info(
+                    "memory_epoch_callback_attached",
+                    run_id=effective_run_id,
+                    env_name=env_name,
+                    algo_name=algo_name,
+                )
+            except Exception as exc:
+                log.warning("memory_epoch_callback_failed", error=str(exc))
 
-        # Run smoke tests
-        self._run_smoke_tests(model, vec_env, env_name, algo_name)
+        # Train, save, and smoke-test -- wrapped in try/finally to ensure
+        # SubprocVecEnv child processes are always cleaned up (C1 fix).
+        try:
+            model.learn(
+                total_timesteps=total_timesteps,
+                callback=callbacks,
+            )
 
-        # Check if training converged early
-        converged_at = None
-        if convergence_cb._stagnation_count >= convergence_cb._patience:
-            converged_at = model.num_timesteps
+            # Extract advice stats and flush telemetry from MemoryEpochCallback
+            _advice_stats: dict[str, Any] | None = None
+            for cb in callbacks:
+                from swingrl.memory.training.epoch_callback import MemoryEpochCallback
 
-        log.info(
-            "training_complete",
-            env_name=env_name,
-            algo_name=algo_name,
-            model_path=str(model_path),
-            converged_at=converged_at,
-        )
+                if isinstance(cb, MemoryEpochCallback):
+                    _advice_stats = cb.advice_stats
+                    # Flush buffered epoch/adjustment data to PostgreSQL now that
+                    # model.learn() is done.
+                    cb.flush_telemetry()
+                    break
 
-        return TrainingResult(
-            model_path=model_path,
-            vec_normalize_path=vec_path,
-            env_name=env_name,
-            algo_name=algo_name,
-            converged_at_step=converged_at,
-            total_timesteps=total_timesteps,
-        )
+            # Save model and VecNormalize — vec_env is always VecNormalize here
+            # (either from _create_env or from explicit VecNormalize() wrapping above)
+            vec_env_norm: VecNormalize = vec_env  # type: ignore[assignment]
+            model_path, vec_path = self._save_model(model, vec_env_norm, env_name, algo_name)
+
+            # Run smoke tests
+            self._run_smoke_tests(model, vec_env_norm, env_name, algo_name)
+
+            # Check if training stopped early (convergence callback OR LLM stop_training)
+            converged_at = None
+            if convergence_cb._stagnation_count >= convergence_cb._patience:
+                converged_at = model.num_timesteps
+            elif getattr(model, "stop_training", False):
+                converged_at = model.num_timesteps
+                log.info(
+                    "training_stopped_by_llm",
+                    env_name=env_name,
+                    algo_name=algo_name,
+                    stopped_at_step=converged_at,
+                    total_configured=total_timesteps,
+                )
+
+            log.info(
+                "training_complete",
+                env_name=env_name,
+                algo_name=algo_name,
+                model_path=str(model_path),
+                converged_at=converged_at,
+            )
+
+            return TrainingResult(
+                model_path=model_path,
+                vec_normalize_path=vec_path,
+                env_name=env_name,
+                algo_name=algo_name,
+                converged_at_step=converged_at,
+                total_timesteps=total_timesteps,
+                advice_stats=_advice_stats,
+            )
+        finally:
+            vec_env.close()
+            eval_vec_env.close()
+            log.debug("vec_envs_closed", env_name=env_name, algo_name=algo_name)
 
     def _create_env(
         self,
         env_name: str,
         features: np.ndarray,
         prices: np.ndarray,
-    ) -> VecNormalize:
-        """Create DummyVecEnv wrapped in VecNormalize.
+        skip_vec_normalize: bool = False,
+    ) -> VecNormalize | DummyVecEnv | SubprocVecEnv:
+        """Create vectorized env, optionally wrapped in VecNormalize.
+
+        Uses SubprocVecEnv when n_envs > 1 and vecenv_backend is 'subproc',
+        otherwise falls back to DummyVecEnv.
 
         Args:
             env_name: Environment type ("equity" or "crypto").
             features: Feature array for the environment.
             prices: Price array for the environment.
+            skip_vec_normalize: If True, return the base VecEnv without
+                VecNormalize wrapping (used when MemoryVecRewardWrapper
+                needs to be inserted before VecNormalize).
 
         Returns:
-            VecNormalize-wrapped vectorized environment.
+            VecNormalize-wrapped or bare vectorized environment.
+        """
+        env_cls = ENV_CLASS_MAP[env_name]
+        n_envs = self._config.training.n_envs
+        backend = self._config.training.vecenv_backend
+
+        def _make_env_fn(rank: int) -> Any:
+            """Return a factory closure for env with unique seed offset."""
+
+            def _init() -> StockTradingEnv | CryptoTradingEnv:
+                return env_cls(
+                    features=features,
+                    prices=prices,
+                    config=self._config,
+                )
+
+            return _init
+
+        env_fns = [_make_env_fn(i) for i in range(n_envs)]
+
+        if n_envs > 1 and backend == "subproc":
+            base_env: DummyVecEnv | SubprocVecEnv = SubprocVecEnv(env_fns, start_method="fork")
+        else:
+            base_env = DummyVecEnv(env_fns)
+
+        if skip_vec_normalize:
+            return base_env
+
+        vec_env: VecNormalize = VecNormalize(
+            base_env,
+            norm_obs=True,
+            norm_reward=True,
+        )
+        return vec_env
+
+    def _create_eval_env(
+        self,
+        env_name: str,
+        features: np.ndarray,
+        prices: np.ndarray,
+        skip_vec_normalize: bool = False,
+    ) -> VecNormalize | DummyVecEnv:
+        """Create lightweight eval environment for EvalCallback.
+
+        Always uses DummyVecEnv with n_envs=1. Eval runs 5 sequential
+        inference episodes (~1,260 steps) — no parallelism benefit from
+        SubprocVecEnv. Avoids forking 6 workers that sit idle 99% of
+        training time.
+
+        Args:
+            env_name: Environment type ("equity" or "crypto").
+            features: Feature array for the environment.
+            prices: Price array for the environment.
+            skip_vec_normalize: If True, return the base DummyVecEnv without
+                VecNormalize wrapping (used when MemoryVecRewardWrapper
+                needs to be inserted before VecNormalize).
+
+        Returns:
+            VecNormalize-wrapped or bare single-env DummyVecEnv.
         """
         env_cls = ENV_CLASS_MAP[env_name]
 
-        def _make_env() -> StockTradingEnv | CryptoTradingEnv:
+        def _init() -> StockTradingEnv | CryptoTradingEnv:
             return env_cls(
                 features=features,
                 prices=prices,
                 config=self._config,
             )
 
-        dummy_env = DummyVecEnv([_make_env])
-        vec_env: VecNormalize = VecNormalize(
-            dummy_env,
-            norm_obs=True,
-            norm_reward=True,
-        )
-        return vec_env
+        base_env = DummyVecEnv([_init])
+        if skip_vec_normalize:
+            return base_env
+        return VecNormalize(base_env, norm_obs=True, norm_reward=True)
 
     def _save_model(
         self,
@@ -285,9 +507,28 @@ class TrainingOrchestrator:
 
         model.save(str(model_path))
 
-        # Save VecNormalize stats (pickle required for SB3 VecNormalize objects)
+        # Save VecNormalize stats — unwrap MemoryVecRewardWrapper if present so
+        # the pickle file always contains a plain VecNormalize (eval loading
+        # expects obs_rms / ret_rms attributes directly on the loaded object).
+        # Pickle is required for SB3 VecNormalize (internal SB3 constraint).
+        from stable_baselines3.common.vec_env import VecEnvWrapper
+
+        vec_to_save = vec_env
+        while isinstance(vec_to_save, VecEnvWrapper) and not isinstance(vec_to_save, VecNormalize):
+            vec_to_save = vec_to_save.venv  # type: ignore[assignment]
+        if not isinstance(vec_to_save, VecNormalize):
+            log.error(
+                "vec_normalize_unwrap_failed",
+                got=type(vec_to_save).__name__,
+                env=env_name,
+                algo=algo_name,
+            )
+            raise ModelError(
+                f"VecNormalize unwrap failed: got {type(vec_to_save).__name__} "
+                f"for {env_name}/{algo_name}"
+            )
         with vec_path.open("wb") as f:
-            pickle.dump(vec_env, f)  # noqa: S301
+            pickle.dump(vec_to_save, f)  # noqa: S301  # nosec B301
 
         log.info(
             "model_saved",

@@ -3,15 +3,15 @@
 Assembles flat NumPy observation vectors from computed feature groups.
 Contract between feature engineering (Phase 5) and RL environments (Phase 6).
 
-- Equity (default): (156,) = 120 per-asset + 6 macro + 2 HMM + 1 turbulence + 27 portfolio
-- Equity (sentiment): (172,) = 136 per-asset + 6 macro + 2 HMM + 1 turbulence + 27 portfolio
-- Crypto: (45,) = 26 per-asset + 6 macro + 2 HMM + 1 turbulence + 1 overnight + 9 portfolio
+- Equity (default): (164,) = 120 per-asset + 6 macro + 2 HMM + 1 turbulence + 35 portfolio
+- Equity (sentiment): (180,) = 136 per-asset + 6 macro + 2 HMM + 1 turbulence + 35 portfolio
+- Crypto: (47,) = 26 per-asset + 6 macro + 2 HMM + 1 turbulence + 1 overnight + 11 portfolio
 
 Assembly order is deterministic: [per-asset alpha-sorted] + [macro] + [HMM] + [turbulence]
 + [overnight (crypto only)] + [portfolio state].
 
 Use equity_obs_dim(sentiment_enabled, n_symbols) to compute the expected dimension at runtime.
-Never hardcode 156 or 172 -- always derive via equity_obs_dim().
+Never hardcode 164 or 180 -- always derive via equity_obs_dim().
 
 Usage:
     from swingrl.features.assembler import ObservationAssembler, equity_obs_dim
@@ -42,13 +42,13 @@ CRYPTO_PER_ASSET = 13  # 9 price action + 4 multi-timeframe
 SHARED_MACRO = 6
 HMM_REGIME = 2
 TURBULENCE = 1
-EQUITY_PORTFOLIO = 27  # 3 fixed + 3*8 per-asset
-CRYPTO_PORTFOLIO = 9  # 3 fixed + 3*2 per-asset
+EQUITY_PORTFOLIO = 35  # 3 fixed + 4*8 per-asset
+CRYPTO_PORTFOLIO = 11  # 3 fixed + 4*2 per-asset
 OVERNIGHT_CONTEXT = 1  # crypto only
 
 # Expected total dimensions (disabled-sentiment baseline; backward-compat aliases)
-EQUITY_OBS_DIM = 156
-CRYPTO_OBS_DIM = 45
+EQUITY_OBS_DIM = 164
+CRYPTO_OBS_DIM = 47
 
 # Sentiment feature names appended per-asset when sentiment is enabled
 _SENTIMENT_FEATURE_NAMES = ["sentiment_score", "sentiment_confidence"]
@@ -69,14 +69,14 @@ def equity_per_asset_dim(sentiment_enabled: bool = False) -> int:
 def equity_obs_dim(sentiment_enabled: bool = False, n_equity_symbols: int = 8) -> int:
     """Return total equity observation dimension.
 
-    Never hardcode 156 or 172 -- always call this function.
+    Never hardcode 164 or 180 -- always call this function.
 
     Args:
         sentiment_enabled: Whether sentiment features are included.
         n_equity_symbols: Number of equity symbols in config.
 
     Returns:
-        Total observation dimension (156 by default, 172 with sentiment and 8 symbols).
+        Total observation dimension (164 by default, 180 with sentiment and 8 symbols).
     """
     per_asset = equity_per_asset_dim(sentiment_enabled)
     return (
@@ -136,7 +136,12 @@ _OVERNIGHT_FEATURE_NAMES = ["overnight_hours_since_equity_close"]
 
 _PORTFOLIO_FIXED_NAMES = ["portfolio_cash_ratio", "portfolio_exposure", "portfolio_daily_return"]
 
-_PORTFOLIO_PER_ASSET_NAMES = ["weight", "unrealized_pnl_pct", "days_since_trade"]
+_PORTFOLIO_PER_ASSET_NAMES = [
+    "weight",
+    "weight_deviation",
+    "unrealized_pnl_pct",
+    "bars_since_trade",
+]
 
 
 class ObservationAssembler:
@@ -171,14 +176,14 @@ class ObservationAssembler:
             macro: (6,) shared macro features.
             hmm_probs: (2,) array [P(bull), P(bear)].
             turbulence: Turbulence index scalar.
-            portfolio_state: (27,) array or None for defaults.
+            portfolio_state: (35,) array or None for defaults.
             sentiment_features: Optional {symbol: (score, confidence)} dict.
                 When provided, appends 2 sentiment features per asset, producing
-                a (172,) vector instead of (156,) for 8-symbol configs.
+                a (180,) vector instead of (164,) for 8-symbol configs.
 
         Returns:
-            (156,) observation vector when sentiment_features is None,
-            or (172,) when sentiment_features is provided (for 8-symbol configs).
+            (164,) observation vector when sentiment_features is None,
+            or (180,) when sentiment_features is provided (for 8-symbol configs).
 
         Raises:
             DataError: If assembled vector contains NaN values or shape mismatch.
@@ -237,10 +242,10 @@ class ObservationAssembler:
             hmm_probs: (2,) array [P(bull), P(bear)].
             turbulence: Turbulence index scalar.
             overnight_context: Hours since equity market close.
-            portfolio_state: (9,) array or None for defaults.
+            portfolio_state: (11,) array or None for defaults.
 
         Returns:
-            (45,) observation vector.
+            (47,) observation vector.
 
         Raises:
             DataError: If assembled vector contains NaN values.
@@ -281,10 +286,10 @@ class ObservationAssembler:
         Args:
             sentiment_enabled: When True, appends sentiment_score and
                 sentiment_confidence names after each asset's 15 base features,
-                producing a 172-element list for 8-symbol configs.
+                producing a 180-element list for 8-symbol configs.
 
         Returns:
-            List of 156 feature name strings (default) or 172 when sentiment_enabled=True.
+            List of 164 feature name strings (default) or 180 when sentiment_enabled=True.
         """
         names: list[str] = []
 
@@ -310,7 +315,7 @@ class ObservationAssembler:
         return names
 
     def get_feature_names_crypto(self) -> list[str]:
-        """Return ordered list of 45 feature names for crypto observation.
+        """Return ordered list of 47 feature names for crypto observation.
 
         Returns:
             List of feature name strings matching assembly order.
@@ -345,7 +350,7 @@ class ObservationAssembler:
             environment: "equity" or "crypto".
 
         Returns:
-            (27,) for equity or (9,) for crypto with cash_ratio=1.0, rest zeros.
+            (35,) for equity or (11,) for crypto with cash_ratio=1.0, rest zeros.
         """
         size = EQUITY_PORTFOLIO if environment == "equity" else CRYPTO_PORTFOLIO
         state = np.zeros(size)

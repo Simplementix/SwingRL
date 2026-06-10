@@ -30,12 +30,12 @@ class TestPositionTrackerPortfolioValue:
         self, position_tracker: PositionTracker, mock_db: DatabaseManager
     ) -> None:
         """PAPER-03: Returns latest snapshot total_value when snapshot exists."""
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
                 "(timestamp, environment, total_value, cash_balance, high_water_mark, "
                 "daily_pnl, drawdown_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("2026-03-09T10:00:00Z", "equity", 450.0, 100.0, 450.0, 5.0, 0.0),
             )
         value = position_tracker.get_portfolio_value("equity")
@@ -54,15 +54,15 @@ class TestPositionTrackerPositions:
         self, position_tracker: PositionTracker, mock_db: DatabaseManager
     ) -> None:
         """PAPER-03: Returns positions filtered by environment."""
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
-                "last_price, unrealized_pnl, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("SPY", "equity", 2.0, 470.0, 475.0, 10.0, "2026-03-09T10:00:00Z"),
             )
             conn.execute(
                 "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
-                "last_price, unrealized_pnl, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("BTCUSDT", "crypto", 0.001, 42000.0, 43000.0, 1.0, "2026-03-09T10:00:00Z"),
             )
         equity_pos = position_tracker.get_positions("equity")
@@ -84,12 +84,12 @@ class TestPositionTrackerHighWaterMark:
         self, position_tracker: PositionTracker, mock_db: DatabaseManager
     ) -> None:
         """PAPER-03: Returns HWM from latest snapshot for environment."""
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
                 "(timestamp, environment, total_value, cash_balance, high_water_mark, "
                 "daily_pnl, drawdown_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("2026-03-09T10:00:00Z", "equity", 420.0, 100.0, 425.0, 5.0, 0.0),
             )
         hwm = position_tracker.get_high_water_mark("equity")
@@ -109,12 +109,12 @@ class TestPositionTrackerDailyPnl:
     ) -> None:
         """PAPER-03: Returns daily_pnl from today's snapshot."""
         today_ts = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
                 "(timestamp, environment, total_value, cash_balance, high_water_mark, "
                 "daily_pnl, drawdown_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (today_ts, "equity", 410.0, 100.0, 420.0, -5.0, 0.024),
             )
         pnl = position_tracker.get_daily_pnl("equity")
@@ -133,10 +133,10 @@ class TestPositionTrackerExposure:
         self, position_tracker: PositionTracker, mock_db: DatabaseManager
     ) -> None:
         """PAPER-03: Exposure = sum(abs(qty * last_price)) / portfolio_value."""
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
-                "last_price, unrealized_pnl, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("SPY", "equity", 0.5, 470.0, 480.0, 5.0, "2026-03-09T10:00:00Z"),
             )
         exposure = position_tracker.get_exposure("equity")
@@ -154,7 +154,7 @@ class TestPositionTrackerRecordSnapshot:
         position_tracker.record_snapshot(
             env="equity", portfolio_value=410.0, cash=100.0, daily_pnl=10.0
         )
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             row = conn.execute(
                 "SELECT * FROM portfolio_snapshots WHERE environment = 'equity' "
                 "ORDER BY timestamp DESC LIMIT 1"
@@ -174,7 +174,7 @@ class TestPositionTrackerRecordSnapshot:
         position_tracker.record_snapshot(
             env="equity", portfolio_value=400.0, cash=80.0, daily_pnl=-20.0
         )
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             row = conn.execute(
                 "SELECT * FROM portfolio_snapshots WHERE environment = 'equity' "
                 "ORDER BY timestamp DESC LIMIT 1"
@@ -187,38 +187,45 @@ class TestPositionTrackerPortfolioStateArray:
     """PAPER-05: Portfolio state arrays match ObservationAssembler format."""
 
     def test_equity_state_shape(self, position_tracker: PositionTracker) -> None:
-        """PAPER-05: Equity portfolio state is (27,) array."""
+        """PAPER-05: Equity portfolio state is (35,) array."""
         state = position_tracker.get_portfolio_state_array("equity")
-        assert state.shape == (27,)
+        assert state.shape == (35,)
 
     def test_crypto_state_shape(self, position_tracker: PositionTracker) -> None:
-        """PAPER-05: Crypto portfolio state is (9,) array."""
+        """PAPER-05: Crypto portfolio state is (11,) array."""
         state = position_tracker.get_portfolio_state_array("crypto")
-        assert state.shape == (9,)
+        assert state.shape == (11,)
 
     def test_equity_state_default_all_cash(self, position_tracker: PositionTracker) -> None:
         """PAPER-05: Default state is 100% cash with zero weights."""
         state = position_tracker.get_portfolio_state_array("equity")
-        # [cash_ratio, exposure, daily_return, 8x weight, 8x unrealized, 8x days]
+        # [cash_ratio, exposure, daily_return,
+        #  per-asset interleaved: weight, weight_dev, unrealized_pnl_pct, days_since_trade]
         assert state[0] == pytest.approx(1.0)  # cash_ratio
         assert state[1] == pytest.approx(0.0)  # exposure
         assert state[2] == pytest.approx(0.0)  # daily_return
-        # All weights, unrealized_pnl_pct, days_since_trade should be 0
+        # All per-asset fields should be 0
         assert np.all(state[3:] == 0.0)
 
     def test_equity_state_with_positions(
         self, position_tracker: PositionTracker, mock_db: DatabaseManager
     ) -> None:
-        """PAPER-05: State reflects positions when held."""
-        with mock_db.sqlite() as conn:
+        """PAPER-05: State reflects positions when held with interleaved layout."""
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
-                "last_price, unrealized_pnl, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("SPY", "equity", 0.5, 470.0, 480.0, 5.0, "2026-03-09T10:00:00Z"),
             )
         state = position_tracker.get_portfolio_state_array("equity")
-        assert state.shape == (27,)
+        assert state.shape == (35,)
         # cash_ratio should be < 1.0 (some capital in SPY)
         assert state[0] < 1.0
-        # SPY weight (index 3) should be > 0
-        assert state[3] > 0.0
+        # SPY is at config index 0 (config order: SPY, QQQ, VTI, XLV, XLI, XLE, XLF, XLK)
+        # In interleaved layout: base_idx = 3 + 0*4 = 3
+        spy_weight_idx = 3 + 0 * 4  # = 3
+        assert state[spy_weight_idx] > 0.0  # SPY weight
+        # weight_deviation = weight - 1/8
+        assert state[spy_weight_idx + 1] == pytest.approx(state[spy_weight_idx] - 1.0 / 8.0)
+        # unrealized_pnl_pct = (480 - 470) / 470
+        assert state[spy_weight_idx + 2] == pytest.approx((480.0 - 470.0) / 470.0)

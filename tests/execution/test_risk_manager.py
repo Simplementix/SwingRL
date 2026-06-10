@@ -98,12 +98,12 @@ class TestRiskManagerDrawdown:
         from swingrl.utils.exceptions import CircuitBreakerError
 
         # Record a snapshot showing 12% drawdown (>10% equity threshold)
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
                 "(timestamp, environment, total_value, cash_balance, "
                 "high_water_mark, daily_pnl, drawdown_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("2026-03-09T10:00:00Z", "equity", 352.0, 50.0, 400.0, -10.0, 0.12),
             )
 
@@ -126,12 +126,12 @@ class TestRiskManagerDailyLoss:
         from swingrl.utils.exceptions import CircuitBreakerError, RiskVetoError
 
         today_ts = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
                 "(timestamp, environment, total_value, cash_balance, "
                 "high_water_mark, daily_pnl, drawdown_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (today_ts, "equity", 392.0, 200.0, 400.0, -8.5, 0.02),
             )
 
@@ -152,7 +152,7 @@ class TestRiskManagerDecisionLogging:
         order = _make_order(dollar_amount=50.0)
         risk_manager.evaluate(order)
 
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             rows = conn.execute("SELECT * FROM risk_decisions").fetchall()
         assert len(rows) >= 1
         assert rows[0]["final_action"] == "buy"

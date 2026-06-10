@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
+from zoneinfo import ZoneInfo
 
 import exchange_calendars as xcals
 import structlog
@@ -37,6 +38,7 @@ _CB_DRAWDOWN_TRIGGER = 0.13
 _VIX_TRIGGER = 40.0
 _NAN_INFERENCE_THRESHOLD = 2
 _IP_BAN_STATUS_CODE = 418
+_ET = ZoneInfo("America/New_York")
 
 
 def _create_alpaca_adapter(config: SwingRLConfig, alerter: Alerter | None = None) -> Any:
@@ -88,11 +90,10 @@ def _is_extended_hours() -> bool:
     Returns:
         True if within extended hours, False otherwise.
     """
-    now = datetime.now(UTC)
-    # Convert to ET hour (approximate: UTC-5 for EST, UTC-4 for EDT)
-    # Use exchange_calendars for precision, but for extended hours we do a quick check
-    et_hour = (now.hour - 5) % 24  # Approximate EST
-    return (4 <= et_hour < 9) or (16 <= et_hour < 20)
+    et_now = datetime.now(_ET)
+    pre_market = (4 <= et_now.hour < 9) or (et_now.hour == 9 and et_now.minute < 30)
+    after_hours = 16 <= et_now.hour < 20
+    return pre_market or after_hours
 
 
 def _get_equity_liquidation_strategy() -> EquityStrategy:
@@ -185,11 +186,21 @@ def _tier2_liquidate_crypto(
         positions = binance.get_positions()
         for pos in positions:
             try:
-                symbol = pos.get("symbol", pos.get("symbol", "UNKNOWN"))
+                symbol = pos.get("symbol", "UNKNOWN")
                 qty = float(pos.get("quantity", 0))
                 if qty > 0:
                     log.info("tier2_liquidating_crypto", symbol=symbol, quantity=qty)
-                    positions_closed += 1
+                    try:
+                        binance.emergency_sell(symbol, qty)
+                        positions_closed += 1
+                        log.info("tier2_crypto_sold", symbol=symbol, quantity=qty)
+                    except Exception:
+                        log.error(
+                            "tier2_crypto_sell_failed",
+                            symbol=symbol,
+                            quantity=qty,
+                            exc_info=True,
+                        )
             except Exception:
                 log.warning("tier2_crypto_position_error", exc_info=True)
 
@@ -226,17 +237,8 @@ def _tier3_liquidate_equity(
         return {"tier": 3, "success": True, "strategy": strategy}
 
     try:
-        if strategy == "limit_at_bid":
-            alpaca._client.close_all_positions(cancel_orders=True)
-            log.info("tier3_close_all_positions_submitted")
-        elif strategy == "limit_extended":
-            # Submit limit sells during extended hours
-            alpaca._client.close_all_positions(cancel_orders=True)
-            log.info("tier3_extended_hours_liquidation")
-        elif strategy == "queue_for_open":
-            # Queue orders with time_in_force='opg' (on-open)
-            alpaca._client.close_all_positions(cancel_orders=True)
-            log.info("tier3_queued_for_open")
+        alpaca._client.close_all_positions(cancel_orders=True)
+        log.info("tier3_equity_liquidation_submitted", strategy=strategy)
     except Exception:
         log.warning("tier3_equity_liquidation_failed", exc_info=True)
 
@@ -265,8 +267,8 @@ def _tier4_verify_and_alert(
     Returns:
         Status dict with tier=4, success flag, and remaining positions.
     """
-    remaining_equity = 0
-    remaining_crypto = 0
+    remaining_equity = -1  # Sentinel: unknown until verified
+    remaining_crypto = -1
 
     # Check Alpaca positions
     if alpaca is not None:
@@ -274,7 +276,9 @@ def _tier4_verify_and_alert(
             equity_positions = alpaca.get_positions()
             remaining_equity = len(equity_positions)
         except Exception:
-            log.warning("tier4_alpaca_position_check_failed", exc_info=True)
+            log.error("tier4_alpaca_position_check_failed", exc_info=True)
+    else:
+        remaining_equity = 0  # No adapter → no positions to check
 
     # Check Binance.US positions
     if binance is not None:
@@ -282,7 +286,9 @@ def _tier4_verify_and_alert(
             crypto_positions = binance.get_positions()
             remaining_crypto = len(crypto_positions)
         except Exception:
-            log.warning("tier4_binance_position_check_failed", exc_info=True)
+            log.error("tier4_binance_position_check_failed", exc_info=True)
+    else:
+        remaining_crypto = 0  # No adapter → no positions to check
 
     # Build status report
     tier_summary = []
@@ -307,15 +313,22 @@ def _tier4_verify_and_alert(
         message=description,
     )
 
+    # -1 means position check failed — we can't confirm positions are closed
+    verification_ok = remaining_equity >= 0 and remaining_crypto >= 0
+    all_closed = verification_ok and remaining_equity == 0 and remaining_crypto == 0
+
     log.info(
         "tier4_complete",
         remaining_equity=remaining_equity,
         remaining_crypto=remaining_crypto,
+        verification_ok=verification_ok,
+        all_closed=all_closed,
     )
 
     return {
         "tier": 4,
-        "success": True,
+        "success": verification_ok,
+        "all_closed": all_closed,
         "remaining_equity": remaining_equity,
         "remaining_crypto": remaining_crypto,
     }
@@ -414,9 +427,9 @@ def check_automated_triggers(
     """Check for automated emergency stop triggers.
 
     Three triggers are checked:
-    1. VIX > 40 (from DuckDB macro_features) AND drawdown >= 13% (from SQLite portfolio_snapshots)
-    2. 2+ NaN inference outputs in 24h (from SQLite inference_outcomes)
-    3. Binance.US IP ban HTTP 418 (from SQLite api_errors)
+    1. VIX > 40 (from PostgreSQL macro_features) AND drawdown >= 13% (from database portfolio_snapshots)
+    2. 2+ NaN inference outputs in 24h (from database inference_outcomes)
+    3. Binance.US IP ban HTTP 418 (from database api_errors)
 
     Each trigger manages its own DB connection independently and fails gracefully.
 
@@ -430,19 +443,19 @@ def check_automated_triggers(
     triggers: list[str] = []
 
     # Trigger 1: VIX + CB threshold
-    # VIX comes from DuckDB macro_features, drawdown from SQLite portfolio_snapshots
+    # VIX comes from PostgreSQL macro_features, drawdown from database portfolio_snapshots
     try:
-        with db.duckdb() as cursor:
+        with db.connection() as cursor:
             vix_row = cursor.execute(
                 "SELECT value FROM macro_features "
                 "WHERE series_id = 'VIXCLS' ORDER BY date DESC LIMIT 1"
             ).fetchone()
 
-        if vix_row is not None and vix_row[0] > _VIX_TRIGGER:
-            with db.sqlite() as conn:
+        if vix_row is not None and vix_row["value"] > _VIX_TRIGGER:
+            with db.connection() as conn:
                 dd_row = conn.execute(
                     "SELECT MAX(drawdown_pct) as worst_dd FROM portfolio_snapshots "
-                    "WHERE timestamp > datetime('now', '-24 hours')"
+                    "WHERE timestamp > NOW() - INTERVAL '24 hours'"
                 ).fetchone()
 
             if (
@@ -451,7 +464,7 @@ def check_automated_triggers(
                 and dd_row["worst_dd"] >= _CB_DRAWDOWN_TRIGGER
             ):
                 triggers.append(
-                    f"VIX={vix_row[0]:.1f} > {_VIX_TRIGGER} "
+                    f"VIX={vix_row['value']:.1f} > {_VIX_TRIGGER} "
                     f"AND drawdown={dd_row['worst_dd']:.1%} "
                     f"(CB threshold: {_CB_DRAWDOWN_TRIGGER:.0%})"
                 )
@@ -460,10 +473,10 @@ def check_automated_triggers(
 
     # Trigger 2: NaN inference count in last 24h
     try:
-        with db.sqlite() as conn:
+        with db.connection() as conn:
             nan_row = conn.execute(
                 "SELECT COUNT(*) as nan_count FROM inference_outcomes "
-                "WHERE had_nan = 1 AND timestamp > datetime('now', '-24 hours')"
+                "WHERE had_nan = 1 AND timestamp > NOW() - INTERVAL '24 hours'"
             ).fetchone()
 
         if nan_row is not None and nan_row["nan_count"] >= _NAN_INFERENCE_THRESHOLD:
@@ -476,11 +489,11 @@ def check_automated_triggers(
 
     # Trigger 3: Binance.US IP ban (HTTP 418)
     try:
-        with db.sqlite() as conn:
+        with db.connection() as conn:
             ban_row = conn.execute(
                 "SELECT COUNT(*) as ban_count FROM api_errors "
-                "WHERE broker = 'binance_us' AND status_code = ? "
-                "AND timestamp > datetime('now', '-24 hours')",
+                "WHERE broker = 'binance_us' AND status_code = %s "
+                "AND timestamp > NOW() - INTERVAL '24 hours'",
                 (_IP_BAN_STATUS_CODE,),
             ).fetchone()
 

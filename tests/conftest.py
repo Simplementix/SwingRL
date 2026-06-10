@@ -8,13 +8,57 @@ Scope rules:
 from __future__ import annotations
 
 import textwrap
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.data.db import DatabaseManager
+from tests.db_guard import SAFE_DB_NAMES, classify_db_url, resolve_target_db_url
+
+# Autouse fixture — imported so it registers globally (wipes test DB after each test).
+from tests.fixtures.db_cleanup import wipe_db_after_test  # noqa: F401
+
+# ---------------------------------------------------------------------------
+# Database safety guard
+# ---------------------------------------------------------------------------
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Refuse to run the suite unless the *resolved* DB target is a test database.
+
+    Resolves the target the same way DatabaseManager does (env DATABASE_URL, then
+    config.system.database_url), so a blank env var with a production URL in YAML
+    config cannot slip past the guard.
+    """
+    verdict, db_name = classify_db_url(resolve_target_db_url())
+    if verdict in {"blank", "safe"}:
+        return
+    if verdict == "unparseable":
+        pytest.exit(
+            "Resolved database URL has no parseable database name; refusing to run pytest.",
+            returncode=2,
+        )
+    pytest.exit(
+        f"REFUSING TO RUN: resolved database {db_name!r} is not a test database. "
+        f"Test fixtures TRUNCATE/DELETE tables. Use a name in "
+        f"{sorted(SAFE_DB_NAMES)} or one ending in '_test'. In CI, "
+        f"scripts/ci-homelab.sh overrides DATABASE_URL automatically.",
+        returncode=2,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _reset_db_singleton() -> None:
+    """Reset DatabaseManager singleton after every test to prevent pool thread leaks."""
+    yield
+    DatabaseManager.reset()
 
 
 @pytest.fixture(scope="session")
@@ -60,8 +104,7 @@ def valid_config_yaml() -> str:
           position_penalty_coeff: 10.0
           drawdown_penalty_coeff: 5.0
         system:
-          duckdb_path: data/db/market_data.ddb
-          sqlite_path: data/db/trading_ops.db
+          database_url: ""
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3
@@ -173,8 +216,7 @@ def equity_env_config_yaml() -> str:
           position_penalty_coeff: 10.0
           drawdown_penalty_coeff: 5.0
         system:
-          duckdb_path: data/db/market_data.ddb
-          sqlite_path: data/db/trading_ops.db
+          database_url: ""
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3
@@ -193,20 +235,20 @@ def equity_env_config(tmp_path: Path, equity_env_config_yaml: str) -> SwingRLCon
 def equity_features_array() -> np.ndarray:
     """Synthetic equity feature array for environment tests.
 
-    Shape (300, 156) float32 — enough for 252-step episodes with buffer.
+    Shape (300, 164) float32 — enough for 252-step episodes with buffer.
     """
     rng = np.random.default_rng(44)
-    return rng.standard_normal((300, 156)).astype(np.float32)
+    return rng.standard_normal((300, 164)).astype(np.float32)
 
 
 @pytest.fixture
 def crypto_features_array() -> np.ndarray:
     """Synthetic crypto feature array for environment tests.
 
-    Shape (600, 45) float32 — enough for 540-step episodes with buffer.
+    Shape (600, 47) float32 — enough for 540-step episodes with buffer.
     """
     rng = np.random.default_rng(45)
-    return rng.standard_normal((600, 45)).astype(np.float32)
+    return rng.standard_normal((600, 47)).astype(np.float32)
 
 
 @pytest.fixture
@@ -246,3 +288,75 @@ def tmp_dirs(tmp_path: Path) -> dict[str, Path]:
         d.mkdir(parents=True)
         dirs[name] = d
     return dirs
+
+
+# ---------------------------------------------------------------------------
+# Shared database mock helpers
+# ---------------------------------------------------------------------------
+
+
+def make_mock_db(
+    fetchone_returns: list[Any] | None = None,
+    fetchall_returns: list[Any] | None = None,
+) -> tuple[MagicMock, MagicMock]:
+    """Create a standard mock DatabaseManager with connection() context manager.
+
+    Returns (db_mock, conn_mock) so callers can further configure the connection.
+    The connection() method is a context manager yielding conn_mock.
+    """
+    db = MagicMock(spec=["connection", "close", "init_schema", "reset"])
+    conn = MagicMock()
+
+    @contextmanager
+    def _connection_ctx() -> Generator[MagicMock, None, None]:
+        yield conn
+
+    db.connection.side_effect = _connection_ctx
+
+    if fetchone_returns is not None:
+        conn.execute.return_value.fetchone.side_effect = fetchone_returns
+    if fetchall_returns is not None:
+        conn.execute.return_value.fetchall.side_effect = fetchall_returns
+
+    return db, conn
+
+
+def make_mock_db_multi(
+    connection_configs: list[dict[str, Any]],
+) -> MagicMock:
+    """Create a mock DatabaseManager where each connection() call returns a different mock.
+
+    Each item in connection_configs is a dict with optional keys:
+      - "fetchone": return value for cursor.execute().fetchone()
+      - "fetchone_side_effect": side_effect for fetchone()
+      - "fetchall": return value for cursor.execute().fetchall()
+    """
+    db = MagicMock(spec=["connection", "close", "init_schema", "reset"])
+    contexts = []
+
+    for cfg in connection_configs:
+        conn = MagicMock()
+        if "fetchone" in cfg:
+            conn.execute.return_value.fetchone.return_value = cfg["fetchone"]
+        if "fetchone_side_effect" in cfg:
+            conn.execute.return_value.fetchone.side_effect = cfg["fetchone_side_effect"]
+        if "fetchall" in cfg:
+            conn.execute.return_value.fetchall.return_value = cfg["fetchall"]
+
+        @contextmanager
+        def _ctx(c: MagicMock = conn) -> Generator[MagicMock, None, None]:
+            yield c
+
+        contexts.append(_ctx)
+
+    db.connection.side_effect = contexts
+    return db
+
+
+@pytest.fixture()
+def mock_alerter() -> MagicMock:
+    """Mock Alerter with send_alert and send_embed methods."""
+    alerter = MagicMock()
+    alerter.send_alert = MagicMock()
+    alerter.send_embed = MagicMock()
+    return alerter

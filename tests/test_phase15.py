@@ -8,13 +8,19 @@ Requirements: TRAIN-01, TRAIN-02, TRAIN-03, VAL-01
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
-import duckdb
 import numpy as np
+import psycopg
 import pytest
+
+from swingrl.utils.exceptions import DataError
+
+pytestmark = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
 
 # Add scripts/ to path so we can import train.py as a module
 _SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
@@ -22,8 +28,8 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from swingrl.config.schema import SwingRLConfig  # noqa: E402
+from swingrl.data.postgres_schema import init_postgres_schema  # noqa: E402
 from swingrl.features.assembler import CRYPTO_OBS_DIM, equity_obs_dim  # noqa: E402
-from swingrl.features.schema import init_feature_schema  # noqa: E402
 
 # EQUITY symbols matching equity_env_config fixture: 8 ETFs
 _EQUITY_SYMBOLS = ["SPY", "QQQ", "VTI", "XLV", "XLI", "XLE", "XLF", "XLK"]
@@ -72,24 +78,25 @@ _CRYPTO_FEATURE_COLS = [
 ]
 
 
-def _make_equity_db(equity_symbols: list[str] | None = None) -> duckdb.DuckDBPyConnection:
-    """Create in-memory DuckDB seeded with equity test data."""
+def _make_equity_db(equity_symbols: list[str] | None = None) -> Any:
+    """Create PostgreSQL connection seeded with equity test data."""
     if equity_symbols is None:
         equity_symbols = _EQUITY_SYMBOLS
 
-    conn = duckdb.connect(":memory:")
-    init_feature_schema(conn)
+    db_url = os.environ["DATABASE_URL"]
+    conn = psycopg.connect(db_url, autocommit=True)
+    init_postgres_schema(conn)
 
     # Create ohlcv_daily
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ohlcv_daily (
             symbol TEXT NOT NULL,
             date DATE NOT NULL,
-            open DOUBLE,
-            high DOUBLE,
-            low DOUBLE,
-            close DOUBLE,
-            volume DOUBLE,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
             PRIMARY KEY (symbol, date)
         )
     """)
@@ -99,7 +106,7 @@ def _make_equity_db(equity_symbols: list[str] | None = None) -> duckdb.DuckDBPyC
         CREATE TABLE IF NOT EXISTS macro_features (
             series_id TEXT NOT NULL,
             date DATE NOT NULL,
-            value DOUBLE,
+            value DOUBLE PRECISION,
             PRIMARY KEY (series_id, date)
         )
     """)
@@ -113,8 +120,9 @@ def _make_equity_db(equity_symbols: list[str] | None = None) -> duckdb.DuckDBPyC
             col_str = ", ".join(_EQUITY_FEATURE_COLS)
             val_str = ", ".join(str(v) for v in feature_vals)
             conn.execute(
-                f"INSERT OR REPLACE INTO features_equity (symbol, date, {col_str}) "  # nosec B608
+                f"INSERT INTO features_equity (symbol, date, {col_str}) "  # nosec B608
                 f"VALUES ('{symbol}', '{date}', {val_str})"  # nosec B608
+                " ON CONFLICT DO NOTHING"
             )
 
     # Seed ohlcv_daily: close prices for each symbol/date
@@ -123,8 +131,9 @@ def _make_equity_db(equity_symbols: list[str] | None = None) -> duckdb.DuckDBPyC
         for symbol in equity_symbols:
             close = base_prices[symbol] * rng.uniform(0.99, 1.01)
             conn.execute(
-                "INSERT OR REPLACE INTO ohlcv_daily (symbol, date, open, high, low, close, volume) "
+                "INSERT INTO ohlcv_daily (symbol, date, open, high, low, close, volume) "
                 f"VALUES ('{symbol}', '{date}', {close}, {close}, {close}, {close}, 1000000.0)"
+                " ON CONFLICT DO NOTHING"
             )
 
     # Seed macro_features
@@ -138,36 +147,39 @@ def _make_equity_db(equity_symbols: list[str] | None = None) -> duckdb.DuckDBPyC
     for series_id, value in macro_series.items():
         for date in _EQUITY_DATES:
             conn.execute(
-                f"INSERT OR REPLACE INTO macro_features (series_id, date, value) "  # nosec B608
+                f"INSERT INTO macro_features (series_id, date, value) "  # nosec B608
                 f"VALUES ('{series_id}', '{date}', {value})"  # nosec B608
+                " ON CONFLICT DO NOTHING"
             )
 
     # Seed hmm_state_history for equity
     for date in _EQUITY_DATES:
         conn.execute(
-            "INSERT OR REPLACE INTO hmm_state_history "
+            "INSERT INTO hmm_state_history "
             "(environment, date, p_bull, p_bear, log_likelihood, fitted_at) "
             f"VALUES ('equity', '{date}', 0.65, 0.35, -100.0, '2024-01-01 00:00:00')"
+            " ON CONFLICT DO NOTHING"
         )
 
     return conn
 
 
-def _make_crypto_db() -> duckdb.DuckDBPyConnection:
-    """Create in-memory DuckDB seeded with crypto test data."""
-    conn = duckdb.connect(":memory:")
-    init_feature_schema(conn)
+def _make_crypto_db() -> Any:
+    """Create PostgreSQL connection seeded with crypto test data."""
+    db_url = os.environ["DATABASE_URL"]
+    conn = psycopg.connect(db_url, autocommit=True)
+    init_postgres_schema(conn)
 
     # Create ohlcv_4h
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ohlcv_4h (
             symbol TEXT NOT NULL,
             datetime TIMESTAMP NOT NULL,
-            open DOUBLE,
-            high DOUBLE,
-            low DOUBLE,
-            close DOUBLE,
-            volume DOUBLE,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
             PRIMARY KEY (symbol, datetime)
         )
     """)
@@ -177,7 +189,7 @@ def _make_crypto_db() -> duckdb.DuckDBPyConnection:
         CREATE TABLE IF NOT EXISTS macro_features (
             series_id TEXT NOT NULL,
             date DATE NOT NULL,
-            value DOUBLE,
+            value DOUBLE PRECISION,
             PRIMARY KEY (series_id, date)
         )
     """)
@@ -191,8 +203,9 @@ def _make_crypto_db() -> duckdb.DuckDBPyConnection:
             col_str = ", ".join(_CRYPTO_FEATURE_COLS)
             val_str = ", ".join(str(v) for v in feature_vals)
             conn.execute(
-                f"INSERT OR REPLACE INTO features_crypto (symbol, datetime, {col_str}) "  # nosec B608
+                f"INSERT INTO features_crypto (symbol, datetime, {col_str}) "  # nosec B608
                 f"VALUES ('{symbol}', '{dt}', {val_str})"  # nosec B608
+                " ON CONFLICT DO NOTHING"
             )
 
     # Seed ohlcv_4h: close prices per symbol/datetime
@@ -201,9 +214,10 @@ def _make_crypto_db() -> duckdb.DuckDBPyConnection:
         for symbol in _CRYPTO_SYMBOLS:
             close = base_prices[symbol] * rng.uniform(0.99, 1.01)
             conn.execute(
-                "INSERT OR REPLACE INTO ohlcv_4h "
+                "INSERT INTO ohlcv_4h "
                 "(symbol, datetime, open, high, low, close, volume) "
                 f"VALUES ('{symbol}', '{dt}', {close}, {close}, {close}, {close}, 500.0)"
+                " ON CONFLICT DO NOTHING"
             )
 
     # Seed macro_features
@@ -216,15 +230,17 @@ def _make_crypto_db() -> duckdb.DuckDBPyConnection:
     }
     for series_id, value in macro_series.items():
         conn.execute(
-            f"INSERT OR REPLACE INTO macro_features (series_id, date, value) "  # nosec B608
+            f"INSERT INTO macro_features (series_id, date, value) "  # nosec B608
             f"VALUES ('{series_id}', '2024-01-01', {value})"  # nosec B608
+            " ON CONFLICT DO NOTHING"
         )
 
     # Seed hmm_state_history for crypto
     conn.execute(
-        "INSERT OR REPLACE INTO hmm_state_history "
+        "INSERT INTO hmm_state_history "
         "(environment, date, p_bull, p_bear, log_likelihood, fitted_at) "
         "VALUES ('crypto', '2024-01-01', 0.55, 0.45, -200.0, '2024-01-01 00:00:00')"
+        " ON CONFLICT DO NOTHING"
     )
 
     return conn
@@ -234,7 +250,7 @@ class TestLoadFeaturesEquity:
     """TRAIN-01: _load_features_prices returns correctly shaped equity arrays."""
 
     def test_equity_features_shape(self, equity_env_config: SwingRLConfig) -> None:
-        """TRAIN-01: equity features shape is (N, 156) with N timesteps."""
+        """TRAIN-01: equity features shape is (N, equity_obs_dim) with N timesteps."""
         from train import _load_features_prices  # type: ignore[import]
 
         conn = _make_equity_db()
@@ -288,7 +304,7 @@ class TestLoadFeaturesCrypto:
     """TRAIN-02: _load_features_prices returns correctly shaped crypto arrays."""
 
     def test_crypto_features_shape(self, equity_env_config: SwingRLConfig) -> None:
-        """TRAIN-02: crypto features shape is (N, 45) with N timesteps."""
+        """TRAIN-02: crypto features shape is (N, CRYPTO_OBS_DIM) with N timesteps."""
         from train import _load_features_prices  # type: ignore[import]
 
         conn = _make_crypto_db()
@@ -378,26 +394,25 @@ class TestDryRunCLI:
               position_penalty_coeff: 10.0
               drawdown_penalty_coeff: 5.0
             system:
-              duckdb_path: "{db_path}"
-              sqlite_path: data/db/trading_ops.db
+              database_url: "{db_url}"
             alerting:
               alert_cooldown_minutes: 30
               consecutive_failures_before_alert: 3
         """)
 
-        # Create a real DuckDB file seeded with test data
-        db_path = tmp_path / "test_market_data.ddb"
-        seed_conn = duckdb.connect(str(db_path))
-        init_feature_schema(seed_conn)
+        # Create PostgreSQL tables seeded with test data
+        db_url = os.environ["DATABASE_URL"]
+        seed_conn = psycopg.connect(db_url, autocommit=True)
+        init_postgres_schema(seed_conn)
         seed_conn.execute("""
             CREATE TABLE IF NOT EXISTS ohlcv_daily (
                 symbol TEXT NOT NULL,
                 date DATE NOT NULL,
-                open DOUBLE,
-                high DOUBLE,
-                low DOUBLE,
-                close DOUBLE,
-                volume DOUBLE,
+                open DOUBLE PRECISION,
+                high DOUBLE PRECISION,
+                low DOUBLE PRECISION,
+                close DOUBLE PRECISION,
+                volume DOUBLE PRECISION,
                 PRIMARY KEY (symbol, date)
             )
         """)
@@ -405,7 +420,7 @@ class TestDryRunCLI:
             CREATE TABLE IF NOT EXISTS macro_features (
                 series_id TEXT NOT NULL,
                 date DATE NOT NULL,
-                value DOUBLE,
+                value DOUBLE PRECISION,
                 PRIMARY KEY (series_id, date)
             )
         """)
@@ -418,32 +433,36 @@ class TestDryRunCLI:
                 col_str = ", ".join(_EQUITY_FEATURE_COLS)
                 val_str = ", ".join(str(v) for v in feature_vals)
                 seed_conn.execute(
-                    f"INSERT OR REPLACE INTO features_equity (symbol, date, {col_str}) "  # nosec B608
+                    f"INSERT INTO features_equity (symbol, date, {col_str}) "  # nosec B608
                     f"VALUES ('{symbol}', '{date}', {val_str})"  # nosec B608
+                    " ON CONFLICT DO NOTHING"
                 )
                 close = rng.uniform(50.0, 500.0)
                 seed_conn.execute(
-                    "INSERT OR REPLACE INTO ohlcv_daily "
+                    "INSERT INTO ohlcv_daily "
                     "(symbol, date, open, high, low, close, volume) "
                     f"VALUES ('{symbol}', '{date}', {close}, {close}, {close}, {close}, 1000000.0)"
+                    " ON CONFLICT DO NOTHING"
                 )
         for series_id, value in {"VIXCLS": 18.5, "T10Y2Y": 0.5, "DFF": 5.25}.items():
             for date in _EQUITY_DATES:
                 seed_conn.execute(
-                    "INSERT OR REPLACE INTO macro_features (series_id, date, value) "
-                    f"VALUES ('{series_id}', '{date}', {value})"
+                    "INSERT INTO macro_features (series_id, date, value) "
+                    f"VALUES ('{series_id}', '{date}', {value})"  # nosec B608
+                    " ON CONFLICT DO NOTHING"
                 )
         for date in _EQUITY_DATES:
             seed_conn.execute(
-                "INSERT OR REPLACE INTO hmm_state_history "
+                "INSERT INTO hmm_state_history "
                 "(environment, date, p_bull, p_bear, log_likelihood, fitted_at) "
                 f"VALUES ('equity', '{date}', 0.65, 0.35, -100.0, '2024-01-01 00:00:00')"
+                " ON CONFLICT DO NOTHING"
             )
         seed_conn.close()
 
-        # Write the config with the real db path
+        # Write the config with the real db url
         config_file = tmp_path / "swingrl.yaml"
-        config_file.write_text(config_yaml.format(db_path=str(db_path)))
+        config_file.write_text(config_yaml.format(db_url=db_url))
 
         with patch("train.TrainingOrchestrator") as mock_orch_cls:
             mock_orch = MagicMock()
@@ -493,42 +512,50 @@ class TestEmptyTables:
         """TRAIN-01: _load_features_prices raises RuntimeError for empty equity table."""
         from train import _load_features_prices  # type: ignore[import]
 
-        conn = duckdb.connect(":memory:")
-        init_feature_schema(conn)
+        db_url = os.environ["DATABASE_URL"]
+        conn = psycopg.connect(db_url, autocommit=True)
+        init_postgres_schema(conn)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS ohlcv_daily (
-                symbol TEXT, date DATE, open DOUBLE, high DOUBLE,
-                low DOUBLE, close DOUBLE, volume DOUBLE
+                symbol TEXT, date DATE, open DOUBLE PRECISION, high DOUBLE PRECISION,
+                low DOUBLE PRECISION, close DOUBLE PRECISION, volume DOUBLE PRECISION
             )
         """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS macro_features (
-                series_id TEXT, date DATE, value DOUBLE
+                series_id TEXT, date DATE, value DOUBLE PRECISION
             )
         """)
+        # Ensure tables are empty
+        conn.execute("DELETE FROM features_equity")
+        conn.execute("DELETE FROM ohlcv_daily")
 
-        with pytest.raises(RuntimeError, match="No data found"):
+        with pytest.raises((RuntimeError, DataError), match="No data found"):
             _load_features_prices(conn, "equity", equity_env_config)
         conn.close()
 
     def test_empty_crypto_table_raises(self, equity_env_config: SwingRLConfig) -> None:
-        """TRAIN-02: _load_features_prices raises RuntimeError for empty crypto table."""
+        """TRAIN-02: _load_features_prices raises DataError for empty crypto table."""
         from train import _load_features_prices  # type: ignore[import]
 
-        conn = duckdb.connect(":memory:")
-        init_feature_schema(conn)
+        db_url = os.environ["DATABASE_URL"]
+        conn = psycopg.connect(db_url, autocommit=True)
+        init_postgres_schema(conn)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS ohlcv_4h (
-                symbol TEXT, datetime TIMESTAMP, open DOUBLE, high DOUBLE,
-                low DOUBLE, close DOUBLE, volume DOUBLE
+                symbol TEXT, datetime TIMESTAMP, open DOUBLE PRECISION,
+                high DOUBLE PRECISION, low DOUBLE PRECISION,
+                close DOUBLE PRECISION, volume DOUBLE PRECISION
             )
         """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS macro_features (
-                series_id TEXT, date DATE, value DOUBLE
+                series_id TEXT, date DATE, value DOUBLE PRECISION
             )
         """)
+        # Ensure tables are empty
+        conn.execute("DELETE FROM features_crypto")
 
-        with pytest.raises(RuntimeError, match="No data found"):
+        with pytest.raises((RuntimeError, DataError), match="No data found"):
             _load_features_prices(conn, "crypto", equity_env_config)
         conn.close()

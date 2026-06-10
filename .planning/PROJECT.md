@@ -1,5 +1,12 @@
 # SwingRL
 
+> **Status (2026-06-05 ET):** v1.1 in progress. The Postgres migration, memory infra, CPS
+> framework, and `docs/training/` set live on the work branch
+> (`gsd/phase-19.1-memory-agent-infrastructure-and-training`, 249 commits ahead of `main`) —
+> **not yet merged to `main`**. Active sequencing and live stage status:
+> [`V1.1_EXECUTION_PLAN.md`](V1.1_EXECUTION_PLAN.md). The "Database" note below describes the
+> v1.0 SQLite+DuckDB layout; production has since migrated to PostgreSQL (pg16).
+
 ## What This Is
 
 An automated reinforcement learning swing trading system deploying PPO/A2C/SAC Sharpe-weighted ensembles across US equities (8 ETFs, daily bars) and cryptocurrency (BTC/ETH, 4-hour bars). Runs as a hands-off, capital-preserving paper trading platform for a solo operator on a two-machine architecture: M1 Mac for training and an always-on homelab server for production inference and execution via Docker.
@@ -57,7 +64,7 @@ Capital preservation through disciplined, automated risk management — the syst
 
 **Tech stack:** Python 3.11, Stable Baselines3 (PPO/A2C/SAC), Gymnasium, DuckDB, SQLite, APScheduler, Streamlit, structlog, Pydantic v2, Docker, uv.
 
-**Architecture:** Two-machine setup. M1 MacBook Pro (32GB RAM) for development, backtesting, model training (MPS). Intel i5-13th gen homelab (64GB RAM) for 24/7 Docker production. Models transfer ARM→x86 without conversion.
+**Architecture:** Two-machine setup. M1 MacBook Pro (32GB RAM) for development, backtesting, model training (MPS). Intel i5-13th gen homelab (30-36GB FREE) for 24/7 Docker production. Models transfer ARM→x86 without conversion.
 
 **Brokers:** Alpaca (equities, commission-free), Binance.US (crypto, 0.10% maker/taker, $10 floor). Charles Schwab (SPX options) deferred.
 
@@ -66,6 +73,7 @@ Capital preservation through disciplined, automated risk management — the syst
 **Capital:** Phase 1: $447 ($47 crypto + $400 equity). Deposit-driven scaling to $1K+ (Phase 2), $2K+ (Phase 3).
 
 **Known tech debt:**
+
 - pipeline.py sets fundamental columns to 0.0 (live FundamentalFetcher integration deferred)
 - Placeholder Sharpe ratios in train.py for initial ensemble weights (backtest.py provides real values)
 
@@ -73,7 +81,7 @@ Capital preservation through disciplined, automated risk management — the syst
 
 - **Python version**: 3.11 — FinRL/pyfolio compatibility (breaks on 3.12+)
 - **Package manager**: uv — installed on both M1 Mac and homelab
-- **Training hardware**: Homelab CPU (Intel i5, 64GB RAM). CPU-only training for automated retraining.
+- **Training hardware**: Homelab CPU (Intel i5, 30-36GB RAM FREE). CPU-only training for automated retraining.
 - **Budget**: Free data sources only. $295 reserved for DiscountOptionData (Phase 3).
 - **Homelab validation**: Every milestone must pass ci-homelab.sh
 - **Config schema**: Pydantic v2 typed schema (Doc 05 §10.7)
@@ -103,6 +111,7 @@ Capital preservation through disciplined, automated risk management — the syst
 **Goal:** Get SwingRL running on the homelab in paper trading mode with automated retraining, Discord alerts, and operator documentation — fully hands-off after initial setup.
 
 **Target features:**
+
 - Complete data ingestion pipeline (max historical depth, aligned dimensions)
 - Trained PPO/A2C/SAC agents for both equity and crypto
 - Homelab Docker deployment with paper trading
@@ -111,4 +120,4 @@ Capital preservation through disciplined, automated risk management — the syst
 - Comprehensive operator runbook with detailed walkthroughs
 
 ---
-*Last updated: 2026-03-10 after v1.1 milestone start*
+*Last updated: 2026-06-05 ET — v1.1 mid-flight; see [`V1.1_EXECUTION_PLAN.md`](V1.1_EXECUTION_PLAN.md) for live status. (Prior update: 2026-03-10, v1.1 start.)*

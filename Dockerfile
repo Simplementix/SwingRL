@@ -24,6 +24,9 @@ RUN useradd -m -u 1000 trader && mkdir -p /app && chown trader:trader /app
 
 WORKDIR /app
 
+# Put venv on PATH so bare `python` resolves to the venv interpreter.
+ENV PATH="/app/.venv/bin:$PATH"
+
 # Install all dependencies (prod + dev for CI) using bind mounts.
 # Running as root here so the uv cache mount target is accessible.
 # The .venv is created inside /app which is owned by trader.
@@ -46,9 +49,12 @@ ENTRYPOINT ["uv", "run", "python", "-m", "swingrl"]
 
 
 # ──────────────────────────────────────────────────────────
-# Production target: no dev deps, minimal image for deployment
-# Used by: docker-compose.prod.yml (target: production)
+# Production target: full deps (training + trading) for deployment
+# Used by: docker-compose.yml (target: production)
 # CMD: APScheduler entrypoint (scripts/main.py) with cron jobs
+# Includes training deps (numpy, SB3, torch) so retraining can
+# run alongside live trading without a separate container.
+# Dev-only deps (pytest, ruff, mypy, bandit) are excluded.
 # ──────────────────────────────────────────────────────────
 FROM python:3.11-slim AS production
 
@@ -58,11 +64,14 @@ RUN useradd -m -u 1000 trader && mkdir -p /app && chown trader:trader /app
 
 WORKDIR /app
 
-# Install production dependencies only (no dev group).
+# Put venv on PATH so bare `python` resolves to the venv interpreter.
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Install all production dependencies including training (no dev group).
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-dev --no-install-project
+    uv sync --locked --no-install-project
 
 # Copy only production-relevant files (exclude tests, docs, .planning).
 COPY --chown=trader:trader src/ /app/src/
@@ -70,9 +79,12 @@ COPY --chown=trader:trader config/ /app/config/
 COPY --chown=trader:trader scripts/ /app/scripts/
 COPY --chown=trader:trader pyproject.toml uv.lock /app/
 
-# Install the project itself (production deps already cached above).
+# Install the project itself (deps already cached above).
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev
+    uv sync --locked
+
+# Set venv ownership to trader so runtime uv run doesn't need root.
+RUN chown -R trader:trader /app/.venv
 
 USER trader
 

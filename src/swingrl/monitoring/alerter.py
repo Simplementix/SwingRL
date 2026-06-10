@@ -78,7 +78,7 @@ class Alerter:
             cooldown_minutes: Minimum minutes between identical critical/warning alerts.
             consecutive_failures_before_alert: Number of consecutive identical warnings
                 before alerting. First N-1 occurrences are suppressed.
-            db: Optional DatabaseManager for alert_log SQLite writes. If None,
+            db: Optional DatabaseManager for alert_log writes. If None,
                 alert_log is skipped.
             alerts_webhook_url: Optional webhook URL for critical/warning alerts.
                 Falls back to webhook_url if not provided.
@@ -297,7 +297,7 @@ class Alerter:
             return False
 
     def _log_alert(self, level: str, title: str, message_hash: str, *, sent: bool) -> None:
-        """Write a row to the alert_log SQLite table if DatabaseManager is available.
+        """Write a row to the alert_log table if DatabaseManager is available.
 
         Args:
             level: Alert level.
@@ -309,19 +309,19 @@ class Alerter:
             return
 
         try:
-            with self._db.sqlite() as conn:
+            with self._db.connection() as conn:
                 conn.execute(
                     "INSERT INTO alert_log"
                     " (alert_id, timestamp, level, title, message_hash, sent)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (
+                    " VALUES (%s, %s, %s, %s, %s, %s)",
+                    [
                         str(uuid.uuid4()),
                         datetime.now(UTC).isoformat(),
                         level,
                         title,
                         message_hash,
                         1 if sent else 0,
-                    ),
+                    ],
                 )
         except Exception:
             log.error(

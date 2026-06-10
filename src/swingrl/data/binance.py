@@ -96,6 +96,17 @@ class BinanceIngestor(BaseIngestor):
         self._store = ParquetStore()
         self._session = requests.Session()
 
+    def close(self) -> None:
+        """Close the HTTP session to prevent resource leaks."""
+        if hasattr(self, "_session") and self._session:
+            self._session.close()
+
+    def __enter__(self) -> BinanceIngestor:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     def _fetch_klines(
         self,
         symbol: str,
@@ -224,6 +235,14 @@ class BinanceIngestor(BaseIngestor):
             start_ms = int(pd.Timestamp(since, tz="UTC").timestamp() * 1000)
 
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        # Cap to last completed 4H bar boundary (exclude current incomplete bar)
+        now_ms = now_ms - (now_ms % FOUR_HOURS_MS)
+
+        # Nothing to fetch if data is already up to date
+        if start_ms >= now_ms:
+            log.info("binance_fetch_skip_up_to_date", symbol=symbol)
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
         all_klines: list[list[str | int]] = []
         current_start = start_ms
 
@@ -462,7 +481,7 @@ class BinanceIngestor(BaseIngestor):
             self._store_quarantine(quarantine, symbol)
         if not clean.empty:
             self.store(clean, symbol)
-            self._sync_to_duckdb(clean, symbol)
+            self._sync_to_db(clean, symbol)
 
         return combined
 
@@ -564,25 +583,25 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_config("config/swingrl.yaml")
-    ingestor = BinanceIngestor(config)
     symbols = args.symbols or config.crypto.symbols
 
-    if args.backfill:
-        failed: list[str] = []
-        for symbol in symbols:
-            try:
-                ingestor.backfill(symbol)
-            except Exception as e:
-                log.error("backfill_failed", symbol=symbol, error=str(e))
-                failed.append(symbol)
-        return 1 if failed else 0
+    with BinanceIngestor(config) as ingestor:
+        if args.backfill:
+            failed: list[str] = []
+            for symbol in symbols:
+                try:
+                    ingestor.backfill(symbol)
+                except Exception as e:
+                    log.error("backfill_failed", symbol=symbol, error=str(e))
+                    failed.append(symbol)
+            return 1 if failed else 0
 
-    since: str | None = None
-    if args.days is not None:
-        since = (datetime.now(UTC) - pd.Timedelta(days=args.days)).strftime("%Y-%m-%d")
+        since: str | None = None
+        if args.days is not None:
+            since = (datetime.now(UTC) - pd.Timedelta(days=args.days)).strftime("%Y-%m-%d")
 
-    failed_symbols = ingestor.run_all(symbols, since)
-    return 1 if failed_symbols else 0
+        failed_symbols = ingestor.run_all(symbols, since)
+        return 1 if failed_symbols else 0
 
 
 if __name__ == "__main__":

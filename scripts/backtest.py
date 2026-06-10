@@ -2,7 +2,7 @@
 
 Runs walk-forward validation for each algorithm on an environment,
 evaluates per-fold metrics, checks validation gates, and writes
-results to DuckDB.
+results to PostgreSQL.
 
 Usage:
     python scripts/backtest.py --env equity
@@ -17,13 +17,15 @@ import sys
 import time
 from pathlib import Path
 
-import duckdb
 import numpy as np
+import psycopg
 import structlog
+from psycopg.rows import dict_row
 
 from swingrl.agents.backtest import WalkForwardBacktester
 from swingrl.config.schema import load_config
 from swingrl.data.db import DatabaseManager
+from swingrl.data.pg_helpers import fetchdf
 from swingrl.training.trainer import ALGO_MAP
 from swingrl.utils.logging import configure_logging
 
@@ -78,23 +80,23 @@ Examples:
 
 
 def _load_features_prices(
-    conn: duckdb.DuckDBPyConnection,
+    conn: psycopg.Connection,
     env_name: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load features and prices from DuckDB for the given environment.
+    """Load features and prices from PostgreSQL for the given environment.
 
     Args:
-        conn: Active DuckDB connection.
+        conn: Active PostgreSQL connection.
         env_name: Environment name ("equity" or "crypto").
 
     Returns:
         Tuple of (features_array, prices_array).
 
     Raises:
-        RuntimeError: If no data found in DuckDB.
+        RuntimeError: If no data found in PostgreSQL.
     """
     table_name = f"features_{env_name}"
-    df = conn.execute(f"SELECT * FROM {table_name} ORDER BY rowid").fetchdf()  # noqa: S608  # nosec B608
+    df = fetchdf(conn.execute(f"SELECT * FROM {table_name} ORDER BY ctid"))  # noqa: S608  # nosec B608
 
     if df.empty:
         msg = f"No data found in {table_name} table"
@@ -183,10 +185,9 @@ def main(argv: list[str] | None = None) -> int:
 
     start_time = time.monotonic()
 
-    # Connect to DuckDB
-    db_path = Path(config.system.duckdb_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = duckdb.connect(str(db_path))
+    # Connect to PostgreSQL
+    database_url = config.system.database_url
+    conn = psycopg.connect(database_url, row_factory=dict_row)
 
     # Initialize DatabaseManager for result storage
     DatabaseManager.reset()

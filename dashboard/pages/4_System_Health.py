@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-import sqlite3
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 import streamlit as st
+
+# Streamlit pages need parent dir on path to import app.py helpers
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # ---------------------------------------------------------------------------
 # Helper functions (pure logic, no st.* calls -- testable without Streamlit)
@@ -52,11 +57,11 @@ def get_traffic_light_status(last_snapshot_ts: str | None, env: str) -> str:
         return "red"
 
 
-def get_latest_trades(conn: sqlite3.Connection, limit: int = 5) -> list[dict]:
+def get_latest_trades(conn: Any, limit: int = 5) -> list[dict]:
     """Query trade_log for most recent trades.
 
     Args:
-        conn: SQLite connection to trading_ops.db.
+        conn: PostgreSQL connection to swingrl database.
         limit: Maximum number of trades to return.
 
     Returns:
@@ -64,11 +69,10 @@ def get_latest_trades(conn: sqlite3.Connection, limit: int = 5) -> list[dict]:
     """
     cursor = conn.execute(
         "SELECT trade_id, timestamp, environment, symbol, side, quantity, fill_price "
-        "FROM trade_log ORDER BY timestamp DESC LIMIT ?",
+        "FROM trade_log ORDER BY timestamp DESC LIMIT %s",
         (limit,),
     )
-    columns = [desc[0] for desc in cursor.description]
-    return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+    return [dict(row) for row in cursor.fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -78,13 +82,9 @@ def get_latest_trades(conn: sqlite3.Connection, limit: int = 5) -> list[dict]:
 st.header("System Health")
 
 try:
-    import sys
-    from pathlib import Path
+    from app import get_pg_conn
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from app import get_sqlite_conn
-
-    conn = get_sqlite_conn()
+    conn = get_pg_conn()
 
     # Traffic-light status per environment
     st.subheader("Environment Status")
@@ -92,7 +92,7 @@ try:
         "SELECT environment, MAX(timestamp) AS last_ts "
         "FROM portfolio_snapshots GROUP BY environment"
     )
-    env_timestamps = {row[0]: row[1] for row in cursor.fetchall()}
+    env_timestamps = {row["environment"]: row["last_ts"] for row in cursor.fetchall()}
 
     if env_timestamps:
         cols = st.columns(len(env_timestamps))
@@ -118,9 +118,9 @@ try:
         "SELECT MIN(timestamp) AS earliest, MAX(timestamp) AS latest FROM portfolio_snapshots"
     )
     row = cursor.fetchone()
-    if row and row[0] and row[1]:
-        st.metric("Tracking Since", row[0])
-        st.metric("Latest Snapshot", row[1])
+    if row and row["earliest"] and row["latest"]:
+        st.metric("Tracking Since", row["earliest"])
+        st.metric("Latest Snapshot", row["latest"])
     else:
         st.info("No uptime data available.")
 

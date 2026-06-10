@@ -57,10 +57,10 @@ class TestStopPollingExceptionRecovery:
                 raise StopIteration("Break loop for test")
             return False
 
-        def sqlite_side_effect() -> MagicMock:
+        def connection_side_effect() -> MagicMock:
             raise ConnectionError("Test DB error")
 
-        mock_db.sqlite.side_effect = sqlite_side_effect
+        mock_db.connection.side_effect = connection_side_effect
 
         with patch("swingrl.scheduler.stop_polling.is_halted", side_effect=halt_side_effect):
             with patch("swingrl.scheduler.stop_polling.time.sleep", side_effect=lambda _: None):

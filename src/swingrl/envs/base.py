@@ -97,7 +97,7 @@ class BaseTradingEnv(gymnasium.Env):
         self.action_space = gymnasium.spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(self._n_assets,),
+            shape=(self._n_assets + 1,),
             dtype=np.float32,
         )
 
@@ -136,7 +136,13 @@ class BaseTradingEnv(gymnasium.Env):
         super().reset(seed=seed)
 
         self._current_step = self._select_start_step()
-        self._max_step = self._current_step + self._episode_bars
+        # Cap max_step so step() never indexes past the last row of prices/features.
+        # step() increments current_step then reads prices[current_step], so the
+        # highest valid current_step after increment is len-1.
+        self._max_step = min(
+            self._current_step + self._episode_bars,
+            len(self._features) - 1,
+        )
 
         # Reset portfolio and reward
         self._portfolio.reset(self._initial_amount)
@@ -173,7 +179,7 @@ class BaseTradingEnv(gymnasium.Env):
         """Execute one environment step.
 
         Args:
-            action: Raw agent action, shape (n_assets,).
+            action: Raw agent action, shape (n_assets + 1,). Last element is cash preference.
 
         Returns:
             Tuple of (observation, reward, terminated, truncated, info).
@@ -216,12 +222,25 @@ class BaseTradingEnv(gymnasium.Env):
         risk_penalty = self._compute_risk_penalty(weights_after, new_value)
         reward = sharpe_reward - risk_penalty
 
+        # 7b. Compute reward components for memory-guided shaping
+        drawdown_frac = 0.0
+        if self._peak_value > 0:
+            drawdown_frac = (self._peak_value - new_value) / self._peak_value
+        turnover_ratio = cost / self._prev_value if self._prev_value > 0 else 0.0
+
+        reward_components = {
+            "profit": daily_return,
+            "sharpe": sharpe_reward,
+            "drawdown": -drawdown_frac,
+            "turnover": -turnover_ratio,
+        }
+
         # 8. Build observation with current portfolio state
         portfolio_state = self._get_portfolio_state(new_prices)
         obs = self._build_observation(portfolio_state)
 
-        # 9. Termination: after exactly episode_bars steps
-        terminated = self._step_count >= self._episode_bars
+        # 9. Termination: when we reach the capped max_step boundary
+        terminated = self._current_step >= self._max_step
         truncated = False
 
         # 10. Build info
@@ -229,12 +248,15 @@ class BaseTradingEnv(gymnasium.Env):
             portfolio_value=new_value,
             daily_return=daily_return,
             transaction_cost=cost,
+            reward_components=reward_components,
         )
 
         # Update previous value for next step
         self._prev_value = new_value
 
         if terminated:
+            # Include trade log before DummyVecEnv auto-resets the env
+            info["trade_log"] = list(self._portfolio.trade_log)
             log.info(
                 "episode_complete",
                 environment=self._environment,
@@ -265,7 +287,8 @@ class BaseTradingEnv(gymnasium.Env):
     def _get_portfolio_state(self, prices: np.ndarray) -> np.ndarray:
         """Compute portfolio state vector for observation.
 
-        Layout: [cash_ratio, total_exposure, daily_return] + per-asset [weight, unrealized_pnl_pct, bars_since_trade]
+        Layout: [cash_ratio, total_exposure, daily_return]
+                + per-asset interleaved [weight, weight_deviation, unrealized_pnl, bars_since_trade]
 
         Args:
             prices: Current prices, shape (n_assets,).
@@ -288,14 +311,20 @@ class BaseTradingEnv(gymnasium.Env):
         state[1] = total_exposure
         state[2] = daily_return
 
-        # Per-asset components (3 * n_assets)
+        # Per-asset components (4 * n_assets), interleaved
         for i in range(self._n_assets):
-            base_idx = 3 + i * 3
+            base_idx = 3 + i * 4
             state[base_idx] = weights[i]
-            # Unrealized PnL pct (simplified: weight deviation from initial equal-weight)
+            # Weight deviation from equal-weight target
             state[base_idx + 1] = weights[i] - (1.0 / self._n_assets) if total_exposure > 0 else 0.0
+            # Unrealized PnL pct from cost basis
+            cost_basis = self._portfolio.cost_basis[i]
+            if cost_basis > 0:
+                state[base_idx + 2] = (prices[i] - cost_basis) / cost_basis
+            else:
+                state[base_idx + 2] = 0.0
             # Bars since last trade
-            state[base_idx + 2] = float(self._step_count - self._last_trade_step[i])
+            state[base_idx + 3] = float(self._step_count - self._last_trade_step[i])
 
         return state
 
@@ -345,6 +374,7 @@ class BaseTradingEnv(gymnasium.Env):
         portfolio_value: float,
         daily_return: float,
         transaction_cost: float,
+        reward_components: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         """Build info dict for step/reset return.
 
@@ -352,14 +382,19 @@ class BaseTradingEnv(gymnasium.Env):
             portfolio_value: Current portfolio value.
             daily_return: Return since last step.
             transaction_cost: Cost incurred this step.
+            reward_components: Optional decomposed reward components for
+                memory-guided shaping (profit, sharpe, drawdown, turnover).
 
         Returns:
             Info dictionary with required keys.
         """
-        return {
+        info: dict[str, Any] = {
             "portfolio_value": portfolio_value,
             "daily_return": daily_return,
             "transaction_cost": transaction_cost,
             "turbulence": self._get_turbulence(),
             "step": self._step_count,
         }
+        if reward_components is not None:
+            info["reward_components"] = reward_components
+        return info

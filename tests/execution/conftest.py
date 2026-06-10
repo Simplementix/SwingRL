@@ -53,8 +53,7 @@ def exec_config_yaml() -> str:
           position_penalty_coeff: 10.0
           drawdown_penalty_coeff: 5.0
         system:
-          duckdb_path: data/db/market_data.ddb
-          sqlite_path: data/db/trading_ops.db
+          database_url: ""
         alerting:
           alert_cooldown_minutes: 30
           consecutive_failures_before_alert: 3
@@ -70,17 +69,20 @@ def exec_config(tmp_path: Path, exec_config_yaml: str) -> SwingRLConfig:
 
 
 @pytest.fixture
-def mock_db(tmp_path: Path, exec_config: SwingRLConfig) -> Generator[DatabaseManager, None, None]:
-    """DatabaseManager with SQLite pointing to tmp_path.
+def mock_db(exec_config: SwingRLConfig) -> Generator[DatabaseManager, None, None]:
+    """DatabaseManager backed by PostgreSQL test database.
 
     Resets singleton and initializes schema for clean test isolation.
+    Requires DATABASE_URL env var pointing to a test PostgreSQL instance.
     """
+    import os  # noqa: PLC0415
+
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        pytest.skip("DATABASE_URL not set — no PostgreSQL available for testing")
+
     DatabaseManager.reset()
-    # Patch system paths to tmp_path
-    sqlite_path = tmp_path / "trading_ops.db"
-    duckdb_path = tmp_path / "market_data.ddb"
-    exec_config.system.sqlite_path = str(sqlite_path)
-    exec_config.system.duckdb_path = str(duckdb_path)
+    exec_config.system.database_url = db_url
     db = DatabaseManager(exec_config)
     db.init_schema()
     yield db

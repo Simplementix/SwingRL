@@ -1,7 +1,7 @@
 """Shadow inference runner for parallel model evaluation.
 
 Runs shadow model inference after active trading cycle, recording hypothetical
-trades in the shadow_trades SQLite table. Failures are logged but never raised
+trades in the shadow_trades table. Failures are logged but never raised
 to protect the active trading cycle.
 
 Usage:
@@ -14,14 +14,40 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 import structlog
 
-if TYPE_CHECKING:
-    pass
-
 log = structlog.get_logger(__name__)
+
+
+def _fetch_latest_prices(db: Any, env_name: str, symbols: list[str]) -> dict[str, float]:
+    """Fetch latest close price per symbol from PostgreSQL.
+
+    Args:
+        db: DatabaseManager instance.
+        env_name: Environment name (equity or crypto).
+        symbols: List of ticker symbols.
+
+    Returns:
+        Dict mapping symbol to latest close price. Missing symbols are omitted.
+    """
+    table = "ohlcv_daily" if env_name == "equity" else "ohlcv_4h"
+    date_col = "date" if env_name == "equity" else "datetime"
+    prices: dict[str, float] = {}
+    try:
+        with db.connection() as conn:
+            for symbol in symbols:
+                row = conn.execute(
+                    f"SELECT close FROM {table} WHERE symbol = %s "  # noqa: S608
+                    f"ORDER BY {date_col} DESC LIMIT 1",  # nosec B608
+                    [symbol],
+                ).fetchone()
+                if row and row["close"] is not None:
+                    prices[symbol] = float(row["close"])
+    except Exception:
+        log.warning("shadow_price_fetch_failed", env=env_name)
+    return prices
 
 
 def run_shadow_inference(ctx: Any, env_name: str) -> None:
@@ -111,7 +137,7 @@ def _generate_hypothetical_trades(
         from swingrl.execution.position_sizer import PositionSizer  # noqa: PLC0415
         from swingrl.execution.signal_interpreter import SignalInterpreter  # noqa: PLC0415
 
-        config = ctx.pipeline._config
+        config = ctx.pipeline.config
         env_literal: Literal["equity", "crypto"] = "equity" if env_name == "equity" else "crypto"
 
         # Step 1: Current date string (same logic as ExecutionPipeline)
@@ -129,7 +155,7 @@ def _generate_hypothetical_trades(
         )
 
         # Step 2: Get observation from feature pipeline
-        observation = ctx.pipeline._feature_pipeline.get_observation(env_literal, current_date_str)
+        observation = ctx.pipeline.feature_pipeline.get_observation(env_literal, current_date_str)
         log.debug("shadow_observation_obtained", env=env_name, shape=observation.shape)
 
         # Step 3: Normalize observation if VecNormalize exists
@@ -158,13 +184,22 @@ def _generate_hypothetical_trades(
         )
         default_atr = 0.02  # conservative fallback
 
+        # Fetch latest prices from PostgreSQL for realistic sizing
+        latest_prices = _fetch_latest_prices(ctx.db, env_name, symbols)
+
         trades: list[dict[str, Any]] = []
         for signal in signals:
             if signal.action == "hold":
                 continue
 
-            # Use a reasonable estimated price fallback
-            estimated_price = 100.0 if env_name == "equity" else 50000.0
+            # Use latest DB price; skip signal if no real price available
+            estimated_price = latest_prices.get(signal.symbol)
+            if estimated_price is None:
+                log.warning(
+                    "shadow_signal_skipped_no_price",
+                    symbol=signal.symbol,
+                )
+                continue
 
             sized_order = sizer.size(signal, estimated_price, default_atr, portfolio_value)
             if sized_order is None:
@@ -235,21 +270,21 @@ def _maybe_normalize_obs(model: Any, observation: Any) -> Any:
 
 
 def _record_shadow_trades(db: Any, trades: list[dict[str, Any]]) -> None:
-    """Insert hypothetical trades into shadow_trades SQLite table.
+    """Insert hypothetical trades into shadow_trades table.
 
     Args:
         db: DatabaseManager instance.
         trades: List of trade dicts with shadow_trades column keys.
     """
-    with db.sqlite() as conn:
+    with db.connection() as conn:
         for trade in trades:
             conn.execute(
                 "INSERT INTO shadow_trades "
                 "(trade_id, timestamp, symbol, side, quantity, price, "
                 "commission, slippage, environment, broker, order_type, "
                 "trade_type, model_version) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                [
                     trade.get("trade_id", str(uuid.uuid4())),
                     trade.get("timestamp", datetime.now(tz=UTC).isoformat()),
                     trade["symbol"],
@@ -263,7 +298,7 @@ def _record_shadow_trades(db: Any, trades: list[dict[str, Any]]) -> None:
                     trade.get("order_type"),
                     trade.get("trade_type"),
                     trade["model_version"],
-                ),
+                ],
             )
 
     log.info("shadow_trades_recorded", count=len(trades))

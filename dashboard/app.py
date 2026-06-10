@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
-import sqlite3
-from pathlib import Path
 
-import duckdb
+import psycopg
 import streamlit as st
+from psycopg.rows import dict_row
 from streamlit_autorefresh import st_autorefresh
 
 # ---------------------------------------------------------------------------
@@ -23,23 +22,42 @@ st.set_page_config(
 st_autorefresh(interval=300_000, key="dashboard_refresh")  # 5-minute refresh
 
 # ---------------------------------------------------------------------------
-# DB path configuration
+# DB connection
 # ---------------------------------------------------------------------------
 
-DB_DIR: Path = Path(os.environ.get("SWINGRL_DB_DIR", "db"))
+
+def _open_pg_connection() -> psycopg.Connection:
+    """Open a fresh PostgreSQL connection from the configured DATABASE_URL."""
+    url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://swingrl:changeme@localhost:5432/swingrl",  # pragma: allowlist secret
+    )
+    return psycopg.connect(url, row_factory=dict_row, autocommit=True)
 
 
-def get_sqlite_conn() -> sqlite3.Connection:
-    """Return a read-only SQLite connection to trading_ops.db."""
-    db_path = DB_DIR / "trading_ops.db"
-    uri = f"file:{db_path}?mode=ro"
-    return sqlite3.connect(uri, uri=True, check_same_thread=False)
+@st.cache_resource
+def _cached_pg_conn() -> psycopg.Connection:
+    """Streamlit cache_resource holder for the singleton connection."""
+    return _open_pg_connection()
 
 
-def get_duckdb_conn() -> duckdb.DuckDBPyConnection:
-    """Return a read-only DuckDB connection to market_data.ddb."""
-    db_path = DB_DIR / "market_data.ddb"
-    return duckdb.connect(str(db_path), read_only=True)
+def get_pg_conn() -> psycopg.Connection:
+    """Return a healthy PostgreSQL connection for the swingrl database.
+
+    Uses Streamlit's cache_resource to reuse the connection across page renders
+    when possible, but transparently reconnects if a previous page closed the
+    cached singleton (which all pages 1-4 do at the end of their render). This
+    self-heal removes a footgun without requiring the consumer pages to change.
+    """
+    conn = _cached_pg_conn()
+    if conn.closed:
+        # Pre-existing pages call ``conn.close()`` at the end of their render,
+        # which closes the cached singleton. The next page load (or this one
+        # after a re-run) gets the closed connection — recover by clearing
+        # the cache and opening a fresh one.
+        _cached_pg_conn.clear()
+        conn = _cached_pg_conn()
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +81,7 @@ st.sidebar.divider()
 st.sidebar.subheader("System Status")
 
 try:
-    conn = get_sqlite_conn()
+    conn = get_pg_conn()
     cursor = conn.execute(
         "SELECT environment, MAX(timestamp) AS last_ts "
         "FROM portfolio_snapshots GROUP BY environment"
@@ -71,8 +89,8 @@ try:
     rows = cursor.fetchall()
     conn.close()
     if rows:
-        for env, last_ts in rows:
-            st.sidebar.text(f"{env.capitalize()}: {last_ts}")
+        for row in rows:
+            st.sidebar.text(f"{row['environment'].capitalize()}: {row['last_ts']}")
     else:
         st.sidebar.info("No portfolio data yet")
 except Exception:

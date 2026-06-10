@@ -1,7 +1,7 @@
-"""DuckDB file backup with CHECKPOINT and table/row verification.
+"""PostgreSQL backup via pg_dump with table/row verification.
 
-Flushes DuckDB WAL via CHECKPOINT, copies the file, and verifies the backup
-contains expected tables with row counts > 0.
+Creates timestamped SQL dumps and verifies that required tables exist with
+row counts > 0.
 
 Usage:
     from swingrl.backup.duckdb_backup import backup_duckdb
@@ -10,12 +10,12 @@ Usage:
 
 from __future__ import annotations
 
-import shutil
+import subprocess  # nosec B404
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import duckdb
+import psycopg
 import structlog
 
 if TYPE_CHECKING:
@@ -29,83 +29,91 @@ _REQUIRED_TABLES = ("ohlcv_daily", "ohlcv_4h")
 
 
 def backup_duckdb(config: SwingRLConfig, alerter: Alerter) -> bool:
-    """Create a timestamped DuckDB backup with table/row verification.
+    """Create a timestamped PostgreSQL backup with table/row verification.
 
-    Connects to DuckDB, runs CHECKPOINT to flush WAL, closes connection,
-    then copies the file. Opens the backup to verify required tables exist
-    and have row counts > 0. Never rotates backups (duckdb_rotate=False).
+    Runs pg_dump to produce a compressed SQL dump, then verifies the
+    live database has required tables with row counts > 0.
 
     Args:
-        config: Validated SwingRLConfig with system.duckdb_path and backup settings.
+        config: Validated SwingRLConfig with system.database_url and backup settings.
         alerter: Alerter instance for Discord notifications.
 
     Returns:
         True on success, False on failure.
     """
     try:
-        source_path = Path(config.system.duckdb_path)
-        if not source_path.exists():
-            raise FileNotFoundError(f"Source DuckDB not found: {source_path}")
+        database_url = config.system.database_url
 
-        # Flush WAL before copy
-        conn = duckdb.connect(str(source_path))
-        try:
-            conn.execute("CHECKPOINT")
-        finally:
-            conn.close()
-
-        backup_dir = Path(config.backup.backup_dir) / "duckdb"
+        backup_dir = Path(config.backup.backup_dir) / "postgres"
         backup_dir.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-        backup_path = backup_dir / f"market_data_{timestamp}.ddb"
+        backup_path = backup_dir / f"swingrl_{timestamp}.sql.gz"
 
-        shutil.copy2(str(source_path), str(backup_path))
+        # pg_dump with gzip compression
+        result = subprocess.run(  # nosec B603,B607
+            [
+                "pg_dump",
+                "--dbname",
+                database_url,
+                "--format=custom",
+                "--compress=6",
+                "--file",
+                str(backup_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
 
-        # Verify backup
-        _verify_backup(backup_path)
+        if result.returncode != 0:
+            raise RuntimeError(f"pg_dump failed: {result.stderr}")
 
-        log.info("duckdb_backup_complete", backup_path=str(backup_path))
+        # Verify live database has expected tables
+        _verify_backup(database_url)
+
+        log.info("postgres_backup_complete", backup_path=str(backup_path))
 
         alerter.send_alert(
             "info",
-            "DuckDB Backup Complete",
+            "PostgreSQL Backup Complete",
             f"Backup created: {backup_path.name}",
         )
         return True
 
     except Exception as exc:
-        log.error("duckdb_backup_failed", error=str(exc), exc_info=True)
+        log.error("postgres_backup_failed", error=str(exc), exc_info=True)
         alerter.send_alert(
             "critical",
-            "DuckDB Backup Failed",
+            "PostgreSQL Backup Failed",
             f"Backup failed: {exc}",
         )
         return False
 
 
-def _verify_backup(backup_path: Path) -> None:
-    """Verify the DuckDB backup has required tables with rows > 0.
+def _verify_backup(database_url: str) -> None:
+    """Verify the PostgreSQL database has required tables with rows > 0.
 
     Args:
-        backup_path: Path to the backup DuckDB file.
+        database_url: PostgreSQL connection string.
 
     Raises:
         RuntimeError: If required tables are missing or have zero rows.
     """
-    conn = duckdb.connect(str(backup_path), read_only=True)
-    try:
-        tables = [row[0] for row in conn.execute("SHOW TABLES").fetchall()]
+    with psycopg.connect(database_url) as conn:
+        cur = conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+        tables = [row[0] for row in cur.fetchall()]
 
         for table in _REQUIRED_TABLES:
             if table not in tables:
-                raise RuntimeError(f"Required table missing from backup: {table}")
+                raise RuntimeError(f"Required table missing: {table}")
 
-            row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # nosec B608
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {table}"  # noqa: S608  # nosec B608
+            ).fetchone()
             count = row[0] if row is not None else 0
             if count == 0:
-                raise RuntimeError(f"Table {table} has zero rows in backup")
+                raise RuntimeError(f"Table {table} has zero rows")
 
-            log.info("duckdb_backup_verified", table=table, row_count=count)
-    finally:
-        conn.close()
+            log.info("postgres_backup_verified", table=table, row_count=count)

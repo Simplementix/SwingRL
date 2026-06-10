@@ -46,7 +46,7 @@ _VERIFICATION_PATH: Path = Path("data/verification.json")
 
 
 def _count_rows(db: DatabaseManager, table: str) -> int:
-    """Count total rows in the given DuckDB table.
+    """Count total rows in the given PostgreSQL table.
 
     Args:
         db: Initialized DatabaseManager instance.
@@ -55,9 +55,11 @@ def _count_rows(db: DatabaseManager, table: str) -> int:
     Returns:
         Row count as integer.
     """
-    with db.duckdb() as cursor:
-        result = cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # nosec B608
-        return int(result[0]) if result else 0
+    with db.connection() as conn:
+        result = conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM {table}",  # noqa: S608  # nosec B608
+        ).fetchone()
+        return int(result["cnt"]) if result else 0
 
 
 # ---------------------------------------------------------------------------
@@ -117,16 +119,15 @@ def run_crypto(config: SwingRLConfig, backfill: bool) -> int:
     db = DatabaseManager(config)
     rows_before = _count_rows(db, "ohlcv_4h")
 
-    ingestor = BinanceIngestor(config)
-
-    if backfill:
-        for symbol in config.crypto.symbols:
-            ingestor.backfill(symbol)
-    else:
-        failed = ingestor.run_all(config.crypto.symbols, since=None)
-        if failed:
-            log.error("crypto_ingestion_failed", failed_symbols=failed)
-            raise DataError(f"Crypto ingestion failed for symbols: {failed}")
+    with BinanceIngestor(config) as ingestor:
+        if backfill:
+            for symbol in config.crypto.symbols:
+                ingestor.backfill(symbol)
+        else:
+            failed = ingestor.run_all(config.crypto.symbols, since=None)
+            if failed:
+                log.error("crypto_ingestion_failed", failed_symbols=failed)
+                raise DataError(f"Crypto ingestion failed for symbols: {failed}")
 
     rows_after = _count_rows(db, "ohlcv_4h")
     delta = max(0, rows_after - rows_before)
@@ -198,18 +199,16 @@ def resolve_crypto_gaps(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
 def run_features(config: SwingRLConfig) -> None:
     """Compute equity and crypto features via FeaturePipeline.
 
-    Opens a DuckDB connection and runs both compute_equity() and
+    Opens a PostgreSQL connection and runs both compute_equity() and
     compute_crypto() on the fresh data.
 
     Args:
         config: Validated SwingRLConfig.
     """
     db = DatabaseManager(config)
-    with db.duckdb() as _cursor:
-        conn = db._get_duckdb_conn()  # noqa: SLF001
-        pipeline = FeaturePipeline(config, conn)
-        pipeline.compute_equity()
-        pipeline.compute_crypto()
+    pipeline = FeaturePipeline(config, db)
+    pipeline.compute_equity()
+    pipeline.compute_crypto()
     log.info("feature_computation_complete")
 
 
@@ -235,7 +234,11 @@ def run_pipeline(config: SwingRLConfig, backfill: bool) -> int:
 
     equity_delta = run_equity(config, backfill=backfill)
     crypto_delta = run_crypto(config, backfill=backfill)
-    macro_delta = run_macro(config, backfill=backfill)
+    try:
+        macro_delta = run_macro(config, backfill=backfill)
+    except DataError:
+        log.warning("macro_ingestion_non_fatal", exc_info=True)
+        macro_delta = 0
 
     # Detect and fill crypto gaps from alternate sources (Binance Global)
     gap_results = detect_and_fill_crypto_gaps(config)

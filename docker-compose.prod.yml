@@ -14,15 +14,57 @@
 #   DISCORD_WEBHOOK_URL=...
 
 services:
+  swingrl-ollama:
+    container_name: swingrl-ollama
+    image: ollama/ollama:latest
+    # No memory or CPU limits — dedicated inference for epoch advice.
+    # qwen3:1.7b uses ~1.5 GB RAM. Let the OS manage resources.
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11435:11434"    # Different host port to avoid ragflow conflict
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  swingrl-memory:
+    container_name: swingrl-memory
+    build:
+      context: ./services/memory
+      dockerfile: Dockerfile
+    # Port exposed to host for validation scripts and operator curl commands.
+    ports:
+      - "127.0.0.1:8889:8889"
+    # 1 GB RAM / 1 CPU for consolidation workload headroom. Soft limit, shared CPUs.
+    mem_limit: 1g
+    cpus: 1.0
+    env_file: .env
+    volumes:
+      - ./db:/app/db
+      - ./data:/app/data
+      - ./config:/app/config
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8889/health\")'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   swingrl:
+    container_name: swingrl
     build:
       context: .
       dockerfile: Dockerfile
       target: production
-    # Resource limits — homelab has 8 GB RAM / 4 cores; cap at 2.5 GB / 1 CPU
-    # to leave headroom for the host OS and other services.
-    mem_limit: 2.5g
-    cpus: 1.0
+    # No mem_limit — swingrl is the primary workload on 64 GB homelab.
+    # Other containers use ~1.5 GB (memory 1G + dashboard 0.5G).
+    # SAC replay buffer (500K × n_envs=6) + 36 SubprocVecEnv fork workers
+    # peak ~12-15 GB during training. Let the OS manage memory.
+    cpus: 10.0
     # Secrets: loaded from .env on the host; never baked into the image.
     env_file: .env
     environment:
@@ -37,9 +79,14 @@ services:
       - ./logs:/app/logs
       - ./config:/app/config
       - ./status:/app/status
+    depends_on:
+      swingrl-memory:
+        # Soft dependency: memory agent is optional; app handles unavailability gracefully
+        condition: service_started
     restart: unless-stopped
 
   swingrl-dashboard:
+    container_name: swingrl-dashboard
     build:
       context: .
       dockerfile: dashboard/Dockerfile.dashboard
@@ -56,3 +103,6 @@ services:
     restart: unless-stopped
     depends_on:
       - swingrl
+
+volumes:
+  ollama_data:    # Named volume for Ollama model persistence across container restarts

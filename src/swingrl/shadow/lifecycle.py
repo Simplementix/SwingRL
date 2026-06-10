@@ -278,12 +278,16 @@ def _load_vec_normalize(stats_path: Path) -> Any:
         stats_path: Path to the .pkl statistics file.
 
     Returns:
-        Loaded VecNormalize instance.
+        Loaded VecNormalize instance with training disabled.
     """
-    from stable_baselines3.common.vec_env import VecNormalize  # noqa: PLC0415
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize  # noqa: PLC0415
 
     log.info("loading_vec_normalize", path=str(stats_path))
-    return VecNormalize.load(str(stats_path))  # type: ignore[call-arg]
+    dummy_env = DummyVecEnv([lambda: None])  # type: ignore[arg-type,return-value,list-item]
+    vec_normalize = VecNormalize.load(str(stats_path), venv=dummy_env)
+    vec_normalize.training = False
+    vec_normalize.norm_reward = False
+    return vec_normalize
 
 
 def smoke_test_model(model_path: Path, env_name: str, obs_dim: int) -> dict[str, bool]:

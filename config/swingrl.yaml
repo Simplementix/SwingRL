@@ -7,12 +7,15 @@ trading_mode: paper  # "paper" | "live"
 
 equity:
   symbols: [SPY, QQQ, VTI, XLV, XLI, XLE, XLF, XLK]
+  hmm_proxy_symbol: SPY         # market proxy for HMM regime detection (must be in symbols)
   max_position_size: 0.25       # max fraction of equity capital in one ETF position
   max_drawdown_pct: 0.10        # circuit breaker: halt equity env at 10% DD
   daily_loss_limit_pct: 0.02    # circuit breaker: halt equity env at 2% daily loss
+  min_order_usd: 1.0            # Alpaca minimum order floor ($1.00 fractional shares)
 
 crypto:
   symbols: [BTCUSDT, ETHUSDT]
+  hmm_proxy_symbol: BTCUSDT     # market proxy for HMM regime detection (must be in symbols)
   max_position_size: 0.50       # BTC can be up to 50% of crypto capital
   max_drawdown_pct: 0.12        # circuit breaker: halt crypto env at 12% DD
   daily_loss_limit_pct: 0.03    # circuit breaker: halt crypto env at 3% daily loss
@@ -43,8 +46,7 @@ environment:
   drawdown_penalty_coeff: 5.0            # soft penalty for drawdown threshold breach
 
 system:
-  duckdb_path: data/db/market_data.ddb   # DuckDB: OHLCV, macro, quarantine, ingestion log
-  sqlite_path: data/db/trading_ops.db    # SQLite: trades, positions, risk, events, alerts
+  database_url: ""                       # PostgreSQL — override via DATABASE_URL env var in Docker
 
 alerting:
   alert_cooldown_minutes: 30               # minimum minutes between repeat alerts
@@ -55,12 +57,13 @@ alerting:
   healthchecks_crypto_url: ""              # Healthchecks.io crypto cycle ping URL
 
 scheduler:
+  enabled: true                           # set true for live/paper trading; false during training-only
   apscheduler_db_path: db/apscheduler_jobs.sqlite  # SEPARATE from trading_ops.db
   misfire_grace_time: 300                  # seconds to tolerate late job execution
   max_workers: 4                           # APScheduler thread pool size
 
 backup:
-  sqlite_retention_days: 14         # days to keep SQLite backups
+  backup_retention_days: 14         # days to keep database backups
   duckdb_rotate: false              # rotate DuckDB snapshots (off in dev)
   backup_dir: backups/              # relative to repo root
   # offsite_host: ""                # rsync destination host (production only)
@@ -73,7 +76,7 @@ shadow:
   mdd_tolerance_ratio: 1.2          # shadow MDD must be <= active_MDD * ratio
 
 sentiment:
-  enabled: false                    # set true + install transformers to enable
+  enabled: true                    # set true + install transformers to enable
   model_name: ProsusAI/finbert      # HuggingFace model for sentiment scoring
   max_headlines_per_asset: 10       # max news headlines per asset per cycle
   finnhub_api_key: ""               # OVERRIDE via SWINGRL_SENTIMENT__FINNHUB_API_KEY
@@ -81,6 +84,103 @@ sentiment:
 security:
   key_rotation_days: 90             # reminder threshold for API key rotation
   env_file_permissions: "600"       # expected permissions on .env file
+
+memory_agent:
+  enabled: true                    # memory agent disabled by default — set true to enable
+  meta_training: false              # LLM hyperparameter meta-training (disabled by default)
+  base_url: "http://swingrl-memory:8889"
+  api_key: ""                       # OVERRIDE via SWINGRL_MEMORY_AGENT__API_KEY in .env
+  live_endpoints:
+    obs_enrichment: false
+    blend_weights: false
+    position_advice: false
+    trade_veto: false
+    cycle_gate: false
+    risk_thresholds: false
+  cloud_block_on_429: true            # skip cloud providers that returned 429 today (resets daily UTC)
+  cloud_block_codes: [429]            # HTTP status codes that trigger calendar-day blocking
+  ollama_instances:
+    - name: homelab
+      url: "http://swingrl-ollama:11434"
+      model: "qwen2.5:14b"
+      timeout: 300
+  # Epoch advice call frequency (fewer calls with smarter model = better than many garbage calls)
+  epoch_cadence_ppo: 20                        # restored: ~4 calls/fold (was 60 → only 1.4/fold, 48% delivery failure)
+  epoch_cadence_a2c: 8000                      # was 2000 → 4x fewer calls (~4 calls/fold)
+  epoch_cadence_sac: 40000                     # was 10000 → 4x fewer calls (~4 calls/fold)
+  epoch_cadence_default: 500                   # was 100
+  # Control folds: fold indices that skip reward adjustments (scientific control group)
+  # Empty list = all folds are treatment (backward compatible)
+  control_folds_equity: [0, 5, 10, 15, 20]    # 5 control, ~18 treatment (spread across market regimes)
+  control_folds_crypto: [0, 4, 9, 13]          # 4 control, ~10 treatment
+  # Epoch aggregation parameters (used by consolidation to summarize epoch memories)
+  outlier_iqr_mild: 1.5                     # Tukey mild fence multiplier for IQR outlier detection
+  outlier_iqr_extreme: 3.0                  # Tukey extreme fence multiplier
+  max_outlier_events: 3                     # max extreme events reported per metric per fold
+  skewness_min_n: 8                         # min snapshots to compute skewness (unreliable below)
+  confidence_n_low: 5                       # N <= this → "low" confidence label in fold summary
+  confidence_n_high: 15                     # N >= this → "high" confidence label
+
+  consolidation:
+    provider: "mistral"                     # key into providers map (fast ~18s, openrouter as backup)
+    model: ""                               # empty = use provider's default_model
+    timeout_sec: 1800
+    inter_phase_delay_sec: 60               # seconds between LLM calls to respect rate limits
+    rate_limit_max_retries: 3               # max 429 retry attempts per provider
+    rate_limit_backoff_base_sec: 30         # exponential backoff base (30, 60, 120s)
+    min_confidence_for_advice: 0.4          # minimum confidence for patterns used in query advice
+    max_patterns_per_merge: 2               # max patterns per dedup/merge LLM call
+    providers:
+      mistral:
+        base_url: "https://api.mistral.ai/v1"
+        api_key: ""                         # OVERRIDE via MISTRAL_API_KEY in .env
+        default_model: "mistral-large-latest"
+        timeout_sec: 600
+        max_tokens: 128000
+      openrouter:
+        base_url: "https://openrouter.ai/api/v1"
+        api_key: ""                         # OVERRIDE via OPENROUTER_API_KEY in .env
+        default_model: "nvidia/nemotron-3-super-120b-a12b:free"
+      gemini:
+        base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+        api_key: ""                         # OVERRIDE via GEMINI_API_KEY in .env
+        default_model: "gemini-2.5-flash"
+        timeout_sec: 60
+        max_tokens: 65536
+      cerebras:
+        base_url: "https://api.cerebras.ai/v1"
+        api_key: ""                         # OVERRIDE via CEREBRAS_API_KEY in .env
+        default_model: "qwen-3-235b-a22b-instruct-2507"
+        timeout_sec: 30
+        max_tokens: 65536
+      groq:
+        base_url: "https://api.groq.com/openai/v1"
+        api_key: ""                         # OVERRIDE via GROQ_API_KEY in .env
+        default_model: "meta-llama/llama-4-scout-17b-16e-instruct"
+        timeout_sec: 30
+        max_tokens: 8192                        # llama-4-scout hard limit; was 30000 (caused 400 on every call)
+      nvidia:
+        base_url: "https://integrate.api.nvidia.com/v1"
+        api_key: ""                         # OVERRIDE via NVIDIA_API_KEY in .env
+        default_model: "moonshotai/kimi-k2.5"
+
+training:
+  bounds:
+    hyperparam_bounds:
+      learning_rate: [0.00001, 0.001]
+      entropy_coeff: [0.0, 0.05]
+      clip_range: [0.1, 0.4]
+      n_epochs: [3, 20]
+      batch_size: [32, 512]
+      gamma: [0.95, 0.995]
+    reward_bounds:
+      profit: [0.10, 0.70]
+      sharpe: [0.10, 0.60]
+      drawdown: [0.05, 0.50]
+      turnover: [0.00, 0.20]
+  sac_buffer_size: 200000           # SAC replay buffer. Was 500K; reduced per research (smaller=better for non-stationary)
+  n_envs: 6                         # Parallel envs per training (SubprocVecEnv). 6 × 3 algo workers = 18 processes.
+  vecenv_backend: subproc            # "subproc" for parallel SubprocVecEnv, "dummy" for sequential DummyVecEnv
 
 features:
   equity_zscore_window: 252        # rolling z-score window for equity (trading days)

@@ -309,7 +309,7 @@ class TestEquityCycleSendsTradeEmbeds:
         mock_db = MagicMock()
         mock_config = MagicMock()
 
-        # Mock the sqlite context manager to return rows
+        # Mock the connection context manager to return rows
         mock_conn = MagicMock()
         mock_conn.execute.return_value.fetchall.return_value = [
             {
@@ -320,8 +320,8 @@ class TestEquityCycleSendsTradeEmbeds:
                 "drawdown_pct": 0.02,
             }
         ]
-        mock_db.sqlite.return_value.__enter__ = MagicMock(return_value=mock_conn)
-        mock_db.sqlite.return_value.__exit__ = MagicMock(return_value=False)
+        mock_db.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_db.connection.return_value.__exit__ = MagicMock(return_value=False)
 
         with patch("swingrl.scheduler.jobs.is_halted", return_value=False):
             with patch(

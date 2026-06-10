@@ -2,7 +2,7 @@
 
 All concrete ingestors (Alpaca, Binance, FRED) inherit from BaseIngestor
 and implement the fetch/validate/store protocol. After Parquet write,
-data is auto-synced to DuckDB and every run is logged to data_ingestion_log.
+data is auto-synced to PostgreSQL and every run is logged to data_ingestion_log.
 """
 
 from __future__ import annotations
@@ -19,13 +19,14 @@ import pandas as pd
 import structlog
 
 from swingrl.config.schema import SwingRLConfig
+from swingrl.data.pg_helpers import executemany_from_df
 
 if TYPE_CHECKING:
     from swingrl.data.db import DatabaseManager
 
 log = structlog.get_logger(__name__)
 
-# Column mappings for DuckDB sync per table
+# Column mappings for PostgreSQL sync per table
 _OHLCV_DAILY_COLUMNS = ["symbol", "date", "open", "high", "low", "close", "volume"]
 _OHLCV_4H_COLUMNS = ["symbol", "datetime", "open", "high", "low", "close", "volume"]
 _MACRO_COLUMNS = ["date", "series_id", "value"]
@@ -42,11 +43,11 @@ class BaseIngestor(abc.ABC):
 
     Constructor takes a SwingRLConfig. Concrete subclasses implement
     fetch(), validate(), and store(). The run() method orchestrates
-    the fetch -> validate -> store -> DuckDB sync -> log pipeline.
+    the fetch -> validate -> store -> PostgreSQL sync -> log pipeline.
 
     Subclasses must set class attributes:
         _environment: str — "equity", "crypto", or "macro"
-        _duckdb_table: str — target DuckDB table name
+        _duckdb_table: str — target table name
 
     Args:
         config: Validated SwingRLConfig instance.
@@ -117,10 +118,10 @@ class BaseIngestor(abc.ABC):
         ...
 
     def run(self, symbol: str, since: str | None = None) -> None:
-        """Orchestrate fetch -> validate -> store -> DuckDB sync -> log.
+        """Orchestrate fetch -> validate -> store -> PostgreSQL sync -> log.
 
         Every run creates a row in data_ingestion_log with timing, counts,
-        and status. Data is synced to DuckDB after Parquet write.
+        and status. Data is synced to PostgreSQL after Parquet write.
 
         Args:
             symbol: Ticker symbol to ingest.
@@ -150,7 +151,7 @@ class BaseIngestor(abc.ABC):
                 )
             if not clean.empty:
                 self.store(clean, symbol)
-                rows_inserted = self._sync_to_duckdb(clean, symbol)
+                rows_inserted = self._sync_to_db(clean, symbol)
             log.info("ingestor_run_complete", symbol=symbol, rows=len(clean))
         except Exception as e:
             status = "failed"
@@ -160,55 +161,43 @@ class BaseIngestor(abc.ABC):
             duration_ms = int((time.perf_counter() - start) * 1000)
             self._log_ingestion(run_id, symbol, status, rows_inserted, errors_count, duration_ms)
 
-    def _sync_to_duckdb(self, clean: pd.DataFrame, symbol: str) -> int:
-        """Sync validated data to DuckDB table.
+    def _sync_to_db(self, clean: pd.DataFrame, symbol: str) -> int:
+        """Sync validated data to PostgreSQL table.
 
-        Uses INSERT OR IGNORE for idempotency (primary key dedup).
+        Uses INSERT ... ON CONFLICT DO NOTHING for idempotency (primary key dedup).
 
         Args:
             clean: Validated DataFrame to sync.
             symbol: Ticker symbol for column mapping.
 
         Returns:
-            Number of rows inserted into DuckDB.
+            Number of rows sent to PostgreSQL.
         """
         db = self._get_db()
         if db is None:
-            log.warning("duckdb_sync_skipped", reason="no database manager")
+            log.warning("db_sync_skipped", reason="no database manager")
             return 0
 
         table = self._duckdb_table
         columns = _TABLE_COLUMN_MAP.get(table)
         if columns is None:
-            log.warning("duckdb_sync_skipped", reason="unknown table", table=table)
+            log.warning("db_sync_skipped", reason="unknown table", table=table)
             return 0
 
         try:
-            with db.duckdb() as cursor:
-                # Build a DataFrame with the columns DuckDB expects
-                sync_df = self._build_sync_df(clean, symbol, table)  # noqa: F841 — used by DuckDB replacement scan
-
-                # Get row count before insert
-                before = cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608  # nosec B608
-
-                # Use DuckDB's ability to query pandas DataFrames directly
-                col_list = ", ".join(columns)
-                cursor.execute(
-                    f"INSERT OR IGNORE INTO {table} ({col_list}) "  # noqa: S608  # nosec B608
-                    f"SELECT {col_list} FROM sync_df"
+            sync_df = self._build_sync_df(clean, symbol, table)
+            with db.connection() as conn:
+                inserted = executemany_from_df(
+                    conn, table, sync_df, columns, on_conflict="DO NOTHING"
                 )
-
-                after = cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608  # nosec B608
-                inserted = after - before
-
-            log.info("duckdb_sync_complete", symbol=symbol, table=table, rows=inserted)
-            return int(inserted)
+            log.info("db_sync_complete", symbol=symbol, table=table, rows=inserted)
+            return inserted
         except Exception:  # noqa: BLE001
-            log.warning("duckdb_sync_failed", symbol=symbol, table=table)
+            log.warning("db_sync_failed", symbol=symbol, table=table)
             return 0
 
     def _build_sync_df(self, clean: pd.DataFrame, symbol: str, table: str) -> pd.DataFrame:
-        """Build a DataFrame matching the DuckDB table schema.
+        """Build a DataFrame matching the PostgreSQL table schema.
 
         Args:
             clean: Source DataFrame with OHLCV data.
@@ -216,7 +205,7 @@ class BaseIngestor(abc.ABC):
             table: Target table name for column mapping.
 
         Returns:
-            DataFrame with columns matching the DuckDB table schema.
+            DataFrame with columns matching the PostgreSQL table schema.
         """
         sync_df = clean.copy()
 
@@ -255,7 +244,7 @@ class BaseIngestor(abc.ABC):
             run_id: UUID for this run.
             symbol: Ticker symbol.
             status: "success", "no_data", or "failed".
-            rows_inserted: Number of rows inserted into DuckDB.
+            rows_inserted: Number of rows inserted into PostgreSQL.
             errors_count: Number of quarantined rows.
             duration_ms: Wall-clock duration in milliseconds.
         """
@@ -264,12 +253,12 @@ class BaseIngestor(abc.ABC):
             return
 
         try:
-            with db.duckdb() as cursor:
-                cursor.execute(
+            with db.connection() as conn:
+                conn.execute(
                     "INSERT INTO data_ingestion_log "
                     "(run_id, environment, symbol, status, rows_inserted, "
                     "errors_count, duration_ms, binance_weight_used) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                     [
                         run_id,
                         self._environment,
@@ -290,9 +279,9 @@ class BaseIngestor(abc.ABC):
             )
 
     def _store_quarantine(self, df: pd.DataFrame, symbol: str) -> Path:
-        """Write quarantined rows to data/quarantine/ and DuckDB data_quarantine.
+        """Write quarantined rows to data/quarantine/ and PostgreSQL data_quarantine.
 
-        Parquet write is retained for backward compatibility. DuckDB write
+        Parquet write is retained for backward compatibility. PostgreSQL write
         serializes each row to JSON with failure reason and severity.
 
         Args:
@@ -310,11 +299,11 @@ class BaseIngestor(abc.ABC):
         df.to_parquet(path, index=True)
         log.info("quarantine_written", path=str(path), rows=len(df))
 
-        # DuckDB write
+        # PostgreSQL write
         db = self._get_db()
         if db is not None:
             try:
-                with db.duckdb() as cursor:
+                with db.connection() as conn:
                     for _, row in df.iterrows():
                         # Serialize the row data to JSON (exclude 'reason' column)
                         data_cols = [c for c in df.columns if c != "reason"]
@@ -322,15 +311,15 @@ class BaseIngestor(abc.ABC):
                         raw_json = json.dumps(row_data)
                         reason = str(row.get("reason", "unknown"))
 
-                        cursor.execute(
+                        conn.execute(
                             "INSERT INTO data_quarantine "
                             "(source, symbol, raw_data_json, failure_reason, severity) "
-                            "VALUES (?, ?, ?, ?, ?)",
+                            "VALUES (%s, %s, %s, %s, %s)",
                             [self._environment, symbol, raw_json, reason, "warning"],
                         )
-                log.info("quarantine_duckdb_written", symbol=symbol, rows=len(df))
+                log.info("quarantine_db_written", symbol=symbol, rows=len(df))
             except Exception:  # noqa: BLE001
-                log.warning("quarantine_duckdb_failed", symbol=symbol)
+                log.warning("quarantine_db_failed", symbol=symbol)
 
         return path
 
@@ -349,61 +338,53 @@ def _serialize_value(val: object) -> object:
     return str(val)
 
 
-def sync_parquet_to_duckdb(
+def sync_parquet_to_db(
     parquet_path: Path,
     table: str,
     symbol: str,
     db: DatabaseManager,
 ) -> int:
-    """Bulk-load a Parquet file into a DuckDB table.
+    """Bulk-load a Parquet file into a PostgreSQL table.
 
-    Uses DuckDB's read_parquet() for fast bulk loading with INSERT OR IGNORE
-    for idempotency (primary key dedup).
+    Reads the Parquet file via pandas, prepares the DataFrame with the
+    correct column layout (including the symbol column), then bulk-inserts
+    via executemany with ON CONFLICT DO NOTHING for idempotency.
 
     Args:
         parquet_path: Path to the Parquet file to load.
-        table: Target DuckDB table name (e.g. "ohlcv_daily", "ohlcv_4h").
+        table: Target table name (e.g. "ohlcv_daily", "ohlcv_4h").
         symbol: Ticker symbol to add as column value.
         db: DatabaseManager instance with initialized schema.
 
     Returns:
-        Number of rows loaded into DuckDB.
+        Number of rows sent to PostgreSQL.
     """
     columns = _TABLE_COLUMN_MAP.get(table)
     if columns is None:
         log.warning("parquet_sync_skipped", reason="unknown table", table=table)
         return 0
 
-    with db.duckdb() as cursor:
-        before = cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608  # nosec B608
+    df = pd.read_parquet(parquet_path)
 
-        # Read parquet and add symbol column, then insert
-        # Parquet stores pandas index as __index_level_0__ by default
-        idx = "__index_level_0__"
-        if table == "ohlcv_daily":
-            cursor.execute(
-                f"INSERT OR IGNORE INTO {table} ({', '.join(columns)}) "  # noqa: S608  # nosec B608
-                f'SELECT ?, "{idx}"::DATE, open, high, low, close, volume '
-                f"FROM read_parquet('{parquet_path}')",
-                [symbol],
-            )
-        elif table == "ohlcv_4h":
-            cursor.execute(
-                f"INSERT OR IGNORE INTO {table} ({', '.join(columns)}) "  # noqa: S608  # nosec B608
-                f'SELECT ?, "{idx}"::TIMESTAMP, open, high, low, close, volume '
-                f"FROM read_parquet('{parquet_path}')",
-                [symbol],
-            )
-        elif table == "macro_features":
-            cursor.execute(
-                f"INSERT OR IGNORE INTO {table} ({', '.join(columns)}) "  # noqa: S608  # nosec B608
-                f'SELECT "{idx}"::DATE, ?, value '
-                f"FROM read_parquet('{parquet_path}')",
-                [symbol],
-            )
+    # Build sync DataFrame matching table schema
+    sync_df = df.copy()
+    if table == "ohlcv_daily":
+        sync_df["symbol"] = symbol
+        sync_df["date"] = pd.DatetimeIndex(sync_df.index).date
+    elif table == "ohlcv_4h":
+        sync_df["symbol"] = symbol
+        sync_df["datetime"] = sync_df.index
+    elif table == "macro_features":
+        dt_idx = pd.DatetimeIndex(sync_df.index)
+        sync_df["date"] = dt_idx.date if hasattr(dt_idx, "date") else sync_df.index
+        sync_df["series_id"] = symbol
 
-        after = cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608  # nosec B608
-        loaded = after - before
+    with db.connection() as conn:
+        loaded = executemany_from_df(conn, table, sync_df, columns, on_conflict="DO NOTHING")
 
-    log.info("parquet_to_duckdb_complete", path=str(parquet_path), table=table, rows=loaded)
-    return int(loaded)
+    log.info("parquet_to_db_complete", path=str(parquet_path), table=table, rows=loaded)
+    return loaded
+
+
+# Backward-compatible alias
+sync_parquet_to_duckdb = sync_parquet_to_db

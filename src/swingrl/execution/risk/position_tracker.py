@@ -1,7 +1,7 @@
-"""Portfolio state reader from SQLite positions and snapshots.
+"""Portfolio state reader from database positions and snapshots.
 
 Provides real-time portfolio state for risk evaluation and observation assembly.
-All reads from SQLite tables: positions, portfolio_snapshots, trades.
+All reads from tables: positions, portfolio_snapshots, trades.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ log = structlog.get_logger(__name__)
 
 
 class PositionTracker:
-    """Read portfolio state from SQLite for risk checks and observation assembly.
+    """Read portfolio state from database for risk checks and observation assembly.
 
     Args:
-        db: DatabaseManager for SQLite access.
+        db: DatabaseManager for database access.
         config: SwingRLConfig for initial capital and symbol lists.
     """
 
@@ -55,15 +55,21 @@ class PositionTracker:
         Returns:
             Portfolio value as float.
         """
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT total_value FROM portfolio_snapshots "
-                "WHERE environment = ? ORDER BY timestamp DESC LIMIT 1",
+                "WHERE environment = %s ORDER BY timestamp DESC LIMIT 1",
                 (env,),
             ).fetchone()
         if row is not None:
             return float(row["total_value"])
-        return self._initial_capital(env)
+        fallback = self._initial_capital(env)
+        log.warning(
+            "portfolio_value_fallback_to_initial_capital",
+            environment=env,
+            initial_capital=fallback,
+        )
+        return fallback
 
     def get_positions(self, env: str) -> list[dict[str, Any]]:
         """Return list of positions for environment.
@@ -75,10 +81,10 @@ class PositionTracker:
             List of position dicts with keys: symbol, quantity, cost_basis,
             last_price, unrealized_pnl, updated_at.
         """
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             rows = conn.execute(
                 "SELECT symbol, quantity, cost_basis, last_price, "
-                "unrealized_pnl, updated_at FROM positions WHERE environment = ?",
+                "unrealized_pnl, updated_at FROM positions WHERE environment = %s",
                 (env,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -94,15 +100,21 @@ class PositionTracker:
         Returns:
             High water mark as float.
         """
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT high_water_mark FROM portfolio_snapshots "
-                "WHERE environment = ? ORDER BY timestamp DESC LIMIT 1",
+                "WHERE environment = %s ORDER BY timestamp DESC LIMIT 1",
                 (env,),
             ).fetchone()
         if row is not None:
             return float(row["high_water_mark"])
-        return self._initial_capital(env)
+        fallback = self._initial_capital(env)
+        log.warning(
+            "high_water_mark_fallback_to_initial_capital",
+            environment=env,
+            initial_capital=fallback,
+        )
+        return fallback
 
     def get_daily_pnl(self, env: str) -> float:
         """Return today's P&L for environment.
@@ -116,12 +128,12 @@ class PositionTracker:
             Daily P&L as float.
         """
         today_prefix = datetime.now(tz=UTC).strftime("%Y-%m-%d")
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT daily_pnl FROM portfolio_snapshots "
-                "WHERE environment = ? AND timestamp LIKE ? "
+                "WHERE environment = %s AND timestamp::date = %s::date "
                 "ORDER BY timestamp DESC LIMIT 1",
-                (env, f"{today_prefix}%"),
+                (env, today_prefix),
             ).fetchone()
         if row is not None:
             return float(row["daily_pnl"])
@@ -167,12 +179,12 @@ class PositionTracker:
         drawdown_pct = 1.0 - portfolio_value / hwm if hwm > 0 else 0.0
         timestamp = datetime.now(tz=UTC).isoformat()
 
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
                 "(timestamp, environment, total_value, cash_balance, "
                 "high_water_mark, daily_pnl, drawdown_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (timestamp, env, portfolio_value, cash, hwm, daily_pnl, drawdown_pct),
             )
         log.info(
@@ -186,10 +198,12 @@ class PositionTracker:
     def get_portfolio_state_array(self, env: str) -> np.ndarray:
         """Build numpy array for ObservationAssembler.
 
-        Equity (27,): [cash_ratio, exposure, daily_return,
-                       8x weight, 8x unrealized_pnl_pct, 8x days_since_trade]
-        Crypto (9,):  [cash_ratio, exposure, daily_return,
-                       2x weight, 2x unrealized_pnl_pct, 2x days_since_trade]
+        Equity (35,): [cash_ratio, exposure, daily_return,
+                       per-asset interleaved: weight, weight_dev, unrealized_pnl_pct,
+                       days_since_trade] x 8
+        Crypto (11,): [cash_ratio, exposure, daily_return,
+                       per-asset interleaved: weight, weight_dev, unrealized_pnl_pct,
+                       days_since_trade] x 2
 
         Args:
             env: "equity" or "crypto".
@@ -199,8 +213,8 @@ class PositionTracker:
         """
         symbols = self._symbols(env)
         n_assets = len(symbols)
-        # 3 global + 3 per asset (weight, unrealized_pnl_pct, days_since_trade)
-        state = np.zeros(3 + 3 * n_assets, dtype=np.float32)
+        # 3 global + 4 per asset (weight, weight_deviation, unrealized_pnl_pct, days_since_trade)
+        state = np.zeros(3 + 4 * n_assets, dtype=np.float32)
 
         portfolio_value = self.get_portfolio_value(env)
         exposure = self.get_exposure(env)
@@ -217,6 +231,7 @@ class PositionTracker:
         now = datetime.now(tz=UTC)
 
         for i, symbol in enumerate(symbols):
+            base_idx = 3 + i * 4
             pos = pos_by_symbol.get(symbol)
             if pos is None:
                 continue
@@ -227,17 +242,21 @@ class PositionTracker:
             position_value = abs(qty * last_price)
 
             # Weight
-            state[3 + i] = position_value / portfolio_value if portfolio_value > 0 else 0.0
+            weight = position_value / portfolio_value if portfolio_value > 0 else 0.0
+            state[base_idx] = weight
+
+            # Weight deviation from equal-weight target (0.0 when no exposure)
+            state[base_idx + 1] = weight - (1.0 / n_assets) if exposure > 0 else 0.0
 
             # Unrealized PnL %
             if cost_basis > 0:
-                state[3 + n_assets + i] = (last_price - cost_basis) / cost_basis
+                state[base_idx + 2] = (last_price - cost_basis) / cost_basis
             else:
-                state[3 + n_assets + i] = 0.0
+                state[base_idx + 2] = 0.0
 
             # Days since last trade for this symbol
             days = self._days_since_trade(env, symbol, now)
-            state[3 + 2 * n_assets + i] = float(days)
+            state[base_idx + 3] = float(days)
 
         return state
 
@@ -252,10 +271,10 @@ class PositionTracker:
         Returns:
             Number of days since last trade, or 0 if no trades found.
         """
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT timestamp FROM trades "
-                "WHERE symbol = ? AND environment = ? "
+                "WHERE symbol = %s AND environment = %s "
                 "ORDER BY timestamp DESC LIMIT 1",
                 (symbol, env),
             ).fetchone()

@@ -1,4 +1,4 @@
-"""Macro feature alignment via DuckDB ASOF JOIN.
+"""Macro feature alignment via PostgreSQL LATERAL JOIN.
 
 Aligns 5 FRED macro series (VIX, yield curve, Fed Funds, CPI, unemployment)
 to OHLCV bars using release_date for look-ahead bias prevention. Derives
@@ -7,7 +7,7 @@ to OHLCV bars using release_date for look-ahead bias prevention. Derives
 Usage:
     from swingrl.features.macro import MacroFeatureAligner
 
-    aligner = MacroFeatureAligner(duckdb_conn)
+    aligner = MacroFeatureAligner(db)
     macro_df = aligner.align_equity("SPY", "2023-01-01", "2023-12-31")
 """
 
@@ -17,15 +17,20 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import psycopg
 import structlog
+
+from swingrl.data.pg_helpers import fetchdf
 
 log = structlog.get_logger(__name__)
 
 # VIX z-score rolling window (business days)
 _VIX_ZSCORE_WINDOW = 252
 
-# ASOF JOIN query for equity daily bars
-_EQUITY_ASOF_QUERY = """
+# LATERAL JOIN query for equity daily bars — PostgreSQL equivalent of ASOF JOIN.
+# Each LATERAL subquery finds the most recent macro value on or before the bar date.
+# Requires index: macro_features(series_id, release_date DESC)
+_EQUITY_LATERAL_QUERY = """
     SELECT
         p.symbol,
         p.date,
@@ -36,25 +41,40 @@ _EQUITY_ASOF_QUERY = """
         cpi.value AS cpi_value,
         unemp.value AS unemployment_rate
     FROM ohlcv_daily p
-    ASOF JOIN (SELECT release_date, value FROM macro_features WHERE series_id = 'VIXCLS')
-        AS vix ON p.date >= vix.release_date
-    ASOF JOIN (SELECT release_date, value FROM macro_features WHERE series_id = 'T10Y2Y')
-        AS t10y2y ON p.date >= t10y2y.release_date
-    ASOF JOIN (SELECT release_date, value FROM macro_features WHERE series_id = 'DFF')
-        AS dff ON p.date >= dff.release_date
-    ASOF JOIN (SELECT release_date, value FROM macro_features WHERE series_id = 'CPIAUCSL')
-        AS cpi ON p.date >= cpi.release_date
-    ASOF JOIN (SELECT release_date, value FROM macro_features WHERE series_id = 'UNRATE')
-        AS unemp ON p.date >= unemp.release_date
-    WHERE p.symbol = $1
-      AND p.date >= CAST($2 AS DATE)
-      AND p.date <= CAST($3 AS DATE)
+    LEFT JOIN LATERAL (
+        SELECT value FROM macro_features
+        WHERE series_id = 'VIXCLS' AND release_date <= p.date
+        ORDER BY release_date DESC LIMIT 1
+    ) AS vix ON true
+    LEFT JOIN LATERAL (
+        SELECT value FROM macro_features
+        WHERE series_id = 'T10Y2Y' AND release_date <= p.date
+        ORDER BY release_date DESC LIMIT 1
+    ) AS t10y2y ON true
+    LEFT JOIN LATERAL (
+        SELECT value FROM macro_features
+        WHERE series_id = 'DFF' AND release_date <= p.date
+        ORDER BY release_date DESC LIMIT 1
+    ) AS dff ON true
+    LEFT JOIN LATERAL (
+        SELECT value FROM macro_features
+        WHERE series_id = 'CPIAUCSL' AND release_date <= p.date
+        ORDER BY release_date DESC LIMIT 1
+    ) AS cpi ON true
+    LEFT JOIN LATERAL (
+        SELECT value FROM macro_features
+        WHERE series_id = 'UNRATE' AND release_date <= p.date
+        ORDER BY release_date DESC LIMIT 1
+    ) AS unemp ON true
+    WHERE p.symbol = %s
+      AND p.date >= %s::DATE
+      AND p.date <= %s::DATE
     ORDER BY p.date
 """
 
-# ASOF JOIN query for crypto 4H bars — joins against ohlcv_4h
-# Macro data forward-fills from last available equity close
-_CRYPTO_ASOF_QUERY = """
+# LATERAL JOIN query for crypto 4H bars — joins against ohlcv_4h.
+# Macro data forward-fills from last available equity close.
+_CRYPTO_LATERAL_QUERY = """
     SELECT
         p.symbol,
         p.datetime,
@@ -65,25 +85,40 @@ _CRYPTO_ASOF_QUERY = """
         cpi.value AS cpi_value,
         unemp.value AS unemployment_rate
     FROM ohlcv_4h p
-    ASOF JOIN (SELECT release_date, value FROM macro_features WHERE series_id = 'VIXCLS')
-        AS vix ON CAST(p.datetime AS DATE) >= vix.release_date
-    ASOF JOIN (SELECT release_date, value FROM macro_features WHERE series_id = 'T10Y2Y')
-        AS t10y2y ON CAST(p.datetime AS DATE) >= t10y2y.release_date
-    ASOF JOIN (SELECT release_date, value FROM macro_features WHERE series_id = 'DFF')
-        AS dff ON CAST(p.datetime AS DATE) >= dff.release_date
-    ASOF JOIN (SELECT release_date, value FROM macro_features WHERE series_id = 'CPIAUCSL')
-        AS cpi ON CAST(p.datetime AS DATE) >= cpi.release_date
-    ASOF JOIN (SELECT release_date, value FROM macro_features WHERE series_id = 'UNRATE')
-        AS unemp ON CAST(p.datetime AS DATE) >= unemp.release_date
-    WHERE p.symbol = $1
-      AND p.datetime >= CAST($2 AS TIMESTAMP)
-      AND p.datetime <= CAST($3 AS TIMESTAMP)
+    LEFT JOIN LATERAL (
+        SELECT value FROM macro_features
+        WHERE series_id = 'VIXCLS' AND release_date <= p.datetime::DATE
+        ORDER BY release_date DESC LIMIT 1
+    ) AS vix ON true
+    LEFT JOIN LATERAL (
+        SELECT value FROM macro_features
+        WHERE series_id = 'T10Y2Y' AND release_date <= p.datetime::DATE
+        ORDER BY release_date DESC LIMIT 1
+    ) AS t10y2y ON true
+    LEFT JOIN LATERAL (
+        SELECT value FROM macro_features
+        WHERE series_id = 'DFF' AND release_date <= p.datetime::DATE
+        ORDER BY release_date DESC LIMIT 1
+    ) AS dff ON true
+    LEFT JOIN LATERAL (
+        SELECT value FROM macro_features
+        WHERE series_id = 'CPIAUCSL' AND release_date <= p.datetime::DATE
+        ORDER BY release_date DESC LIMIT 1
+    ) AS cpi ON true
+    LEFT JOIN LATERAL (
+        SELECT value FROM macro_features
+        WHERE series_id = 'UNRATE' AND release_date <= p.datetime::DATE
+        ORDER BY release_date DESC LIMIT 1
+    ) AS unemp ON true
+    WHERE p.symbol = %s
+      AND p.datetime >= %s::TIMESTAMPTZ
+      AND p.datetime <= %s::TIMESTAMPTZ
     ORDER BY p.datetime
 """
 
 
 class MacroFeatureAligner:
-    """Aligns macro features to OHLCV bars via DuckDB ASOF JOIN.
+    """Aligns macro features to OHLCV bars via PostgreSQL LATERAL JOIN.
 
     Produces 6 derived macro features:
     1. vix_zscore: VIX 1-year rolling z-score
@@ -94,16 +129,39 @@ class MacroFeatureAligner:
     6. unemployment_3m_direction: binary (1 if improving = lower, else 0)
     """
 
-    def __init__(self, conn: Any) -> None:
-        """Initialize with DuckDB connection.
+    def __init__(self, db: Any) -> None:
+        """Initialize with DatabaseManager or raw psycopg connection.
 
         Args:
-            conn: DuckDB connection (not cursor) for executing queries.
+            db: DatabaseManager instance providing PostgreSQL connections,
+                or a raw psycopg Connection for direct use.
         """
-        self._conn = conn
+        self._db = db
+        # Detect whether db is a raw psycopg Connection vs a DatabaseManager
+        self._is_raw_conn = isinstance(db, psycopg.Connection)
+
+    def _execute_query(self, query: str, params: list[object]) -> pd.DataFrame:
+        """Execute a query and return a DataFrame via fetchdf.
+
+        Handles both DatabaseManager (context manager) and raw psycopg
+        connections transparently.
+
+        Args:
+            query: SQL query string with %s placeholders.
+            params: Query parameters.
+
+        Returns:
+            DataFrame with query results.
+        """
+        if self._is_raw_conn:
+            cur = self._db.execute(query, params)
+            return fetchdf(cur)
+        with self._db.connection() as conn:
+            cur = conn.execute(query, params)
+            return fetchdf(cur)
 
     def _fetch_macro_aligned_equity(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        """Fetch raw macro values aligned to equity daily bars via ASOF JOIN.
+        """Fetch raw macro values aligned to equity daily bars via LATERAL JOIN.
 
         Args:
             symbol: Equity symbol (e.g., "SPY").
@@ -113,9 +171,7 @@ class MacroFeatureAligner:
         Returns:
             DataFrame with date index and raw macro columns.
         """
-        result: pd.DataFrame = self._conn.execute(
-            _EQUITY_ASOF_QUERY, [symbol, start, end]
-        ).fetchdf()
+        result = self._execute_query(_EQUITY_LATERAL_QUERY, [symbol, start, end])
 
         if "date" in result.columns:
             result = result.set_index("date")
@@ -130,7 +186,7 @@ class MacroFeatureAligner:
         return result
 
     def _fetch_macro_aligned_crypto(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        """Fetch raw macro values aligned to crypto 4H bars via ASOF JOIN.
+        """Fetch raw macro values aligned to crypto 4H bars via LATERAL JOIN.
 
         Args:
             symbol: Crypto symbol (e.g., "BTCUSDT").
@@ -140,9 +196,7 @@ class MacroFeatureAligner:
         Returns:
             DataFrame with datetime index and raw macro columns.
         """
-        result: pd.DataFrame = self._conn.execute(
-            _CRYPTO_ASOF_QUERY, [symbol, start, end]
-        ).fetchdf()
+        result = self._execute_query(_CRYPTO_LATERAL_QUERY, [symbol, start, end])
 
         if "datetime" in result.columns:
             result = result.set_index("datetime")
@@ -157,7 +211,7 @@ class MacroFeatureAligner:
         return result
 
     def compute_derived_macro(self, raw_macro: pd.DataFrame) -> pd.DataFrame:
-        """Compute 6 derived macro features from raw ASOF-joined values.
+        """Compute 6 derived macro features from raw LATERAL-joined values.
 
         Args:
             raw_macro: DataFrame with columns: vix_value, yield_curve_spread,
@@ -205,7 +259,7 @@ class MacroFeatureAligner:
     def align_equity(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         """Align macro features to equity daily bars.
 
-        Fetches raw macro data via ASOF JOIN, computes 6 derived features,
+        Fetches raw macro data via LATERAL JOIN, computes 6 derived features,
         and forward-fills any remaining NaN.
 
         Args:

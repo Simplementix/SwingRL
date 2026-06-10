@@ -117,15 +117,15 @@ class BinanceSimAdapter:
         )
 
     def get_positions(self) -> list[dict[str, object]]:
-        """Get current crypto positions from SQLite.
+        """Get current crypto positions from database.
 
         Returns:
             List of position dicts for the crypto environment.
         """
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             rows = conn.execute(
                 "SELECT symbol, quantity, cost_basis, last_price, unrealized_pnl "
-                "FROM positions WHERE environment = ?",
+                "FROM positions WHERE environment = %s",
                 ("crypto",),
             ).fetchall()
 
@@ -139,6 +139,55 @@ class BinanceSimAdapter:
             }
             for row in rows
         ]
+
+    def emergency_sell(self, symbol: str, quantity: float) -> FillResult:
+        """Emergency market-sell a crypto position (simulated).
+
+        Args:
+            symbol: Binance symbol (e.g., "BTCUSDT").
+            quantity: Number of units to sell.
+
+        Returns:
+            FillResult with simulated fill details.
+
+        Raises:
+            BrokerError: If mid-price fetch fails.
+        """
+        mid_price, _bid, _ask = self._get_mid_price(symbol)
+        fill_price = mid_price * (1 - self._slippage)
+        commission = quantity * fill_price * _COMMISSION_RATE
+        slippage_amount = abs(fill_price - mid_price) * quantity
+        trade_id = str(uuid.uuid4())
+
+        # Update position in DB
+        try:
+            with self._db.connection() as conn:
+                conn.execute(
+                    "UPDATE positions SET quantity = 0 WHERE symbol = %s AND environment = %s",
+                    (symbol, "crypto"),
+                )
+        except Exception:
+            log.warning("emergency_sell_db_update_failed", symbol=symbol, exc_info=True)
+
+        log.info(
+            "emergency_sell_simulated",
+            symbol=symbol,
+            quantity=quantity,
+            fill_price=fill_price,
+            trade_id=trade_id,
+        )
+
+        return FillResult(
+            trade_id=trade_id,
+            symbol=symbol,
+            side="sell",
+            quantity=quantity,
+            fill_price=fill_price,
+            commission=commission,
+            slippage=slippage_amount,
+            environment="crypto",
+            broker="binance_us",
+        )
 
     def cancel_order(self, order_id: str) -> bool:
         """No-op for simulated fills.
@@ -189,9 +238,15 @@ class BinanceSimAdapter:
                 response.raise_for_status()
                 data = response.json()
 
+                if not data.get("bids") or not data.get("asks"):
+                    raise BrokerError(f"Empty orderbook for {symbol} — no bids or asks")
+
                 best_bid = float(data["bids"][0][0])
                 best_ask = float(data["asks"][0][0])
                 mid = (best_bid + best_ask) / 2.0
+
+                if mid <= 0:
+                    raise BrokerError(f"Zero or negative mid-price for {symbol}: {mid}")
 
                 # Spread sanity check
                 spread_pct = (best_ask - best_bid) / mid
@@ -223,10 +278,10 @@ class BinanceSimAdapter:
 
         # Record API error for automated trigger detection
         try:
-            with self._db.sqlite() as conn:
+            with self._db.connection() as conn:
                 conn.execute(
                     "INSERT INTO api_errors (timestamp, broker, status_code, endpoint, "
-                    "error_message) VALUES (?, ?, ?, ?, ?)",
+                    "error_message) VALUES (%s, %s, %s, %s, %s)",
                     (
                         datetime.now(UTC).isoformat(),
                         "binance_us",

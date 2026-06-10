@@ -1,8 +1,8 @@
-"""Circuit breaker state machine with SQLite persistence.
+"""Circuit breaker state machine with PostgreSQL persistence.
 
 Three states: ACTIVE -> HALTED -> RAMPING -> ACTIVE
 Triggers on drawdown or daily loss threshold breach.
-Persists halt events in circuit_breaker_events SQLite table.
+Persists halt events in circuit_breaker_events table.
 
 Cooldown periods:
 - Equity: 5 business days (NYSE calendar)
@@ -39,11 +39,11 @@ class CBState(enum.Enum):
 
 
 class CircuitBreaker:
-    """Per-environment circuit breaker with SQLite persistence.
+    """Per-environment circuit breaker with PostgreSQL persistence.
 
     Args:
         environment: "equity" or "crypto".
-        db: DatabaseManager for SQLite access.
+        db: DatabaseManager for database access.
         config: SwingRLConfig for thresholds and initial capital.
     """
 
@@ -93,9 +93,9 @@ class CircuitBreaker:
                 )
                 return CBState.HALTED
 
-        # Check daily loss
+        # Check daily loss against high-water mark
         if daily_pnl < 0:
-            daily_loss_pct = abs(daily_pnl) / self._initial_capital
+            daily_loss_pct = abs(daily_pnl) / high_water_mark if high_water_mark > 0 else 0.0
             if daily_loss_pct >= self._daily_limit:
                 self._trigger(
                     trigger_value=daily_loss_pct,
@@ -107,7 +107,7 @@ class CircuitBreaker:
         return self.get_state()
 
     def get_state(self) -> CBState:
-        """Load current state from SQLite.
+        """Load current state from database.
 
         Returns:
             ACTIVE if no unresolved halt, HALTED if within initial cooldown,
@@ -178,10 +178,10 @@ class CircuitBreaker:
     def resume(self) -> None:
         """Mark latest halt event as resumed."""
         now = datetime.now(tz=UTC).isoformat()
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
-                "UPDATE circuit_breaker_events SET resumed_at = ? "
-                "WHERE environment = ? AND resumed_at IS NULL",
+                "UPDATE circuit_breaker_events SET resumed_at = %s "
+                "WHERE environment = %s AND resumed_at IS NULL",
                 (now, self._environment),
             )
         log.info("circuit_breaker_resumed", environment=self._environment)
@@ -191,11 +191,11 @@ class CircuitBreaker:
         event_id = str(uuid4())
         triggered_at = datetime.now(tz=UTC).isoformat()
 
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
                 "INSERT INTO circuit_breaker_events "
                 "(event_id, environment, triggered_at, trigger_value, threshold, reason) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s)",
                 (event_id, self._environment, triggered_at, trigger_value, threshold, reason),
             )
 
@@ -209,10 +209,10 @@ class CircuitBreaker:
 
     def _latest_event(self) -> dict[str, str | float | None] | None:
         """Load the latest circuit breaker event for this environment."""
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT * FROM circuit_breaker_events "
-                "WHERE environment = ? ORDER BY triggered_at DESC LIMIT 1",
+                "WHERE environment = %s ORDER BY triggered_at DESC LIMIT 1",
                 (self._environment,),
             ).fetchone()
         if row is None:
@@ -293,6 +293,7 @@ class GlobalCircuitBreaker:
         self._circuit_breakers = circuit_breakers
         self._config = config
         self._total_initial = config.capital.equity_usd + config.capital.crypto_usd
+        self._total_hwm: float = self._total_initial
 
     def check_combined(
         self,
@@ -311,8 +312,11 @@ class GlobalCircuitBreaker:
         total_value = sum(portfolio_values.values())
         total_daily_pnl = sum(daily_pnls.values())
 
-        # Check combined drawdown
-        combined_dd = 1.0 - total_value / self._total_initial if self._total_initial > 0 else 0.0
+        # Update high-water mark
+        self._total_hwm = max(self._total_hwm, total_value)
+
+        # Check combined drawdown against high-water mark
+        combined_dd = 1.0 - total_value / self._total_hwm if self._total_hwm > 0 else 0.0
         if combined_dd >= self.GLOBAL_MAX_DD:
             log.critical(
                 "global_circuit_breaker_triggered",
@@ -323,9 +327,11 @@ class GlobalCircuitBreaker:
             self._trigger_all("combined_drawdown")
             return True
 
-        # Check combined daily loss
+        # Check combined daily loss against high-water mark
         if total_daily_pnl < 0:
-            combined_loss_pct = abs(total_daily_pnl) / self._total_initial
+            combined_loss_pct = (
+                abs(total_daily_pnl) / self._total_hwm if self._total_hwm > 0 else 0.0
+            )
             if combined_loss_pct >= self.GLOBAL_DAILY_LIMIT:
                 log.critical(
                     "global_circuit_breaker_triggered",

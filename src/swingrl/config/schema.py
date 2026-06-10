@@ -14,12 +14,15 @@ Raises pydantic.ValidationError on any invalid field value.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+from swingrl.utils.exceptions import ConfigError
 
 
 class YamlConfigSettingsSource(PydanticBaseSettingsSource):
@@ -47,16 +50,18 @@ class EquityConfig(BaseModel):
     symbols: list[str] = Field(
         default_factory=lambda: ["SPY", "QQQ", "VTI", "XLV", "XLI", "XLE", "XLF", "XLK"]
     )
+    hmm_proxy_symbol: str = Field(default="SPY")
     max_position_size: float = Field(default=0.25, gt=0.0, le=1.0)
     max_drawdown_pct: float = Field(default=0.10, gt=0.0, lt=1.0)
     daily_loss_limit_pct: float = Field(default=0.02, gt=0.0, lt=1.0)
+    min_order_usd: float = Field(default=1.0, ge=1.0)  # Alpaca $1 floor for fractional shares
 
     @field_validator("symbols")
     @classmethod
     def symbols_not_empty(cls, v: list[str]) -> list[str]:
         """Validate equity symbols list is non-empty."""
         if not v:
-            raise ValueError("equity.symbols must not be empty")
+            raise ConfigError("equity.symbols must not be empty")
         return v
 
     @model_validator(mode="after")
@@ -68,9 +73,19 @@ class EquityConfig(BaseModel):
         single bad day could blow through the full drawdown gate — defeat in purpose.
         """
         if self.daily_loss_limit_pct >= self.max_drawdown_pct:
-            raise ValueError(
+            raise ConfigError(
                 f"equity.daily_loss_limit_pct ({self.daily_loss_limit_pct}) must be "
                 f"less than equity.max_drawdown_pct ({self.max_drawdown_pct})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def hmm_proxy_in_symbols(self) -> EquityConfig:
+        """hmm_proxy_symbol must be present in symbols list."""
+        if self.hmm_proxy_symbol not in self.symbols:
+            raise ConfigError(
+                f"equity.hmm_proxy_symbol '{self.hmm_proxy_symbol}' "
+                f"must be in equity.symbols {self.symbols}"
             )
         return self
 
@@ -79,6 +94,7 @@ class CryptoConfig(BaseModel):
     """Crypto environment configuration."""
 
     symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
+    hmm_proxy_symbol: str = Field(default="BTCUSDT")
     max_position_size: float = Field(default=0.50, gt=0.0, le=1.0)
     max_drawdown_pct: float = Field(default=0.12, gt=0.0, lt=1.0)
     daily_loss_limit_pct: float = Field(default=0.03, gt=0.0, lt=1.0)
@@ -89,16 +105,26 @@ class CryptoConfig(BaseModel):
     def symbols_not_empty(cls, v: list[str]) -> list[str]:
         """Validate crypto symbols list is non-empty."""
         if not v:
-            raise ValueError("crypto.symbols must not be empty")
+            raise ConfigError("crypto.symbols must not be empty")
         return v
 
     @model_validator(mode="after")
     def daily_loss_below_drawdown(self) -> CryptoConfig:
         """daily_loss_limit_pct must be less than max_drawdown_pct (same logic as equity)."""
         if self.daily_loss_limit_pct >= self.max_drawdown_pct:
-            raise ValueError(
+            raise ConfigError(
                 f"crypto.daily_loss_limit_pct ({self.daily_loss_limit_pct}) must be "
                 f"less than crypto.max_drawdown_pct ({self.max_drawdown_pct})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def hmm_proxy_in_symbols(self) -> CryptoConfig:
+        """hmm_proxy_symbol must be present in symbols list."""
+        if self.hmm_proxy_symbol not in self.symbols:
+            raise ConfigError(
+                f"crypto.hmm_proxy_symbol '{self.hmm_proxy_symbol}' "
+                f"must be in crypto.symbols {self.symbols}"
             )
         return self
 
@@ -148,6 +174,7 @@ class FeaturesConfig(BaseModel):
 
     # Turbulence
     equity_turbulence_warmup: int = Field(default=252, ge=50)
+    equity_turbulence_half_life: int = Field(default=126, ge=10)
     crypto_turbulence_window: int = Field(default=1080, ge=100)
     crypto_turbulence_warmup: int = Field(default=360, ge=50)
 
@@ -166,10 +193,9 @@ class EnvironmentConfig(BaseModel):
 
 
 class SystemConfig(BaseModel):
-    """System-level database paths."""
+    """System-level database configuration."""
 
-    duckdb_path: str = Field(default="data/db/market_data.ddb")
-    sqlite_path: str = Field(default="data/db/trading_ops.db")
+    database_url: str = Field(default="")  # Set via DATABASE_URL env var
 
 
 class AlertingConfig(BaseModel):
@@ -186,6 +212,7 @@ class AlertingConfig(BaseModel):
 class SchedulerConfig(BaseModel):
     """APScheduler configuration."""
 
+    enabled: bool = Field(default=True)
     apscheduler_db_path: str = Field(default="db/apscheduler_jobs.sqlite")
     misfire_grace_time: int = Field(default=300, ge=60)
     max_workers: int = Field(default=4, ge=1)
@@ -194,8 +221,7 @@ class SchedulerConfig(BaseModel):
 class BackupConfig(BaseModel):
     """Backup and retention configuration."""
 
-    sqlite_retention_days: int = Field(default=14, ge=1)
-    duckdb_rotate: bool = Field(default=False)
+    backup_retention_days: int = Field(default=14, ge=1)
     backup_dir: str = Field(default="backups/")
     offsite_host: str = Field(default="")
     offsite_path: str = Field(default="")
@@ -226,6 +252,228 @@ class SecurityConfig(BaseModel):
     env_file_permissions: str = Field(default="600")
 
 
+class MemoryLiveEndpointsConfig(BaseModel):
+    """Live memory agent endpoint toggles (all disabled by default)."""
+
+    obs_enrichment: bool = False
+    blend_weights: bool = False
+    position_advice: bool = False
+    trade_veto: bool = False
+    cycle_gate: bool = False
+    risk_thresholds: bool = False
+
+
+class ConsolidationProviderConfig(BaseModel):
+    """Single consolidation LLM provider."""
+
+    base_url: str
+    api_key: str = ""  # Override via env var (e.g. NVIDIA_API_KEY)
+    default_model: str
+    timeout_sec: float = 600.0  # Per-provider read timeout (generous default)
+    max_tokens: int = 32768  # Per-provider max output tokens
+
+
+class ConsolidationConfig(BaseModel):
+    """Multi-provider consolidation configuration."""
+
+    provider: str = "nvidia"  # Key into providers map
+    model: str = ""  # Override per-provider default; empty = use provider's default_model
+    timeout_sec: float = 120.0
+    min_confidence_for_advice: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence threshold for patterns to be used in query advice.",
+    )
+    max_patterns_per_merge: int = Field(
+        default=2,
+        ge=1,
+        description="Maximum patterns per dedup/merge LLM call (pairwise limit).",
+    )
+    providers: dict[str, ConsolidationProviderConfig] = Field(
+        default_factory=lambda: {
+            "mistral": ConsolidationProviderConfig(
+                base_url="https://api.mistral.ai/v1",
+                default_model="mistral-large-latest",
+                timeout_sec=600,
+                max_tokens=128000,
+            ),
+            "cerebras": ConsolidationProviderConfig(
+                base_url="https://api.cerebras.ai/v1",
+                default_model="qwen-3-235b-a22b-instruct-2507",
+                timeout_sec=30,
+                max_tokens=65536,
+            ),
+            "groq": ConsolidationProviderConfig(
+                base_url="https://api.groq.com/openai/v1",
+                default_model="meta-llama/llama-4-scout-17b-16e-instruct",
+                timeout_sec=30,
+                max_tokens=30000,
+            ),
+            "gemini": ConsolidationProviderConfig(
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                default_model="gemini-2.5-flash",
+                timeout_sec=60,
+                max_tokens=65536,
+            ),
+            "openrouter": ConsolidationProviderConfig(
+                base_url="https://openrouter.ai/api/v1",
+                default_model="nvidia/nemotron-3-super-120b-a12b:free",
+                timeout_sec=1800,
+                max_tokens=32768,
+            ),
+            "nvidia": ConsolidationProviderConfig(
+                base_url="https://integrate.api.nvidia.com/v1",
+                default_model="moonshotai/kimi-k2.5",
+                timeout_sec=600,
+                max_tokens=32768,
+            ),
+        }
+    )
+
+    @model_validator(mode="after")
+    def resolve_provider_api_keys_from_env(self) -> ConsolidationConfig:
+        """Fall back to {PROVIDER}_API_KEY env vars for empty api_key fields."""
+        for provider_name, provider_cfg in self.providers.items():
+            if not provider_cfg.api_key:
+                env_key = f"{provider_name.upper()}_API_KEY"
+                env_val = os.environ.get(env_key, "")
+                if env_val:
+                    provider_cfg.api_key = env_val
+        return self
+
+
+class OllamaInstanceConfig(BaseModel):
+    """Single Ollama instance for the fallback chain."""
+
+    name: str = "default"
+    url: str = ""
+    model: str = ""
+    timeout: float = 30.0
+
+
+class MemoryAgentConfig(BaseModel):
+    """Memory agent (LLM meta-trainer) configuration.
+
+    All fields default to disabled/safe values. Existing CI and paper trading
+    are completely unaffected until memory_agent.enabled is set to true.
+    """
+
+    enabled: bool = False
+    base_url: str = "http://swingrl-memory:8889"
+    timeout_sec: float = 3.0
+    blend_strength: float = 0.30
+    meta_training: bool = False
+    meta_training_timeout_sec: float = 300.0
+    min_run_history_for_meta: int = 3
+    llm_backend: str = "openrouter"
+    openai_model: str = "gpt-4o-mini"
+    cloud_fast_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+    cloud_smart_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+
+    query_provider: str = "gemini"  # HP tuning provider: "gemini", "openrouter", or "ollama"
+    epoch_advice_provider: str = (
+        "cerebras"  # Epoch advice: "cerebras" (fast cloud), "ollama" (local), or "openrouter"
+    )
+    cloud_block_on_429: bool = (
+        True  # Skip cloud providers that returned 429 today (resets daily UTC)
+    )
+    cloud_block_codes: list[int] = Field(
+        default_factory=lambda: [429]
+    )  # HTTP codes triggering block
+    ollama_url: str = "http://swingrl-ollama:11434"  # Legacy single-instance (backward compat)
+    ollama_model: str = "qwen2.5:1.5b"  # Legacy single-instance (backward compat)
+    ollama_instances: list[OllamaInstanceConfig] = Field(default_factory=list)
+
+    # Per-algo epoch cadence (read from yaml by epoch_callback per fold).
+    # Normalized so each algo makes ~4-17 calls/fold regardless of n_steps.
+    epoch_cadence_ppo: int = 20  # ~82 rollouts/fold → ~4 calls
+    epoch_cadence_a2c: int = 2000  # ~33K rollouts/fold → ~17 calls
+    epoch_cadence_sac: int = 10000  # ~167K rollouts/fold → ~17 calls
+    epoch_cadence_default: int = 100  # Fallback for unknown algos
+
+    # Epoch aggregation parameters (used by consolidate.py _aggregate_epoch_summaries)
+    outlier_iqr_mild: float = 1.5  # Tukey mild fence multiplier (Q1 - k*IQR, Q3 + k*IQR)
+    outlier_iqr_extreme: float = 3.0  # Tukey extreme fence multiplier
+    max_outlier_events: int = 3  # Max extreme events reported per metric per fold
+    skewness_min_n: int = 8  # Min snapshots to compute skewness (unreliable below this)
+    confidence_n_low: int = 5  # N <= this → "low" confidence label
+    confidence_n_high: int = 15  # N >= this → "high" confidence label
+
+    consolidate_interval_min: int = 30
+    inbox_dir: str = "/data/memory_inbox"
+    api_key: str = ""  # Populated from SWINGRL_MEMORY_AGENT__API_KEY env var; empty = no auth
+    live_endpoints: MemoryLiveEndpointsConfig = Field(default_factory=MemoryLiveEndpointsConfig)
+    consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
+
+    # Control folds: fold indices that skip reward adjustments (epoch advice disabled)
+    # to serve as a scientific baseline for measuring reward shaping impact.
+    # Empty list = all folds are treatment (backward compatible).
+    control_folds_equity: list[int] = Field(default_factory=list)
+    control_folds_crypto: list[int] = Field(default_factory=list)
+
+
+class HyperparamBoundsConfig(BaseModel):
+    """Hyperparameter bounds for LLM-suggested training config clamping."""
+
+    learning_rate: tuple[float, float] = (1e-5, 1e-3)
+    entropy_coeff: tuple[float, float] = (0.0, 0.05)
+    clip_range: tuple[float, float] = (0.1, 0.4)
+    n_epochs: tuple[int, int] = (3, 20)
+    batch_size: tuple[int, int] = (32, 512)
+    gamma: tuple[float, float] = (0.95, 0.995)
+    target_kl: tuple[float, float] = (0.01, 0.05)
+    gae_lambda: tuple[float, float] = (0.85, 1.0)
+    gradient_steps: tuple[int, int] = (1, 8)
+    target_entropy: tuple[float, float] = (-9.0, -0.5)
+
+
+class RewardBoundsConfig(BaseModel):
+    """Reward weight bounds for LLM-suggested reward weight clamping."""
+
+    profit: tuple[float, float] = (0.10, 0.70)
+    sharpe: tuple[float, float] = (0.10, 0.60)
+    drawdown: tuple[float, float] = (0.05, 0.50)
+    turnover: tuple[float, float] = (0.00, 0.20)
+
+
+class TrainingBoundsConfig(BaseModel):
+    """Combined bounds config for hyperparameters and reward weights."""
+
+    hyperparam_bounds: HyperparamBoundsConfig = Field(default_factory=HyperparamBoundsConfig)
+    reward_bounds: RewardBoundsConfig = Field(default_factory=RewardBoundsConfig)
+
+
+class TrainingConfig(BaseModel):
+    """Training pipeline configuration."""
+
+    bounds: TrainingBoundsConfig = Field(default_factory=TrainingBoundsConfig)
+    sac_buffer_size: int = Field(
+        default=500_000,
+        gt=0,
+        description=(
+            "SAC replay buffer size. Default 500K fits within 24GB swingrl container. "
+            "Override via SWINGRL_TRAINING__SAC_BUFFER_SIZE. Proven 200K works on constrained RAM."
+        ),
+    )
+    n_envs: int = Field(
+        default=6,
+        ge=1,
+        description=(
+            "Number of parallel environments for vectorized training. "
+            "1 uses DummyVecEnv (sequential), >1 uses SubprocVecEnv (parallel). "
+            "Default 6 balances parallelism with 3-algo parallel workers on 20-thread homelab."
+        ),
+    )
+    vecenv_backend: Literal["dummy", "subproc"] = Field(
+        default="subproc",
+        description=(
+            "VecEnv backend: 'dummy' for single-process sequential, "
+            "'subproc' for multiprocess parallel. SubprocVecEnv requires picklable envs."
+        ),
+    )
+
+
 class SwingRLConfig(BaseSettings):
     """Root SwingRL configuration.
 
@@ -253,6 +501,8 @@ class SwingRLConfig(BaseSettings):
     shadow: ShadowConfig = Field(default_factory=ShadowConfig)
     sentiment: SentimentConfig = Field(default_factory=SentimentConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
+    memory_agent: MemoryAgentConfig = Field(default_factory=MemoryAgentConfig)
+    training: TrainingConfig = Field(default_factory=TrainingConfig)
 
 
 def load_config(path: Path | str = "config/swingrl.yaml") -> SwingRLConfig:

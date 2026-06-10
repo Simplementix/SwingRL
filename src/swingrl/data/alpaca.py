@@ -31,7 +31,7 @@ from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.data.base import BaseIngestor
 from swingrl.data.parquet_store import ParquetStore
 from swingrl.data.validation import DataValidator
-from swingrl.utils.exceptions import DataError
+from swingrl.utils.exceptions import ConfigError, DataError
 from swingrl.utils.logging import configure_logging
 
 log = structlog.get_logger(__name__)
@@ -62,6 +62,14 @@ class AlpacaIngestor(BaseIngestor):
         super().__init__(config)
         api_key = os.environ.get("ALPACA_API_KEY", "")
         secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
+        if not api_key:
+            msg = "ALPACA_API_KEY environment variable is empty or not set"
+            log.error("alpaca_missing_api_key")
+            raise ConfigError(msg)
+        if not secret_key:
+            msg = "ALPACA_SECRET_KEY environment variable is empty or not set"
+            log.error("alpaca_missing_secret_key")
+            raise ConfigError(msg)
         self._client = StockHistoricalDataClient(
             api_key=api_key,
             secret_key=secret_key,
@@ -90,13 +98,24 @@ class AlpacaIngestor(BaseIngestor):
         end = datetime.now(UTC)
 
         # SIP for historical backfill (full depth back to 2016), IEX for
-        # incremental/trading. Free-tier SIP blocks "recent" data, so cap
-        # end at start-of-today (yesterday's close) for SIP requests.
+        # incremental/trading. Cap end to start-of-today (UTC) so we only
+        # request completed daily bars — today's bar isn't final until
+        # market close (4 PM ET).
         if since == "incremental":
             feed = DataFeed.IEX
         else:
             feed = DataFeed.SIP
-            end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Nothing to fetch if data is already up to date
+        if start >= end:
+            log.info(
+                "alpaca_fetch_skip_up_to_date",
+                symbol=symbol,
+                start=start.isoformat(),
+                end=end.isoformat(),
+            )
+            return pd.DataFrame()
 
         request = StockBarsRequest(
             symbol_or_symbols=symbol,

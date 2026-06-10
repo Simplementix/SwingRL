@@ -5,13 +5,18 @@ PAPER-14: Stuck agent detection uses trading days for equity, cycles for crypto.
 
 from __future__ import annotations
 
-import sqlite3
+import os
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import MagicMock
 
+import psycopg
 import pytest
+from psycopg.rows import dict_row
 
 from swingrl.monitoring.stuck_agent import check_stuck_agents
+
+pytestmark = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -20,34 +25,35 @@ from swingrl.monitoring.stuck_agent import check_stuck_agents
 
 @pytest.fixture
 def mock_db() -> MagicMock:
-    """Provide a mock DatabaseManager backed by in-memory SQLite."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    """Provide a mock DatabaseManager backed by PostgreSQL."""
+    db_url = os.environ["DATABASE_URL"]
+    conn = psycopg.connect(db_url, row_factory=dict_row, autocommit=False)
     conn.execute("""
-        CREATE TABLE portfolio_snapshots (
+        CREATE TABLE IF NOT EXISTS portfolio_snapshots (
             timestamp TEXT NOT NULL,
             environment TEXT NOT NULL,
-            total_value REAL NOT NULL,
-            equity_value REAL,
-            crypto_value REAL,
-            cash_balance REAL,
-            high_water_mark REAL,
-            daily_pnl REAL,
-            drawdown_pct REAL,
+            total_value DOUBLE PRECISION NOT NULL,
+            equity_value DOUBLE PRECISION,
+            crypto_value DOUBLE PRECISION,
+            cash_balance DOUBLE PRECISION,
+            high_water_mark DOUBLE PRECISION,
+            daily_pnl DOUBLE PRECISION,
+            drawdown_pct DOUBLE PRECISION,
             PRIMARY KEY (timestamp, environment)
         )
     """)
+    conn.execute("DELETE FROM portfolio_snapshots")
     conn.commit()
 
     db = MagicMock()
-    db.sqlite.return_value.__enter__ = MagicMock(return_value=conn)
-    db.sqlite.return_value.__exit__ = MagicMock(return_value=False)
+    db.connection.return_value.__enter__ = MagicMock(return_value=conn)
+    db.connection.return_value.__exit__ = MagicMock(return_value=False)
     yield db
     conn.close()
 
 
 def _insert_snapshots(
-    conn: sqlite3.Connection,
+    conn: Any,
     env: str,
     count: int,
     *,
@@ -69,7 +75,8 @@ def _insert_snapshots(
         cash = total_value if all_cash else total_value * 0.5
         conn.execute(
             "INSERT INTO portfolio_snapshots "
-            "(timestamp, environment, total_value, cash_balance) VALUES (?, ?, ?, ?)",
+            "(timestamp, environment, total_value, cash_balance) VALUES (%s, %s, %s, %s)"
+            " ON CONFLICT DO NOTHING",
             (ts, env, total_value, cash),
         )
     conn.commit()
@@ -85,7 +92,7 @@ class TestStuckEquity:
 
     def test_equity_stuck_at_threshold(self, mock_db: MagicMock) -> None:
         """10 consecutive all-cash equity snapshots triggers stuck alert."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "equity", 10, all_cash=True)
 
         alerts = check_stuck_agents(mock_db)
@@ -95,7 +102,7 @@ class TestStuckEquity:
 
     def test_equity_not_stuck_below_threshold(self, mock_db: MagicMock) -> None:
         """9 all-cash snapshots does not trigger equity stuck alert."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "equity", 9, all_cash=True)
 
         alerts = check_stuck_agents(mock_db)
@@ -113,7 +120,7 @@ class TestStuckCrypto:
 
     def test_crypto_stuck_at_threshold(self, mock_db: MagicMock) -> None:
         """30 consecutive all-cash crypto snapshots triggers stuck alert."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "crypto", 30, all_cash=True)
 
         alerts = check_stuck_agents(mock_db)
@@ -123,7 +130,7 @@ class TestStuckCrypto:
 
     def test_crypto_not_stuck_below_threshold(self, mock_db: MagicMock) -> None:
         """29 all-cash snapshots does not trigger crypto stuck alert."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "crypto", 29, all_cash=True)
 
         alerts = check_stuck_agents(mock_db)
@@ -141,7 +148,7 @@ class TestNotStuck:
 
     def test_equity_not_stuck_with_positions(self, mock_db: MagicMock) -> None:
         """Equity with positions (cash != total) is not stuck."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "equity", 15, all_cash=False)
 
         alerts = check_stuck_agents(mock_db)
@@ -155,7 +162,7 @@ class TestNotStuck:
 
     def test_mixed_cash_and_positions_not_stuck(self, mock_db: MagicMock) -> None:
         """Recent position snapshot among cash snapshots is not stuck."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         base = datetime(2026, 3, 1, tzinfo=UTC)
 
         # Insert 9 all-cash then 1 with positions (most recent)
@@ -163,13 +170,15 @@ class TestNotStuck:
             ts = (base + timedelta(hours=i)).isoformat()
             conn.execute(
                 "INSERT INTO portfolio_snapshots "
-                "(timestamp, environment, total_value, cash_balance) VALUES (?, ?, ?, ?)",
+                "(timestamp, environment, total_value, cash_balance) VALUES (%s, %s, %s, %s)"
+                " ON CONFLICT DO NOTHING",
                 (ts, "equity", 10000.0, 10000.0),
             )
         ts_last = (base + timedelta(hours=9)).isoformat()
         conn.execute(
             "INSERT INTO portfolio_snapshots "
-            "(timestamp, environment, total_value, cash_balance) VALUES (?, ?, ?, ?)",
+            "(timestamp, environment, total_value, cash_balance) VALUES (%s, %s, %s, %s)"
+            " ON CONFLICT DO NOTHING",
             (ts_last, "equity", 10000.0, 5000.0),
         )
         conn.commit()
@@ -189,7 +198,7 @@ class TestLastActionDate:
 
     def test_stuck_alert_has_last_action_date(self, mock_db: MagicMock) -> None:
         """Stuck alert dict includes last_action_date key."""
-        conn = mock_db.sqlite.return_value.__enter__.return_value
+        conn = mock_db.connection.return_value.__enter__.return_value
         _insert_snapshots(conn, "equity", 10, all_cash=True)
 
         alerts = check_stuck_agents(mock_db)

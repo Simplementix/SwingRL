@@ -105,13 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         db = DatabaseManager(config)
         db.init_schema()
 
-        import duckdb
-
-        duckdb_path = Path(config.system.duckdb_path)
-        duckdb_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = duckdb.connect(str(duckdb_path))
-
-        feature_pipeline = FeaturePipeline(config, conn)
+        feature_pipeline = FeaturePipeline(config, db)
 
         alerter = Alerter(
             webhook_url="",  # No webhook in paper mode
@@ -162,8 +156,6 @@ def main(argv: list[str] | None = None) -> int:
         else:
             msg = "dry-run" if dry_run else "no signals"
             print(f"\nCycle complete: 0 fills ({msg})")
-
-        conn.close()
 
     except Exception:
         log.exception("run_cycle_failed")

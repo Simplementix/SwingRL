@@ -6,6 +6,7 @@ Covers: FEAT-03 — yfinance primary, Alpha Vantage fallback, validation, z-scor
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -34,8 +35,7 @@ def fetcher(tmp_path: Path) -> FundamentalFetcher:
         "  daily_loss_limit_pct: 0.03\n"
         "  min_order_usd: 10.0\n"
         "system:\n"
-        "  duckdb_path: data/db/market_data.ddb\n"
-        "  sqlite_path: data/db/trading_ops.db\n"
+        "  database_url: ''\n"
     )
     config = load_config(config_file)
     return FundamentalFetcher(config)
@@ -231,30 +231,31 @@ class TestSectorRelativeZscore:
 class TestStoreFundamentals:
     """FEAT-03: store_fundamentals writes to DuckDB."""
 
-    def test_store_writes_to_duckdb(self, tmp_path: Path) -> None:
-        """store_fundamentals() writes to DuckDB fundamentals table with fetched_at."""
-        import duckdb
+    @pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
+    def test_store_writes_to_pg(self, tmp_path: Path) -> None:
+        """store_fundamentals() writes to PostgreSQL fundamentals table with fetched_at."""
+        import psycopg
 
-        db_path = tmp_path / "test.ddb"
-        conn = duckdb.connect(str(db_path))
+        db_url = os.environ["DATABASE_URL"]
+        conn = psycopg.connect(db_url, autocommit=False)
         conn.execute("""
-            CREATE TABLE fundamentals (
+            CREATE TABLE IF NOT EXISTS fundamentals (
                 symbol TEXT,
                 date DATE,
-                pe_ratio DOUBLE,
-                earnings_growth DOUBLE,
-                debt_to_equity DOUBLE,
-                dividend_yield DOUBLE,
+                pe_ratio DOUBLE PRECISION,
+                earnings_growth DOUBLE PRECISION,
+                debt_to_equity DOUBLE PRECISION,
+                dividend_yield DOUBLE PRECISION,
                 sector TEXT,
                 fetched_at TIMESTAMP,
                 PRIMARY KEY (symbol, date)
             )
         """)
 
-        # Create a mock DatabaseManager
+        # Create a mock DatabaseManager that yields the real connection
         mock_db = MagicMock()
-        mock_db.duckdb.return_value.__enter__ = MagicMock(return_value=conn.cursor())
-        mock_db.duckdb.return_value.__exit__ = MagicMock(return_value=False)
+        mock_db.connection.return_value.__enter__ = MagicMock(return_value=conn)
+        mock_db.connection.return_value.__exit__ = MagicMock(return_value=False)
 
         df = pd.DataFrame(
             {
@@ -282,8 +283,7 @@ class TestStoreFundamentals:
             "  daily_loss_limit_pct: 0.03\n"
             "  min_order_usd: 10.0\n"
             "system:\n"
-            "  duckdb_path: data/db/market_data.ddb\n"
-            "  sqlite_path: data/db/trading_ops.db\n"
+            '  database_url: ""\n'
         )
         config = load_config(config_file)
         fetcher = FundamentalFetcher(config)
@@ -291,6 +291,9 @@ class TestStoreFundamentals:
         rows = fetcher.store_fundamentals(mock_db, df)
         assert rows == 2
 
+        conn.commit()
         stored = conn.execute("SELECT * FROM fundamentals").fetchall()
         assert len(stored) == 2
+        conn.execute("DROP TABLE IF EXISTS fundamentals")
+        conn.commit()
         conn.close()

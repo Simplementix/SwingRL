@@ -198,7 +198,7 @@ def daily_summary_job() -> None:
         return
 
     try:
-        with ctx.db.sqlite() as conn:
+        with ctx.db.connection() as conn:
             rows = conn.execute(
                 "SELECT environment, total_value, cash_balance, daily_pnl, drawdown_pct "
                 "FROM portfolio_snapshots "
@@ -263,12 +263,12 @@ def stuck_agent_check_job() -> None:
 
     try:
         for env, threshold in thresholds.items():
-            with ctx.db.sqlite() as conn:
+            with ctx.db.connection() as conn:
                 rows = conn.execute(
                     "SELECT total_value, cash_balance FROM portfolio_snapshots "
-                    "WHERE environment = ? "
-                    "ORDER BY timestamp DESC LIMIT ?",
-                    (env, threshold),
+                    "WHERE environment = %s "
+                    "ORDER BY timestamp DESC LIMIT %s",
+                    [env, threshold],
                 ).fetchall()
 
             if len(rows) < threshold:
@@ -338,7 +338,7 @@ def monthly_macro_job() -> None:
 
 
 def daily_backup_job() -> None:
-    """Run daily SQLite backup with integrity verification and rotation.
+    """Run daily PostgreSQL backup with integrity verification and rotation.
 
     Backups should run even when trading is halted (no halt check).
     Wraps in try/except to never crash the scheduler.
@@ -355,7 +355,7 @@ def daily_backup_job() -> None:
 
 
 def weekly_duckdb_backup_job() -> None:
-    """Run weekly DuckDB backup with table/row verification.
+    """Run weekly PostgreSQL backup with table/row verification.
 
     Backups should run even when trading is halted (no halt check).
     Wraps in try/except to never crash the scheduler.

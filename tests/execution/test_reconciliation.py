@@ -24,12 +24,6 @@ def mock_adapter() -> MagicMock:
 
 
 @pytest.fixture
-def mock_alerter() -> MagicMock:
-    """Mock Alerter for Discord warnings."""
-    return MagicMock()
-
-
-@pytest.fixture
 def reconciler(
     exec_config: Any,
     mock_db: Any,
@@ -70,10 +64,10 @@ class TestReconcile:
     ) -> None:
         """Quantity mismatch between DB and broker creates adjustment trade."""
         # DB has 5 shares of SPY
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
-                "last_price, unrealized_pnl, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("SPY", "equity", 5.0, 440.0, 450.0, 50.0, "2026-01-01T00:00:00"),
             )
 
@@ -111,10 +105,10 @@ class TestReconcile:
     ) -> None:
         """Position in DB but not in broker gets deleted (broker is truth)."""
         # DB has a position
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             conn.execute(
                 "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
-                "last_price, unrealized_pnl, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 ("XLE", "equity", 2.0, 80.0, 85.0, 10.0, "2026-01-01T00:00:00"),
             )
 
@@ -125,9 +119,9 @@ class TestReconcile:
         assert len(result) > 0
 
         # Verify DB position was deleted
-        with mock_db.sqlite() as conn:
+        with mock_db.connection() as conn:
             row = conn.execute(
-                "SELECT * FROM positions WHERE symbol = ? AND environment = ?",
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
                 ("XLE", "equity"),
             ).fetchone()
         assert row is None

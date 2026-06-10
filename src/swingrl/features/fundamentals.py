@@ -2,7 +2,7 @@
 
 Fetches P/E ratio, earnings growth, debt-to-equity, and dividend yield from
 yfinance (primary) with Alpha Vantage fallback. Validates, computes sector-relative
-z-scores, and stores to DuckDB.
+z-scores, and stores to PostgreSQL.
 
 Usage:
     from swingrl.config.schema import load_config
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -128,8 +129,11 @@ class FundamentalFetcher:
         )
         return result
 
+    # Alpha Vantage free tier: 5 requests/minute. Track last call time for rate limiting.
+    _av_last_call: float = 0.0
+
     def _fetch_from_alpha_vantage(self, symbol: str) -> dict[str, float | None]:
-        """Fetch from Alpha Vantage as fallback.
+        """Fetch from Alpha Vantage as fallback (rate-limited to 5 req/min).
 
         Args:
             symbol: Ticker symbol.
@@ -137,6 +141,12 @@ class FundamentalFetcher:
         Returns:
             Fundamental metrics dict.
         """
+        # Enforce 12s gap between AV calls (5 req/min = 1 per 12s)
+        elapsed = time.monotonic() - self._av_last_call
+        if elapsed < 12.0:
+            time.sleep(12.0 - elapsed)
+        self._av_last_call = time.monotonic()
+
         try:
             av = FundamentalData(key=self._av_api_key, output_format="pandas")
             overview_df, _ = av.get_company_overview(symbol)
@@ -266,7 +276,11 @@ class FundamentalFetcher:
             pe = group["pe_ratio"]
             mean = pe.mean()
             std = pe.std()
-            if std == 0 or pd.isna(std):
+            if pd.isna(std) or pd.isna(mean):
+                # All values NaN — propagate NaN (not 0) to distinguish from identical values
+                return pd.Series(float("nan"), index=group.index)
+            if std < 1e-10:
+                # All values identical (non-NaN) — z-score is 0 by definition
                 return pd.Series(0.0, index=group.index)
             return (pe - mean) / std
 
@@ -277,7 +291,7 @@ class FundamentalFetcher:
         return result
 
     def store_fundamentals(self, db: DatabaseManager, fundamentals: pd.DataFrame) -> int:
-        """Store fundamentals to DuckDB via replacement scan.
+        """Store fundamentals to PostgreSQL via replacement scan.
 
         Args:
             db: DatabaseManager instance.
@@ -295,15 +309,26 @@ class FundamentalFetcher:
         store_df["date"] = today
         store_df["fetched_at"] = now
 
-        with db.duckdb() as cursor:
-            # Use DuckDB replacement scan pattern (Phase 4 established)
-            sync_df = store_df  # noqa: F841
-            cursor.execute("""
-                INSERT OR REPLACE INTO fundamentals
-                SELECT symbol, date, pe_ratio, earnings_growth,
-                       debt_to_equity, dividend_yield, sector, fetched_at
-                FROM sync_df
-            """)
+        from swingrl.data.pg_helpers import executemany_from_df  # noqa: PLC0415
+
+        columns = [
+            "symbol",
+            "date",
+            "pe_ratio",
+            "earnings_growth",
+            "debt_to_equity",
+            "dividend_yield",
+            "sector",
+            "fetched_at",
+        ]
+        on_conflict = (
+            "(symbol, date) DO UPDATE SET "
+            "pe_ratio=EXCLUDED.pe_ratio, earnings_growth=EXCLUDED.earnings_growth, "
+            "debt_to_equity=EXCLUDED.debt_to_equity, dividend_yield=EXCLUDED.dividend_yield, "
+            "sector=EXCLUDED.sector, fetched_at=EXCLUDED.fetched_at"
+        )
+        with db.connection() as conn:
+            executemany_from_df(conn, "fundamentals", store_df, columns, on_conflict=on_conflict)
 
         rows_written = len(store_df)
         log.info("fundamentals_stored", rows=rows_written)

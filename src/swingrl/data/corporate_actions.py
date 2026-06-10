@@ -1,7 +1,7 @@
 """Corporate action detection and recording.
 
 Detects overnight price spikes that may indicate stock splits or other
-corporate actions. Records actions to SQLite corporate_actions table and
+corporate actions. Records actions to the corporate_actions table and
 suppresses false-positive quarantine for known actions.
 """
 
@@ -93,7 +93,7 @@ class CorporateActionDetector:
         ratio: float | None = None,
         amount: float | None = None,
     ) -> None:
-        """Insert a corporate action into the SQLite corporate_actions table.
+        """Insert a corporate action into the corporate_actions table.
 
         Args:
             symbol: Ticker symbol.
@@ -103,12 +103,12 @@ class CorporateActionDetector:
             amount: Dividend amount per share.
         """
         action_id = str(uuid.uuid4())
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
                 "INSERT INTO corporate_actions "
                 "(action_id, symbol, action_type, effective_date, ratio, amount, processed) "
-                "VALUES (?, ?, ?, ?, ?, ?, 0)",
-                (action_id, symbol, action_type, effective_date, ratio, amount),
+                "VALUES (%s, %s, %s, %s, %s, %s, 0)",
+                [action_id, symbol, action_type, effective_date, ratio, amount],
             )
         log.info(
             "corporate_action_recorded",
@@ -130,10 +130,10 @@ class CorporateActionDetector:
         Returns:
             True if a matching corporate action exists.
         """
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             row = conn.execute(
-                "SELECT 1 FROM corporate_actions WHERE symbol = ? AND effective_date = ? LIMIT 1",
-                (symbol, date),
+                "SELECT 1 FROM corporate_actions WHERE symbol = %s AND effective_date = %s LIMIT 1",
+                [symbol, date],
             ).fetchone()
         return row is not None
 

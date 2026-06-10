@@ -85,20 +85,27 @@ class TestSortinoRatio:
     """VAL-03: Sortino ratio uses downside deviation only."""
 
     def test_known_returns(self) -> None:
-        """Only negative returns contribute to downside deviation."""
+        """Downside deviation uses np.minimum(excess, 0) over ALL periods."""
         returns = np.array([0.02, -0.01, 0.015, -0.005, 0.01])
-        mean_r = np.mean(returns)
-        neg = returns[returns < 0]
-        downside_dev = np.sqrt(np.mean(neg**2))
+        excess = returns - 0.0
+        downside = np.minimum(excess, 0.0)
+        downside_dev = np.sqrt(np.mean(downside**2))
+        mean_r = np.mean(excess)
         expected = (mean_r / downside_dev) * np.sqrt(252)
         result = sortino_ratio(returns, periods_per_year=252.0)
         assert abs(result - expected) < 1e-6
 
-    def test_no_negative_returns_nan(self) -> None:
-        """All positive returns -> no downside deviation -> NaN."""
+    def test_no_negative_returns_capped(self) -> None:
+        """All positive returns -> zero downside variance -> 999.0 (capped)."""
         returns = np.array([0.01, 0.02, 0.03])
         result = sortino_ratio(returns, periods_per_year=252.0)
-        assert math.isnan(result)
+        assert result == 999.0
+
+    def test_zero_excess_zero_downside(self) -> None:
+        """Zero mean excess with zero downside variance -> 0.0."""
+        returns = np.array([0.0, 0.0, 0.0])
+        result = sortino_ratio(returns, periods_per_year=252.0)
+        assert result == 0.0
 
     def test_empty_returns_nan(self) -> None:
         """Empty array -> NaN."""
@@ -118,7 +125,7 @@ class TestCalmarRatio:
         """Known returns with a clear drawdown."""
         returns = np.array([0.05, -0.10, 0.03, 0.02, 0.01])
         cum = np.cumprod(1 + returns)
-        total_return = cum[-1] / cum[0] - 1  # not annualized simple
+        total_return = cum[-1] - 1.0
         n_periods = len(returns)
         ann_return = (1 + total_return) ** (252 / n_periods) - 1
         mdd = max_drawdown(returns)
@@ -187,9 +194,10 @@ class TestMaxDrawdown:
     """VAL-04: MDD matches known worst peak-to-trough drop."""
 
     def test_known_series(self) -> None:
-        """Known drawdown: peak at 1.10, trough at 0.95 -> dd = (1.10-0.95)/1.10."""
+        """Known drawdown: peak at 1.10, trough at 0.9405 -> dd = (1.10-0.9405)/1.10."""
         returns = np.array([0.10, -0.05, -0.10, 0.03, 0.02])
-        cum = np.cumprod(1 + returns)
+        # Prepend 1.0 to match production implementation
+        cum = np.concatenate([[1.0], np.cumprod(1 + returns)])
         running_max = np.maximum.accumulate(cum)
         drawdowns = (running_max - cum) / running_max
         expected = np.max(drawdowns)
@@ -219,7 +227,8 @@ class TestAvgDrawdown:
     def test_known_series(self) -> None:
         """Average of the underwater (drawdown) curve."""
         returns = np.array([0.10, -0.05, -0.10, 0.03, 0.15])
-        cum = np.cumprod(1 + returns)
+        # Prepend 1.0 to match production implementation
+        cum = np.concatenate([[1.0], np.cumprod(1 + returns)])
         running_max = np.maximum.accumulate(cum)
         drawdowns = (running_max - cum) / running_max
         expected = np.mean(drawdowns)

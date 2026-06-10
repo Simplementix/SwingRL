@@ -5,51 +5,57 @@ Covers: FEAT-04 — 6 macro features aligned to equity/crypto bars with no look-
 
 from __future__ import annotations
 
+import os
 from datetime import date
 from typing import Any
 
-import duckdb
 import numpy as np
 import pandas as pd
+import psycopg
 import pytest
 
 from swingrl.features.macro import MacroFeatureAligner
 
+pytestmark = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
+
 
 @pytest.fixture
 def ddb_conn() -> Any:
-    """Create in-memory DuckDB with seeded macro_features and OHLCV data."""
-    conn = duckdb.connect(":memory:")
+    """Create PostgreSQL connection with seeded macro_features and OHLCV data."""
+    db_url = os.environ["DATABASE_URL"]
+    conn = psycopg.connect(db_url, autocommit=False)
 
     # Create tables matching Phase 4 schema
     conn.execute("""
-        CREATE TABLE macro_features (
+        CREATE TABLE IF NOT EXISTS macro_features (
             date DATE NOT NULL,
             series_id TEXT NOT NULL,
-            value DOUBLE,
+            value DOUBLE PRECISION,
             release_date DATE,
             PRIMARY KEY (date, series_id)
         )
     """)
 
     conn.execute("""
-        CREATE TABLE ohlcv_daily (
+        CREATE TABLE IF NOT EXISTS ohlcv_daily (
             symbol TEXT NOT NULL,
             date DATE NOT NULL,
-            open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
+            open DOUBLE PRECISION, high DOUBLE PRECISION,
+            low DOUBLE PRECISION, close DOUBLE PRECISION,
             volume BIGINT,
-            adjusted_close DOUBLE,
+            adjusted_close DOUBLE PRECISION,
             fetched_at TIMESTAMP DEFAULT current_timestamp,
             PRIMARY KEY (symbol, date)
         )
     """)
 
     conn.execute("""
-        CREATE TABLE ohlcv_4h (
+        CREATE TABLE IF NOT EXISTS ohlcv_4h (
             symbol TEXT NOT NULL,
             datetime TIMESTAMP NOT NULL,
-            open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
-            volume DOUBLE,
+            open DOUBLE PRECISION, high DOUBLE PRECISION,
+            low DOUBLE PRECISION, close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
             source TEXT,
             fetched_at TIMESTAMP DEFAULT current_timestamp,
             PRIMARY KEY (symbol, datetime)
@@ -63,7 +69,8 @@ def ddb_conn() -> Any:
 
     for i, d in enumerate(dates):
         conn.execute(
-            "INSERT INTO ohlcv_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+            "INSERT INTO ohlcv_daily VALUES (%s, %s, %s, %s, %s, %s, %s, %s, current_timestamp)"
+            " ON CONFLICT DO NOTHING",
             [
                 "SPY",
                 d.date(),
@@ -82,7 +89,8 @@ def ddb_conn() -> Any:
 
     for i, dt in enumerate(crypto_dts):
         conn.execute(
-            "INSERT INTO ohlcv_4h VALUES (?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+            "INSERT INTO ohlcv_4h VALUES (%s, %s, %s, %s, %s, %s, %s, %s, current_timestamp)"
+            " ON CONFLICT DO NOTHING",
             [
                 "BTCUSDT",
                 dt.to_pydatetime().replace(tzinfo=None),
@@ -100,7 +108,7 @@ def ddb_conn() -> Any:
     for d in dates:
         vix_val = 18.0 + rng.normal(0, 3)
         conn.execute(
-            "INSERT INTO macro_features VALUES (?, 'VIXCLS', ?, ?)",
+            "INSERT INTO macro_features VALUES (%s, 'VIXCLS', %s, %s) ON CONFLICT DO NOTHING",
             [d.date(), vix_val, d.date()],  # release_date = observation date
         )
 
@@ -108,7 +116,7 @@ def ddb_conn() -> Any:
     for d in dates:
         spread = 0.5 + rng.normal(0, 0.3)
         conn.execute(
-            "INSERT INTO macro_features VALUES (?, 'T10Y2Y', ?, ?)",
+            "INSERT INTO macro_features VALUES (%s, 'T10Y2Y', %s, %s) ON CONFLICT DO NOTHING",
             [d.date(), spread, d.date()],
         )
 
@@ -116,7 +124,7 @@ def ddb_conn() -> Any:
     for d in dates:
         ff = 5.25 + rng.normal(0, 0.05)
         conn.execute(
-            "INSERT INTO macro_features VALUES (?, 'DFF', ?, ?)",
+            "INSERT INTO macro_features VALUES (%s, 'DFF', %s, %s) ON CONFLICT DO NOTHING",
             [d.date(), ff, d.date()],
         )
 
@@ -126,7 +134,7 @@ def ddb_conn() -> Any:
         release = obs_date + pd.DateOffset(days=14)
         cpi_val = 300.0 + month_offset * 0.5
         conn.execute(
-            "INSERT INTO macro_features VALUES (?, 'CPIAUCSL', ?, ?)",
+            "INSERT INTO macro_features VALUES (%s, 'CPIAUCSL', %s, %s) ON CONFLICT DO NOTHING",
             [
                 obs_date.date() if hasattr(obs_date, "date") else obs_date,
                 cpi_val,
@@ -140,7 +148,7 @@ def ddb_conn() -> Any:
         release = obs_date + pd.DateOffset(months=1)
         unemp_val = 3.7 - month_offset * 0.02
         conn.execute(
-            "INSERT INTO macro_features VALUES (?, 'UNRATE', ?, ?)",
+            "INSERT INTO macro_features VALUES (%s, 'UNRATE', %s, %s) ON CONFLICT DO NOTHING",
             [
                 obs_date.date() if hasattr(obs_date, "date") else obs_date,
                 unemp_val,
@@ -148,12 +156,14 @@ def ddb_conn() -> Any:
             ],
         )
 
-    return conn
+    conn.commit()
+    yield conn
+    conn.close()
 
 
 @pytest.fixture
 def aligner(ddb_conn: Any) -> MacroFeatureAligner:
-    """Create a MacroFeatureAligner with in-memory DuckDB."""
+    """Create a MacroFeatureAligner with PostgreSQL connection."""
     return MacroFeatureAligner(ddb_conn)
 
 

@@ -37,7 +37,7 @@ class FillProcessor:
         """Initialize fill processor.
 
         Args:
-            db: DatabaseManager for SQLite trades/positions access.
+            db: DatabaseManager for database access.
         """
         self._db = db
 
@@ -82,12 +82,12 @@ class FillProcessor:
         now = datetime.now(UTC).isoformat()
         side = "buy" if quantity_delta > 0 else "sell"
 
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
                 "INSERT INTO trades "
                 "(trade_id, timestamp, symbol, side, quantity, price, commission, "
                 "slippage, environment, broker, order_type, trade_type) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     trade_id,
                     now,
@@ -120,12 +120,12 @@ class FillProcessor:
         """
         now = datetime.now(UTC).isoformat()
 
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             conn.execute(
                 "INSERT INTO trades "
                 "(trade_id, timestamp, symbol, side, quantity, price, commission, "
                 "slippage, environment, broker, order_type, trade_type) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     fill.trade_id,
                     now,
@@ -161,10 +161,10 @@ class FillProcessor:
         new_tp = sized_order.take_profit_price if sized_order is not None else None
         new_side = sized_order.side if sized_order is not None else fill.side
 
-        with self._db.sqlite() as conn:
+        with self._db.connection() as conn:
             existing = conn.execute(
                 "SELECT quantity, cost_basis, stop_loss_price, take_profit_price, side "
-                "FROM positions WHERE symbol = ? AND environment = ?",
+                "FROM positions WHERE symbol = %s AND environment = %s",
                 (fill.symbol, fill.environment),
             ).fetchone()
 
@@ -176,7 +176,7 @@ class FillProcessor:
                         "INSERT INTO positions "
                         "(symbol, environment, quantity, cost_basis, last_price, "
                         "unrealized_pnl, updated_at, stop_loss_price, take_profit_price, side) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         (
                             fill.symbol,
                             fill.environment,
@@ -199,10 +199,15 @@ class FillProcessor:
                     unrealized_pnl = (fill.fill_price - new_cost) * new_qty
 
                     conn.execute(
-                        "INSERT OR REPLACE INTO positions "
+                        "INSERT INTO positions "
                         "(symbol, environment, quantity, cost_basis, last_price, "
                         "unrealized_pnl, updated_at, stop_loss_price, take_profit_price, side) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                        "ON CONFLICT (symbol, environment) DO UPDATE SET "
+                        "quantity = EXCLUDED.quantity, cost_basis = EXCLUDED.cost_basis, "
+                        "last_price = EXCLUDED.last_price, unrealized_pnl = EXCLUDED.unrealized_pnl, "
+                        "updated_at = EXCLUDED.updated_at, stop_loss_price = EXCLUDED.stop_loss_price, "
+                        "take_profit_price = EXCLUDED.take_profit_price, side = EXCLUDED.side",
                         (
                             fill.symbol,
                             fill.environment,
@@ -224,7 +229,7 @@ class FillProcessor:
                     if new_qty <= 0:
                         # Position fully closed
                         conn.execute(
-                            "DELETE FROM positions WHERE symbol = ? AND environment = ?",
+                            "DELETE FROM positions WHERE symbol = %s AND environment = %s",
                             (fill.symbol, fill.environment),
                         )
                     else:
@@ -236,10 +241,15 @@ class FillProcessor:
                         unrealized_pnl = (fill.fill_price - old_cost) * new_qty
 
                         conn.execute(
-                            "INSERT OR REPLACE INTO positions "
+                            "INSERT INTO positions "
                             "(symbol, environment, quantity, cost_basis, last_price, "
                             "unrealized_pnl, updated_at, stop_loss_price, take_profit_price, side) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                            "ON CONFLICT (symbol, environment) DO UPDATE SET "
+                            "quantity = EXCLUDED.quantity, cost_basis = EXCLUDED.cost_basis, "
+                            "last_price = EXCLUDED.last_price, unrealized_pnl = EXCLUDED.unrealized_pnl, "
+                            "updated_at = EXCLUDED.updated_at, stop_loss_price = EXCLUDED.stop_loss_price, "
+                            "take_profit_price = EXCLUDED.take_profit_price, side = EXCLUDED.side",
                             (
                                 fill.symbol,
                                 fill.environment,

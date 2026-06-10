@@ -1,7 +1,8 @@
 """Discord embed builder functions for all alert types.
 
 Builds Discord webhook-compatible embed payloads for trade fills,
-daily summaries, stuck agents, and circuit breaker events.
+daily summaries, stuck agents, circuit breaker events, and iteration
+completion (Phase 0.6 of the memory agent refocus).
 
 Usage:
     from swingrl.monitoring.embeds import build_trade_embed
@@ -12,7 +13,7 @@ Usage:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from swingrl.execution.types import FillResult
@@ -265,3 +266,233 @@ def build_circuit_breaker_embed(
             }
         ]
     }
+
+
+def build_iteration_completion_embed(
+    summary: dict[str, Any],
+) -> dict[str, list[dict[str, object]]]:
+    """Build a Capital Preservation Score iteration completion Discord embed.
+
+    Phase 0.6 of the memory agent refocus. Fired by ``train_pipeline.py``
+    after each (env, iteration) finishes and CPS is computed/persisted.
+
+    Color logic:
+        - **Green**: no regression flagged AND ``cps_v1_delta_vs_prev >= 0``
+          (or no prior baseline). The iteration moved CPS forward without
+          regressing on any dimension.
+        - **Yellow**: ``regression_flag`` is True but ``cps_v1_delta_vs_prev``
+          is still positive. One dimension (e.g., worst_fold_mdd) jumped
+          but the overall CPS still improved — partial regression worth
+          watching but not a failure.
+        - **Red**: ``cps_v1_delta_vs_prev < 0``. The primary CPS metric
+          regressed — likely the "gave back returns for pass rate" trap
+          that the refocus is designed to catch.
+
+    Args:
+        summary: Dict from ``compute_and_persist_iteration_cps``. Required
+            keys: env, iteration, cps_v1_multiplicative, cps_v2_additive,
+            cps_v3_sortino, cps_v1_delta_vs_prev, return_delta_vs_prev,
+            worst_mdd_delta_vs_prev, median_return, mean_winner_sharpe,
+            winners_count, chronic_failure_count, worst_fold_number,
+            worst_fold_mdd, regression_flag, regression_dimensions,
+            cps_v1_treatment_only, cps_v1_control_only, dedup_rows_dropped.
+
+    Returns:
+        Discord webhook payload dict ready for ``alerter.send_embed()``.
+    """
+    cps_v1_delta = summary.get("cps_v1_delta_vs_prev")
+    regression_flag = bool(summary.get("regression_flag", False))
+
+    # Color: red if v1 dropped, yellow if partial regression with v1 up,
+    # green otherwise (including iter 0 with no baseline).
+    if cps_v1_delta is not None and cps_v1_delta < 0:
+        color = _COLOR_CRITICAL
+    elif regression_flag:
+        color = _COLOR_WARNING
+    else:
+        color = _COLOR_BUY
+
+    fields: list[dict[str, object]] = []
+
+    # Primary CPS values (3 formulas side-by-side)
+    fields.append(
+        {
+            "name": "CPS v1 (multiplicative)",
+            "value": _fmt_cps(summary.get("cps_v1_multiplicative"), delta=cps_v1_delta),
+            "inline": True,
+        }
+    )
+    fields.append(
+        {
+            "name": "CPS v2 (additive)",
+            "value": _fmt_cps(summary.get("cps_v2_additive")),
+            "inline": True,
+        }
+    )
+    fields.append(
+        {
+            "name": "CPS v3 (sortino)",
+            "value": _fmt_cps(summary.get("cps_v3_sortino")),
+            "inline": True,
+        }
+    )
+
+    # Median return + delta
+    fields.append(
+        {
+            "name": "Median Return",
+            "value": _fmt_pct(
+                summary.get("median_return"),
+                delta=summary.get("return_delta_vs_prev"),
+            ),
+            "inline": True,
+        }
+    )
+    fields.append(
+        {
+            "name": "Winner Sharpe (mean)",
+            "value": _fmt_float(summary.get("mean_winner_sharpe")),
+            "inline": True,
+        }
+    )
+    fields.append(
+        {
+            "name": "Winners",
+            "value": _fmt_int(summary.get("winners_count")),
+            "inline": True,
+        }
+    )
+
+    # Worst-fold info
+    fields.append(
+        {
+            "name": "Worst Fold",
+            "value": _fmt_int(summary.get("worst_fold_number")),
+            "inline": True,
+        }
+    )
+    fields.append(
+        {
+            "name": "Worst Fold MDD",
+            "value": _fmt_pct(
+                summary.get("worst_fold_mdd"),
+                delta=summary.get("worst_mdd_delta_vs_prev"),
+            ),
+            "inline": True,
+        }
+    )
+    fields.append(
+        {
+            "name": "Chronic Failures",
+            "value": _fmt_int(summary.get("chronic_failure_count")),
+            "inline": True,
+        }
+    )
+
+    # Treatment vs control split — only if populated (iter 3+ with control folds)
+    treatment_v1 = summary.get("cps_v1_treatment_only")
+    control_v1 = summary.get("cps_v1_control_only")
+    if treatment_v1 is not None and control_v1 is not None:
+        fields.append(
+            {
+                "name": "Treatment CPS v1",
+                "value": _fmt_cps(treatment_v1),
+                "inline": True,
+            }
+        )
+        fields.append(
+            {
+                "name": "Control CPS v1",
+                "value": _fmt_cps(control_v1),
+                "inline": True,
+            }
+        )
+        # Compute the ratio for the smoking-gun signal
+        if treatment_v1 != 0:
+            ratio = control_v1 / treatment_v1
+            fields.append(
+                {
+                    "name": "Control / Treatment",
+                    "value": f"{ratio:.2f}×",
+                    "inline": True,
+                }
+            )
+
+    # Regression dimensions list (only when regression_flag is True)
+    regression_dims = summary.get("regression_dimensions") or []
+    if regression_dims:
+        fields.append(
+            {
+                "name": "Regression dimensions",
+                "value": ", ".join(regression_dims),
+                "inline": False,
+            }
+        )
+
+    # Audit field — only show dedup count when nonzero (iter 1 equity)
+    dedup = summary.get("dedup_rows_dropped", 0)
+    if dedup:
+        fields.append(
+            {
+                "name": "Dedup rows dropped",
+                "value": str(int(dedup)),
+                "inline": True,
+            }
+        )
+
+    env = str(summary.get("env", "?"))
+    iteration = int(summary.get("iteration", 0))
+    title = f"Iteration {iteration} complete — {env.title()}"
+    footer_marker = "REGRESSION" if regression_flag else "OK"
+
+    return {
+        "embeds": [
+            {
+                "title": title,
+                "color": color,
+                "fields": fields,
+                "footer": {"text": f"SwingRL | {env.title()} | {footer_marker}"},
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers (kept private to embeds.py — used only by the
+# iteration completion embed)
+# ---------------------------------------------------------------------------
+
+
+def _fmt_cps(value: float | None, *, delta: float | None = None) -> str:
+    """Format a CPS scalar (5 decimal places). Optionally append delta in parens."""
+    if value is None:
+        return "—"
+    base = f"{value:.5f}"
+    if delta is None:
+        return base
+    return f"{base} ({delta:+.5f})"
+
+
+def _fmt_pct(value: float | None, *, delta: float | None = None) -> str:
+    """Format a fractional value as percentage. Optionally append delta in pp."""
+    if value is None:
+        return "—"
+    base = f"{value * 100:.2f}%"
+    if delta is None:
+        return base
+    return f"{base} ({delta * 100:+.2f}pp)"
+
+
+def _fmt_float(value: float | None) -> str:
+    """Format a plain float to 3 decimals; em-dash for None."""
+    if value is None:
+        return "—"
+    return f"{value:.3f}"
+
+
+def _fmt_int(value: int | None) -> str:
+    """Format an integer cell; em-dash for None."""
+    if value is None:
+        return "—"
+    return str(int(value))
