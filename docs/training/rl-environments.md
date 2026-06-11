@@ -123,6 +123,8 @@ risk_penalty = Σ position_penalty_coeff × max(0, w − max_position_size)²
 
 The env also attaches `info["reward_components"]` (profit/sharpe/drawdown/turnover) — consumed by the memory system for reward-shaping guidance; these are *observations*, not reward components proper.
 
+`info["trades_this_step"]` (int, default 0) is the per-step count of individual trade executions that occurred during `portfolio.rebalance`; consumed by the memory reward wrapper's rolling trade-activity indicator to compute a leading signal of portfolio churn.
+
 ## Configurable values (yaml)
 
 All yaml paths, defaults, and validators live in `src/swingrl/config/schema.py`.
