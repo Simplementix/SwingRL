@@ -885,11 +885,10 @@ class TestFoldAttributionWiring:
     """C5-ATTR-02: WalkForwardBacktester wires record_fold_attribution after _store_results."""
 
     def _make_backtester_with_mock_db(self) -> tuple[Any, Any]:
-        """Return (WalkForwardBacktester, mock_db) with _store_results patched."""
+        """Return (WalkForwardBacktester, mock_db) with a minimal mock config."""
         from unittest.mock import MagicMock
 
         from swingrl.agents.backtest import WalkForwardBacktester
-        from swingrl.config.schema import SwingRLConfig
 
         mock_db = MagicMock()
         # connection() is a contextmanager yielding a connection
@@ -897,9 +896,8 @@ class TestFoldAttributionWiring:
         mock_db.connection.return_value.__enter__ = MagicMock(return_value=mock_conn_obj)
         mock_db.connection.return_value.__exit__ = MagicMock(return_value=False)
 
-        # We won't call backtester.run() (too heavy); instead we test the private
-        # dispatch path: _store_results + attribution call directly on a fake fold.
-        config = MagicMock(spec=SwingRLConfig)
+        # Use a plain MagicMock (no spec) so nested attribute access works freely.
+        config = MagicMock()
         config.environment.initial_amount = 100_000.0
         config.paths.logs_dir = "/tmp/swingrl_test_logs"
 

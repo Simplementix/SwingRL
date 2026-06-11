@@ -120,3 +120,41 @@ def load_fold_context(database_url: str, env: str, fold_number: int) -> dict[str
         "protected_winner_folds": protected_folds,
         "prev_iter_cps_v1": row[0] if row else None,
     }
+
+
+def record_fold_attribution(conn: Any, run_id: str, fold: dict[str, Any]) -> None:
+    """Close the advice-attribution loop after a fold's backtest completes.
+
+    Sets fold_cps_v1_after = single-fold CPS v1 and
+    advice_was_effective = (after > before) on every advice row for this run_id.
+    Rows with NULL fold_cps_v1_before keep NULL effectiveness (no baseline —
+    iter 0 never has a before value).
+
+    Does NOT swallow exceptions. Callers (e.g. the walk-forward loop) must
+    wrap in try/except so that attribution failure never kills a fold.
+
+    Args:
+        conn: An open psycopg connection (or any object supporting .cursor()).
+        run_id: Training run identifier matching reward_adjustments.run_id.
+        fold: FoldMetrics-shaped dict for the completed fold. Must include at
+            minimum: fold_number, sharpe, mdd, total_return, profit_factor,
+            win_rate, total_trades, sortino, max_single_loss, overfitting_class,
+            is_control_fold.
+    """
+    from swingrl.metrics.cps import FoldMetrics, compute_cps_v1_multiplicative
+
+    # Cast to FoldMetrics so the type checker is satisfied; runtime is duck-typed.
+    fold_metrics: FoldMetrics = fold  # type: ignore[assignment]
+    cps_after = compute_cps_v1_multiplicative([fold_metrics])
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE reward_adjustments "
+            "SET fold_cps_v1_after = %s, "
+            "    advice_was_effective = CASE WHEN fold_cps_v1_before IS NULL "
+            "        THEN NULL ELSE %s > fold_cps_v1_before END "
+            "WHERE run_id = %s",
+            (cps_after, cps_after, run_id),
+        )
+
+    log.info("fold_attribution_recorded", run_id=run_id, fold_cps_v1_after=cps_after)

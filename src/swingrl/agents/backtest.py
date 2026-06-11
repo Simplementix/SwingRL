@@ -31,6 +31,7 @@ from swingrl.agents.metrics import (
     sortino_ratio,
 )
 from swingrl.agents.validation import GateResult, check_validation_gates, diagnose_overfitting
+from swingrl.memory.training.fold_context import record_fold_attribution
 from swingrl.utils.exceptions import DataError
 
 if TYPE_CHECKING:
@@ -443,6 +444,33 @@ class WalkForwardBacktester:
             if self._db is not None:
                 model_id = f"{env_name}-{algo_name}-fold{fold_idx}"
                 self._store_results(fold_result, model_id)
+
+                # Close the advice-attribution loop: update fold_cps_v1_after +
+                # advice_was_effective on any reward_adjustment rows for this run_id.
+                # Fail-open: attribution must never kill a fold.
+                _attr_run_id = f"{env_name}_{algo_name}_fold{fold_idx}{ctrl_suffix}"
+                _fold_metrics: dict[str, Any] = {
+                    "fold_number": fold_idx,
+                    "sharpe": oos_metrics.get("sharpe", 0.0),
+                    "mdd": oos_metrics.get("mdd", 0.0),
+                    "total_return": oos_metrics.get("total_return", 0.0),
+                    "profit_factor": oos_metrics.get("profit_factor", 0.0),
+                    "win_rate": oos_metrics.get("win_rate", 0.0),
+                    "total_trades": int(oos_metrics.get("total_trades", 0)),
+                    "sortino": oos_metrics.get("sortino", 0.0),
+                    "max_single_loss": oos_metrics.get("max_single_loss"),
+                    "overfitting_class": overfit.get("classification", "reject"),
+                    "is_control_fold": is_control,
+                }
+                try:
+                    with self._db.connection() as _attr_conn:
+                        record_fold_attribution(_attr_conn, _attr_run_id, _fold_metrics)
+                except Exception as _attr_exc:
+                    log.warning(
+                        "fold_attribution_failed",
+                        run_id=_attr_run_id,
+                        error=str(_attr_exc),
+                    )
 
             log.info(
                 "fold_complete",

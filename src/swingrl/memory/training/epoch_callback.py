@@ -680,7 +680,7 @@ class MemoryEpochCallback(BaseCallback):
                     f"EPOCH ADVICE: run_id={self._run_id} algo={self._algo} "
                     f"env={self._env} epoch={self._epoch}{iter_part} "
                     f"current_weights={_json.dumps(self._wrapper.weights)} "
-                    f"context={_json.dumps(context)}"
+                    f"context={_json.dumps(context, allow_nan=False)}"
                 )
             }
             self._advice_calls += 1
