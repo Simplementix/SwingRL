@@ -142,6 +142,8 @@ _PRECEDENCE: tuple[DiagnosisLabel, ...] = (
     "poor_selection",
 )
 
+TRADE_RATE_COLLAPSE_FRACTION: float = 0.5
+
 
 def _baseline(env: str, algo: str) -> TradeBaseline:
     """Look up the (env, algo) baseline or raise DataError."""
@@ -237,3 +239,65 @@ def diagnose_fold(fold: FoldMetrics, env: str, algo: str) -> CpsDiagnosis:
     label = next(lab for lab in _PRECEDENCE if lab in fired)
     confidence: Literal["clear", "mixed"] = "clear" if len(fired) == 1 else "mixed"
     return {"label": label, "fired": fired, "confidence": confidence, "evidence": evidence}
+
+
+def diagnose_rolling(
+    trade_rate: float,
+    baseline_trade_rate: float,
+    rolling_win_rate: float,
+    env: str,
+    algo: str,
+) -> CpsDiagnosis:
+    """Label mid-fold degradation from the wrapper's rolling indicators.
+
+    Self-baseline design: baseline_trade_rate is the fold's own first-full-window
+    rate (wrapper-provided), so no cross-fold steps conversion is needed. Only
+    trade_shy and poor_selection are detectable mid-fold; disaster/churning need
+    the completed backtest row (rolling MDD is in reward units, not portfolio
+    fraction).
+
+    Args:
+        trade_rate: Current rolling trades-per-step rate.
+        baseline_trade_rate: The fold's first-full-window trades-per-step rate
+            (0.0 while the window is still filling — disables the trade_shy rule).
+        rolling_win_rate: Wrapper's rolling fraction of positive-reward steps.
+        env: Environment name.
+        algo: Algorithm name.
+
+    Returns:
+        CpsDiagnosis (same shape as diagnose_fold).
+
+    Raises:
+        DataError: Unknown (env, algo), or NaN input.
+    """
+    for name, val in (
+        ("trade_rate", trade_rate),
+        ("baseline_trade_rate", baseline_trade_rate),
+        ("rolling_win_rate", rolling_win_rate),
+    ):
+        if math.isnan(val):
+            log.error("diagnose_rolling_nan_input", field=name, env=env, algo=algo)
+            raise DataError(f"diagnose_rolling: field '{name}' is NaN")
+
+    b = _baseline(env, algo)
+
+    fired: list[str] = []
+    evidence: dict[str, float] = {}
+
+    if (
+        baseline_trade_rate > 0.0
+        and trade_rate < TRADE_RATE_COLLAPSE_FRACTION * baseline_trade_rate
+    ):
+        fired.append("trade_shy")
+        evidence["trade_rate"] = trade_rate
+        evidence["baseline_trade_rate"] = baseline_trade_rate
+    elif rolling_win_rate < b["p25_win_rate"]:
+        fired.append("poor_selection")
+        evidence["rolling_win_rate"] = rolling_win_rate
+        evidence["p25_win_rate"] = b["p25_win_rate"]
+
+    if not fired:
+        return {"label": "healthy", "fired": [], "confidence": "clear", "evidence": {}}
+
+    label: DiagnosisLabel = fired[0]  # type: ignore[assignment]  # elif ensures single rule
+    return {"label": label, "fired": fired, "confidence": "clear", "evidence": evidence}
