@@ -140,6 +140,7 @@ class TrainingOrchestrator:
         advice_enabled: bool = True,
         is_control_fold: bool = False,
         iteration: int | None = None,
+        fold_number: int | None = None,
     ) -> TrainingResult:
         """Train an SB3 algorithm on the specified environment.
 
@@ -170,6 +171,9 @@ class TrainingOrchestrator:
             is_control_fold: When True, tags epoch snapshots with control fold
                 status for scientific measurement of reward shaping impact.
             iteration: Training iteration number for pattern presentation tracking.
+            fold_number: Sequential fold index (0-based) within the walk-forward run.
+                Passed into MemoryEpochCallback for per-fold advice context assembly
+                and attribution column writes.
 
         Returns:
             TrainingResult with paths and metadata.
@@ -311,6 +315,7 @@ class TrainingOrchestrator:
                     is_control_fold=is_control_fold,
                     iteration=iteration,
                     database_url=self._config.system.database_url,
+                    fold_number=fold_number,
                 )
                 callbacks.append(memory_cb)
                 log.info(

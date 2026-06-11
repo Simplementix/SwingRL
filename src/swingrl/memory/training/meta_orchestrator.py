@@ -37,6 +37,10 @@ from swingrl.memory.training.bounds import (
     clamp_reward_weights,
     clamp_run_config,
 )
+from swingrl.memory.training.cps_diagnosis import diagnose_fold
+from swingrl.memory.training.fold_context import load_fold_context
+from swingrl.reporting.iteration_report import load_fold_history
+from swingrl.utils.exceptions import DataError
 
 if TYPE_CHECKING:
     from swingrl.config.schema import SwingRLConfig
@@ -295,11 +299,51 @@ class MetaTrainingOrchestrator:
         try:
             regime = self._current_regime_vector(env_name)
 
+            # Assemble run-level context: fold lists, prev-iter CPS, and per-fold
+            # diagnoses from the previous iteration. Fail-open: any error here logs
+            # a warning and falls back to the minimal {target_metric} context so
+            # that training is never blocked by context assembly failures.
+            context: dict[str, Any] = {"target_metric": "cps_v1_multiplicative"}
+            if self._database_url:
+                try:
+                    ctx = load_fold_context(self._database_url, env_name, fold_number=-1)
+                    context["chronic_failure_folds"] = ctx["chronic_failure_folds"]
+                    context["protected_winner_folds"] = ctx["protected_winner_folds"]
+                    context["prev_iter_cps_v1"] = ctx["prev_iter_cps_v1"]
+                    with psycopg.connect(self._database_url, connect_timeout=5) as conn:
+                        history = load_fold_history(conn, env_name)
+                    if not history.empty:
+                        last_iter = int(history["iteration_number"].max())
+                        prev = history[
+                            (history["iteration_number"] == last_iter)
+                            & (history["algorithm"].str.lower() == algo_name.lower())
+                        ]
+                        diagnoses: dict[int, str] = {}
+                        for _, r in prev.iterrows():
+                            try:
+                                diagnoses[int(r["fold_number"])] = diagnose_fold(
+                                    r.to_dict(),  # type: ignore[arg-type]
+                                    env=env_name,
+                                    algo=algo_name,
+                                )["label"]
+                            except DataError as exc:
+                                log.warning(
+                                    "prev_iter_diagnosis_skipped",
+                                    fold=int(r["fold_number"]),
+                                    error=str(exc),
+                                )
+                        context["prev_iter_diagnoses"] = diagnoses
+                    else:
+                        context["prev_iter_diagnoses"] = {}
+                except Exception as exc:  # noqa: BLE001 — fail-open by design
+                    log.warning("run_config_context_failed", error=str(exc))
+
             iter_part = f" iteration={iteration}" if iteration is not None else ""
             payload = {
                 "query": (
                     f"TRAINING RUN CONFIG ADVICE: env={env_name} algo={algo_name}{iter_part} "
-                    f"current_regime={json.dumps(regime)}"
+                    f"current_regime={json.dumps(regime)} "
+                    f"context={json.dumps(context, allow_nan=False)}"
                 )
             }
             data = json.dumps(payload).encode("utf-8")

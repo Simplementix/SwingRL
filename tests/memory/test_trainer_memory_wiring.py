@@ -339,3 +339,56 @@ class TestTrainerMemoryFailOpen:
                 memory_client=client,
             )
         assert result.model_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# TestTrainerFoldNumberWiring
+# ---------------------------------------------------------------------------
+
+
+class TestTrainerFoldNumberWiring:
+    """C1-WIRING-01: trainer.train() passes fold_number into MemoryEpochCallback."""
+
+    def test_fold_number_passed_to_callback(
+        self,
+        trainer_config: SwingRLConfig,
+        tiny_equity_features: np.ndarray,
+        tiny_equity_prices: np.ndarray,
+        tmp_path: Path,
+    ) -> None:
+        """C1-WIRING-01: fold_number=7 passed to train() reaches MemoryEpochCallback."""
+        from swingrl.training.trainer import TrainingOrchestrator
+
+        client = _make_mock_memory_client()
+        # Patch epoch_advice to avoid actual HTTP; return stop_training immediately
+        client.epoch_advice.return_value = {"stop_training": False}
+        orch = TrainingOrchestrator(
+            config=trainer_config,
+            models_dir=tmp_path / "models",
+            logs_dir=tmp_path / "logs",
+        )
+
+        captured: list[MemoryEpochCallback] = []
+
+        original_init = MemoryEpochCallback.__init__
+
+        def _capturing_init(self: MemoryEpochCallback, *args: object, **kwargs: object) -> None:
+            original_init(self, *args, **kwargs)
+            captured.append(self)
+
+        with patch.object(MemoryEpochCallback, "__init__", _capturing_init):
+            orch.train(
+                env_name="equity",
+                algo_name="ppo",
+                features=tiny_equity_features,
+                prices=tiny_equity_prices,
+                total_timesteps=500,
+                memory_client=client,
+                fold_number=7,
+            )
+
+        assert captured, "MemoryEpochCallback was never instantiated"
+        cb = captured[0]
+        assert cb._fold_number == 7, (  # noqa: SLF001
+            f"fold_number should be 7 in callback, got {cb._fold_number}"  # noqa: SLF001
+        )

@@ -311,3 +311,165 @@ class TestRollingMetrics:
         wrapper.reset()
         assert len(wrapper._reward_history) == 0
         assert wrapper.rolling_win_rate() == pytest.approx(0.0)
+
+
+class TestRollingTradeRate:
+    """TRAIN-TRADE-01/02: rolling trade rate + first-window self-baseline."""
+
+    def test_trade_rate_counts_trades_per_step(self) -> None:
+        """TRAIN-TRADE-01: rate = mean trades_this_step over the window."""
+        from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
+
+        mock_venv = _make_mock_venv()
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+
+        # Alternate: step with 1 trade, step with 0 trades → mean 0.5 over 10 steps
+        for i in range(10):
+            trades = 1 if i % 2 == 0 else 0
+            mock_venv.step_wait.return_value = (
+                np.zeros((1, 4), dtype=np.float32),
+                np.ones(1, dtype=np.float32),
+                np.zeros(1, dtype=bool),
+                [{"trades_this_step": trades}],
+            )
+            wrapper.step_wait()
+
+        assert wrapper.rolling_trade_rate() == pytest.approx(0.5)
+
+    def test_empty_history_rate_zero(self) -> None:
+        """TRAIN-TRADE-01: no steps → 0.0 (matches other rolling metrics)."""
+        from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
+
+        mock_venv = _make_mock_venv()
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+        assert wrapper.rolling_trade_rate() == pytest.approx(0.0)
+
+    def test_missing_info_key_counts_zero(self) -> None:
+        """TRAIN-TRADE-01: infos without trades_this_step (old envs) count 0, no crash."""
+        from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
+
+        mock_venv = _make_mock_venv()
+        # Default mock returns infos=[{}] — no trades_this_step key
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+
+        for _ in range(5):
+            wrapper.step_wait()
+
+        # Should be 0.0 since no trades_this_step in any info
+        assert wrapper.rolling_trade_rate() == pytest.approx(0.0)
+
+    def test_baseline_locks_at_first_full_window(self) -> None:
+        """TRAIN-TRADE-02: baseline_trade_rate() is 0.0 until the rolling window first
+        fills, then locks to that window's rate permanently."""
+        from swingrl.memory.training.reward_wrapper import (
+            _ROLLING_WINDOW,
+            MemoryVecRewardWrapper,
+        )
+
+        mock_venv = _make_mock_venv()
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+
+        # Before window fills: baseline stays 0.0
+        for _ in range(_ROLLING_WINDOW - 1):
+            mock_venv.step_wait.return_value = (
+                np.zeros((1, 4), dtype=np.float32),
+                np.ones(1, dtype=np.float32),
+                np.zeros(1, dtype=bool),
+                [{"trades_this_step": 1}],
+            )
+            wrapper.step_wait()
+
+        assert wrapper.baseline_trade_rate() == pytest.approx(0.0)
+
+        # One more step fills the window → baseline locks at 1.0 (1 trade/step)
+        mock_venv.step_wait.return_value = (
+            np.zeros((1, 4), dtype=np.float32),
+            np.ones(1, dtype=np.float32),
+            np.zeros(1, dtype=bool),
+            [{"trades_this_step": 1}],
+        )
+        wrapper.step_wait()
+
+        assert wrapper.baseline_trade_rate() == pytest.approx(1.0)
+        assert len(wrapper._trades_per_step) == _ROLLING_WINDOW
+
+        # Drive another full window at 0 trades — baseline stays locked at 1.0
+        for _ in range(_ROLLING_WINDOW):
+            mock_venv.step_wait.return_value = (
+                np.zeros((1, 4), dtype=np.float32),
+                np.ones(1, dtype=np.float32),
+                np.zeros(1, dtype=bool),
+                [{"trades_this_step": 0}],
+            )
+            wrapper.step_wait()
+
+        assert wrapper.baseline_trade_rate() == pytest.approx(1.0)
+        assert wrapper.rolling_trade_rate() == pytest.approx(0.0)
+
+    def test_reset_clears_trade_history_and_baseline(self) -> None:
+        """TRAIN-TRADE-02: reset() clears trade history and the locked baseline."""
+        from swingrl.memory.training.reward_wrapper import (
+            _ROLLING_WINDOW,
+            MemoryVecRewardWrapper,
+        )
+
+        mock_venv = _make_mock_venv()
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+
+        # Fill the window so baseline locks
+        for _ in range(_ROLLING_WINDOW):
+            mock_venv.step_wait.return_value = (
+                np.zeros((1, 4), dtype=np.float32),
+                np.ones(1, dtype=np.float32),
+                np.zeros(1, dtype=bool),
+                [{"trades_this_step": 1}],
+            )
+            wrapper.step_wait()
+
+        assert wrapper.baseline_trade_rate() == pytest.approx(1.0)
+
+        # reset() must clear trade history and baseline
+        wrapper.reset()
+
+        assert wrapper.rolling_trade_rate() == pytest.approx(0.0)
+        assert wrapper.baseline_trade_rate() == pytest.approx(0.0)
+        assert len(wrapper._trades_per_step) == 0
+
+    def test_zero_trade_first_window_locks_baseline_at_zero(self) -> None:
+        """TRAIN-TRADE-02: a zero-trade first full window locks baseline 0.0
+        permanently — the collapse detector stays disabled even after trading starts."""
+        from swingrl.memory.training.reward_wrapper import (
+            _ROLLING_WINDOW,
+            MemoryVecRewardWrapper,
+        )
+
+        mock_venv = _make_mock_venv()
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+
+        # Drive exactly _ROLLING_WINDOW steps at 0 trades → first full window = 0.0
+        for _ in range(_ROLLING_WINDOW):
+            mock_venv.step_wait.return_value = (
+                np.zeros((1, 4), dtype=np.float32),
+                np.ones(1, dtype=np.float32),
+                np.zeros(1, dtype=bool),
+                [{"trades_this_step": 0}],
+            )
+            wrapper.step_wait()
+
+        # Baseline must be locked at 0.0 after the zero-trade window fills
+        assert wrapper.baseline_trade_rate() == pytest.approx(0.0)
+
+        # Drive another _ROLLING_WINDOW steps at 2 trades/step — trading resumes
+        for _ in range(_ROLLING_WINDOW):
+            mock_venv.step_wait.return_value = (
+                np.zeros((1, 4), dtype=np.float32),
+                np.ones(1, dtype=np.float32),
+                np.zeros(1, dtype=bool),
+                [{"trades_this_step": 2}],
+            )
+            wrapper.step_wait()
+
+        # rolling_trade_rate reflects the new activity
+        assert wrapper.rolling_trade_rate() == pytest.approx(2.0)
+        # baseline must still be 0.0 (locked from the zero-trade first window)
+        assert wrapper.baseline_trade_rate() == pytest.approx(0.0)

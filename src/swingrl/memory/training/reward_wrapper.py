@@ -75,6 +75,9 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         # Rolling history for metrics (per-env index 0 only, single-env training)
         self._reward_history: deque[float] = deque(maxlen=_ROLLING_WINDOW)
         self._positive_steps: deque[bool] = deque(maxlen=_ROLLING_WINDOW)
+        self._trades_per_step: deque[float] = deque(maxlen=_ROLLING_WINDOW)
+        self._baseline_trade_rate: float = 0.0
+        self._baseline_locked: bool = False
 
         log.info(
             "reward_wrapper_init",
@@ -104,6 +107,17 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
             self._reward_history.append(float(r))
             self._positive_steps.append(float(r) > 0.0)
 
+        # Track rolling trade activity
+        trades = 0.0
+        for info in infos:
+            trades += float(info.get("trades_this_step", 0))
+        self._trades_per_step.append(trades)
+        if not self._baseline_locked and len(self._trades_per_step) == _ROLLING_WINDOW:
+            self._baseline_trade_rate = float(
+                sum(self._trades_per_step) / len(self._trades_per_step)
+            )
+            self._baseline_locked = True
+
         return obs, shaped, dones, infos
 
     def reset(self) -> np.ndarray:
@@ -115,6 +129,9 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         obs: np.ndarray = np.asarray(self.venv.reset())
         self._reward_history.clear()
         self._positive_steps.clear()
+        self._trades_per_step.clear()
+        self._baseline_trade_rate = 0.0
+        self._baseline_locked = False
         return obs
 
     def _shape_rewards(
@@ -221,6 +238,25 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         if not self._positive_steps:
             return 0.0
         return float(sum(self._positive_steps)) / len(self._positive_steps)
+
+    def rolling_trade_rate(self) -> float:
+        """Mean trades per step over the rolling window. 0.0 if empty."""
+        if not self._trades_per_step:
+            return 0.0
+        return float(sum(self._trades_per_step) / len(self._trades_per_step))
+
+    def baseline_trade_rate(self) -> float:
+        """The fold's first-full-window trade rate (0.0 until the window fills).
+
+        Locked once: later windows never overwrite it, so a mid-fold activity
+        collapse is measured against how the fold STARTED trading.
+
+        Note: a fold whose first full window contains zero trades locks baseline
+        at 0.0, permanently disabling the collapse detector for that fold
+        (``diagnose_rolling`` treats baseline 0.0 as "window not yet full").
+        This is conservative and intentional — fail-safe over false alarms.
+        """
+        return self._baseline_trade_rate
 
     @staticmethod
     def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:

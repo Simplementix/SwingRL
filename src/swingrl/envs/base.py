@@ -191,7 +191,9 @@ class BaseTradingEnv(gymnasium.Env):
         target_weights = process_actions(action, current_weights, self._deadzone)
 
         # 2. Execute trades at current prices
+        trades_before = len(self._portfolio.trade_log)
         cost = self._portfolio.rebalance(target_weights, prices)
+        trades_this_step = len(self._portfolio.trade_log) - trades_before
         self._last_cost = cost
 
         # Track which assets were traded
@@ -249,6 +251,7 @@ class BaseTradingEnv(gymnasium.Env):
             daily_return=daily_return,
             transaction_cost=cost,
             reward_components=reward_components,
+            trades_this_step=trades_this_step,
         )
 
         # Update previous value for next step
@@ -375,6 +378,7 @@ class BaseTradingEnv(gymnasium.Env):
         daily_return: float,
         transaction_cost: float,
         reward_components: dict[str, float] | None = None,
+        trades_this_step: int = 0,
     ) -> dict[str, Any]:
         """Build info dict for step/reset return.
 
@@ -384,6 +388,10 @@ class BaseTradingEnv(gymnasium.Env):
             transaction_cost: Cost incurred this step.
             reward_components: Optional decomposed reward components for
                 memory-guided shaping (profit, sharpe, drawdown, turnover).
+            trades_this_step: Number of individual trade executions that occurred
+                during this step's rebalance call.  Consumed by the memory reward
+                wrapper's rolling trade-activity indicator.  Defaults to 0 for
+                the reset()-path call where no trades occur.
 
         Returns:
             Info dictionary with required keys.
@@ -394,6 +402,7 @@ class BaseTradingEnv(gymnasium.Env):
             "transaction_cost": transaction_cost,
             "turbulence": self._get_turbulence(),
             "step": self._step_count,
+            "trades_this_step": trades_this_step,
         }
         if reward_components is not None:
             info["reward_components"] = reward_components

@@ -103,14 +103,14 @@ Source: `ENV_PARAMS` dict at `src/swingrl/agents/backtest.py:44-59`. Same `gener
 
 `WalkForwardBacktester.run()` at `src/swingrl/agents/backtest.py:300-470`:
 
-1. Slice train + test data (`:357-360`).
-2. `is_control = fold_idx in valid_control_set` (`:346`).
-3. `orchestrator.train(...)` with `run_id=f"{env_name}_{algo_name}_fold{fold_idx}{ctrl_suffix}"` and `is_control_fold=is_control` (`:367-379`). Control folds get `advice_enabled=False` (`:363`).
-4. `_evaluate_fold` on train data → in-sample metrics (`:382-390`).
-5. `_evaluate_fold` on test data → out-of-sample metrics (`:393-401`).
-6. `diagnose_overfitting(is_sharpe, oos_sharpe)` (`:404-407`).
-7. `check_validation_gates(oos_sharpe, oos_mdd, profit_factor, overfit_gap)` (`:410-415`).
-8. Build `FoldResult` (`:417-430`); enqueue to `fold_queue` for real-time DB write (`:434-439`); legacy DB write via `self._db._store_results` (`:441-444`).
+1. `is_control = fold_idx in valid_control` (`:367`); slice train + test data (`:378-381`).
+2. `fold_advice = advice_enabled and not is_control` (`:384`) — control folds get `advice_enabled=False`.
+3. `orchestrator.train(...)` with `run_id=fold_run_id(env_name, algo_name, fold_idx, is_control)`, `is_control_fold=is_control`, and `fold_number=fold_idx` (`:387-400`). `fold_run_id` is the canonical helper at `backtest.py:63` — both the training callback and post-fold attribution resolve run IDs through it.
+4. `_evaluate_fold` on train data → in-sample metrics (`:403-411`).
+5. `_evaluate_fold` on test data → out-of-sample metrics (`:414-422`).
+6. `diagnose_overfitting(in_sample_sharpe, out_of_sample_sharpe)` (`:425-428`).
+7. `check_validation_gates(sharpe, mdd, profit_factor, overfit_gap)` (`:431-436`).
+8. Build `FoldResult` (`:438-452`); enqueue to `fold_queue` for real-time DB write (`:456-460`); legacy DB write via `self._store_results` (`:465`); post-fold attribution closure via `record_fold_attribution` (`:466-491`, fail-open).
 
 ### Control vs treatment folds
 
@@ -123,7 +123,7 @@ Validated at runtime against actual fold count (`backtest.py:317-325`); out-of-r
 
 ### `run_id` format
 
-`{env_name}_{algo_name}_fold{fold_idx}[_CTRL]` — `src/swingrl/agents/backtest.py:375`. The `_CTRL` suffix is added when `is_control = True` (`:364`). Downstream consumers parse this with the regex `r"run_id=\S+_fold(\d+)(_CTRL)?"` — see [`memory-system.md`](memory-system.md) "Side effects" under `/training/epoch_advice`.
+`{env_name}_{algo_name}_fold{fold_idx}[_CTRL]` — produced by `fold_run_id(env_name, algo_name, fold_idx, is_control)` at `src/swingrl/agents/backtest.py:63`. The `_CTRL` suffix is added when `is_control = True`. `fold_run_id` is the single source of truth — both the training-side `epoch_callback` and the post-fold attribution in `fold_context.py::record_fold_attribution` must produce the same string. Downstream consumers parse this with the regex `r"run_id=\S+_fold(\d+)(_CTRL)?"` — see [`memory-system.md`](memory-system.md) "Side effects" under `/training/epoch_advice`.
 
 ### Fold metric aggregation
 
@@ -279,7 +279,7 @@ CLI flags override yaml defaults for: `--config` path itself, `--iterations`, `-
 | `_DEFAULT_STATE_PATH = "data/training_state.json"` | `train_pipeline.py:70` |
 | `_DEFAULT_COMPARISON_PATH = "data/training_comparison.json"` | `train_pipeline.py:71` |
 | `iter_log_file = logs/training_iter{N}.log` | `train_pipeline.py:2867` |
-| `run_id` format `{env}_{algo}_fold{N}[_CTRL]` | `backtest.py:375` |
+| `run_id` format `{env}_{algo}_fold{N}[_CTRL]` | `backtest.py:63` (`fold_run_id` helper) |
 | Per-env loop order `["equity", "crypto"]` | `train_pipeline.py:438` and `:2881` |
 | Healthcheck cadence `60s / 10s / 3 retries` | `Dockerfile:93` |
 
@@ -330,3 +330,4 @@ CLI flags override yaml defaults for: `--config` path itself, `--iterations`, `-
 ## Changelog
 
 - **2026-05-07** — Initial version.
+- **2026-06-11** — Updated `run_id` format references: canonical source is now `fold_run_id()` at `backtest.py:63`, not inline f-string at `:375`.

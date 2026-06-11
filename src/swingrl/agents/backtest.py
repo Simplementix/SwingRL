@@ -31,6 +31,7 @@ from swingrl.agents.metrics import (
     sortino_ratio,
 )
 from swingrl.agents.validation import GateResult, check_validation_gates, diagnose_overfitting
+from swingrl.memory.training.fold_context import record_fold_attribution
 from swingrl.utils.exceptions import DataError
 
 if TYPE_CHECKING:
@@ -57,6 +58,26 @@ ENV_PARAMS: dict[str, dict[str, int | float]] = {
         "bars_per_week": 42,
     },
 }
+
+
+def fold_run_id(env_name: str, algo_name: str, fold_idx: int, is_control: bool) -> str:
+    """Canonical run_id for a walk-forward fold.
+
+    Single source of truth: the training-side callback persists this string to
+    reward_adjustments.run_id, and post-fold attribution UPDATEs match on it —
+    the two sides MUST agree byte-for-byte.
+
+    Args:
+        env_name: Environment identifier (e.g. "equity", "crypto").
+        algo_name: Algorithm identifier (e.g. "ppo", "a2c", "sac").
+        fold_idx: Zero-based fold index.
+        is_control: Whether this is a control fold (appends "_CTRL" suffix).
+
+    Returns:
+        Run ID string of the form "<env>_<algo>_fold<N>" or "<env>_<algo>_fold<N>_CTRL".
+    """
+    ctrl_suffix = "_CTRL" if is_control else ""
+    return f"{env_name}_{algo_name}_fold{fold_idx}{ctrl_suffix}"
 
 
 @dataclass
@@ -361,7 +382,6 @@ class WalkForwardBacktester:
 
             # Control folds: train normally but skip reward adjustments
             fold_advice = advice_enabled and not is_control
-            ctrl_suffix = "_CTRL" if is_control else ""
 
             # Train on training window
             training_result = orchestrator.train(
@@ -372,10 +392,11 @@ class WalkForwardBacktester:
                 total_timesteps=total_timesteps,
                 hyperparams_override=hyperparams_override,
                 memory_client=memory_client,
-                run_id=f"{env_name}_{algo_name}_fold{fold_idx}{ctrl_suffix}",
+                run_id=fold_run_id(env_name, algo_name, fold_idx, is_control),
                 advice_enabled=fold_advice,
                 is_control_fold=is_control,
                 iteration=iteration,
+                fold_number=fold_idx,
             )
 
             # Evaluate on train data (in-sample)
@@ -442,6 +463,33 @@ class WalkForwardBacktester:
             if self._db is not None:
                 model_id = f"{env_name}-{algo_name}-fold{fold_idx}"
                 self._store_results(fold_result, model_id)
+
+                # Close the advice-attribution loop: update fold_cps_v1_after +
+                # advice_was_effective on any reward_adjustment rows for this run_id.
+                # Fail-open: attribution must never kill a fold.
+                _attr_run_id = fold_run_id(env_name, algo_name, fold_idx, is_control)
+                _fold_metrics: dict[str, Any] = {
+                    "fold_number": fold_idx,
+                    "sharpe": oos_metrics.get("sharpe", 0.0),
+                    "mdd": oos_metrics.get("mdd", 0.0),
+                    "total_return": oos_metrics.get("total_return", 0.0),
+                    "profit_factor": oos_metrics.get("profit_factor", 0.0),
+                    "win_rate": oos_metrics.get("win_rate", 0.0),
+                    "total_trades": int(oos_metrics.get("total_trades", 0)),
+                    "sortino": oos_metrics.get("sortino", 0.0),
+                    "max_single_loss": oos_metrics.get("max_single_loss"),
+                    "overfitting_class": overfit.get("classification", "reject"),
+                    "is_control_fold": is_control,
+                }
+                try:
+                    with self._db.connection() as _attr_conn:
+                        record_fold_attribution(_attr_conn, _attr_run_id, _fold_metrics)
+                except Exception as _attr_exc:
+                    log.warning(
+                        "fold_attribution_failed",
+                        run_id=_attr_run_id,
+                        error=str(_attr_exc),
+                    )
 
             log.info(
                 "fold_complete",

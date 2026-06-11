@@ -646,6 +646,77 @@ _RUN_CONFIG_INSTRUCTIONS = (
     "diverging from the best-known config and why."
 )
 
+# ---------------------------------------------------------------------------
+# C3 prompt blocks — spliced into both builders (epoch + run-config)
+# ---------------------------------------------------------------------------
+
+_GOAL_BLOCK = (
+    "YOUR OBJECTIVE:\n"
+    "Your single objective metric is CPS v1 (Capital Preservation Score):\n"
+    "  CPS v1 = median_return x (1 - max_mdd)^2 x tanh(mean_winner_sharpe / 2) x pass_ratio\n"
+    "It is MULTIPLICATIVE: collapsing any factor - including profit - kills your score.\n"
+    "Reducing trading activity to reduce risk LOWERS your score: a return collapse from "
+    "8% to 2% costs ~4x while the paired drawdown improvement earns only ~1.25x back.\n"
+    "Pass rate is NOT your goal. Risk-damping is NOT automatically safe.\n\n"
+)
+
+_ANTIPATTERN_BLOCK_EPOCH = (
+    "EMPIRICAL ANTI-PATTERNS (from this system's own history):\n"
+    "Across iterations 3-4, folds receiving LLM advice scored 2.7x-5.1x WORSE CPS than "
+    "control folds with no advice. Two observed failure modes:\n"
+    "1. Tail blowups (iter 3-4): advised folds reached max drawdown 0.36-0.38 vs 0.067-0.069 "
+    "for controls - adjustments amplified worst-case risk.\n"
+    "2. Trade-shy collapse (iter 4-5): advised folds cut trading, suppressing profit AND risk "
+    "together, collapsing CPS (e.g. A2C returns fell 6.0% -> 4.9% while pass rate rose).\n"
+    "Your payload includes a deterministic context JSON with a 'diagnosis' field. Match your "
+    "advice to the labeled cause:\n"
+    "- trade_shy -> increase participation; do NOT damp risk further\n"
+    "- poor_selection -> tighten entry quality; reduce frequency, not size\n"
+    "- single_disaster -> cap per-trade risk; leave frequency alone\n"
+    "- churning -> reduce frequency; raise conviction threshold\n"
+    "- healthy -> no adjustment warranted\n"
+    "If diagnosis confidence is 'mixed', be conservative: prefer no change.\n\n"
+)
+
+_FOLD_PROTECTION_BLOCK_EPOCH = (
+    "FOLD PROTECTION:\n"
+    "The context JSON includes fold_role and the chronic_failure/protected_winner fold lists.\n"
+    "- fold_role=protected_winner: return the current weights UNCHANGED. This fold wins "
+    "without intervention; history shows intervention degrades it.\n"
+    "- fold_role=chronic_failure: regime-conditional shaping is allowed; you may lean toward "
+    "drawdown emphasis, always within the stated bounds.\n"
+    "- fold_role=neutral: adjust only with clear diagnosis-backed cause.\n\n"
+)
+
+_ANTIPATTERN_BLOCK_RUNCONFIG = (
+    "EMPIRICAL ANTI-PATTERNS (from this system's own history):\n"
+    "Across iterations 3-4, folds receiving LLM advice scored 2.7x-5.1x WORSE CPS than "
+    "control folds with no advice. Two observed failure modes:\n"
+    "1. Tail blowups (iter 3-4): advised folds reached max drawdown 0.36-0.38 vs 0.067-0.069 "
+    "for controls - adjustments amplified worst-case risk.\n"
+    "2. Trade-shy collapse (iter 4-5): advised folds cut trading, suppressing profit AND risk "
+    "together, collapsing CPS (e.g. A2C returns fell 6.0% -> 4.9% while pass rate rose).\n"
+    "Your payload includes prev_iter_diagnoses, a map of fold_number -> diagnosis label from "
+    "the previous iteration. Match each fold's advice to its labeled cause:\n"
+    "- trade_shy -> increase participation; do NOT damp risk further\n"
+    "- poor_selection -> tighten entry quality; reduce frequency, not size\n"
+    "- single_disaster -> cap per-trade risk; leave frequency alone\n"
+    "- churning -> reduce frequency; raise conviction threshold\n"
+    "- healthy -> no adjustment warranted\n"
+    "If a fold's diagnosis was unavailable, be conservative for that fold: prefer no change.\n\n"
+)
+
+_FOLD_PROTECTION_BLOCK_RUNCONFIG = (
+    "FOLD PROTECTION:\n"
+    "The context JSON includes the chronic_failure_folds and protected_winner_folds lists "
+    "(by fold number).\n"
+    "- Folds in protected_winner_folds: return the current weights UNCHANGED for these folds. "
+    "They win without intervention; history shows intervention degrades them.\n"
+    "- Folds in chronic_failure_folds: regime-conditional shaping is allowed; you may lean "
+    "toward drawdown emphasis, always within the stated bounds.\n"
+    "- All other folds: adjust only with clear cause from prev_iter_diagnoses.\n\n"
+)
+
 
 def _build_algo_system_prompt(
     hp_bounds: dict[str, tuple[Any, Any]],
@@ -686,6 +757,9 @@ def _build_algo_system_prompt(
         "MDD are the main metrics\n"
         "- Market regimes: bull (0), bear (1), crisis (2) — detected by HMM "
         "from FRED indicators\n\n"
+        f"{_GOAL_BLOCK}"
+        f"{_ANTIPATTERN_BLOCK_RUNCONFIG}"
+        f"{_FOLD_PROTECTION_BLOCK_RUNCONFIG}"
         f"Hyperparameter bounds for {algo_upper} (you MUST stay within these):\n{hp_lines}\n\n"
         "Reward weight bounds (you MUST stay within these, weights should "
         f"sum to ~1.0):\n{rw_lines}\n\n"
@@ -727,6 +801,9 @@ def _build_epoch_system_prompt(
         f")\n"
         "- Capital preservation is the PRIMARY constraint — Sortino ratio and "
         "MDD are the main metrics\n\n"
+        f"{_GOAL_BLOCK}"
+        f"{_ANTIPATTERN_BLOCK_EPOCH}"
+        f"{_FOLD_PROTECTION_BLOCK_EPOCH}"
         "Reward weight bounds (you MUST stay within these, weights should "
         f"sum to ~1.0):\n{rw_lines}\n\n"
         "FOLD ADJUSTMENT HISTORY: The user message may include recent reward weight\n"
