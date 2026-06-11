@@ -231,10 +231,20 @@ Sentiment-metric pairs are extracted with a 3-token adjacency window, skipping c
 **Call site:** `meta_orchestrator.py:159` (`self._query_run_config()` at iteration start). Query string format:
 
 ```
-TRAINING RUN CONFIG ADVICE: env=equity algo=ppo iteration=2 current_regime={"bull": 0.33, "bear": 0.33, "crisis": 0.17, "sideways": 0.17}
+TRAINING RUN CONFIG ADVICE: env=equity algo=ppo iteration=2 current_regime={"bull": 0.33, "bear": 0.33, "crisis": 0.17, "sideways": 0.17} context={"target_metric": "cps_v1_multiplicative", "chronic_failure_folds": [2], "protected_winner_folds": [7], "prev_iter_cps_v1": 0.034, "prev_iter_diagnoses": {"3": "healthy", "7": "trade_shy"}}
 ```
 
-The regime vector is sourced from the latest `hmm_state_history` row.
+The regime vector is sourced from the latest `hmm_state_history` row. The `context` JSON is assembled once per env+algo before the run (distinct from the per-epoch payload) and includes:
+
+| Key | Type | Source |
+|-----|------|--------|
+| `target_metric` | `str` | Hard-coded `"cps_v1_multiplicative"` |
+| `chronic_failure_folds` | `list[int]` | `load_fold_context(…, fold_number=-1)` → `detect_chronic_failures` |
+| `protected_winner_folds` | `list[int]` | `load_fold_context(…, fold_number=-1)` → `detect_protected_winners` |
+| `prev_iter_cps_v1` | `float \| None` | Latest row in `iteration_results.cps_v1_multiplicative` for this env |
+| `prev_iter_diagnoses` | `dict[str, str]` | Per-fold label from `diagnose_fold` re-computed against the previous iteration's `backtest_results` rows for this algo; keys are fold numbers as strings |
+
+**Fail-open:** `database_url` absent → `context = {"target_metric": "cps_v1_multiplicative"}` only. Any DB/context assembly error → same minimal fallback, logged as `run_config_context_failed`. A NULL-metric row in a previous iteration causes that fold's diagnosis to be skipped (not fatal) via per-fold `DataError` handling.
 
 **Pattern selection** (`query.py:1393-1425`):
 
