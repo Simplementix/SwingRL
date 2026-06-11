@@ -110,7 +110,7 @@ Source: `ENV_PARAMS` dict at `src/swingrl/agents/backtest.py:44-59`. Same `gener
 5. `_evaluate_fold` on test data → out-of-sample metrics (`:414-422`).
 6. `diagnose_overfitting(in_sample_sharpe, out_of_sample_sharpe)` (`:425-428`).
 7. `check_validation_gates(sharpe, mdd, profit_factor, overfit_gap)` (`:431-436`).
-8. Build `FoldResult` (`:438-452`); enqueue to `fold_queue` for real-time DB write (`:456-460`); legacy DB write via `self._store_results` (`:465`); post-fold attribution closure via `record_fold_attribution` (`:468-481`, fail-open).
+8. Build `FoldResult` (`:438-452`); enqueue to `fold_queue` for real-time DB write (`:456-460`); legacy DB write via `self._store_results` (`:465`); post-fold attribution closure via `record_fold_attribution` (`:466-491`, fail-open).
 
 ### Control vs treatment folds
 
