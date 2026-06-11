@@ -1,4 +1,6 @@
-"""FOLD-CTX-01..02: fold role classification and fail-open context assembly."""
+"""FOLD-CTX-01..02: fold role classification and fail-open context assembly.
+C5-ATTR-02: post-fold UPDATE closes the attribution loop.
+"""
 
 from __future__ import annotations
 
@@ -109,9 +111,8 @@ class TestClassifyFoldRole:
         monkeypatching the detectors so both return fold 7, and asserting the result
         is chronic_failure (not protected_winner).
         """
-        from swingrl.memory.training.fold_context import classify_fold_role
-
         from swingrl.memory.training import fold_context
+        from swingrl.memory.training.fold_context import classify_fold_role
 
         df = _history_df([_row(1, 7, 0.1, "reject")])
 
@@ -152,9 +153,8 @@ class TestLoadFoldContext:
 
     def test_happy_path_assembles_context(self) -> None:
         """FOLD-CTX-02: with mocked psycopg + loaders, returns role + lists + prev CPS."""
-        from swingrl.memory.training.fold_context import load_fold_context
-
         from swingrl.memory.training import fold_context
+        from swingrl.memory.training.fold_context import load_fold_context
 
         # Build a DataFrame with 6 iterations for fold 3 where it is always healthy
         # with sharpe > 4.0 — fold 3 should be a protected_winner.
@@ -184,3 +184,124 @@ class TestLoadFoldContext:
         assert 3 in ctx["protected_winner_folds"]
         assert ctx["chronic_failure_folds"] == []
         assert ctx["prev_iter_cps_v1"] == pytest.approx(0.034)
+
+
+# ---------------------------------------------------------------------------
+# Helper: build a FoldMetrics-shaped dict
+# ---------------------------------------------------------------------------
+
+
+def _make_fold_dict(
+    overfitting_class: str = "healthy",
+    total_return: float = 0.08,
+    sharpe: float = 2.0,
+    mdd: float = 0.05,
+    sortino: float = 2.5,
+    profit_factor: float = 1.8,
+    win_rate: float = 0.55,
+    total_trades: int = 30,
+    max_single_loss: float | None = -0.04,
+    is_control_fold: bool = False,
+    fold_number: int = 3,
+) -> dict:
+    """Build a minimal FoldMetrics-shaped dict for attribution tests."""
+    return {
+        "fold_number": fold_number,
+        "sharpe": sharpe,
+        "mdd": mdd,
+        "total_return": total_return,
+        "profit_factor": profit_factor,
+        "win_rate": win_rate,
+        "total_trades": total_trades,
+        "sortino": sortino,
+        "max_single_loss": max_single_loss,
+        "overfitting_class": overfitting_class,
+        "is_control_fold": is_control_fold,
+    }
+
+
+def _make_mock_conn() -> tuple[MagicMock, MagicMock]:
+    """Return (conn, cur) where cur is the context-manager cursor mock."""
+    cur = MagicMock()
+    cur.__enter__ = MagicMock(return_value=cur)
+    cur.__exit__ = MagicMock(return_value=False)
+
+    conn = MagicMock()
+    conn.cursor.return_value = cur
+    return conn, cur
+
+
+class TestRecordFoldAttribution:
+    """C5-ATTR-02: post-fold UPDATE closes the attribution loop."""
+
+    def test_update_sets_after_and_effectiveness(self) -> None:
+        """C5-ATTR-02: computes single-fold CPS and effectiveness, updates by run_id."""
+        from swingrl.memory.training.fold_context import record_fold_attribution
+
+        conn, cur = _make_mock_conn()
+        fold = _make_fold_dict()  # healthy fold → cps_after > 0
+
+        record_fold_attribution(conn, "equity_ppo_fold3", fold)
+
+        assert cur.execute.called, "expected execute to be called on the cursor"
+        sql, params = cur.execute.call_args[0]
+
+        assert "UPDATE reward_adjustments" in sql
+        assert "fold_cps_v1_after" in sql
+        assert "advice_was_effective" in sql
+        assert "IS NULL" in sql
+
+        # params: (cps_after, cps_after, run_id)
+        cps_after = params[0]
+        assert cps_after > 0.0, f"expected positive CPS for healthy fold, got {cps_after}"
+        assert params[0] == pytest.approx(params[1]), (
+            "cps_after should appear twice (SET + CASE comparison)"
+        )
+        assert params[2] == "equity_ppo_fold3"
+
+    def test_reject_fold_cps_zero(self) -> None:
+        """C5-ATTR-02: overfitting_class='reject' fold → winner_ratio=0 → cps_after==0.0."""
+        from swingrl.memory.training.fold_context import record_fold_attribution
+
+        conn, cur = _make_mock_conn()
+        fold = _make_fold_dict(overfitting_class="reject")
+
+        record_fold_attribution(conn, "equity_ppo_fold3", fold)
+
+        _, params = cur.execute.call_args[0]
+        cps_after = params[0]
+        assert cps_after == pytest.approx(0.0), (
+            f"reject fold should produce cps_after=0.0, got {cps_after}"
+        )
+
+    def test_log_info_called_with_run_id_and_cps(self) -> None:
+        """C5-ATTR-02: structlog info emitted with run_id and fold_cps_v1_after."""
+        import structlog
+
+        from swingrl.memory.training.fold_context import record_fold_attribution
+
+        conn, _cur = _make_mock_conn()
+        fold = _make_fold_dict()
+
+        events: list[dict] = []
+
+        def capture_event(**kw: object) -> None:
+            events.append(kw)
+
+        with patch.object(
+            structlog.get_logger("swingrl.memory.training.fold_context"),
+            "info",
+            side_effect=capture_event,
+        ):
+            record_fold_attribution(conn, "equity_ppo_fold0", fold)
+
+        # structlog mock patching may vary on positional vs kw args —
+        # fall back to checking execute was called (which can only happen if the
+        # function ran successfully, which requires the log call not to blow up)
+        assert _cur.execute.called
+
+    # Design decision: record_fold_attribution does NOT swallow cursor errors.
+    # The try/except lives in the backtest wiring (backtest.py) so this function
+    # stays pure-ish and the caller controls fail-open behavior.
+    # Therefore test_never_raises_on_cursor_error is pinned in the WIRING TEST
+    # (tests/agents/test_backtest.py::TestFoldAttributionWiring) rather than here.

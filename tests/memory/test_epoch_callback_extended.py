@@ -675,3 +675,75 @@ class TestAttributionIdentity:
 
         row = cb._adjustment_trigger_queue[0]
         assert row[-1] is None, f"cps_before should be None when no prior iter, got {row[-1]}"
+
+
+# ---------------------------------------------------------------------------
+# TestNaNContextGuard
+# ---------------------------------------------------------------------------
+
+
+class TestNaNContextGuard:
+    """C5-ATTR-02 carry-over: context JSON must not emit non-finite float tokens."""
+
+    def _make_nan_callback(self) -> MemoryEpochCallback:
+        """Callback whose wrapper returns NaN for rolling_sharpe (simulating early training)."""
+        client = _make_mock_memory_client()
+        client.epoch_advice.return_value = {
+            "reward_weights": {
+                "profit": 0.55,
+                "sharpe": 0.25,
+                "drawdown": 0.15,
+                "turnover": 0.05,
+            },
+            "stop_training": False,
+            "rationale": "test",
+            "provider": "test",
+            "model": "test",
+        }
+        wrapper = _make_mock_wrapper()
+        # Make rolling_sharpe return NaN — simulates an early fold with no return data yet
+        wrapper.rolling_sharpe.return_value = float("nan")
+
+        cb = MemoryEpochCallback(
+            memory_client=client,
+            wrapper=wrapper,
+            run_id="equity_ppo_fold0",
+            algo="PPO",
+            env="equity",
+            verbose=0,
+            advice_enabled=True,
+            iteration=6,
+            fold_number=0,
+        )
+        mock_logger = MagicMock()
+        mock_logger.name_to_value = {}
+        cb.model = MagicMock()
+        cb.model.logger = mock_logger
+        cb.num_timesteps = 1000
+        cb._epoch = cb._cadence  # noqa: SLF001  # storage epoch
+        # Pre-inject fold context to bypass DB load
+        cb._fold_context = {  # noqa: SLF001
+            "fold_role": "neutral",
+            "chronic_failure_folds": [],
+            "protected_winner_folds": [],
+            "prev_iter_cps_v1": None,
+        }
+        return cb
+
+    def test_nan_rolling_sharpe_skips_advice_no_crash(self) -> None:
+        """C5-ATTR-02: NaN rolling_sharpe → allow_nan=False raises → advice skipped, no crash.
+
+        Before the fix, json.dumps(context) would silently emit 'NaN' (a JS token,
+        not valid JSON) to the LLM API call.  With allow_nan=False the ValueError
+        is caught by the outer try/except in _query_epoch_advice, advice is skipped
+        (fail-open), and epoch_advice is NOT called on the client.
+        """
+        cb = self._make_nan_callback()
+        cb._query_epoch_advice()  # noqa: SLF001
+
+        # Advice must have been skipped (not called) because context JSON raised
+        cb._client.epoch_advice.assert_not_called()
+        # Also verify the advice-failed counter was incremented (the except branch ran)
+        assert cb._advice_timed_out == 1, (
+            f"expected 1 advice_timed_out (skipped via exception), got {cb._advice_timed_out}"
+        )
