@@ -228,3 +228,103 @@ class TestDiagnoseFoldRobustness:
         fold = make_fold(win_rate=0.562, total_trades=450)
         d = diagnose_fold(fold, env="equity", algo="ppo")
         assert "poor_selection" not in d["fired"]
+
+
+class TestDiagnoseRolling:
+    """DIAG-06: mid-fold diagnosis from rolling indicators."""
+
+    def test_trade_rate_collapse_labeled_trade_shy(self) -> None:
+        """DIAG-06: trade rate < 50% of the fold's own baseline → trade_shy."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_rolling
+
+        d = diagnose_rolling(
+            trade_rate=0.10,
+            baseline_trade_rate=0.40,
+            rolling_win_rate=0.60,
+            env="equity",
+            algo="ppo",
+        )
+        assert d["label"] == "trade_shy"
+        assert d["evidence"]["trade_rate"] == 0.10
+        assert d["evidence"]["baseline_trade_rate"] == 0.40
+
+    def test_winrate_collapse_normal_activity_poor_selection(self) -> None:
+        """DIAG-06: activity normal but win rate < p25 baseline → poor_selection."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_rolling
+
+        d = diagnose_rolling(
+            trade_rate=0.40,
+            baseline_trade_rate=0.40,
+            rolling_win_rate=0.30,
+            env="equity",
+            algo="ppo",
+        )
+        assert d["label"] == "poor_selection"
+
+    def test_no_signals_healthy(self) -> None:
+        """DIAG-06: nothing fired → healthy/clear."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_rolling
+
+        d = diagnose_rolling(
+            trade_rate=0.40,
+            baseline_trade_rate=0.40,
+            rolling_win_rate=0.60,
+            env="equity",
+            algo="ppo",
+        )
+        assert d["label"] == "healthy"
+
+    def test_zero_baseline_never_divides(self) -> None:
+        """DIAG-06: baseline 0.0 (window not yet full) → healthy, no ZeroDivisionError."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_rolling
+
+        d = diagnose_rolling(
+            trade_rate=0.0,
+            baseline_trade_rate=0.0,
+            rolling_win_rate=0.60,
+            env="equity",
+            algo="ppo",
+        )
+        assert d["label"] == "healthy"
+
+    def test_nan_input_raises_data_error(self) -> None:
+        """DIAG-06: NaN in any float input raises DataError (not a false label)."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_rolling
+
+        with pytest.raises(DataError):
+            diagnose_rolling(
+                trade_rate=float("nan"),
+                baseline_trade_rate=0.40,
+                rolling_win_rate=0.60,
+                env="equity",
+                algo="ppo",
+            )
+        with pytest.raises(DataError):
+            diagnose_rolling(
+                trade_rate=0.40,
+                baseline_trade_rate=float("nan"),
+                rolling_win_rate=0.60,
+                env="equity",
+                algo="ppo",
+            )
+        with pytest.raises(DataError):
+            diagnose_rolling(
+                trade_rate=0.40,
+                baseline_trade_rate=0.40,
+                rolling_win_rate=float("nan"),
+                env="equity",
+                algo="ppo",
+            )
+
+    def test_unknown_env_algo_raises_data_error(self) -> None:
+        """DIAG-06: unknown (env, algo) pair raises DataError, never silent default."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_rolling
+
+        with pytest.raises(DataError):
+            diagnose_rolling(
+                trade_rate=0.40,
+                baseline_trade_rate=0.40,
+                rolling_win_rate=0.60,
+                env="forex",
+                algo="ppo",
+            )
