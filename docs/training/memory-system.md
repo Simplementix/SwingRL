@@ -2,7 +2,7 @@
 
 Living reference for SwingRL's memory subsystem — the LLM-backed pattern store that ingests training events, consolidates them into reusable patterns, and feeds them back as run-config and epoch-level advice. The subsystem lives in its own FastAPI service (`services/memory/`, container `swingrl-memory`); the trainer talks to it over HTTP via `src/swingrl/memory/client.py` only — never SQL.
 
-**Last verified against code:** 2026-05-05
+**Last verified against code:** 2026-06-11 (attribution table updated to reflect 6 columns after Task 9 post-fold closure; prior Tasks 8/10 already updated payload schemas)
 
 **Honest-gap policy:** every concrete claim is `file:line`-cited. Where a behavior or writer is referenced from project memory but cannot be located in current code, the gap is flagged inline and aggregated in [Known issues](#known-issues--open-questions). Discrepancies between code and `MEMORY.md` are surfaced rather than silently corrected.
 
@@ -327,7 +327,18 @@ The fold context is lazy-loaded once per fold from PostgreSQL with a 5-second ti
 
 The `stop_training` flag, if `True`, lets the LLM signal the trainer to abort the current fold's training loop.
 
-**Side effects:** Same `pattern_presentations` write per pattern shown (`query.py:1237`); `llm_audit_log` with `call_type='epoch_advice'`. Audit row has `fold_number` and `is_control_fold` parsed from the run_id (`query.py:1186-1189, 1220-1231`). When advice is accepted and weights are updated, a row is appended to `reward_adjustments` including 4 attribution columns: `fold_number`, `iteration_number`, `advice_id` (UUID v4, unique per accepted advice call), and `fold_cps_v1_before` (the most recent `cps_v1_multiplicative` from `iteration_results` at the time of the call — null on iter 0 cold start).
+**Side effects:** Same `pattern_presentations` write per pattern shown (`query.py:1237`); `llm_audit_log` with `call_type='epoch_advice'`. Audit row has `fold_number` and `is_control_fold` parsed from the run_id (`query.py:1186-1189, 1220-1231`). When advice is accepted and weights are updated, a row is appended to `reward_adjustments` including 6 attribution columns:
+
+| Column | Written when | Value |
+|--------|-------------|-------|
+| `fold_number` | Trigger flush (epoch callback) | Fold index from `epoch_callback._fold_number` |
+| `iteration_number` | Trigger flush | `epoch_callback._iteration` |
+| `advice_id` | Trigger flush | UUID v4, unique per accepted advice call (`str(uuid.uuid4())`) |
+| `fold_cps_v1_before` | Trigger flush | Most recent `cps_v1_multiplicative` from `iteration_results` at the time of the call — null on iter 0 cold start |
+| `fold_cps_v1_after` | `record_fold_attribution()` post-fold | Single-fold CPS v1 computed from the completed backtest row (`fold_context.py:125-160`) |
+| `advice_was_effective` | `record_fold_attribution()` post-fold | `fold_cps_v1_after > fold_cps_v1_before`; NULL when `fold_cps_v1_before IS NULL` (iter 0) |
+
+`record_fold_attribution()` (`src/swingrl/memory/training/fold_context.py`) is called after the fold backtest completes. It updates all `reward_adjustments` rows with the matching `run_id`. Rows with `fold_cps_v1_before IS NULL` get `advice_was_effective = NULL` — NULL-safe, no false positives on cold start.
 
 ### Cold-start gate
 
