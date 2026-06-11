@@ -77,6 +77,7 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         self._positive_steps: deque[bool] = deque(maxlen=_ROLLING_WINDOW)
         self._trades_per_step: deque[float] = deque(maxlen=_ROLLING_WINDOW)
         self._baseline_trade_rate: float = 0.0
+        self._baseline_locked: bool = False
 
         log.info(
             "reward_wrapper_init",
@@ -111,10 +112,11 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         for info in infos:
             trades += float(info.get("trades_this_step", 0))
         self._trades_per_step.append(trades)
-        if self._baseline_trade_rate == 0.0 and len(self._trades_per_step) == _ROLLING_WINDOW:
+        if not self._baseline_locked and len(self._trades_per_step) == _ROLLING_WINDOW:
             self._baseline_trade_rate = float(
                 sum(self._trades_per_step) / len(self._trades_per_step)
             )
+            self._baseline_locked = True
 
         return obs, shaped, dones, infos
 
@@ -129,6 +131,7 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         self._positive_steps.clear()
         self._trades_per_step.clear()
         self._baseline_trade_rate = 0.0
+        self._baseline_locked = False
         return obs
 
     def _shape_rewards(
