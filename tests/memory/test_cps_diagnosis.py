@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from swingrl.metrics.cps import FoldMetrics
@@ -116,3 +118,113 @@ class TestDiagnoseFold:
         d = diagnose_fold(make_fold(mdd=0.30), env="equity", algo="ppo")
         assert d["evidence"]["mdd"] == 0.30
         assert d["evidence"]["mdd_disaster_threshold"] == 0.20
+
+
+class TestDiagnoseFoldRobustness:
+    """DIAG-07: None/NaN guard, inf-pf safety, boundary pins."""
+
+    # ------------------------------------------------------------------
+    # DIAG-07a: None in any consumed field → DataError (not TypeError)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("mdd", None),
+            ("win_rate", None),
+            ("total_trades", None),
+            ("profit_factor", None),
+            ("total_return", None),
+        ],
+    )
+    def test_none_field_raises_data_error(self, field: str, value: None) -> None:
+        """DIAG-07a: None in any consumed field raises DataError naming the field."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_fold
+
+        fold = make_fold(**{field: value})  # type: ignore[arg-type]
+        with pytest.raises(DataError, match=field):
+            diagnose_fold(fold, env="equity", algo="ppo")
+
+    # ------------------------------------------------------------------
+    # DIAG-07b: NaN silently → DataError (not false "healthy")
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("mdd", float("nan")),
+            ("win_rate", float("nan")),
+            ("profit_factor", float("nan")),
+            ("total_return", float("nan")),
+        ],
+    )
+    def test_nan_field_raises_data_error(self, field: str, value: float) -> None:
+        """DIAG-07b: NaN in any float consumed field raises DataError (not 'healthy')."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_fold
+
+        fold = make_fold(**{field: value})
+        with pytest.raises(DataError, match=field):
+            diagnose_fold(fold, env="equity", algo="ppo")
+
+    # ------------------------------------------------------------------
+    # DIAG-07c: profit_factor=inf, high trades → NOT churning; evidence JSON-safe
+    # ------------------------------------------------------------------
+
+    def test_inf_profit_factor_no_churning_and_json_safe_evidence(self) -> None:
+        """DIAG-07c: inf profit_factor does not fire churning; evidence is JSON-finite."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_fold
+
+        # equity/ppo p90 = 478; trades=600 > p90, but inf pf < 1.5 is False → no churning
+        fold = make_fold(total_trades=600, profit_factor=float("inf"))
+        d = diagnose_fold(fold, env="equity", algo="ppo")
+        assert "churning" not in d["fired"]
+        # evidence must be serialisable without allow_nan (LLM payload contract)
+        json.dumps(d["evidence"], allow_nan=False)
+
+    # ------------------------------------------------------------------
+    # DIAG-07d: boundary pin — total_trades == p25 (446) does NOT fire trade_shy
+    # ------------------------------------------------------------------
+
+    def test_trades_equal_p25_not_trade_shy(self) -> None:
+        """DIAG-07d: total_trades == p25 (446 for equity/ppo) does NOT fire trade_shy."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_fold
+
+        # trade_shy requires trades < p25 (strict); at p25 it should not fire
+        fold = make_fold(total_trades=446, total_return=0.01)  # low return, but trades == p25
+        d = diagnose_fold(fold, env="equity", algo="ppo")
+        assert "trade_shy" not in d["fired"]
+
+    def test_trades_equal_p25_poor_selection_eligible(self) -> None:
+        """DIAG-07d: total_trades == p25 with low win_rate IS eligible for poor_selection."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_fold
+
+        # poor_selection requires trades >= p25; at p25 with win_rate < p25_win_rate it fires
+        fold = make_fold(total_trades=446, win_rate=0.40)
+        d = diagnose_fold(fold, env="equity", algo="ppo")
+        assert "poor_selection" in d["fired"]
+
+    # ------------------------------------------------------------------
+    # DIAG-07e: boundary pin — mdd == 0.20 equity does NOT fire single_disaster
+    # ------------------------------------------------------------------
+
+    def test_mdd_at_threshold_not_single_disaster(self) -> None:
+        """DIAG-07e: mdd == 0.20 equity (at threshold, not above) does NOT fire single_disaster."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_fold
+
+        # single_disaster requires mdd > 0.20 (strict); at exactly 0.20 it must not fire
+        fold = make_fold(mdd=0.20)
+        d = diagnose_fold(fold, env="equity", algo="ppo")
+        assert "single_disaster" not in d["fired"]
+
+    # ------------------------------------------------------------------
+    # DIAG-07f: boundary pin — win_rate == p25_win_rate (0.562) does NOT fire poor_selection
+    # ------------------------------------------------------------------
+
+    def test_win_rate_at_p25_not_poor_selection(self) -> None:
+        """DIAG-07f: win_rate == p25_win_rate (0.562 equity/ppo) does NOT fire poor_selection."""
+        from swingrl.memory.training.cps_diagnosis import diagnose_fold
+
+        # poor_selection requires win_rate < p25_win_rate (strict); at p25_win_rate it must not fire
+        fold = make_fold(win_rate=0.562, total_trades=450)
+        d = diagnose_fold(fold, env="equity", algo="ppo")
+        assert "poor_selection" not in d["fired"]

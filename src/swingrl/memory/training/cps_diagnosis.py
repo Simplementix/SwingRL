@@ -15,6 +15,7 @@ claims), so the single_disaster rule uses mdd + win_rate instead.
 
 from __future__ import annotations
 
+import math
 from typing import Literal, TypedDict
 
 import structlog
@@ -40,7 +41,13 @@ class TradeBaseline(TypedDict):
 
 
 class CpsDiagnosis(TypedDict):
-    """Labeled cause for a fold's CPS state."""
+    """Labeled cause for a fold's CPS state.
+
+    Contract: ``evidence`` values are JSON-finite floats — infinite or NaN values
+    are excluded by the rule logic so that ``json.dumps(evidence, allow_nan=False)``
+    always succeeds.  This is required because the dict is serialised directly into
+    LLM payloads.
+    """
 
     label: DiagnosisLabel
     fired: list[str]
@@ -49,6 +56,9 @@ class CpsDiagnosis(TypedDict):
 
 
 # Derived 2026-06-11 from iter 0-4 backtest_results (SQL in C0 baseline doc).
+# Regenerate after each completed training iteration via the percentile SQL in
+# .planning/research/phase-19.1-prompt-baseline.md §8; stale baselines mislabel
+# as the policy improves.
 TRADE_BASELINES: dict[tuple[str, str], TradeBaseline] = {
     ("crypto", "a2c"): {
         "p10": 67,
@@ -142,6 +152,42 @@ def _baseline(env: str, algo: str) -> TradeBaseline:
     return TRADE_BASELINES[key]
 
 
+def _validate_fold_fields(fold: FoldMetrics) -> None:
+    """Raise DataError if any consumed field is None or NaN.
+
+    FoldMetrics annotations declare these as non-Optional, but real DB rows are
+    nullable.  A None or NaN value would silently produce a false label or raise
+    an untyped TypeError — both worse than a typed refusal.  Callers catch
+    DataError and fall back to no-diagnosis.
+
+    Args:
+        fold: Per-fold metrics dict to validate.
+
+    Raises:
+        DataError: If any of the five consumed fields is None or NaN.
+    """
+    float_fields = ("mdd", "win_rate", "profit_factor", "total_return")
+    for field in float_fields:
+        val: float | None = fold.get(field)  # type: ignore[assignment]
+        if val is None:
+            log.error("diagnosis_null_field", field=field, fold_number=fold.get("fold_number"))
+            raise DataError(
+                f"diagnose_fold: field '{field}' is None for fold {fold.get('fold_number')!r}"
+            )
+        if math.isnan(val):
+            log.error("diagnosis_nan_field", field=field, fold_number=fold.get("fold_number"))
+            raise DataError(
+                f"diagnose_fold: field '{field}' is NaN for fold {fold.get('fold_number')!r}"
+            )
+
+    trades: int | None = fold.get("total_trades")  # type: ignore[assignment]
+    if trades is None:
+        log.error("diagnosis_null_field", field="total_trades", fold_number=fold.get("fold_number"))
+        raise DataError(
+            f"diagnose_fold: field 'total_trades' is None for fold {fold.get('fold_number')!r}"
+        )
+
+
 def diagnose_fold(fold: FoldMetrics, env: str, algo: str) -> CpsDiagnosis:
     """Label why a completed fold's CPS contribution is degraded (or healthy).
 
@@ -156,7 +202,11 @@ def diagnose_fold(fold: FoldMetrics, env: str, algo: str) -> CpsDiagnosis:
 
     Raises:
         DataError: Unknown (env, algo) — never silently defaults.
+        DataError: Any of the five consumed fields (mdd, win_rate, total_trades,
+            profit_factor, total_return) is None or NaN — typed refusal so callers
+            can fall back to no-diagnosis rather than receiving a false label.
     """
+    _validate_fold_fields(fold)
     b = _baseline(env, algo)
     mdd_max = MDD_DISASTER_THRESHOLD[env.lower()]
     med_ret = ENV_MEDIAN_RETURN[env.lower()]
