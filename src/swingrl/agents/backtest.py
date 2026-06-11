@@ -60,6 +60,26 @@ ENV_PARAMS: dict[str, dict[str, int | float]] = {
 }
 
 
+def fold_run_id(env_name: str, algo_name: str, fold_idx: int, is_control: bool) -> str:
+    """Canonical run_id for a walk-forward fold.
+
+    Single source of truth: the training-side callback persists this string to
+    reward_adjustments.run_id, and post-fold attribution UPDATEs match on it —
+    the two sides MUST agree byte-for-byte.
+
+    Args:
+        env_name: Environment identifier (e.g. "equity", "crypto").
+        algo_name: Algorithm identifier (e.g. "ppo", "a2c", "sac").
+        fold_idx: Zero-based fold index.
+        is_control: Whether this is a control fold (appends "_CTRL" suffix).
+
+    Returns:
+        Run ID string of the form "<env>_<algo>_fold<N>" or "<env>_<algo>_fold<N>_CTRL".
+    """
+    ctrl_suffix = "_CTRL" if is_control else ""
+    return f"{env_name}_{algo_name}_fold{fold_idx}{ctrl_suffix}"
+
+
 @dataclass
 class FoldResult:
     """Result of a single walk-forward fold evaluation.
@@ -362,7 +382,6 @@ class WalkForwardBacktester:
 
             # Control folds: train normally but skip reward adjustments
             fold_advice = advice_enabled and not is_control
-            ctrl_suffix = "_CTRL" if is_control else ""
 
             # Train on training window
             training_result = orchestrator.train(
@@ -373,7 +392,7 @@ class WalkForwardBacktester:
                 total_timesteps=total_timesteps,
                 hyperparams_override=hyperparams_override,
                 memory_client=memory_client,
-                run_id=f"{env_name}_{algo_name}_fold{fold_idx}{ctrl_suffix}",
+                run_id=fold_run_id(env_name, algo_name, fold_idx, is_control),
                 advice_enabled=fold_advice,
                 is_control_fold=is_control,
                 iteration=iteration,
@@ -448,7 +467,7 @@ class WalkForwardBacktester:
                 # Close the advice-attribution loop: update fold_cps_v1_after +
                 # advice_was_effective on any reward_adjustment rows for this run_id.
                 # Fail-open: attribution must never kill a fold.
-                _attr_run_id = f"{env_name}_{algo_name}_fold{fold_idx}{ctrl_suffix}"
+                _attr_run_id = fold_run_id(env_name, algo_name, fold_idx, is_control)
                 _fold_metrics: dict[str, Any] = {
                     "fold_number": fold_idx,
                     "sharpe": oos_metrics.get("sharpe", 0.0),

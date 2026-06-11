@@ -1007,3 +1007,29 @@ class TestFoldAttributionWiring:
         assert "fold_attribution_failed" in src, (
             "backtest.py must have a try/except with log.warning('fold_attribution_failed')"
         )
+
+
+class TestFoldRunId:
+    """C5-ATTR-03: fold_run_id is the single source of truth for the attribution JOIN key."""
+
+    def test_treatment_fold(self) -> None:
+        """REQ-ID C5-ATTR-03: treatment fold produces expected string without _CTRL suffix."""
+        from swingrl.agents.backtest import fold_run_id
+
+        result = fold_run_id(env_name="equity", algo_name="ppo", fold_idx=3, is_control=False)
+        assert result == "equity_ppo_fold3"
+
+    def test_control_fold(self) -> None:
+        """REQ-ID C5-ATTR-03: control fold appends _CTRL suffix."""
+        from swingrl.agents.backtest import fold_run_id
+
+        result = fold_run_id(env_name="equity", algo_name="ppo", fold_idx=3, is_control=True)
+        assert result == "equity_ppo_fold3_CTRL"
+
+    def test_type_and_shape_stability(self) -> None:
+        """REQ-ID C5-ATTR-03: always returns str; works for fold 0 + crypto/sac."""
+        from swingrl.agents.backtest import fold_run_id
+
+        result = fold_run_id(env_name="crypto", algo_name="sac", fold_idx=0, is_control=False)
+        assert isinstance(result, str)
+        assert result == "crypto_sac_fold0"
