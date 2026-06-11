@@ -542,8 +542,8 @@ def compute_iteration_cps(
     # with the highest MDD. We report the fold_number and its MDD value.
     worst_idx = iter_folds["mdd"].idxmax()
     worst_row = iter_folds.loc[worst_idx]
-    worst_fold_number = int(worst_row["fold_number"])
-    worst_fold_mdd = float(worst_row["mdd"])
+    worst_fold_number = int(worst_row["fold_number"])  # type: ignore[arg-type]
+    worst_fold_mdd = float(worst_row["mdd"])  # type: ignore[arg-type]
     worst_msl_raw = worst_row.get("max_single_loss")
     worst_fold_msl = (
         float(worst_msl_raw) if worst_msl_raw is not None and not pd.isna(worst_msl_raw) else None
