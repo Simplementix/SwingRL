@@ -103,14 +103,14 @@ Source: `ENV_PARAMS` dict at `src/swingrl/agents/backtest.py:44-59`. Same `gener
 
 `WalkForwardBacktester.run()` at `src/swingrl/agents/backtest.py:300-470`:
 
-1. Slice train + test data (`:357-360`).
-2. `is_control = fold_idx in valid_control_set` (`:346`).
-3. `orchestrator.train(...)` with `run_id=fold_run_id(env_name, algo_name, fold_idx, is_control)` and `is_control_fold=is_control` (`:395-400`). Control folds get `advice_enabled=False` (`:363`). `fold_run_id` is the canonical helper at `backtest.py:63` — both the training callback and post-fold attribution resolve run IDs through it.
-4. `_evaluate_fold` on train data → in-sample metrics (`:382-390`).
-5. `_evaluate_fold` on test data → out-of-sample metrics (`:393-401`).
-6. `diagnose_overfitting(is_sharpe, oos_sharpe)` (`:404-407`).
-7. `check_validation_gates(oos_sharpe, oos_mdd, profit_factor, overfit_gap)` (`:410-415`).
-8. Build `FoldResult` (`:417-430`); enqueue to `fold_queue` for real-time DB write (`:434-439`); legacy DB write via `self._db._store_results` (`:441-444`).
+1. `is_control = fold_idx in valid_control` (`:367`); slice train + test data (`:378-381`).
+2. `fold_advice = advice_enabled and not is_control` (`:384`) — control folds get `advice_enabled=False`.
+3. `orchestrator.train(...)` with `run_id=fold_run_id(env_name, algo_name, fold_idx, is_control)`, `is_control_fold=is_control`, and `fold_number=fold_idx` (`:387-400`). `fold_run_id` is the canonical helper at `backtest.py:63` — both the training callback and post-fold attribution resolve run IDs through it.
+4. `_evaluate_fold` on train data → in-sample metrics (`:403-411`).
+5. `_evaluate_fold` on test data → out-of-sample metrics (`:414-422`).
+6. `diagnose_overfitting(in_sample_sharpe, out_of_sample_sharpe)` (`:425-428`).
+7. `check_validation_gates(sharpe, mdd, profit_factor, overfit_gap)` (`:431-436`).
+8. Build `FoldResult` (`:438-452`); enqueue to `fold_queue` for real-time DB write (`:456-460`); legacy DB write via `self._store_results` (`:465`); post-fold attribution closure via `record_fold_attribution` (`:468-481`, fail-open).
 
 ### Control vs treatment folds
 
