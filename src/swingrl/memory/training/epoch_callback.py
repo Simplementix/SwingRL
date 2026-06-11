@@ -577,7 +577,7 @@ class MemoryEpochCallback(BaseCallback):
                 (
                     [
                         self._epoch,
-                        sharpe_delta,
+                        current_sharpe,
                         sharpe_delta,
                         mdd_delta,
                         effective,

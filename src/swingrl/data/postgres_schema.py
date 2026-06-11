@@ -354,6 +354,12 @@ CREATE TABLE IF NOT EXISTS reward_adjustments (
     mdd_delta           DOUBLE PRECISION,
     effective           BOOLEAN,
     outcome_sharpe      DOUBLE PRECISION,
+    fold_number         INTEGER,
+    iteration_number    INTEGER,
+    advice_id           TEXT,
+    fold_cps_v1_before  DOUBLE PRECISION,
+    fold_cps_v1_after   DOUBLE PRECISION,
+    advice_was_effective BOOLEAN,
     created_at          TIMESTAMPTZ DEFAULT NOW()
 )
 """
