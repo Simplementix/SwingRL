@@ -533,10 +533,15 @@ NULL-safe effectiveness, no false positives on the cold start.
 ### 5.5 `fold_run_id` single-source-of-truth helper
 
 The `run_id` written at trigger flush (`self._run_id`) is the same run_id used in
-`record_fold_attribution`. It is assembled once per fold by the meta-orchestrator at
-`self._generate_run_id(env_name, algo_name)` and threaded through the callback's
-`__init__`. There is no separate "fold_run_id" lookup — the same `run_id` serves both
-trigger writes (at flush) and the attribution closure (post-fold).
+`record_fold_attribution`. Both sides obtain it from the single source of truth
+`fold_run_id(env_name, algo_name, fold_idx, is_control)` in
+`src/swingrl/agents/backtest.py` — the training side passes its output into
+`trainer.train(run_id=...)` (which threads it to the callback's `__init__`), and the
+post-fold attribution side calls the same helper to build the UPDATE's WHERE value.
+A unit test (`TestFoldRunId`) pins the format (`{env}_{algo}_fold{idx}` plus a control
+suffix for control folds), so the attribution JOIN cannot silently drift. (The
+meta-orchestrator's `_generate_run_id` is a different, run-level identifier and is not
+involved in fold attribution.)
 
 ### 5.6 `outcome_sharpe` bug fix
 
