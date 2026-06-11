@@ -129,3 +129,57 @@ class TestFoldProtectionBlock:
         for marker in ("YOUR OBJECTIVE", "EMPIRICAL ANTI-PATTERNS", "FOLD PROTECTION"):
             assert marker in e, f"epoch prompt missing section header: {marker!r}"
             assert marker in r, f"run-config prompt missing section header: {marker!r}"
+
+
+class TestPayloadShapeAccuracy:
+    """C3-PROMPT-04: each builder references only fields present in its own payload."""
+
+    def test_run_config_prompt_references_prev_iter_diagnoses(self) -> None:
+        """C3-PROMPT-04: run-config builder mentions prev_iter_diagnoses (its actual payload field)."""
+        r = q._build_algo_system_prompt(_HP_BOUNDS, _RW_BOUNDS, _ALGO)
+        assert "prev_iter_diagnoses" in r
+
+    def test_run_config_prompt_references_chronic_failure_folds(self) -> None:
+        """C3-PROMPT-04: run-config builder mentions chronic_failure_folds list (its actual payload field)."""
+        r = q._build_algo_system_prompt(_HP_BOUNDS, _RW_BOUNDS, _ALGO)
+        assert "chronic_failure_folds" in r
+
+    def test_run_config_prompt_does_not_reference_epoch_only_diagnosis_field(self) -> None:
+        """C3-PROMPT-04: run-config builder must NOT reference 'diagnosis' field — epoch-only construct."""
+        r = q._build_algo_system_prompt(_HP_BOUNDS, _RW_BOUNDS, _ALGO)
+        assert "'diagnosis' field" not in r
+
+    def test_run_config_prompt_does_not_reference_fold_role(self) -> None:
+        """C3-PROMPT-04: run-config builder must NOT reference fold_role= — epoch-only construct."""
+        r = q._build_algo_system_prompt(_HP_BOUNDS, _RW_BOUNDS, _ALGO)
+        assert "fold_role=" not in r
+
+    def test_epoch_prompt_references_diagnosis_field(self) -> None:
+        """C3-PROMPT-04: epoch builder still references 'diagnosis' field (its actual payload field)."""
+        e = q._build_epoch_system_prompt(_HP_BOUNDS, _RW_BOUNDS, _ALGO)
+        assert "'diagnosis' field" in e
+
+    def test_epoch_prompt_references_fold_role(self) -> None:
+        """C3-PROMPT-04: epoch builder still references fold_role= (its actual payload field)."""
+        e = q._build_epoch_system_prompt(_HP_BOUNDS, _RW_BOUNDS, _ALGO)
+        assert "fold_role=" in e
+
+    def test_run_config_corrections_match_diagnosis_module_verbatim(self) -> None:
+        """C3-PROMPT-04: run-config correction strings mirror DIAGNOSIS_CORRECTIONS exactly.
+
+        Byte-pinned against swingrl.memory.training.cps_diagnosis.DIAGNOSIS_CORRECTIONS
+        so drift on either side fails this test.
+        """
+        r = q._build_algo_system_prompt(_HP_BOUNDS, _RW_BOUNDS, _ALGO)
+        for label, correction in DIAGNOSIS_CORRECTIONS.items():
+            assert correction in r, (
+                f"correction for {label!r} missing or drifted in run-config prompt"
+            )
+            assert label in r, f"label {label!r} missing from run-config prompt"
+
+    def test_epoch_corrections_match_diagnosis_module_verbatim(self) -> None:
+        """C3-PROMPT-04: epoch correction strings mirror DIAGNOSIS_CORRECTIONS exactly (re-asserts C3-PROMPT-02)."""
+        e = q._build_epoch_system_prompt(_HP_BOUNDS, _RW_BOUNDS, _ALGO)
+        for label, correction in DIAGNOSIS_CORRECTIONS.items():
+            assert correction in e, f"correction for {label!r} missing or drifted in epoch prompt"
+            assert label in e, f"label {label!r} missing from epoch prompt"
