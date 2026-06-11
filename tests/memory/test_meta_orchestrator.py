@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import psycopg
 import pytest
 
@@ -460,3 +461,297 @@ class TestMetaOrchestratorPatternCountWarning:
         assert "meta_pattern_count_query_failed" in log_events, (
             "Should log meta_pattern_count_query_failed on HTTP failure"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestRunConfigPayload — C1-PAYLOAD-02
+# ---------------------------------------------------------------------------
+
+
+def _make_fold_history_df(rows: list[dict]) -> pd.DataFrame:
+    """Build a minimal backtest_results-shaped DataFrame for tests."""
+    return pd.DataFrame(rows)
+
+
+def _make_urlopen_mock(response_body: dict) -> MagicMock:
+    """Return a context-manager mock for urllib.request.urlopen."""
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(response_body).encode()
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+class TestRunConfigPayload:
+    """C1-PAYLOAD-02: run-config payload carries fold context + diagnoses."""
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _orch_with_db(self, tmp_path: Path) -> MetaTrainingOrchestrator:
+        """Orchestrator with a non-empty database_url so the context path fires."""
+        return _make_orchestrator(tmp_path, database_url="postgresql://fake/db")
+
+    def _orch_without_db(self, tmp_path: Path) -> MetaTrainingOrchestrator:
+        """Orchestrator with no database_url (cold-start context)."""
+        return _make_orchestrator(tmp_path, database_url=None)
+
+    def _prev_iter_rows(self) -> list[dict]:
+        """Two equity/ppo rows: one healthy-shaped, one trade_shy-shaped."""
+        # equity/ppo baseline: p25_trades=446, med_return=0.0535
+        # healthy: trades>=446, win_rate>=0.562 (p25), mdd<=0.20, return>=0.0535
+        # trade_shy: trades<446 AND total_return<0.0535
+        return [
+            {
+                "iteration_number": 5,
+                "environment": "equity",
+                "algorithm": "ppo",
+                "fold_number": 3,
+                "sharpe": 1.8,
+                "mdd": 0.05,
+                "total_return": 0.08,
+                "profit_factor": 2.0,
+                "win_rate": 0.65,
+                "total_trades": 460,
+                "sortino": 2.0,
+                "max_single_loss": None,
+                "overfitting_class": "healthy",
+                "is_control_fold": False,
+                "calmar": 1.5,
+                "hmm_p_bull": 0.5,
+                "hmm_p_bear": 0.2,
+                "vix_mean": 18.0,
+                "train_start_date": None,
+                "test_start_date": None,
+                "test_end_date": None,
+                "created_at": None,
+            },
+            {
+                "iteration_number": 5,
+                "environment": "equity",
+                "algorithm": "ppo",
+                "fold_number": 7,
+                "sharpe": 0.3,
+                "mdd": 0.04,
+                "total_return": 0.01,  # < 0.0535 median
+                "profit_factor": 1.2,
+                "win_rate": 0.60,
+                "total_trades": 200,  # < p25=446 → trade_shy
+                "sortino": 0.4,
+                "max_single_loss": None,
+                "overfitting_class": "reject",
+                "is_control_fold": False,
+                "calmar": 0.3,
+                "hmm_p_bull": 0.5,
+                "hmm_p_bear": 0.2,
+                "vix_mean": 18.0,
+                "train_start_date": None,
+                "test_start_date": None,
+                "test_end_date": None,
+                "created_at": None,
+            },
+        ]
+
+    # ------------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------------
+
+    def test_payload_contains_context_json(self, tmp_path: Path) -> None:
+        """C1-PAYLOAD-02: query embeds context with target_metric + fold lists +
+        per-fold prev-iteration diagnoses."""
+        orch = self._orch_with_db(tmp_path)
+        orch._get_pattern_count = MagicMock(return_value=2)
+        orch._current_regime_vector = MagicMock(
+            return_value={"bull": 0.5, "bear": 0.3, "crisis": 0.1, "sideways": 0.1}
+        )
+
+        fold_ctx = {
+            "fold_role": "neutral",
+            "chronic_failure_folds": [2],
+            "protected_winner_folds": [7],
+            "prev_iter_cps_v1": 0.034,
+        }
+        history_df = _make_fold_history_df(self._prev_iter_rows())
+
+        captured_req: list[MagicMock] = []
+
+        def fake_urlopen(req: MagicMock, timeout: float | None = None) -> MagicMock:
+            captured_req.append(req)
+            return _make_urlopen_mock({"learning_rate": 0.0003})
+
+        with (
+            patch(
+                "swingrl.memory.training.meta_orchestrator.load_fold_context",
+                return_value=fold_ctx,
+            ),
+            patch(
+                "swingrl.memory.training.meta_orchestrator.load_fold_history",
+                return_value=history_df,
+            ),
+            patch("swingrl.memory.training.meta_orchestrator.psycopg") as mock_psycopg,
+            patch("urllib.request.urlopen", side_effect=fake_urlopen),
+        ):
+            mock_conn = MagicMock()
+            mock_psycopg.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+            mock_psycopg.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+            orch._query_run_config("equity", "ppo", iteration=6)
+
+        assert captured_req, "urlopen was never called"
+        req = captured_req[0]
+        raw_data = req.data.decode("utf-8")
+        outer = json.loads(raw_data)
+        query_str = outer["query"]
+        context_str = query_str.split("context=", 1)[1]
+        context = json.loads(context_str)
+
+        assert context["target_metric"] == "cps_v1_multiplicative"
+        assert context["chronic_failure_folds"] == [2]
+        assert context["protected_winner_folds"] == [7]
+        assert abs(context["prev_iter_cps_v1"] - 0.034) < 1e-9
+
+        diagnoses = context["prev_iter_diagnoses"]
+        # json.loads converts int keys to strings
+        assert "3" in diagnoses
+        assert "7" in diagnoses
+        assert diagnoses["3"] == "healthy"
+        assert diagnoses["7"] == "trade_shy"
+
+    def test_no_database_url_minimal_context(self, tmp_path: Path) -> None:
+        """C1-PAYLOAD-02: without database_url, context = {target_metric} only; no crash."""
+        orch = self._orch_without_db(tmp_path)
+        orch._get_pattern_count = MagicMock(return_value=2)
+        orch._current_regime_vector = MagicMock(
+            return_value={"bull": 0.33, "bear": 0.33, "crisis": 0.17, "sideways": 0.17}
+        )
+
+        captured_req: list[MagicMock] = []
+
+        def fake_urlopen(req: MagicMock, timeout: float | None = None) -> MagicMock:
+            captured_req.append(req)
+            return _make_urlopen_mock({"learning_rate": 0.0003})
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            orch._query_run_config("equity", "ppo", iteration=1)
+
+        assert captured_req, "urlopen was never called"
+        raw_data = captured_req[0].data.decode("utf-8")
+        query_str = json.loads(raw_data)["query"]
+        context_str = query_str.split("context=", 1)[1]
+        context = json.loads(context_str)
+
+        assert context == {"target_metric": "cps_v1_multiplicative"}
+
+    def test_context_failure_fails_open(self, tmp_path: Path) -> None:
+        """C1-PAYLOAD-02: load_fold_context raising → payload still sent with minimal context."""
+        orch = self._orch_with_db(tmp_path)
+        orch._get_pattern_count = MagicMock(return_value=2)
+        orch._current_regime_vector = MagicMock(
+            return_value={"bull": 0.33, "bear": 0.33, "crisis": 0.17, "sideways": 0.17}
+        )
+
+        captured_req: list[MagicMock] = []
+
+        def fake_urlopen(req: MagicMock, timeout: float | None = None) -> MagicMock:
+            captured_req.append(req)
+            return _make_urlopen_mock({"learning_rate": 0.0003})
+
+        with (
+            patch(
+                "swingrl.memory.training.meta_orchestrator.load_fold_context",
+                side_effect=RuntimeError("db is dead"),
+            ),
+            patch("swingrl.memory.training.meta_orchestrator.psycopg") as mock_psycopg,
+            patch("urllib.request.urlopen", side_effect=fake_urlopen),
+        ):
+            mock_conn = MagicMock()
+            mock_psycopg.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+            mock_psycopg.connect.return_value.__exit__ = MagicMock(return_value=False)
+            result = orch._query_run_config("equity", "ppo", iteration=1)
+
+        # Training was NOT blocked — result came back
+        assert result == {"learning_rate": 0.0003}
+        assert captured_req, "urlopen should have been called despite context failure"
+
+        raw_data = captured_req[0].data.decode("utf-8")
+        query_str = json.loads(raw_data)["query"]
+        context_str = query_str.split("context=", 1)[1]
+        context = json.loads(context_str)
+        # Only the target_metric key — no fold lists, no diagnoses
+        assert context == {"target_metric": "cps_v1_multiplicative"}
+
+    def test_null_metric_row_skipped_not_fatal(self, tmp_path: Path) -> None:
+        """C1-PAYLOAD-02: a prev-iter row with None profit_factor is skipped; others diagnosed."""
+        orch = self._orch_with_db(tmp_path)
+        orch._get_pattern_count = MagicMock(return_value=2)
+        orch._current_regime_vector = MagicMock(
+            return_value={"bull": 0.33, "bear": 0.33, "crisis": 0.17, "sideways": 0.17}
+        )
+
+        rows = self._prev_iter_rows()
+        # Corrupt fold 3's profit_factor to None — diagnose_fold should raise DataError
+        rows[0]["profit_factor"] = None
+        history_df = _make_fold_history_df(rows)
+
+        fold_ctx = {
+            "fold_role": "neutral",
+            "chronic_failure_folds": [],
+            "protected_winner_folds": [],
+            "prev_iter_cps_v1": 0.020,
+        }
+
+        captured_req: list[MagicMock] = []
+
+        def fake_urlopen(req: MagicMock, timeout: float | None = None) -> MagicMock:
+            captured_req.append(req)
+            return _make_urlopen_mock({"learning_rate": 0.0003})
+
+        with (
+            patch(
+                "swingrl.memory.training.meta_orchestrator.load_fold_context",
+                return_value=fold_ctx,
+            ),
+            patch(
+                "swingrl.memory.training.meta_orchestrator.load_fold_history",
+                return_value=history_df,
+            ),
+            patch("swingrl.memory.training.meta_orchestrator.psycopg") as mock_psycopg,
+            patch("urllib.request.urlopen", side_effect=fake_urlopen),
+        ):
+            mock_conn = MagicMock()
+            mock_psycopg.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+            mock_psycopg.connect.return_value.__exit__ = MagicMock(return_value=False)
+            result = orch._query_run_config("equity", "ppo", iteration=6)
+
+        # Training not blocked
+        assert result == {"learning_rate": 0.0003}
+        assert captured_req
+
+        raw_data = captured_req[0].data.decode("utf-8")
+        query_str = json.loads(raw_data)["query"]
+        context_str = query_str.split("context=", 1)[1]
+        context = json.loads(context_str)
+
+        diagnoses = context["prev_iter_diagnoses"]
+        # fold 3 was skipped (None profit_factor → DataError), fold 7 was diagnosed
+        assert "3" not in diagnoses
+        assert "7" in diagnoses
+        assert diagnoses["7"] == "trade_shy"
+
+    def test_cold_start_guard_short_circuits_before_context_assembly(self, tmp_path: Path) -> None:
+        """C1-PAYLOAD-02: cold-start guard (pattern_count < min) returns {} before DB work."""
+        orch = self._orch_with_db(tmp_path)
+        orch._get_pattern_count = MagicMock(return_value=0)
+
+        with (
+            patch("swingrl.memory.training.meta_orchestrator.load_fold_context") as mock_lfc,
+            patch("swingrl.memory.training.meta_orchestrator.psycopg") as mock_psycopg,
+            patch("urllib.request.urlopen") as mock_urlopen,
+        ):
+            result = orch._query_run_config("equity", "ppo", iteration=0)
+
+        assert result == {}
+        mock_lfc.assert_not_called()
+        mock_psycopg.connect.assert_not_called()
+        mock_urlopen.assert_not_called()
