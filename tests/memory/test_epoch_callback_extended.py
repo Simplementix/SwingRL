@@ -343,3 +343,84 @@ class TestEpochCallbackResolvePendingAdjustment:
         cb._client.ingest_training.assert_called_once()
         text = cb._client.ingest_training.call_args[0][0]
         assert "REWARD_ADJUSTMENT_OUTCOME" in text
+
+
+# ---------------------------------------------------------------------------
+# TestOutcomeSharpeRegression
+# ---------------------------------------------------------------------------
+
+
+class TestOutcomeSharpeRegression:
+    """TRAIN-10: outcome_sharpe must store current_sharpe, not sharpe_delta."""
+
+    def _setup_with_pending_and_db(
+        self,
+        sharpe_at_trigger: float = 1.0,
+        current_sharpe: float = 1.5,
+        current_mdd: float = -0.03,
+    ) -> MemoryEpochCallback:
+        """Callback pre-loaded with a pending adjustment and a fake DATABASE_URL
+        so _adjustment_outcome_queue is populated on _resolve_pending_adjustment().
+        """
+        cb = _make_callback()
+        cb._epoch = 20
+        cb._pending_adjustment = {
+            "epoch_triggered": 10,
+            "trigger_metric": "rolling_mdd_500",
+            "trigger_value": -0.09,
+            "trigger_reason": "test",
+            "weights_before": {
+                "profit": 0.5,
+                "sharpe": 0.25,
+                "drawdown": 0.15,
+                "turnover": 0.1,
+            },
+            "weights_after": {
+                "profit": 0.6,
+                "sharpe": 0.2,
+                "drawdown": 0.1,
+                "turnover": 0.1,
+            },
+            "curriculum_window_at_trigger": "2022_bear",
+            "regime_at_trigger": "bear",
+        }
+        cb._sharpe_at_trigger = sharpe_at_trigger
+        cb._mdd_at_trigger = -0.05
+        cb._wrapper.rolling_sharpe.return_value = current_sharpe
+        cb._wrapper.rolling_mdd.return_value = current_mdd
+        # Provide a fake DATABASE_URL so the queue-append branch executes.
+        cb._database_url = "postgresql://fake:fake@localhost/fake"  # pragma: allowlist secret
+        return cb
+
+    def test_outcome_sharpe_stores_current_sharpe_not_delta(self) -> None:
+        """TRAIN-10: outcome_queue tuple position 1 (outcome_sharpe) == current_sharpe.
+
+        The UPDATE SQL is:
+          SET epoch_outcome=%s, outcome_sharpe=%s, sharpe_delta=%s, mdd_delta=%s, effective=%s
+        so params[0]=epoch, params[1]=outcome_sharpe, params[2]=sharpe_delta.
+
+        Before the fix, params[1] was sharpe_delta (the difference), not
+        current_sharpe (the absolute value).  With sharpe_at_trigger=1.0 and
+        current_sharpe=1.5, the delta is 0.5 — clearly distinct from 1.5.
+        """
+        cb = self._setup_with_pending_and_db(
+            sharpe_at_trigger=1.0,
+            current_sharpe=1.5,
+        )
+        cb._resolve_pending_adjustment()
+
+        assert len(cb._adjustment_outcome_queue) == 1, (
+            "Expected exactly one item in the outcome queue"
+        )
+        params, _run_id, _epoch_trigger = cb._adjustment_outcome_queue[0]
+        # params layout: [epoch_outcome, outcome_sharpe, sharpe_delta, mdd_delta, effective]
+        outcome_sharpe_value = params[1]
+        sharpe_delta_value = params[2]
+
+        # The bug: outcome_sharpe_value == sharpe_delta_value (both 0.5)
+        # The fix: outcome_sharpe_value == current_sharpe (1.5)
+        assert abs(outcome_sharpe_value - 1.5) < 1e-9, (
+            f"outcome_sharpe should be current_sharpe=1.5, got {outcome_sharpe_value}. "
+            f"sharpe_delta was {sharpe_delta_value}. "
+            "Likely the outcome tuple still passes sharpe_delta instead of current_sharpe."
+        )
