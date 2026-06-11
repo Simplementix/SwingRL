@@ -376,6 +376,7 @@ class WalkForwardBacktester:
                 advice_enabled=fold_advice,
                 is_control_fold=is_control,
                 iteration=iteration,
+                fold_number=fold_idx,
             )
 
             # Evaluate on train data (in-sample)

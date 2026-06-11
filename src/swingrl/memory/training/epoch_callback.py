@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import uuid
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -110,6 +111,7 @@ class MemoryEpochCallback(BaseCallback):
         is_control_fold: bool = False,
         iteration: int | None = None,
         database_url: str | None = None,
+        fold_number: int | None = None,
     ) -> None:
         """Initialize the epoch callback.
 
@@ -125,6 +127,9 @@ class MemoryEpochCallback(BaseCallback):
                 (no reward adjustments). Tagged in epoch snapshot text.
             iteration: Training iteration number for pattern presentation tracking.
             database_url: Optional PostgreSQL connection URL for epoch/adjustment writes.
+            fold_number: Sequential fold index (0-based) within the current walk-forward run.
+                Used to assemble the per-fold advice context and written to the
+                reward_adjustments attribution columns.
         """
         super().__init__(verbose=verbose)
         self._client = memory_client
@@ -135,6 +140,11 @@ class MemoryEpochCallback(BaseCallback):
         self._is_control_fold = is_control_fold
         self._iteration = iteration
         self._database_url = database_url
+        self._fold_number = fold_number
+        # Lazy-loaded once on first _query_epoch_advice call; None = not yet loaded.
+        self._fold_context: dict[str, Any] | None = None
+        # UUID string for the most recent accepted advice event (attribution).
+        self._advice_id: str = ""
 
         # Queue-based telemetry: buffer writes during training, flush post-fold.
         self._epoch_queue: list[list[Any]] = []
@@ -271,8 +281,9 @@ class MemoryEpochCallback(BaseCallback):
                             """INSERT INTO reward_adjustments (
                                 run_id, epoch_trigger, algo, env, trigger_metric,
                                 trigger_value, trigger_reason, weight_before,
-                                weight_after, sharpe_at_trigger, mdd_at_trigger
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                weight_after, sharpe_at_trigger, mdd_at_trigger,
+                                fold_number, iteration_number, advice_id, fold_cps_v1_before
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                             self._adjustment_trigger_queue,
                         )
                     con.commit()
@@ -529,6 +540,11 @@ class MemoryEpochCallback(BaseCallback):
                     json.dumps(new_weights),
                     self._sharpe_at_trigger,
                     self._mdd_at_trigger,
+                    # Attribution identity (Task 8): fold / iteration / advice UUID / CPS before
+                    self._fold_number,
+                    self._iteration,
+                    self._advice_id,
+                    (self._fold_context or {}).get("prev_iter_cps_v1"),
                 ]
             )
 
@@ -605,14 +621,66 @@ class MemoryEpochCallback(BaseCallback):
         try:
             import json as _json
 
+            # Lazy-load fold context once per fold (skipped if no DB or no fold_number).
+            if self._fold_context is None:
+                if self._database_url and self._fold_number is not None:
+                    from swingrl.memory.training.fold_context import load_fold_context
+
+                    self._fold_context = load_fold_context(
+                        self._database_url, self._env, self._fold_number
+                    )
+                else:
+                    self._fold_context = {
+                        "fold_role": "neutral",
+                        "chronic_failure_folds": [],
+                        "protected_winner_folds": [],
+                        "prev_iter_cps_v1": None,
+                    }
+
+            from swingrl.memory.training.cps_diagnosis import diagnose_rolling
+            from swingrl.utils.exceptions import DataError
+
+            try:
+                diagnosis: dict[str, Any] = dict(
+                    diagnose_rolling(
+                        trade_rate=self._wrapper.rolling_trade_rate(),
+                        baseline_trade_rate=self._wrapper.baseline_trade_rate(),
+                        rolling_win_rate=self._wrapper.rolling_win_rate(),
+                        env=self._env,
+                        algo=self._algo,
+                    )
+                )
+            except DataError as exc:
+                log.warning("diagnosis_unavailable", env=self._env, algo=self._algo, error=str(exc))
+                diagnosis = {
+                    "label": "healthy",
+                    "fired": [],
+                    "confidence": "clear",
+                    "evidence": {},
+                }
+
+            context = {
+                "fold_number": self._fold_number,
+                "fold_role": self._fold_context["fold_role"],
+                "prev_iter_cps_v1": self._fold_context["prev_iter_cps_v1"],
+                "target_metric": "cps_v1_multiplicative",
+                "leading_indicators": {
+                    "rolling_sharpe": round(self._wrapper.rolling_sharpe(), 4),
+                    "rolling_mdd": round(self._wrapper.rolling_mdd(), 4),
+                    "rolling_win_rate": round(self._wrapper.rolling_win_rate(), 4),
+                    "trade_rate": round(self._wrapper.rolling_trade_rate(), 4),
+                    "baseline_trade_rate": round(self._wrapper.baseline_trade_rate(), 4),
+                },
+                "diagnosis": diagnosis,
+            }
+
             iter_part = f" iteration={self._iteration}" if self._iteration is not None else ""
             payload = {
                 "query": (
                     f"EPOCH ADVICE: run_id={self._run_id} algo={self._algo} "
                     f"env={self._env} epoch={self._epoch}{iter_part} "
-                    f"rolling_sharpe={self._wrapper.rolling_sharpe():.4f} "
-                    f"rolling_mdd={self._wrapper.rolling_mdd():.4f} "
-                    f"current_weights={_json.dumps(self._wrapper.weights)}"
+                    f"current_weights={_json.dumps(self._wrapper.weights)} "
+                    f"context={_json.dumps(context)}"
                 )
             }
             self._advice_calls += 1
@@ -725,6 +793,7 @@ class MemoryEpochCallback(BaseCallback):
 
                 self._wrapper.update_weights(clamped)
                 self._last_adjustment_step = self.num_timesteps
+                self._advice_id = str(uuid.uuid4())
                 self._ingest_adjustment_trigger(
                     new_weights=clamped,
                     old_weights=old_weights,

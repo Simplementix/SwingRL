@@ -272,7 +272,32 @@ Fields are nullable so the LLM can choose to leave a knob alone. `rationale` is 
 
 **Call site:** `epoch_callback.py` per cadence (PPO 20, A2C 8000, SAC 40000 epochs) plus notable events (KL > 0.10, MDD < -25.0). Cadence detail in [`reward-shaping.md`](reward-shaping.md).
 
-**Inputs:** env, algo, iteration, current epoch metrics — **plus within-fold adjustment history.** When the `run_id` is present, `query.py:1123-1172` fetches the most recent 5 `REWARD_ADJUSTMENT_OUTCOME` memories from the same fold and embeds extracted fields (`epoch_triggered`, `post_adjustment_sharpe_delta`, `post_adjustment_mdd_delta`, `adjustment_effective`, `weights_before/after`) into the user message. This prevents the LLM from re-recommending an adjustment that just failed.
+**Inputs:** env, algo, iteration, current epoch metrics — **plus within-fold adjustment history** and a compact per-fold context block. When the `run_id` is present, `query.py:1123-1172` fetches the most recent 5 `REWARD_ADJUSTMENT_OUTCOME` memories from the same fold and embeds extracted fields (`epoch_triggered`, `post_adjustment_sharpe_delta`, `post_adjustment_mdd_delta`, `adjustment_effective`, `weights_before/after`) into the user message. This prevents the LLM from re-recommending an adjustment that just failed.
+
+**Payload query string format** (assembled in `epoch_callback.py::_query_epoch_advice`):
+
+```
+EPOCH ADVICE: run_id=<run_id> algo=<algo> env=<env> epoch=<N> [iteration=<N>]
+current_weights={"profit": 0.50, ...}
+context={"fold_number": 3, "fold_role": "neutral", "prev_iter_cps_v1": 0.034,
+         "target_metric": "cps_v1_multiplicative",
+         "leading_indicators": {"rolling_sharpe": 1.2, "rolling_mdd": -0.05,
+             "rolling_win_rate": 0.55, "trade_rate": 0.12, "baseline_trade_rate": 0.10},
+         "diagnosis": {"label": "healthy", "fired": [], "confidence": "clear", "evidence": {}}}
+```
+
+`context` keys:
+
+| Key | Type | Description |
+|---|---|---|
+| `fold_number` | `int \| null` | Walk-forward fold index (0-based); null when not wired. |
+| `fold_role` | `str` | `"chronic_failure"` \| `"protected_winner"` \| `"neutral"` — from `fold_context.load_fold_context()`. |
+| `prev_iter_cps_v1` | `float \| null` | Most recent `cps_v1_multiplicative` from `iteration_results` for this env. Null on iter 0 cold start. |
+| `target_metric` | `str` | Always `"cps_v1_multiplicative"` — reminds the LLM what to optimise for. |
+| `leading_indicators` | `dict` | Five rolling scalars from the wrapper: `rolling_sharpe`, `rolling_mdd`, `rolling_win_rate`, `trade_rate`, `baseline_trade_rate`. Moved here from bare f-string fields. |
+| `diagnosis` | `CpsDiagnosis` | Output of `cps_diagnosis.diagnose_rolling()` — `label`, `fired`, `confidence`, `evidence`. Falls back to `{"label": "healthy", ...}` on `DataError` (unknown algo). |
+
+The fold context is lazy-loaded once per fold from PostgreSQL with a 5-second timeout (fails open to neutral defaults). `rolling_sharpe` and `rolling_mdd` are no longer bare f-string fields in the query; they live exclusively inside `context.leading_indicators`.
 
 **Pattern selection:** Same composite-score path as `run_config`, with a different category filter — `_RELEVANT_CATEGORIES["epoch_advice"]` (7 categories at `query.py:760-768`: `drawdown_recovery`, `trade_quality`, `reward_shaping`, `overfit_diagnosis`, `iteration_progression`, `hp_effectiveness`, `iteration_regression`).
 
@@ -292,7 +317,7 @@ Fields are nullable so the LLM can choose to leave a knob alone. `rationale` is 
 
 The `stop_training` flag, if `True`, lets the LLM signal the trainer to abort the current fold's training loop.
 
-**Side effects:** Same `pattern_presentations` write per pattern shown (`query.py:1237`); `llm_audit_log` with `call_type='epoch_advice'`. Audit row has `fold_number` and `is_control_fold` parsed from the run_id (`query.py:1186-1189, 1220-1231`).
+**Side effects:** Same `pattern_presentations` write per pattern shown (`query.py:1237`); `llm_audit_log` with `call_type='epoch_advice'`. Audit row has `fold_number` and `is_control_fold` parsed from the run_id (`query.py:1186-1189, 1220-1231`). When advice is accepted and weights are updated, a row is appended to `reward_adjustments` including 4 attribution columns: `fold_number`, `iteration_number`, `advice_id` (UUID v4, unique per accepted advice call), and `fold_cps_v1_before` (the most recent `cps_v1_multiplicative` from `iteration_results` at the time of the call — null on iter 0 cold start).
 
 ### Cold-start gate
 

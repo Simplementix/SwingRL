@@ -254,7 +254,8 @@ def diagnose_rolling(
     rate (wrapper-provided), so no cross-fold steps conversion is needed. Only
     trade_shy and poor_selection are detectable mid-fold; disaster/churning need
     the completed backtest row (rolling MDD is in reward units, not portfolio
-    fraction).
+    fraction). trade_shy is checked first: an activity collapse is the root cause,
+    so win-rate degradation is treated as a symptom.
 
     Args:
         trade_rate: Current rolling trades-per-step rate.
@@ -299,5 +300,8 @@ def diagnose_rolling(
     if not fired:
         return {"label": "healthy", "fired": [], "confidence": "clear", "evidence": {}}
 
-    label: DiagnosisLabel = fired[0]  # type: ignore[assignment]  # elif ensures single rule
+    if "trade_shy" in fired:
+        label: DiagnosisLabel = "trade_shy"
+    else:
+        label = "poor_selection"
     return {"label": label, "fired": fired, "confidence": "clear", "evidence": evidence}
