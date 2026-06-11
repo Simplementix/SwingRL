@@ -100,7 +100,9 @@ This is the original Phase 1 design from
 bookends (C0, C6) produce two archival artifacts used by Group D to
 validate that the prompt changes actually shifted pattern quality.
 
-- [ ] **C0** Baseline documentation — **before any code changes**.
+Implemented on `swingrl/19.1-training-refocus` (PR #19); see spec `docs/superpowers/specs/2026-06-11-stage2-training-refocus-design.md` for amendments (C4 dropped; diagnosis layer + trade-activity indicator added beyond original scope).
+
+- [x] **C0** Baseline documentation — **before any code changes**.
   Write `.planning/research/phase-19.1-prompt-baseline.md` capturing:
   - Current `services/memory/memory_agents/query.py::_build_system_prompt` full text
   - Current consolidation prompts (Phase A, Phase B, Stage 2 — system + few-shot)
@@ -113,52 +115,51 @@ validate that the prompt changes actually shifted pattern quality.
     with treat-vs-control evidence. This replaces the earlier
     "retire-harmful" design; the analysis becomes documentation used
     as QA criteria in Group D, rather than a database mutation.
-- [ ] **C1** LLM context enrichment:
-  - `epoch_callback.py::_query_epoch_advice` — add `fold_number`,
-    `fold_role`, `fold_history` (last 6 iters this fold), `hmm_regime`,
-    `vix_mean`, `chronic_failure_folds`, `protected_winner_folds`,
-    `prev_iter_cps_v1` to the payload
-  - `meta_orchestrator.py::_query_run_config` — add `fold_role`,
-    `prev_iterations` (last 3), `chronic_failure_folds`,
-    `protected_winner_folds`, `target_metric=cps_v1_multiplicative`,
-    explicit goal text
-- [ ] **C2** New helper module
+- [x] **C1** LLM context enrichment:
+  - `epoch_callback.py::_query_epoch_advice` — added `fold_number`,
+    `fold_role`, `prev_iter_cps_v1`, `target_metric`, `leading_indicators`
+    (rolling_sharpe, rolling_mdd, rolling_win_rate, trade_rate,
+    baseline_trade_rate), `diagnosis` to the context JSON. Old bare
+    f-string fields `rolling_sharpe=` / `rolling_mdd=` removed.
+  - `meta_orchestrator.py::_query_run_config` — added context JSON with
+    `target_metric`, `chronic_failure_folds`, `protected_winner_folds`,
+    `prev_iter_cps_v1`, `prev_iter_diagnoses`.
+- [x] **C2** New helper module
   `src/swingrl/memory/training/fold_context.py`:
-  - `classify_fold_role(env, fold_number) -> "chronic_failure" | "protected_winner" | "neutral"`
-  - `load_fold_history(env, fold_number, n_iters=6)`
+  - `load_fold_context(database_url, env, fold_number)` — returns fold role +
+    chronic/protected lists + prev_iter_cps_v1 from pg16
+  - `record_fold_attribution(conn, run_id, fold)` — writes attribution
+    closure to `reward_adjustments` 6 new columns post-fold
   - Reuses `detect_chronic_failures` / `detect_protected_winners` from
     `iteration_report.py`
-- [ ] **C3** Prompt updates in
-  `services/memory/memory_agents/query.py::_build_system_prompt` —
-  three new blocks:
+- [x] **C3** Prompt updates in
+  `services/memory/memory_agents/query.py` — `_build_epoch_system_prompt`
+  and `_build_algo_system_prompt` now include:
   - **Goal block**: explicit "your single objective metric is CPS v1;
     pass rate is NOT your goal"
   - **Anti-pattern block**: cite iter 4-5 trade-shy collapse and
     conviction-trading regression with empirical numbers
-  - **Fold-protection block**: if `fold_role == protected_winner`
-    return baseline; if `chronic_failure` recommend regime-conditional
-    shaping
-- [ ] **C4** Reward weight rebalance — unify to
-  `{profit: 0.30, sharpe: 0.30, drawdown: 0.30, turnover: 0.10}`
-  across all 4 files:
-  - `services/memory/memory_agents/query.py` (`_SAFE_DEFAULTS`)
-  - `services/memory/memory_agents/bounds.py` (`_FALLBACK_REWARD_BOUNDS`)
-  - `src/swingrl/memory/training/reward_wrapper.py` (`DEFAULT_WEIGHTS`)
-  - `config/swingrl.yaml` (`training.bounds.reward_bounds`)
-  - Plus new `CHRONIC_FAILURE_WEIGHTS =
-    {profit: 0.20, sharpe: 0.30, drawdown: 0.40, turnover: 0.10}`
-- [ ] **C5** Per-fold attribution — extend `reward_adjustments` table
+  - **Fold-protection block**: payload-shape-aware variants for epoch
+    vs run-config contexts
+- [x] **C4** DROPPED — superseded by spec D2. Control wins on current
+  `DEFAULT_WEIGHTS = {profit: 0.50, sharpe: 0.25, drawdown: 0.15, turnover: 0.10}`;
+  base rebalance would contaminate Group E comparison. Chronic-failure
+  guidance moved to the fold-protection prompt block. No `CHRONIC_FAILURE_WEIGHTS`
+  constant exists. See spec §2 for full rationale.
+- [x] **C5** Per-fold attribution — extended `reward_adjustments` table
   with `fold_number`, `iteration_number`, `advice_id`,
-  `fold_cps_v1_before/after`, `advice_was_effective`. Wire into
-  `epoch_callback` at advice time and post-fold.
-- [ ] **C6** Post-change documentation — write
+  `fold_cps_v1_before`, `fold_cps_v1_after`, `advice_was_effective`.
+  Migration: `scripts/migrations/add_attribution_columns.py`.
+  `outcome_sharpe` bug fixed (now stores current sharpe at resolution).
+  Attribution closure via `fold_context.py::record_fold_attribution`.
+- [x] **C6** Post-change documentation — wrote
   `.planning/research/phase-19.1-prompt-refocus.md` symmetric to C0:
   - New prompt full text
   - New payload schemas
-  - New reward weights + `CHRONIC_FAILURE_WEIGHTS` + rationale
+  - New reward weights (unchanged from baseline per C4 drop) + rationale
   - Diff summary: what changed, why, expected CPS impact per change
 - [ ] **C7** Rebuild `swingrl` + `swingrl-memory` images with Phase 1
-  code (second rebuild after Group B's initial pass)
+  code (second rebuild after Group B's initial pass) — pending Group B.
 
 ### Group D — Iteration-by-iteration pattern regeneration with QA gates
 

@@ -124,7 +124,7 @@ Living reference for SwingRL's pg16 schema. Source-of-truth for every table's pu
 - **Honest gaps:** No index on `(run_id, algo, env)`. No DDL-level schema for `decision_json`.
 
 ### `reward_adjustments`
-- **Purpose:** Two-pass trigger/outcome tracking for LLM-driven reward-weight adjustments. Schema, two-pass mechanics, and `effective` rule already covered in [`reward-shaping.md`](reward-shaping.md). (`postgres_schema.py:339-359`)
+- **Purpose:** Two-pass trigger/outcome tracking for LLM-driven reward-weight adjustments. Schema, two-pass mechanics, and `effective` rule already covered in [`reward-shaping.md`](reward-shaping.md). (`postgres_schema.py:339-364`). Stage 2 Group C added 6 attribution columns (`fold_number`, `iteration_number`, `advice_id`, `fold_cps_v1_before`, `fold_cps_v1_after`, `advice_was_effective`) via `scripts/migrations/add_attribution_columns.py`; `outcome_sharpe` was also corrected to store current sharpe at outcome-resolution time.
 - **Writers:** `memory/training/epoch_callback.py:271` (trigger queue), `:286` (outcome queue) — **buffered**, flushed per-fold by `flush_telemetry()`.
 - **Cardinality cadence:** rows per LLM-approved adjustment (gated by per-algo cooldown — see `reward-shaping.md`). Total UNKNOWN.
 - **Readers:** **no readers found in src/**.
@@ -369,3 +369,4 @@ PG connection knobs are sourced from `config/swingrl.yaml` `database.*` and `.en
 
 - **2026-04-16** — Initial version.
 - **2026-05-15** — Wholesale path-citation cleanup. Fixed every `safety/*` (directory doesn't exist), `tax/*`, `alerts/*`, `paper/*`, `risk/*` (sans `execution/`) reference. Corrected line numbers and function names in `agents/backtest.py` (L598 `_store_results`, L724 `store_fold_results_to_duckdb`, L882 `store_iteration_results_to_duckdb`), `reporting/iteration_report.py` (L90 `load_iteration_history`, L114 `load_fold_history`, L612 `persist_iteration_cps`), `features/hmm_regime.py` (L293), `scripts/train_pipeline.py` (L1612), `execution/fill_processor.py` (L64/L115 labels were swapped), `execution/risk/position_tracker.py` (L162, L263 private `_days_since_trade`), `execution/risk/risk_manager.py` (L273), `monitoring/wash_sale.py` (L28 `record_realized_loss`, L66 `scan_wash_sales`). Resolved `macro_features` HONEST GAP — writer is `FREDIngestor` via `base.py:383`. Function rename: `check_halt()` → `is_halted()`.
+- **2026-06-11** — Updated `reward_adjustments` DDL line reference (`339-359` → `339-364`) and noted 6 attribution columns added in Stage 2 Group C.

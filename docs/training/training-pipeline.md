@@ -105,7 +105,7 @@ Source: `ENV_PARAMS` dict at `src/swingrl/agents/backtest.py:44-59`. Same `gener
 
 1. Slice train + test data (`:357-360`).
 2. `is_control = fold_idx in valid_control_set` (`:346`).
-3. `orchestrator.train(...)` with `run_id=f"{env_name}_{algo_name}_fold{fold_idx}{ctrl_suffix}"` and `is_control_fold=is_control` (`:367-379`). Control folds get `advice_enabled=False` (`:363`).
+3. `orchestrator.train(...)` with `run_id=fold_run_id(env_name, algo_name, fold_idx, is_control)` and `is_control_fold=is_control` (`:395-400`). Control folds get `advice_enabled=False` (`:363`). `fold_run_id` is the canonical helper at `backtest.py:63` — both the training callback and post-fold attribution resolve run IDs through it.
 4. `_evaluate_fold` on train data → in-sample metrics (`:382-390`).
 5. `_evaluate_fold` on test data → out-of-sample metrics (`:393-401`).
 6. `diagnose_overfitting(is_sharpe, oos_sharpe)` (`:404-407`).
@@ -123,7 +123,7 @@ Validated at runtime against actual fold count (`backtest.py:317-325`); out-of-r
 
 ### `run_id` format
 
-`{env_name}_{algo_name}_fold{fold_idx}[_CTRL]` — `src/swingrl/agents/backtest.py:375`. The `_CTRL` suffix is added when `is_control = True` (`:364`). Downstream consumers parse this with the regex `r"run_id=\S+_fold(\d+)(_CTRL)?"` — see [`memory-system.md`](memory-system.md) "Side effects" under `/training/epoch_advice`.
+`{env_name}_{algo_name}_fold{fold_idx}[_CTRL]` — produced by `fold_run_id(env_name, algo_name, fold_idx, is_control)` at `src/swingrl/agents/backtest.py:63`. The `_CTRL` suffix is added when `is_control = True`. `fold_run_id` is the single source of truth — both the training-side `epoch_callback` and the post-fold attribution in `fold_context.py::record_fold_attribution` must produce the same string. Downstream consumers parse this with the regex `r"run_id=\S+_fold(\d+)(_CTRL)?"` — see [`memory-system.md`](memory-system.md) "Side effects" under `/training/epoch_advice`.
 
 ### Fold metric aggregation
 
@@ -279,7 +279,7 @@ CLI flags override yaml defaults for: `--config` path itself, `--iterations`, `-
 | `_DEFAULT_STATE_PATH = "data/training_state.json"` | `train_pipeline.py:70` |
 | `_DEFAULT_COMPARISON_PATH = "data/training_comparison.json"` | `train_pipeline.py:71` |
 | `iter_log_file = logs/training_iter{N}.log` | `train_pipeline.py:2867` |
-| `run_id` format `{env}_{algo}_fold{N}[_CTRL]` | `backtest.py:375` |
+| `run_id` format `{env}_{algo}_fold{N}[_CTRL]` | `backtest.py:63` (`fold_run_id` helper) |
 | Per-env loop order `["equity", "crypto"]` | `train_pipeline.py:438` and `:2881` |
 | Healthcheck cadence `60s / 10s / 3 retries` | `Dockerfile:93` |
 
@@ -330,3 +330,4 @@ CLI flags override yaml defaults for: `--config` path itself, `--iterations`, `-
 ## Changelog
 
 - **2026-05-07** — Initial version.
+- **2026-06-11** — Updated `run_id` format references: canonical source is now `fold_run_id()` at `backtest.py:63`, not inline f-string at `:375`.

@@ -263,7 +263,7 @@ Fallback (hardcoded when yaml absent): PPO 60 / A2C 8000 / SAC 40000 / unknown 5
 
 ### `reward_adjustments` (one row per trigger, UPDATEd at outcome)
 
-`run_id, epoch_trigger, epoch_outcome, algo, env, trigger_metric, trigger_value, trigger_reason, weight_before (TEXT json), weight_after (TEXT json), sharpe_at_trigger, mdd_at_trigger, sharpe_delta, mdd_delta, effective, outcome_sharpe, created_at` (`postgres_schema.py:338-359`).
+`run_id, epoch_trigger, epoch_outcome, algo, env, trigger_metric, trigger_value, trigger_reason, weight_before (TEXT json), weight_after (TEXT json), sharpe_at_trigger, mdd_at_trigger, sharpe_delta, mdd_delta, effective, outcome_sharpe, fold_number, iteration_number, advice_id, fold_cps_v1_before, fold_cps_v1_after, advice_was_effective, created_at` (`postgres_schema.py:339-364`). The 6 attribution columns (`fold_number` … `advice_was_effective`) were added in Stage 2 Group C via `scripts/migrations/add_attribution_columns.py`; `outcome_sharpe` was also corrected at that time to store the current sharpe at outcome-resolution (was previously wrong). Attribution closure is handled by `fold_context.py::record_fold_attribution`.
 
 Both tables are consumed by analysis notebooks / dashboards; `reward_adjustments` is the primary source for treatment-effect studies.
 
@@ -305,4 +305,4 @@ Both tables are consumed by analysis notebooks / dashboards; `reward_adjustments
 
 - **2026-04-16** — Initial version.
 - **2026-05-15** — Added file:line citations for `max_position_size` / `max_drawdown_pct` defaults (schema + read sites). Clarified `peak_value` scope as episode-level (reset on `env.reset()`).
-- **2026-06-11** — Added `rolling_trade_rate` and `baseline_trade_rate` to the rolling-metrics table. These track per-fold trade activity using `info["trades_this_step"]` emitted by the envs (Task 4). `baseline_trade_rate` locks on the first full window so Task 8 mid-fold advice can detect "trade-shy collapse" against the fold's own starting rate.
+- **2026-06-11** — Added `rolling_trade_rate` and `baseline_trade_rate` to the rolling-metrics table. These track per-fold trade activity using `info["trades_this_step"]` emitted by the envs (Task 4). `baseline_trade_rate` locks on the first full window so Task 8 mid-fold advice can detect "trade-shy collapse" against the fold's own starting rate. Updated `reward_adjustments` column list to include the 6 attribution columns added in Stage 2 Group C; corrected DDL line reference.
