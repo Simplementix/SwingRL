@@ -38,6 +38,8 @@ def _make_mock_wrapper(n_envs: int = 1) -> MagicMock:
     mock.rolling_sharpe.return_value = 1.2
     mock.rolling_mdd.return_value = -0.05
     mock.rolling_win_rate.return_value = 0.55
+    mock.rolling_trade_rate.return_value = 0.12
+    mock.baseline_trade_rate.return_value = 0.10
     mock.weights = {"profit": 0.50, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.10}
     return mock
 
@@ -46,6 +48,7 @@ def _make_callback(
     run_id: str = "test_run_001",
     algo: str = "PPO",
     env: str = "equity",
+    fold_number: int | None = None,
 ) -> MemoryEpochCallback:
     """Create a callback with mock dependencies, logger pre-wired."""
     client = _make_mock_memory_client()
@@ -57,6 +60,7 @@ def _make_callback(
         algo=algo,
         env=env,
         verbose=0,
+        fold_number=fold_number,
     )
     # SB3 exposes logger as a property: self.model.logger
     # Wire a mock model so logger is accessible in unit tests
@@ -424,3 +428,250 @@ class TestOutcomeSharpeRegression:
             f"sharpe_delta was {sharpe_delta_value}. "
             "Likely the outcome tuple still passes sharpe_delta instead of current_sharpe."
         )
+
+
+# ---------------------------------------------------------------------------
+# TestEnrichedEpochPayload
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichedEpochPayload:
+    """C1-PAYLOAD-01: epoch advice payload carries context JSON."""
+
+    def _make_advice_callback(
+        self,
+        fold_number: int | None = 3,
+        algo: str = "PPO",
+        env: str = "equity",
+        advice_enabled: bool = True,
+        iteration: int | None = 6,
+    ) -> MemoryEpochCallback:
+        """Create an advice-enabled callback at a storage epoch, fold context pre-injected."""
+        client = _make_mock_memory_client()
+        # Return a non-empty body so the accepted-advice path runs
+        client.epoch_advice.return_value = {
+            "reward_weights": {
+                "profit": 0.55,
+                "sharpe": 0.25,
+                "drawdown": 0.15,
+                "turnover": 0.05,
+            },
+            "stop_training": False,
+            "rationale": "test rationale",
+            "provider": "test",
+            "model": "test",
+        }
+        wrapper = _make_mock_wrapper()
+        cb = MemoryEpochCallback(
+            memory_client=client,
+            wrapper=wrapper,
+            run_id=f"equity_{algo}_fold{fold_number or 0}",
+            algo=algo,
+            env=env,
+            verbose=0,
+            advice_enabled=advice_enabled,
+            iteration=iteration,
+            fold_number=fold_number,
+        )
+        # Wire mock model
+        mock_logger = MagicMock()
+        mock_logger.name_to_value = {}
+        cb.model = MagicMock()
+        cb.model.logger = mock_logger
+        cb.num_timesteps = 1000
+        # Set epoch to a storage epoch so the cadence check passes
+        cb._epoch = cb._cadence  # noqa: SLF001
+        # Inject fold context to bypass the lazy DB load
+        cb._fold_context = {  # noqa: SLF001
+            "fold_role": "neutral",
+            "chronic_failure_folds": [],
+            "protected_winner_folds": [],
+            "prev_iter_cps_v1": 0.034,
+        }
+        return cb
+
+    def test_payload_query_contains_context_block(self) -> None:
+        """C1-PAYLOAD-01: query embeds context={...} with required keys."""
+        import json
+
+        cb = self._make_advice_callback(fold_number=3, iteration=6)
+        cb._query_epoch_advice()  # noqa: SLF001
+
+        payload = cb._client.epoch_advice.call_args[0][0]
+        assert "context=" in payload["query"], "payload query must contain context= key"
+
+        ctx = json.loads(payload["query"].split("context=", 1)[1])
+        assert ctx["fold_number"] == 3
+        assert ctx["fold_role"] == "neutral"
+        assert ctx["target_metric"] == "cps_v1_multiplicative"
+        assert ctx["prev_iter_cps_v1"] == 0.034
+
+        li = ctx["leading_indicators"]
+        assert set(li) == {
+            "rolling_sharpe",
+            "rolling_mdd",
+            "rolling_win_rate",
+            "trade_rate",
+            "baseline_trade_rate",
+        }
+        # rolling_sharpe and rolling_mdd must be in leading_indicators (not bare in query)
+        assert "rolling_sharpe=" not in payload["query"].split("context=")[0], (
+            "rolling_sharpe must be inside context JSON, not in bare query string"
+        )
+
+        valid_labels = {"trade_shy", "poor_selection", "single_disaster", "churning", "healthy"}
+        assert ctx["diagnosis"]["label"] in valid_labels
+
+    def test_lazy_context_defaults_without_db(self) -> None:
+        """C1-PAYLOAD-01: no database_url → neutral context, no crash."""
+        import json
+
+        cb = self._make_advice_callback(fold_number=3)
+        # Remove the pre-injected fold_context so the lazy-load path runs
+        cb._fold_context = None  # noqa: SLF001
+        # No database_url set → neutral defaults
+        cb._database_url = None  # noqa: SLF001
+
+        cb._query_epoch_advice()  # noqa: SLF001
+
+        payload = cb._client.epoch_advice.call_args[0][0]
+        ctx = json.loads(payload["query"].split("context=", 1)[1])
+        assert ctx["fold_role"] == "neutral"
+        assert ctx["prev_iter_cps_v1"] is None
+
+    def test_diagnosis_dataerror_falls_back_healthy(self) -> None:
+        """C1-PAYLOAD-01: unknown algo → DataError inside diagnose_rolling → healthy fallback."""
+        import json
+
+        # Use an unknown algo so _baseline() raises DataError
+        cb = self._make_advice_callback(fold_number=3, algo="XGB", env="equity")
+        # Need a run_id that keeps advice_enabled logic working
+        cb._algo = "xgb"  # noqa: SLF001  # ensure lowercase for diagnose_rolling lookup
+
+        cb._query_epoch_advice()  # noqa: SLF001
+
+        # epoch_advice must still have been called (advice proceeds despite error)
+        assert cb._client.epoch_advice.called
+        payload = cb._client.epoch_advice.call_args[0][0]
+        ctx = json.loads(payload["query"].split("context=", 1)[1])
+        assert ctx["diagnosis"]["label"] == "healthy"
+
+    def test_control_fold_sends_no_advice_query(self) -> None:
+        """C1-PAYLOAD-01: advice_enabled=False short-circuits (existing behavior kept)."""
+        cb = self._make_advice_callback(fold_number=3, advice_enabled=False)
+        cb._advice_enabled = False  # noqa: SLF001
+        cb._query_epoch_advice()  # noqa: SLF001
+        cb._client.epoch_advice.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestAttributionIdentity
+# ---------------------------------------------------------------------------
+
+
+class TestAttributionIdentity:
+    """C5-ATTR-01: trigger row carries fold/iteration/advice_id/cps_before."""
+
+    def _make_accepted_advice_callback(
+        self,
+        fold_number: int = 3,
+        iteration: int = 6,
+        prev_iter_cps_v1: float | None = 0.034,
+    ) -> MemoryEpochCallback:
+        """Create a callback where advice is accepted (big enough delta) with DB url."""
+        client = _make_mock_memory_client()
+        # Return weights with a delta large enough to exceed the 0.01 min
+        client.epoch_advice.return_value = {
+            "reward_weights": {
+                "profit": 0.62,  # was 0.50 → delta 0.12 > 0.01
+                "sharpe": 0.20,
+                "drawdown": 0.12,
+                "turnover": 0.06,
+            },
+            "stop_training": False,
+            "rationale": "test",
+            "provider": "test",
+            "model": "test",
+        }
+        wrapper = _make_mock_wrapper()
+        cb = MemoryEpochCallback(
+            memory_client=client,
+            wrapper=wrapper,
+            run_id=f"equity_ppo_fold{fold_number}",
+            algo="PPO",
+            env="equity",
+            verbose=0,
+            advice_enabled=True,
+            iteration=iteration,
+            fold_number=fold_number,
+            database_url="postgresql://fake:fake@localhost/fake",  # pragma: allowlist secret
+        )
+        mock_logger = MagicMock()
+        mock_logger.name_to_value = {}
+        cb.model = MagicMock()
+        cb.model.logger = mock_logger
+        cb.num_timesteps = 0
+        cb._epoch = cb._cadence  # noqa: SLF001  # storage epoch
+        # Pre-inject fold context to bypass DB load
+        cb._fold_context = {  # noqa: SLF001
+            "fold_role": "neutral",
+            "chronic_failure_folds": [],
+            "protected_winner_folds": [],
+            "prev_iter_cps_v1": prev_iter_cps_v1,
+        }
+        return cb
+
+    def test_adjustment_trigger_row_has_attribution_tail(self) -> None:
+        """C5-ATTR-01: queue row tail = (fold_number, iteration, advice_id, cps_before)."""
+        cb = self._make_accepted_advice_callback(fold_number=3, iteration=6, prev_iter_cps_v1=0.034)
+        cb._query_epoch_advice()  # noqa: SLF001
+
+        assert len(cb._adjustment_trigger_queue) == 1, (
+            "Expected one trigger row in queue after accepted advice"
+        )
+        row = cb._adjustment_trigger_queue[0]
+
+        # Existing 11 columns: run_id, epoch, algo, env, trigger_metric,
+        #   trigger_value, trigger_reason, weight_before, weight_after,
+        #   sharpe_at_trigger, mdd_at_trigger
+        # New 4: fold_number, iteration_number, advice_id, fold_cps_v1_before
+        assert len(row) == 15, f"Expected 15 columns in trigger row, got {len(row)}"
+
+        fold_col = row[-4]
+        iteration_col = row[-3]
+        advice_id_col = row[-2]
+        cps_before_col = row[-1]
+
+        assert fold_col == 3, f"fold_number should be 3, got {fold_col}"
+        assert iteration_col == 6, f"iteration_number should be 6, got {iteration_col}"
+        assert isinstance(advice_id_col, str) and len(advice_id_col) == 36, (
+            f"advice_id should be a UUID string (len 36), got {advice_id_col!r}"
+        )
+        assert abs(cps_before_col - 0.034) < 1e-9, (
+            f"fold_cps_v1_before should be 0.034, got {cps_before_col}"
+        )
+
+    def test_advice_id_is_unique_per_call(self) -> None:
+        """C5-ATTR-01: each accepted advice produces a distinct advice_id UUID."""
+        cb = self._make_accepted_advice_callback()
+        # First call
+        cb._query_epoch_advice()  # noqa: SLF001
+        row1 = cb._adjustment_trigger_queue[0]
+        advice_id_1 = row1[-2]
+
+        # Reset pending so second call also accepts
+        cb._pending_adjustment = None  # noqa: SLF001
+        cb._epoch = cb._cadence * 2  # noqa: SLF001  # next storage epoch
+        cb._query_epoch_advice()  # noqa: SLF001
+        row2 = cb._adjustment_trigger_queue[1]
+        advice_id_2 = row2[-2]
+
+        assert advice_id_1 != advice_id_2, "Each advice call should produce a unique advice_id"
+
+    def test_attribution_none_cps_when_no_context(self) -> None:
+        """C5-ATTR-01: fold_cps_v1_before is None when prev_iter_cps_v1 not set."""
+        cb = self._make_accepted_advice_callback(prev_iter_cps_v1=None)
+        cb._query_epoch_advice()  # noqa: SLF001
+
+        row = cb._adjustment_trigger_queue[0]
+        assert row[-1] is None, f"cps_before should be None when no prior iter, got {row[-1]}"
