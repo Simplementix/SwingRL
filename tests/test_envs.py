@@ -1116,3 +1116,69 @@ class TestIntegration:
         )
         obs, _ = env.reset(seed=42)
         assert np.max(np.abs(obs)) > 1.0, "Raw observations should not be clipped to [-1, 1]"
+
+
+# ---------------------------------------------------------------------------
+# trades_this_step info key
+# ---------------------------------------------------------------------------
+
+
+class TestStepInfoTradesThisStep:
+    """step() info dict reports how many trades executed this step (ENV-TRADES-01)."""
+
+    def test_step_info_contains_trades_this_step(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """ENV-TRADES-01: step() info dict reports how many trades executed this step."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        action = env.action_space.sample()
+        _, _, _, _, info = env.step(action)
+        assert "trades_this_step" in info
+        assert isinstance(info["trades_this_step"], int)
+        assert info["trades_this_step"] >= 0
+
+    def test_step_info_trades_this_step_nonzero_on_rebalance(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """ENV-TRADES-01: first step from cash forces a rebalance — trades_this_step >= 1."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        # Action that concentrates into one asset forces rebalance from all-cash start.
+        action = np.array([-5.0, -5.0, -5.0, -5.0, -5.0, -5.0, -5.0, 10.0, -5.0], dtype=np.float32)
+        _, _, _, _, info = env.step(action)
+        assert info["trades_this_step"] >= 1
+
+    def test_step_info_trades_this_step_zero_in_deadzone(
+        self,
+        equity_features_array: np.ndarray,
+        equity_prices_array: np.ndarray,
+        equity_env_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """ENV-TRADES-01: repeated identical actions in deadzone yield trades_this_step == 0."""
+        env = StockTradingEnv(
+            features=equity_features_array,
+            prices=equity_prices_array,
+            config=equity_env_config,
+        )
+        env.reset(seed=42)
+        zero_action = np.zeros(9, dtype=np.float32)
+        # First step establishes position (trades happen).
+        env.step(zero_action)
+        # Subsequent identical actions are within deadzone — no trades expected.
+        _, _, _, _, info = env.step(zero_action)
+        assert info["trades_this_step"] == 0
