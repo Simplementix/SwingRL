@@ -3,7 +3,7 @@
 > **Status: IN PROGRESS** — written incrementally; each topic section is locked during the
 > Fable scoping sessions and committed as it closes. Pending sections are scope checklists,
 > not approved content.
-> **§1 (Goal): LOCKED 2026-06-12.** §2 (Topic 2) and §3 (Topic 3) pending.
+> **§1 (Goal): LOCKED 2026-06-12.** **§2 (Topic 2): LOCKED 2026-07-06.** §3 (Topic 3) pending.
 > **Kickoff:** `.planning/REDESIGN_SCOPING_KICKOFF.md` ·
 > **Tracker:** `.planning/V1.1_EXECUTION_PLAN.md` ▶ Stage 2.R
 > **Gates:** topic-level approval in conversation → full-spec G1 sign-off when all topics close
@@ -75,7 +75,7 @@ per-fold validation gate. Implementation: `src/swingrl/metrics/cps.py`.)
 
 | # | Criterion | Test |
 |---|---|---|
-| S1 | Treatment/control CPS v1 ratio ≥ 1.0 on the next full run | Extend the harm table (handoff §"empirical case"); regime-aware comparison |
+| S1 | Treatment/control CPS v1 ratio ≥ 1.0 on the next full run † | Extend the harm table (handoff §"empirical case"); regime-aware comparison |
 | S2 | Treatment worst-fold MDD ≤ control's (+ agreed margin) | Per-iteration check against `backtest_results` |
 | S3 | Every lever pull has recorded before/after attribution | No advice row without identity + outcome columns |
 | S4 | Re-consolidation of a past iteration succeeds from captured data alone | Dry-run produces patterns with correct iteration/fold/env/algo |
@@ -83,6 +83,11 @@ per-fold validation gate. Implementation: `src/swingrl/metrics/cps.py`.)
 | S6 | Each retained lever passes a cheap directional verification before the re-run | Lever-verification harness results on record |
 | S7 | The lever inventory is exhaustive | Audit finds no training-influence path outside it |
 | S8 | Every pull carries an intent and gets an intent-matched verdict; prompts include the per-lever track record | A risk-reduction pull cannot be marked effective by a Sharpe improvement alone |
+
+† **Approved amendment (D-T2.5, 2026-07-06):** "control" in S1 means the **coach-free reference
+season** (iteration 5 under baseline HPs + `DEFAULT_WEIGHTS`), compared season-over-season on
+identical folds — not within-iteration control folds. Rationale in §2.5; the within-iteration
+control-fold mechanism is retained dormant for L1 live re-earn only.
 
 ### §1.4 Out of scope
 
@@ -136,31 +141,198 @@ per-fold validation gate. Implementation: `src/swingrl/metrics/cps.py`.)
 
 ---
 
-## §2 — Meta-trainer decision-set + observability (Topic 2 — PENDING)
+## §2 — Meta-trainer decision-set + observability (Topic 2 — LOCKED 2026-07-06)
 
-Scope checklist derived from pillars 1–4. Topic 2 is not closed until every item has a decision:
+Every §2 scope-checklist item is resolved by decisions D-T2.1–D-T2.11 (log: §2.9). The coach's
+governing posture: **iteration-scale coach only** — no live mid-fold influence path — until
+levers individually re-earn scope via §2.3 + §2.4.
 
-- [ ] **Exhaustive lever enumeration** incl. currently unlisted influence paths:
-      `_SAFE_DEFAULTS` cold-start weights, the epoch-advice `stop_training` flag, any fallback
-      defaults applied on service failure. Close or formalize each. (S7)
-- [ ] **Keep / restrict / remove / add** decision per lever, with blast radius (bounds, cadence,
-      scope) per retained lever. (Pillar 2)
-- [ ] **One-lever-per-iteration** attribution discipline at runtime — design the alternation.
-      (Pillar 3)
-- [ ] **Lever verification harness** — how each retained lever is cheaply proven directional
-      *before* the iter-5 re-run. (S6)
-- [ ] **Benching rule** operationalized — what evidence, over how many iterations, triggers
-      removal. (Pillar 3)
-- [ ] **Gate re-derivation** — new per-fold gate criteria (return/activity floor so silence
-      can't pass) + ensemble gate review. (D-T1.4, S5)
-- [ ] **Observability gap analysis** — inventory what the coach receives today (epoch payload,
-      run-config payload, patterns, diagnosis) vs what each retained decision requires; fix the
-      500-step-window vs cooldown mismatch class of problems. (Pillar 4)
-- [ ] **Intent→outcome closure design** — pull-time intent record (metric + direction +
-      horizon), intent-matched verdicts, per-lever track record fed back into prompts. (S8,
-      D-T1.5)
-- [ ] **Regime-aware uplift evaluation** — how disaster folds without control counterparts are
-      flagged/excluded. (D-T1.3)
+### §2.1 Lever posture (D-T2.1)
+
+| Lever | Decision | Blast radius when live |
+|---|---|---|
+| **L1** mid-fold reward-weight adjustment | **BENCHED** for all (env, algo) pairs: `_MAX_REWARD_DELTA` = 0.0 everywhere (config posture via the existing PPO-crypto mechanism, `bounds.py:110` — no code deletion). Runs in **shadow** (§2.4). Re-earn per (env, algo): §2.3 harness pass + §2.4 judgment track record | Per-epoch; component clamps + per-(env,algo) max-delta; step-based cooldowns (PPO 24,576 / A2C 500 / SAC 20,000) |
+| **L2** between-iteration HP tuning | **RETAINED** — the coach's primary live lever, staged in per the §2.5 staircase | Once per (env, algo, iteration); double-clamped (service + trainer); every pull carries an intent record (§2.4) |
+| **L3** consolidated patterns → prompts | **RETAINED** — corpus discarded/regenerated (disposition formalized in Topic 3). Structural note: with L1 benched, L3 has **no independent actuator** — its live channel is the L2 run-config prompt. Evaluated as the marginal value of patterns on L2 advice (§2.5) | Per iteration; top-3 per category, min confidence 0.4; patterns must pass C6 §7 QA (absorbed into §2.3 Stage 2) |
+| New levers (position sizing, trade-frequency caps, regime vetoes, conviction thresholds) | **DEFERRED** → §2.10 future-levers appendix with pre-written verification requirements | — |
+
+### §2.2 Unenumerated influence paths closed (D-T2.2, S7)
+
+| Path | Decision |
+|---|---|
+| **U1** `stop_training` flag (`query.py:996–999`; actuated `epoch_callback.py:694–713`) | **Advice-only.** Runtime ignores the flag — folds always run to completion. A stop request is logged with full context and graded post-fold like any bet ("was the fold, in fact, wasted?"). Evidence: **0 stop requests in 850,430 live epochs** (pg16, verified 2026-06-15) — never-used power, no case for keeping actuation. Promotion to a real lever requires the §2.10 appendix path |
+| **U2** `_SAFE_DEFAULTS` cold-start (`query.py:122–131`) | Cold-start/fallback weight sets **must equal `DEFAULT_WEIGHTS`** — the silent 4-weight shift is a bug, fixed in the implementation plan |
+| **U3** service-failure fallback behaviors | **Audit item** for the targeted code-verification review: enumerate every fallback default; each must be identity with baseline (no influence) or become a named lever |
+
+After these closures the lever inventory of §2.1 is exhaustive (S7); any further influence path
+found in the code review is a defect against this section.
+
+### §2.3 Lever-verification harness (D-T2.3, S6)
+
+Two stages; a lever goes live only after passing both. Harness runs are standalone (reuse
+trainer + data + folds; models discarded); every harness record carries a run-type quarantine
+tag and is **never consolidated** into patterns/memories (schema in Topic 3).
+
+- **Stage 1 — mechanics, no LLM.** Scripted pull of known direction/magnitude on one fold,
+  shortened run: **3 seeds with the pull vs 3 same-seed controls; majority of seed-pairs must
+  agree with the intended direction** without collapsing trade activity. Minimum run length per
+  (algo, lever): ≥ cooldown + one trend-window measurement period (table of exact lengths in the
+  implementation plan). The 6 runs are independent → run in parallel.
+- **Stage 2 — judgment, no training.** Replay recorded fold situations to the coach with
+  **production-identical prompts** (including regenerated patterns); grade against the
+  deterministic diagnosis→correction menu (`cps_diagnosis.py`) and fold-protection rules.
+  Absorbs the C6 §7 Group-D pattern-QA criteria — a Stage-2 failure indicts prompt or pattern.
+- **Fold selection:** a **neutral fold is the gate**. The chronic-failure tryout is additionally
+  required when (a) the lever is fold-targeted and its permitted scope includes
+  `chronic_failure` folds (true for any L1 re-earn — the fold-protection blocks steer reward
+  shaping there), or (b) at runtime, a live lever's failed bets cluster on chronic-failure folds
+  (retroactive trigger → pass it or lose that scope).
+
+### §2.4 Shadow mode + intent records (D-T2.4, D-T2.8; S8, D-T1.5)
+
+Epoch advice keeps running with production prompts but is **log-only**: nothing the coach says
+mid-fold changes the run. Every lever call — shadow L1, U1 stop requests, and **live L2 pulls
+alike** — writes a five-block **intent record**:
+
+1. **Identity** — iteration / run / fold / env / algo / epoch / timestep + %-complete /
+   advice_id / mode (`shadow`|`live`) / lever.
+2. **Evidence snapshot** — both observation windows' metrics (§2.6), diagnosis + confidence,
+   fold role, current weights/HPs. Self-contained: graders never join other tables.
+3. **Proposal** — the change (or explicit no-change) + rationale.
+4. **Falsifiable bet** — target metric + expected direction + horizon. **Horizons are
+   system-fixed, never coach-chosen** (aggregability; no gaming): mid-fold = one trend window
+   after the call; L2 = one season, verdict via same-fold season-over-season comparison.
+5. **Verdict** (deterministic, post-horizon) — actual value, direction-match, plus an immediate
+   menu-consistency check. Replaces the intent-blind `effective` flag (D-T1.5).
+
+**Grading semantics (honest limits):** shadow verdicts grade **judgment** — was the diagnosis
+right, did the prognosis materialize absent intervention — not treatment effect (the action was
+never applied). Treatment effect is Stage 1's job. **Re-earn = medicine proven (harness) +
+judgment proven (shadow track record).** Prognosis grading needs no control arm: the bet is
+about the fold's own future. Aggregated per-lever/per-scope track records are fed into the
+coach's prompts each iteration (S8).
+
+### §2.5 Attribution model + staircase schedule (D-T2.5, D-T2.6)
+
+**Verified finding that reshaped this section:** control folds were only ever shielded from
+epoch advice (`backtest.py:384`); **advised HPs reached all folds including controls**
+(`backtest.py:393`, unconditional). Consequences: (a) the 2.7–5.1× harm indicts the **mid-fold
+lever alone** — both arms shared HPs; (b) with L1 benched, within-iteration arms would differ
+by nothing live.
+
+- **Active control arm dropped.** Its question ("does mid-fold advice help?") is answered.
+  The mechanism (yaml `control_folds_*`) is **retained dormant** solely for L1 live re-earn.
+- **Reference season:** iteration 5 runs coach-free — baseline HPs, `DEFAULT_WEIGHTS`, shadow
+  coach mic'd up with full production prompts. This is the bar every lever season must beat.
+- **Season-over-season comparison on identical folds:** fold boundaries are deterministic and
+  calendar-stable (`backtest.py:202` — new data only appends folds), so iter-N fold-k vs
+  iter-M fold-k is a same-regime comparison; the D-T1.3 regime confound dissolves for lever
+  evaluation. **Per-fold seeds pinned across iterations** (feasibility → code review) so the
+  lever is the only variable.
+- **Staircase (one change per season):** iter 5 reference → iter 6 **L2 bare** (HP advice,
+  patterns withheld from the prompt) → iter 7 **L2 + regenerated patterns** (measures L3's
+  marginal value) → iter 8+ decided by the track record and the §2.7 ladder.
+- **S1 amendment** recorded (see §1.3 footnote).
+
+### §2.6 Observability (D-T2.7, D-T2.11; pillar 4)
+
+- **Two observation windows per algo, defined in percent-of-fold** (measurable today:
+  `num_timesteps / _total_timesteps`, cf. `epoch_callback.py:698`): a **short window**
+  (~0.5–1%) as acute-change detector (keeps the trade-shy alarm live mid-cooldown) and a
+  **trend window** (~12–15%, sized to cover the longest cooldown at current fold budgets) as
+  the decision basis. Fixes the 500-step-window vs 20,000-step-cooldown mismatch (40×).
+- **Cooldowns stay step-based** — they protect learner adaptation (SAC replay-buffer turnover,
+  PPO rollout cycles), which runs on absolute steps, not fold fractions.
+- **Startup guard:** at config load, assert trend-window-steps ≥ longest cooldown; refuse to
+  start otherwise. Makes the eyesight-mismatch bug class structurally unrepeatable.
+- **Dual-unit capture:** every windowed value recorded with both percent and absolute steps,
+  units labeled (the undeclared-units corpus failure must be impossible to repeat).
+- **New capture requirements surfaced by the decision audit** (→ Topic 3): L2's own
+  settings-history-with-outcomes (today the run-config coach picks HPs blind to his past
+  picks); **gate version + era tag + pinned seed on every season and fold record**.
+- **Regime residues:** newly-appended folds are excluded from lever verdicts until played in
+  two eras (counted in standings, silent in attribution); the D-T1.3 disaster-fold rule applies
+  as written if control folds ever reactivate.
+
+### §2.7 Benching ladder (D-T2.9; pillar 3)
+
+| Level | Trigger | Response |
+|---|---|---|
+| 0 Noise | Single wrong bet | Record only — no reaction to single calls |
+| 1 Weak spot | One scope (diagnosis label, or (env, algo)) below threshold over the minimum sample | **Scoped demotion to shadow** (the PPO-crypto precedent as a standing rule); rest of the coach unaffected |
+| 2 Broad failure | A lever below threshold across scopes | Lever benched → shadow; re-earn path required |
+| 3 Coach removed | No lever shows uplift over the reference season across the agreed season count | **No-coach baseline becomes production** (pillar 3's guarantee) |
+
+Principles: **deterministic grading** — verdicts, aggregation and ladder decisions are computed
+by scripts from intent records; the LLM never grades itself. **Minimum sample:** ≥10 graded
+bets per scope before any ladder verdict. **Demotion threshold:** directional accuracy not
+credibly better than coin flip (~<60% — exact numbers are spec *proposals*, finalized against
+per-season bet volumes in the implementation plan). **Demotions are recoverable** via the same
+re-earn path as L1.
+
+### §2.8 Gate re-derivation (D-T2.10; S5, D-T1.4)
+
+The per-fold gate (`sharpe > 0.7, mdd < 0.15, profit_factor > 1.5, overfitting_gap < 0.20`) is
+replaced by a win condition that cannot mark an unplayed game a win (iter 4–5 proof: A2C
+returns 6.0%→4.9% while pass rate rose):
+
+| Requirement | Basis |
+|---|---|
+| **Profit floor** (NEW) | Fold return above a small positive floor |
+| **Activity floor** (NEW) | Trade count above a per-(env, algo) minimum from `TRADE_BASELINES` (`cps_diagnosis.py`) |
+| Risk cap | Per-env MDD ceiling (equity ≠ crypto weather) |
+| Quality bar | Sharpe / profit-factor minimums, re-checked |
+| Overfit cap | In-sample vs OOS gap ceiling, kept |
+
+**Derivation + acceptance:** thresholds derived from the 564 iter-0–4 `backtest_results` rows
+and validated by **offline replay** before season 5. Acceptance: (a) the fake-win anti-pattern
+disappears (returns fall ⇒ pass rate falls), (b) historical pass rate lands in a sane band
+(~40–70% proposed), (c) passing correlates with fold-level CPS contribution. Ensemble gate
+(`sharpe > 1.0 AND |mdd| < 0.15`): same method.
+
+**Loop safety:** the gate is a **floor, not a target** — sanity minimums; excellence is priced
+by CPS's continuous factors; the coach's prompts state CPS as the sole objective and never
+present the gate as a target. **No self-tuning:** live pass rate is monitored against an alarm
+band; out-of-band triggers a *human-approved* review only. Every gate change is
+**version-stamped and starts a new era; cross-era CPS values are never compared** (this also
+covers old-era iters 0–4 vs the new gate regime).
+
+### §2.9 Topic 2 decisions log
+
+| # | Decision | Rationale |
+|---|---|---|
+| D-T2.1 | L1 benched everywhere (config max-delta 0.0); coach iteration-scale only; L2+L3 retained; new levers deferred | Only lever with direct harm evidence (2.7–5.1×, tail MDD 0.36–0.38 vs 0.067–0.069); eyesight 40× too short for its action interval; bookkeeping contradicted action (ids 2–3); pillar 3 = prove first |
+| D-T2.2 | U1 advice-only; U2 must return `DEFAULT_WEIGHTS`; U3 audited | Mid-fold halt is a mid-fold lever (posture consistency); 0 uses in 850k epochs; logging preserves the signal at zero risk |
+| D-T2.3 | Two-stage harness (mechanics w/o coach; judgment w/o training); 3 seeds majority; neutral gate + two chronic triggers; quarantined | Separates "tool broken" from "operator wrong" — the old system could never tell; RL noise demands seed replication |
+| D-T2.4 | Shadow mode for mid-fold advice | Free judgment evidence for re-earn; trade-shy detector keeps an audience; zero influence |
+| D-T2.5 | Reference-season attribution; same-fold cross-iteration comparison; pinned seeds; control mechanism dormant; S1 amended | Control arm's question is answered; HP leak (`backtest.py:393`) made arms meaningless post-benching; stable fold boundaries make same-fold comparison regime-clean |
+| D-T2.6 | Staircase: iter 5 reference → 6 L2-bare → 7 L2+patterns | One variable per step; L3 has no actuator without L2; bare-first finds a harmful L2 one season sooner |
+| D-T2.7 | Percent windows (short + trend), step cooldowns, startup guard, dual-unit capture | Windows serve the coach (proportions); cooldowns serve learner physics (absolute steps); guard makes the mismatch class unrepeatable |
+| D-T2.8 | Five-block intent record for every pull; system-fixed horizons | Falsifiable bets or no call; fixed horizons keep track records aggregable and ungameable; kills the intent-blind `effective` flag |
+| D-T2.9 | Four-level scoped ladder; deterministic grading; ≥10-bet minimum; recoverable | Punishment lands where evidence is; no self-grading; no verdicts on noise; ladder runs both directions |
+| D-T2.10 | Gates: profit+activity floors, per-env caps, replay-derived, floor-not-target, no self-tuning, versioned eras | Gate leaks into CPS via pass_ratio; floors kill the fake-win channel; self-tuning gates destroy season comparability |
+| D-T2.11 | Observability closeouts: L2 history, version/era/seed stamps; regime residue rules | Last gaps from the per-decision information audit (pillar 4) |
+
+### §2.10 Future-levers appendix (deferred; D-T2.1)
+
+Each candidate is **not designed** here; listed with the verification it must pass before any
+design work (all: §2.3 two-stage harness + §2.4 intent records + §2.7 ladder from day one):
+
+| Candidate | Pre-registered directional test (Stage 1 sketch) |
+|---|---|
+| Position sizing | Scripted size cap on one fold: MDD falls without return collapse beyond CPS-neutral |
+| Trade-frequency caps | Scripted cap on a `churning` fold: profit factor rises, trade count falls to band |
+| Regime vetoes | Scripted veto on a disaster fold: worst-fold MDD falls; healthy folds untouched |
+| Conviction thresholds | Scripted threshold raise on a `poor_selection` fold: win rate rises, activity floor still met |
+
+### §2.11 Hand-offs
+
+- **→ Topic 3 (data model):** intent-record schema (5 blocks); dual-unit fields; gate
+  version/era/seed stamps on season+fold records; harness run-type quarantine tag; L2
+  settings-history capture; structural identity keys on every record type.
+- **→ Code-verification review:** U3 fallback enumeration; per-fold seed-pinning feasibility;
+  startup-guard placement; gate-replay SQL against the 564 rows; `_MAX_REWARD_DELTA` config
+  surface for the all-pairs bench; exact minimum harness run lengths per (algo, lever).
 
 ## §3 — Durable memory-capture data model (Topic 3 — PENDING)
 
