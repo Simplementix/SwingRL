@@ -3,7 +3,8 @@
 > **Status: IN PROGRESS** — written incrementally; each topic section is locked during the
 > Fable scoping sessions and committed as it closes. Pending sections are scope checklists,
 > not approved content.
-> **§1 (Goal): LOCKED 2026-06-12.** **§2 (Topic 2): LOCKED 2026-07-06.** §3 (Topic 3) pending.
+> **§1 (Goal): LOCKED 2026-06-12.** **§2 (Topic 2): LOCKED 2026-07-06.** **§3 (Topic 2.5,
+> Meta-Trader): LOCKED 2026-07-06.** §4 (Topic 3) pending.
 > **Kickoff:** `.planning/REDESIGN_SCOPING_KICKOFF.md` ·
 > **Tracker:** `.planning/V1.1_EXECUTION_PLAN.md` ▶ Stage 2.R
 > **Gates:** topic-level approval in conversation → full-spec G1 sign-off when all topics close
@@ -92,7 +93,7 @@ control-fold mechanism is retained dormant for L1 live re-earn only.
 ### §1.4 Out of scope
 
 - Live-trading bugs: F1 turbulence column (`execution/pipeline.py:537`); shadow-promotion
-  directory mismatch (`models/active/{env}/` flat vs `{env}/{algo}/` expected) — recorded in §4,
+  directory mismatch (`models/active/{env}/` flat vs `{env}/{algo}/` expected) — recorded in §5,
   not fixed here.
 - Stage 3 repository refactor (incl. the `bounds.py` / `query.py` `_FALLBACK_REWARD_BOUNDS`
   duplication — Stage 3.4).
@@ -334,9 +335,151 @@ design work (all: §2.3 two-stage harness + §2.4 intent records + §2.7 ladder 
   startup-guard placement; gate-replay SQL against the 564 rows; `_MAX_REWARD_DELTA` config
   surface for the all-pairs bench; exact minimum harness run lengths per (algo, lever).
 
-## §3 — Durable memory-capture data model (Topic 3 — PENDING)
+## §3 — Meta-Trader: mission, boundaries, and data requirements (Topic 2.5 — LOCKED 2026-07-06)
 
-Scope checklist derived from pillar 5 (+ Topic 2's information requirements):
+A **second LLM coach for trade time** (paper + live), distinct from the §2 meta-trainer: the
+meta-trainer develops players between seasons; the Meta-Trader manages them during real games.
+This section is a **bounded charter** — mission, boundaries, candidate levers (listed, not
+authorized), the shared weakness-profile asset, and capture requirements. The full design
+(lever mechanics, authority thresholds, cadence, prompts) is **deferred to its own spec** (§3.8).
+
+### §3.1 Mission (D-MT.1)
+
+> The Meta-Trader is a game-day defender: it watches live and paper trading, maps sensor
+> readings and scheduled events onto each player's documented weaknesses, and — only with
+> earned authority — reduces a player's influence or the team's exposure before damage,
+> never adding risk. It detects nothing itself, trades nothing itself, and can never
+> override the referee.
+
+Direction is **reduce-only**: every lever it could ever hold can only shrink exposure or
+influence, so its worst wrong call costs upside, never unrecoverable capital. Symmetric/boosting
+management is excluded from the mission; any future upgrade requires a §2.10-style appendix
+path with pre-registered verification.
+
+The structural gap it fills (true regardless of doc/code drift): between trainings, nothing
+judges live form — ensemble weights are set once per training from WF Sharpe
+(`pipeline_helpers.py:219–256`) and read per cycle (`execution/pipeline.py:410–445`); the only
+in-game protections are deterministic tripwires that fire *after* damage. The Meta-Trader is
+the judgment layer on the middle timescale: faster than retraining, earlier than the breakers.
+
+### §3.2 Division of labor (D-MT.2)
+
+| Condition | Detected by | Response |
+|---|---|---|
+| Crash (vol spike, loss breach) | Circuit breakers (deterministic, existing) | Breakers halt — the Meta-Trader is never in this loop |
+| Regime shift | Statistical sensors (HMM p_bull/p_bear, VIX features — existing) | Meta-Trader *interprets* against weakness profiles |
+| Scheduled events (FOMC, CPI, earnings) | Script + calendar feed (new plumbing, no LLM) | Meta-Trader *interprets significance* |
+| Rule violations | Risk layer + broker middleware | Deterministic veto — the Meta-Trader always sits behind it |
+
+The Meta-Trader's **only unique job is interpretation**: does the current picture — sensor
+readings + upcoming events + recent per-player behavior — match a documented weakness of a
+specific (algo, env), and is reducing that player's influence warranted *before* the tripwires
+fire? It never detects (sensors are faster and better at that) and never trades (the players
+are the traders).
+
+### §3.3 Day-one duties — no authority (D-MT.3)
+
+Active from paper trading onward; all outputs advisory and graded:
+
+1. **Commentator** — periodic structured judgment on live/paper telemetry: diagnosis, matched
+   weakness signature + confidence, proposal, falsifiable bet. Log-only; written as §2.4
+   five-block intent records, mode=`shadow`, system-fixed horizons, deterministic grading.
+2. **Alarm-raiser** — escalate-to-human (Discord) when a weakness signature fires or an
+   unscheduled event warrants a look. Advisory only; escalations are themselves graded calls.
+3. **Event-significance interpretation** — weighs upcoming *scheduled* events in context;
+   output feeds its own commentary/alarms only.
+
+### §3.4 Candidate lever set (LISTED, NOT AUTHORIZED; D-MT.4)
+
+All reduce-only. Each goes live only after its own §2.3-style harness pass + shadow track
+record + §2.7 ladder standing — pre-registered in the future Meta-Trader spec:
+
+| Candidate | Action | Natural surface |
+|---|---|---|
+| Ensemble tilt (down) | Reduce a flagged player's blend weight, bounded | `model_metadata` ensemble weights read per cycle (`execution/pipeline.py:410–445`) |
+| Position-size scaling (down) | Shrink sizes when a flagged player drove the decision, or env-wide | Sizing path in `execution/` |
+| Live benching | Player weight → 0, time-boxed, recoverable | Same weight surface |
+| Per-algo trade veto | Block trades where the flagged player was the driver | Pre-middleware check |
+| Pre-event de-risk | Reduce/veto new entries in a defined window around scheduled high-impact events | Calendar-triggered; highly gradeable (each CPI/FOMC print is a repeated natural experiment) |
+
+Flagged unknown (honest gap): whether pre-event de-risking is net-positive for a swing
+strategy at all — plenty of setups profit from post-event moves. Answered by its shadow track
+record before any authority question arises.
+
+### §3.5 Prohibitions / hard caps (D-MT.5)
+
+- **No play-calling** — per-order approve/modify is being a trader, not a coach.
+- **No posture-switching** — team-wide defensive/cash calls duplicate the circuit breakers in
+  the most expensive seat; the escalation path covers the genuine cases.
+- **No autonomous action on unscheduled/breaking news, ever** — news text is untrusted input
+  to a system with trade authority (hallucination + injection risk); escalate-only, permanently.
+- **No training-side influence** — not a side door for new training levers or unbenching L1
+  (§2.10 remains the only path).
+- **No LLM-to-LLM channel** with the meta-trainer (§3.6).
+
+### §3.6 Shared weakness profiles (D-MT.6)
+
+One **script-maintained** asset per (algo, env): failure mode → data signature → early
+detectability → evidence rows. Seeded from existing training-time knowledge
+(`.planning/research/hp-tuning-reference.md` per-algo diagnostics; iter-1 forensics and
+per-algo reward sensitivity in `reward-shaping-vs-hyperparameters.md` §6/§10); enriched by
+structured live records as they accumulate. **Both coaches read it; neither writes it
+directly** — scripts and consolidation maintain it from graded records. This replaces the
+earlier "Meta-Trader feeds Meta-Trainer" sketch: there is no coach-to-coach advice channel,
+only a shared, attributable evidence base.
+
+### §3.7 Capture requirements → Topic 3 (D-MT.7)
+
+Start accumulating at paper trading (cold-start avoidance — the time-critical part of this topic):
+
+1. **Per-cycle per-player record**: each algo's proposed action vs the blended action vs
+   actual fills — today only the blend is visible, so live per-algo behavior is unattributable.
+2. **Regime context stamped on trade records** (HMM probabilities, VIX at decision time).
+3. **Event-calendar ingestion + event-stamping** on trades, verdicts, and grading windows —
+   event shocks must not silently contaminate weakness attribution (the D-T1.3 disaster-fold
+   exclusion applied at trade time: don't grade a player on a game played in a hurricane).
+4. **Meta-Trader intent records** — §2.4 five-block format, system-fixed horizons,
+   mode=`shadow` from day one.
+5. **Slippage / fill-quality vs backtest expectation per algo** — the train-vs-live transfer
+   signal (e.g. does a model's backtest trade-rate survive contact with live markets).
+
+### §3.8 Governance preconditions + deferral (D-MT.8)
+
+The §2 template applies wholesale as a precondition: shadow-first; deterministic grading (the
+LLM never grades itself); ≥10 graded bets per scope before any ladder verdict; the §2.7
+benching ladder in both directions; always behind broker middleware + the risk-veto layer
+(CLAUDE.md critical rule). **Full lever design is deferred to a dedicated Meta-Trader spec**,
+gated on (a) the §3.7 capture data existing and (b) the §2 machinery operating in code —
+designing levers before the signatures exist would repeat the original meta-trainer's sin
+(levers never verified).
+
+### §3.9 Topic 2.5 decisions log
+
+| # | Decision | Rationale |
+|---|---|---|
+| D-MT.1 | Mission = reduce-only game-day defender; boosting excluded | Worst wrong call = missed upside (recoverable) — matches capital preservation + the 2.7–5.1× humility prior; upgrade only via appendix path |
+| D-MT.2 | Detect/interpret split: breakers own crashes, sensors own regimes, calendar is plumbing; the LLM interprets only | Deterministic layers are faster and more reliable at detection; interpretation against weakness profiles is the one judgment no threshold expresses |
+| D-MT.3 | Day-one duties advisory-only (commentator / alarm-raiser / event significance), intent-recorded from day one | Free evidence at zero risk; builds the graded track record any authority must be earned from |
+| D-MT.4 | Five candidate levers listed, none authorized; all reduce-only | Player-level levers match the weakness-compensation intent; each must individually earn scope (§2 pattern) |
+| D-MT.5 | Hard caps: no play-calling, no posture-switching, no autonomous news action, no training-side influence, no LLM-to-LLM channel | Keeps the Meta-Trader a coach not a trader; keeps untrusted input away from trade authority; keeps §2's governance closed |
+| D-MT.6 | Weakness profiles = one shared script-maintained asset consumed by both coaches | Replaces an ungradeable coach-to-coach channel with an attributable evidence base |
+| D-MT.7 | Five capture requirements start at paper trading | The signatures the whole design depends on don't exist yet; capture is the only time-critical piece |
+| D-MT.8 | Full design deferred to its own spec, gated on capture data + §2 machinery operating | Designing levers without signatures = the original unverified-lever mistake |
+
+### §3.10 Hand-offs
+
+- **→ Topic 3 (data model):** the five §3.7 capture requirements as first-class record types
+  (per-player cycle records, regime/event stamps, trade-time intent records, fill-quality
+  records); the event calendar as a new ingested data source; all under the same
+  structural-identity-key regime as §2.11.
+- **→ Future Meta-Trader spec:** lever mechanics + bounds, authority-ladder thresholds,
+  cadence, prompt design, harness adaptation for trade time (what "3 seeds" becomes when the
+  fold is a live window).
+
+## §4 — Durable memory-capture data model (Topic 3 — PENDING)
+
+Scope checklist derived from pillar 5 (+ Topic 2's §2.11 hand-offs + Topic 2.5's §3.7
+capture requirements):
 
 - [ ] Per memory/record type: *what* it is, *when* captured, **exact schema** (fields, types,
       **units**, keys, provenance). Cover today's types (epoch memories, reward-adjustment
@@ -352,7 +495,7 @@ Scope checklist derived from pillar 5 (+ Topic 2's information requirements):
 - [ ] Machine-readable payloads (jsonb not text; declared units; no narrative-only records).
 - [ ] **Dry-run re-consolidation test** as the acceptance gate. (S4)
 
-## §4 — Bug & finding catalogue (running; fix scope varies)
+## §5 — Bug & finding catalogue (running; fix scope varies)
 
 | Finding | Evidence | Fix scope |
 |---|---|---|
