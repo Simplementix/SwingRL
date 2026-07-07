@@ -4,7 +4,8 @@
 > topic section was locked during the Fable scoping sessions and committed as it closed.
 > **§1 (Goal): LOCKED 2026-06-12.** **§2 (Topic 2): LOCKED 2026-07-06.** **§3 (Topic 2.5,
 > Meta-Trader): LOCKED 2026-07-06.** **§4 (Topic 3, data model): LOCKED 2026-07-06.**
-> **All topics locked — spec ready for full G1 sign-off.**
+> **Pre-G1 amendments A1–A25 applied 2026-07-06 after a four-lens adversarial review — log:
+> §4.15.** **All topics locked — spec ready for full G1 sign-off.**
 > **Kickoff:** `.planning/REDESIGN_SCOPING_KICKOFF.md` ·
 > **Tracker:** `.planning/V1.1_EXECUTION_PLAN.md` ▶ Stage 2.R
 > **Gates:** topic-level approval in conversation → full-spec G1 sign-off when all topics close
@@ -77,7 +78,7 @@ per-fold validation gate. Implementation: `src/swingrl/metrics/cps.py`.)
 | # | Criterion | Test |
 |---|---|---|
 | S1 | Treatment/control CPS v1 ratio ≥ 1.0 on the next full run † | Extend the harm table (handoff §"empirical case"); regime-aware comparison |
-| S2 | Treatment worst-fold MDD ≤ control's (+ agreed margin) | Per-iteration check against `backtest_results` |
+| S2 | Treatment worst-fold MDD ≤ control's (+ agreed margin) † | Per-season check against `season_results.worst_fold_mdd_frac` (era 1+); margin value → §4.14 hand-off |
 | S3 | Every lever pull has recorded before/after attribution | No advice row without identity + outcome columns |
 | S4 | Re-consolidation of a past iteration succeeds from captured data alone | Dry-run produces patterns with correct iteration/fold/env/algo |
 | S5 | Gates re-derived and documented | Pass rate can no longer rise while returns fall |
@@ -89,6 +90,11 @@ per-fold validation gate. Implementation: `src/swingrl/metrics/cps.py`.)
 season** (iteration 5 under baseline HPs + `DEFAULT_WEIGHTS`), compared season-over-season on
 identical folds — not within-iteration control folds. Rationale in §2.5; the within-iteration
 control-fold mechanism is retained dormant for L1 live re-earn only.
+**Pre-G1 amendment A1 (2026-07-06):** the same redefinition applies to **S2** — its "control"
+is the reference season, compared same-fold season-over-season; the "+ agreed margin" value is
+finalized in the implementation plan (§4.14 hand-off).
+**Editorial note (A2):** forward-looking references to `backtest_results` in §1–§2 read as
+`fold_results` from era 1 onward (§4.3); era-0 evidence keeps the legacy table.
 
 ### §1.4 Out of scope
 
@@ -334,6 +340,9 @@ design work (all: §2.3 two-stage harness + §2.4 intent records + §2.7 ladder 
 - **→ Code-verification review:** U3 fallback enumeration; per-fold seed-pinning feasibility;
   startup-guard placement; gate-replay SQL against the 564 rows; `_MAX_REWARD_DELTA` config
   surface for the all-pairs bench; exact minimum harness run lengths per (algo, lever).
+  **Pre-G1 amendment A3 (2026-07-06):** the risk-penalty-discarded-under-shaping bug
+  (`reward-shaping.md` known issue) is owned here — its fix is a **precondition of any L1
+  §2.3 harness run** (a wrapper that drops the risk penalty corrupts Stage-1 verdicts).
 
 ## §3 — Meta-Trader: mission, boundaries, and data requirements (Topic 2.5 — LOCKED 2026-07-06)
 
@@ -497,12 +506,21 @@ failure becomes structurally unrepeatable (UNIQUE constraint, not discipline).
 | `environment` | `TEXT` CHECK (`equity`,`crypto`) | League |
 | `algorithm` | `TEXT` CHECK (`ppo`,`a2c`,`sac`) | Player |
 | `fold_number` | `SMALLINT` NOT NULL | Game |
-| `run_type` | `TEXT` CHECK (`season`,`reference`,`harness_stage1`,`harness_stage2`,`final_train`) | §2.3 quarantine tag + deployable-model training |
+| `run_type` | `TEXT` CHECK (`season`,`reference`,`harness_stage1`,`harness_stage2`,`final_train`,`l1_reearn_control`) | §2.3 quarantine tag + deployable-model training + the dormant §2.5 control-fold arm's capture surface for L1 live re-earn (A5) |
 | `seed` | `INTEGER` NOT NULL | Pinned seed (D-T2.5) |
 | `attempt` | `SMALLINT` default 1 | Re-runs are new rows, never overwrites |
+| `status` | `TEXT` CHECK (`running`,`completed`,`failed`,`aborted`) | Crash semantics explicit; a retry is a new `attempt` row (A4) |
 | `era_id` | `SMALLINT` NOT NULL → `eras` | Known at run start; run-scoped records inherit era via the spine |
+| `code_version` | `TEXT` NOT NULL | Git SHA / image digest — a dependency bump between seasons must never masquerade as a lever effect (A12) |
+| `config_hash`, `config_snapshot` | `TEXT`, `JSONB` | The yaml in force, hashed + snapshotted at run start (A12) |
+| `data_fingerprint` | `TEXT` NOT NULL | Row count + hash of the fold's OHLCV slice at run start — pins D-T2.5's same-fold comparison against gap-fill data revisions (A12) |
 | `started_at` / `finished_at` | `TIMESTAMPTZ` | UTC |
 | UNIQUE(iteration, env, algo, fold, run_type, attempt) | | Duplicates impossible |
+
+**Canonical-run rule (A6):** for any (iteration, env, algo, fold, run_type), the canonical run
+is the **highest `attempt` with `status = 'completed'`**. Every aggregation and view — season
+CPS computation, `v_consolidation_corpus`, D-T2.5 same-fold comparison, S4 coverage — binds to
+canonical runs only. Non-canonical attempts remain on record (forensics) but never count.
 
 **`gate_versions`** — the rulebook editions (D-T2.10). Human-approved changes only; never
 written by training code.
@@ -526,6 +544,18 @@ a CPS formula fix) starts a new era; **cross-era CPS values are never compared**
 | `first_iteration` | `SMALLINT` | Seasons ≥ this belong to the era |
 | `started_at` | `TIMESTAMPTZ` | |
 
+**Era mechanics (A7):** era rows are created by the same human-approved migration process as
+`gate_versions` — never by training code. The trainer resolves the current era at run start as
+`max(era_id) WHERE first_iteration ≤ current iteration`; `first_iteration` carries a
+monotonicity CHECK so a pre-created future era cannot mis-stamp in-flight runs. The
+era-0/gate-v0 bootstrap migration (including back-stamping the 574 kept rows) is a §4.14 item.
+
+**`schema_migrations`** (A7b) — the eighth registry: `(version SMALLINT PK, description TEXT,
+applied_at TIMESTAMPTZ)`, written by the migration runner itself. "Which DDL is this database
+running" becomes answerable by query — the structural fix for the documented
+"merged ≠ deployed" drift class (§1.6). Detail (runner, fingerprint assertion at container
+start) → G2.
+
 **Stamping rule:** fold and season records carry **both** `era_id` and gate version(s)
 explicitly (deliberate belt-and-suspenders redundancy per D-T2.11 — a result row answers
 "which rules judged me" without a join); epoch and other run-scoped records inherit era via
@@ -548,6 +578,10 @@ gate) — kept as evidence, never score-compared to the new regime.
    — a stored copy can drift; a view cannot.
 6. **Dual-unit capture** for windowed/progress values: absolute steps + percent-of-fold, both
    labeled (D-T2.7).
+7. **Every structured JSONB payload carries a `schema_version` key** (A8) — `evidence`,
+   `claim`, `gate_components`, `coach_config`, `learner_metrics`, etc. all evolve; graders and
+   re-consolidation parse payloads years after they were written and must know which shape
+   they are reading.
 
 ### §4.3 Training records (D-T3.3, D-T3.5, D-T3.16)
 
@@ -578,11 +612,13 @@ plain/rich two-writer split collapses — change-site in §4.14).
 
 | Field | Type | Unit | Notes |
 |---|---|---|---|
+| `id` | `BIGINT` identity PK | — | Surrogate PK for polymorphic addressability (A11) |
 | `run_pk` | `BIGINT` NOT NULL → `training_runs`, **UNIQUE** | — | One box score per run; read-time dedup dies |
 | `era_id` | `SMALLINT` NOT NULL → `eras` | — | Explicit stamp |
 | `gate_version` | `SMALLINT` NOT NULL → `gate_versions` | — | Explicit stamp |
+| `seed` | `INTEGER` NOT NULL | — | Denorm from the spine — honors D-T2.11's "pinned seed on every fold record" as written (A11) |
 | `fold_role` | `TEXT` CHECK (`neutral`,`chronic_failure`,`disaster`,…) | enum | §2.3 fold selection queries this |
-| `fold_start_date` / `fold_end_date` | `DATE` | calendar | Same-fold cross-season joins (D-T2.5) |
+| `fold_start_ts` / `fold_end_ts` | `TIMESTAMPTZ` | UTC | Same-fold cross-season joins (D-T2.5); TIMESTAMPTZ not DATE — crypto 4H fold boundaries fall intra-day (A11) |
 | `oos_return_frac` | `DOUBLE PRECISION` | fraction | |
 | `oos_sharpe_annualized`, `oos_sortino_annualized`, `oos_calmar` | `DOUBLE PRECISION` | annualized | |
 | `oos_mdd_frac` | `DOUBLE PRECISION` | fraction ≥0 | Feeds CPS `max_mdd`, S2 |
@@ -606,9 +642,10 @@ columns (obsolete per D-T2.5) and `memory_enabled` (subsumed by `coach_config`).
 
 | Field | Type | Unit | Notes |
 |---|---|---|---|
-| `iteration_number`, `environment`, `scope` | keys, UNIQUE together | — | |
+| `iteration_number`, `environment`, `scope`, `result_version` | keys, UNIQUE together | — | **Recomputes and season re-runs are new `result_version` rows — never UPDATEs** (A10); the canonical row is the highest version, computed from canonical runs (A6) |
 | `era_id` | `SMALLINT` → `eras` | — | Explicit stamp |
 | `gate_version_per_fold`, `gate_version_ensemble` | `SMALLINT` → `gate_versions` | — | Explicit stamps |
+| `gate_passed`, `gate_components` | `BOOLEAN`, `JSONB` | declared per key | **Ensemble-scope rows: the §2.8 ensemble-gate verdict + working** — the ensemble gate's home; D-T3.3's "every gate verdict auditable" now holds for both gates (A10) |
 | `coach_config` | `JSONB` NOT NULL | — | **The staircase stamp**: `{"l1": "benched", "l2": "live", "patterns_in_prompt": false, "reference_season": false}` — what keeps iter 6 vs 7 attributable forever (D-T2.6) |
 | `cps_v1`, `cps_v2`, `cps_v3` | `DOUBLE PRECISION` | score (v3 nullable) | |
 | `cps_components` | `JSONB` | declared per key | median_return_frac, max_mdd_frac, mean_winner_sharpe, pass_ratio, winners, fold_count |
@@ -619,7 +656,7 @@ columns (obsolete per D-T2.5) and `memory_enabled` (subsumed by `coach_config`).
 | `reward_weights_used` | `JSONB` | fractions | |
 | `ensemble_weights` | `JSONB` | fractions | Ensemble scope only |
 | `wall_clock_seconds` | `INTEGER` | seconds | |
-| `created_at`, `cps_recomputed_at` | `TIMESTAMPTZ` | UTC | Recomputes become visible |
+| `created_at` | `TIMESTAMPTZ` | UTC | Recompute visibility comes from `result_version` rows' timestamps (A10 — `cps_recomputed_at` dropped; it implied in-place UPDATE) |
 
 **`backtest_trades`** (NEW) — per-trade records from **evaluation/backtest episodes only**
 (frozen policy, OOS window). **Hard rule: learning-step trades are never captured** — millions
@@ -657,8 +694,9 @@ every conversation with either coach. The decision content moves to intent recor
 | `coach` | `TEXT` CHECK (`meta_trainer`,`meta_trader`,`consolidator`) | |
 | `call_type` | `TEXT` CHECK (`run_config`,`epoch_advice`,`consolidate_stage1`,`consolidate_stage2`,`harness_replay`,`trade_commentary`,`trade_alarm`,`event_significance`) | Extended for §3.3 duties |
 | `run_pk` | `BIGINT` nullable → `training_runs` | Fold-scoped calls |
+| `cycle_id` | `BIGINT` nullable → `inference_cycles` | Trade-time calls join structurally to the cycle they judge — no timestamp inference (A15) |
 | `iteration_number`, `environment`, `algorithm` | nullable | Calls without run context |
-| *identity CHECK per call_type* | table constraint | e.g. `epoch_advice ⇒ run_pk NOT NULL`; `run_config ⇒ iteration+env NOT NULL`. **The F3 fix**: NULL legal only where the call type genuinely has no such context |
+| *identity CHECK matrix — all 8 call_types* (A15) | table constraint | `epoch_advice ⇒ run_pk NOT NULL` · `run_config ⇒ iteration+env NOT NULL` · `consolidate_stage1 ⇒ iteration+env NOT NULL` · `consolidate_stage2 ⇒ iteration NOT NULL` · `harness_replay ⇒ linked via `harness_replays`` · `trade_commentary / trade_alarm / event_significance ⇒ cycle_id NOT NULL`. **The F3 fix**: NULL legal only where the call type genuinely has no such context |
 | `provider` | `TEXT` NOT NULL | e.g. `cerebras`, `openrouter` |
 | `model` | `TEXT` NOT NULL | Exact model ID — advice quality attributable per model |
 | `prompt_version` | `TEXT` NOT NULL | Makes §2.3's "production-identical prompts" a checkable equality |
@@ -680,31 +718,49 @@ discriminate).
 | 1 Identity | `intent_id` | `BIGINT` identity PK | |
 | | `llm_call_id` | `BIGINT` NOT NULL → `llm_calls` | |
 | | `coach` | `TEXT` CHECK (`meta_trainer`,`meta_trader`) | |
-| | `lever` | `TEXT` CHECK (`L1_reward_weights`,`L2_hyperparams`,`U1_stop`,`MT_commentary`,`MT_alarm`,`MT_pre_event`,…) | |
+| | `lever` | `TEXT` CHECK (`L1_reward_weights`,`L2_hyperparams`,`U1_stop`,`MT_commentary`,`MT_alarm`,`MT_pre_event`) | Inclusion rule (A17): the enum is extended when a lever enters shadow; `MT_pre_event` is present because its shadow track record starts day-one (§3.4's flagged unknown) |
 | | `mode` | `TEXT` CHECK (`shadow`,`live`) | |
 | | `run_pk` | `BIGINT` nullable → `training_runs` | Mid-fold calls; NULL for L2 + trade-time |
 | | `iteration_number`, `environment`, `algorithm` | per-lever CHECK | Trade-time: env + flagged algo + deployed iteration |
 | | `epoch`, `timestep`, `pct_complete` | nullable | Mid-fold only, dual-unit |
 | 2 Evidence | `evidence` | `JSONB` NOT NULL | **Self-contained snapshot** (graders never join): both windows, diagnosis + confidence, fold role, current weights/HPs — units per key |
-| 3 Proposal | `proposal` | `JSONB` NOT NULL | The change **or explicit no-change** + rationale |
-| | `applied_change` | `JSONB` nullable | **What the runtime actually did** after clamps — written by the runtime, not the LLM. Proposal ≠ applied visible by design (kills the ids-2/3 bookkeeping-contradiction class) |
-| 4 Bet | `bet_metric` | `TEXT` NOT NULL | Fixed menu |
+| 3 Proposal | `proposal` | `JSONB` NOT NULL | The change **or explicit no-change** + rationale. What was *applied* lives in the `intent_applications` sidecar (A13) |
+| 4 Bet | `bet_metric` | `TEXT` NOT NULL | Fixed menu — **the menu is a registry declaring units per metric**; `bet_baseline_value`/`actual_value` are interpreted via it (A9) |
 | | `bet_direction` | `TEXT` CHECK (`up`,`down`) | |
 | | `bet_baseline_value` | `DOUBLE PRECISION` NOT NULL | Metric at pull time |
-| | `horizon_spec` | `JSONB` NOT NULL, **system-written** | Never coach-chosen (D-T2.8): `{"type":"trend_window","steps":N}` or `{"type":"season_same_fold"}` |
+| | `horizon_spec` | `JSONB` NOT NULL, **system-written** | Never coach-chosen (D-T2.8): `{"type":"trend_window","steps":N}`, `{"type":"season_same_fold"}`, or the trade-time type `{"type":"wall_clock_hours","hours":N}` / next-N-cycles (A14); values fixed per lever |
 | | `created_at` | `TIMESTAMPTZ` | |
+
+**`intent_applications`** (A13 — restores no-UPDATE): the proposal is written at call time by
+the memory service; the application happens later in a different process (trainer start for
+L2). A field on the intent row would be an UPDATE in disguise. Instead:
+`(intent_id BIGINT → intent_records, UNIQUE, applied JSONB, applied_at TIMESTAMPTZ)` —
+append-only, written by the runtime when the change actually lands, after clamps. Proposal ≠
+applied stays visible by design (the ids-2/3 bookkeeping-contradiction fix); a proposal with
+no application row = rejected/never-landed, itself informative.
+
+**Trade-time volume bound (A14):** MT commentary is capped at **≤1 intent record per
+inference cycle** — the day-one writer is D-T3.19-bounded from the start; exact cadence values
+are the future Meta-Trader spec's to tune downward, never upward past this cap.
 
 `intent_verdicts` (block 5, grader script only, append-only):
 
 | Field | Type | Notes |
 |---|---|---|
+| `verdict_id` | `BIGINT` identity PK | Surrogate PK for polymorphic addressability (A16) |
 | `intent_id` | `BIGINT` → `intent_records` | |
 | `grader_version` | `SMALLINT` | UNIQUE(intent_id, grader_version) — regrades are new rows |
 | `actual_value` | `DOUBLE PRECISION` | Metric at horizon |
 | `direction_match` | `BOOLEAN` | Intent-aware verdict — replaces the intent-blind `effective` flag (D-T1.5) |
 | `menu_consistent` | `BOOLEAN` | Immediate diagnosis→correction-menu check |
-| `excluded`, `excluded_reason` | `BOOLEAN`, `TEXT` CHECK (`new_fold_residue`,`event_shock`,…) | §2.6 regime residues + §3.7 event exclusion — explicit rows, never silent omissions |
+| `excluded`, `excluded_reason` | `BOOLEAN`, `TEXT` CHECK (`new_fold_residue`,`event_shock`,`horizon_unreachable`,…) | §2.6 regime residues + §3.7 event exclusion — explicit rows, never silent omissions |
 | `graded_at` | `TIMESTAMPTZ` | |
+
+**Terminal-verdict guarantee (A16):** every intent gets a verdict row eventually. A sweep
+script writes `excluded, reason = horizon_unreachable` for any bet whose horizon can no longer
+arrive (fold aborted, season cancelled, fold set changed) — an ungraded bet silently vanishing
+is exactly the omission §2.4 forbids, and the §2.7 ladder denominators count these rows
+explicitly.
 
 **`models`** (replaces `model_metadata`) + **`ensemble_weight_history`** — the roster card +
 append-only weight dial. `training_runs.run_type` gains `final_train` so deployable models
@@ -712,7 +768,9 @@ inherit iteration/env/algo/seed/era through the spine. Drops `validation_sharpe`
 written `None`).
 
 `models`: `model_id TEXT PK`, `run_pk NOT NULL → training_runs`, `artifact_path`,
-`vecnormalize_path`, `training_window_start/end DATE`, `converged_at_step BIGINT`,
+`vecnormalize_path`, `artifact_sha256`, `vecnormalize_sha256` (A22 — written at `final_train`,
+verified at load: a re-save, partial copy, or wrong-directory pickup becomes loud instead of
+silent), `training_window_start/end DATE`, `converged_at_step BIGINT`,
 `ensemble_weight_at_train_frac`, `status CHECK (active|shadow|archived)`, `promoted_at`,
 `created_at`.
 
@@ -735,6 +793,10 @@ lever exists.
 - **Per-lever track record** (S8) — aggregation over `intent_records` ⋈ `intent_verdicts`
   grouped by (coach, lever, scope); feeds the coach's prompts each iteration and the §2.7
   ladder.
+- **Consolidator quality** (A18) — pattern confirmation/contradiction ratio grouped by the
+  producing call's `prompt_version` + `model` (all keys exist via `patterns` ⋈ `llm_calls`).
+  The third LLM gets a track record like the two coaches; sustained contradiction dominance ⇒
+  patterns withheld from prompts (the L2-bare mode that already exists) pending human review.
 
 ### §4.5 Patterns + lifecycle (D-T3.6, D-T3.7)
 
@@ -815,8 +877,18 @@ situation JSONB, expected_response JSONB, graded_consistent BOOLEAN, created_at)
 
 **Structural quarantine** (never-consolidated made schema-enforced, not convention):
 
-1. **`v_consolidation_corpus`** — the *only* surface consolidation reads: records reachable
-   from runs with `run_type IN ('season','reference')`; harness/replay records excluded.
+1. **`v_consolidation_corpus`** — the *only* surface consolidation reads, **defined per
+   record type** (A19 — several types legitimately have no `run_pk`, so "reachable from runs"
+   alone leaves the boundary undefined exactly where it matters):
+   - *Run-scoped tables* (`epoch_snapshots`, `fold_results`, `backtest_trades`, run-scoped
+     `intent_records`/`llm_calls`): **canonical runs only** (A6) with `run_type IN
+     ('season','reference')`.
+   - *Non-run-scoped allowlist*: `season_results` (canonical `result_version` only), L2
+     `intent_records` + verdicts, and trade-time records (`inference_cycles`,
+     `cycle_algo_proposals`, `trades` with `cycle_id`, `fill_quality`) — mode-tagged.
+   - *Excluded*: everything harness-tagged — Stage 1 via `run_type`, Stage-2 replay
+     calls/intents via `call_type = 'harness_replay'` + `harness_replays` linkage.
+   S4 criterion 5 keys off this definition.
 2. **Write-time check on `pattern_sources`**: a source row pointing at a quarantined record is
    rejected at the application layer.
 
@@ -832,7 +904,7 @@ Capture starts at **paper trading** (D-MT.7 cold-start avoidance).
 | `environment` | `TEXT` CHECK | — | |
 | `mode` | `TEXT` CHECK (`paper`,`live`) | — | |
 | `cycle_ts` | `TIMESTAMPTZ` | UTC | |
-| `deployed_iteration` | `SMALLINT` NOT NULL | season | Which season's team is fielded — the live→training bridge |
+| `deployed_iteration` | `SMALLINT` | season | **Derived/display convenience only** (A20): iteration of the newest active model. Shadow promotion is per-model, so the blend can mix vintages — the **authoritative** per-algo vintage is `cycle_algo_proposals.model_id → models → run_pk`. Trade-time era rule: the era in force at `cycle_ts` (max `started_at ≤ cycle_ts`) governs verdict exclusion |
 | `hmm_p_bull`, `hmm_p_bear` | `DOUBLE PRECISION` | probability 0–1 | §3.7.2 regime stamp at decision time |
 | `vix` | `DOUBLE PRECISION` | index points | |
 | `active_event_ids` | `BIGINT[]` | → `calendar_events` | The hurricane stamp |
@@ -879,10 +951,11 @@ calendar is the macro candidate).
 
 | Field | Type | Unit | Notes |
 |---|---|---|---|
+| `id` | `BIGINT` identity PK | — | Surrogate PK for polymorphic addressability (A21) |
 | `trade_id` | `TEXT` → `trades`, UNIQUE | — | Algo attribution + stamps inherit via `trades.cycle_id` |
-| `decision_price_usd` | `DOUBLE PRECISION` | USD | The price the blend acted on |
-| `expected_fill_price_usd` | `DOUBLE PRECISION` | USD | Aim adjusted by modeled cost |
-| `fill_price_usd` | `DOUBLE PRECISION` | USD | Where it landed |
+| `decision_price_usd` | `NUMERIC(18,8)` | USD | The price the blend acted on. NUMERIC not DOUBLE — slippage is a small difference of near-equal numbers (A21) |
+| `expected_fill_price_usd` | `NUMERIC(18,8)` | USD | Aim adjusted by modeled cost |
+| `fill_price_usd` | `NUMERIC(18,8)` | USD | Where it landed |
 | `slippage_frac` | `DOUBLE PRECISION` | fraction, **signed: positive = adverse**, side-aware | Sign convention in column comment |
 | `expected_cost_frac` | `DOUBLE PRECISION` | fraction | **Snapshotted from config in force** |
 | `realized_cost_frac` | `DOUBLE PRECISION` | fraction | Commission + slippage all-in |
@@ -1026,13 +1099,23 @@ consolidation end-to-end into a scratch schema → a **script** checks the outpu
 | 5 | Zero sources from harness runs | Quarantine leaked |
 | 6 | Every numeric in every claim carries a declared unit | Units chaos resurfacing |
 | 7 | Trend surfaces (`v_l2_settings_history`, track record, season-over-season CPS) return complete, correct results | The *analysis* half of pillar 5 failed |
+| 8 | **Grading completeness** (A23): zero intents past horizon without a verdict row; per-fold capture-completeness assertions met (epoch rows ≥ cadence expectation, fold_results present, intent count matches advice cadence) | The evidence engine silently stalled — a dead grader or writer costs a season if only S4 catches it |
 
 **Scoping (honest):** the test demands **reconstructability, not reproducibility** — LLM
 consolidation is nondeterministic; requiring identical output would test temperature, not
-schema. **Two tiers:** (1) CI tier — a compact synthetic fixture season runs criteria 1–7 on
-every commit; (2) the real gate — first execution against **iteration 5 (the reference
-season)**, formally discharging S4; thereafter a per-season corpus-health check. Failures
-indict the capture model, never the test — criteria are never relaxed to pass.
+schema. **Two tiers:** (1) CI tier — a compact synthetic fixture season runs criteria 1–8 on
+every commit, with a **canned-consolidator mode** (no live LLM calls in CI; criterion 4's QA
+gate on real LLM output is therefore fully exercised only at the real gate) against an
+ephemeral isolated instance (definition → G2); (2) the real gate — first execution against
+**iteration 5 (the reference season)**, formally discharging S4; thereafter a per-season
+corpus-health check. Failures indict the capture model, never the test — criteria are never
+relaxed to pass.
+
+**Iteration-5 failure path (A23):** iter 5 is simultaneously the new schema's first production
+outing, the S4 real gate, and the permanent attribution baseline. **Iteration 6 does not start
+until S4 passes on some iter-5 attempt.** A failed attempt → fix capture → re-run as a new
+`attempt` (A4/A6); a re-run under patched *capture* code still counts as coach-free (capture
+fixes are not levers), and the canonical-run rule keeps the baseline unambiguous.
 
 ### §4.12 Data-model diagram
 
@@ -1055,8 +1138,10 @@ erDiagram
 
     %% ── Coach records ──
     training_runs ||--o{ llm_calls : "run_pk (nullable)"
+    inference_cycles ||--o{ llm_calls : "cycle_id (nullable, trade-time)"
     llm_calls ||--o{ intent_records : "llm_call_id"
     intent_records ||--o{ intent_verdicts : "intent_id (append-only)"
+    intent_records ||--o| intent_applications : "intent_id (append-only)"
     models ||--o{ ensemble_weight_history : "model_id"
     intent_records ||--o{ ensemble_weight_history : "intent_id (nullable)"
 
@@ -1086,10 +1171,13 @@ erDiagram
 ```
 
 Derived surfaces (views, stored nowhere): `v_consolidation_corpus` (§4.6 quarantine boundary),
-`v_l2_settings_history` (§4.4), per-lever track record (§4.4), pattern effectiveness (§4.5),
-`v_live_transfer` (§4.7). Polymorphic edges (`pattern_sources`, `weakness_evidence`) reference
-(`source_table`, `source_id`) pairs into `fold_results` / `epoch_snapshots` / `intent_records`
-/ `backtest_trades` / `patterns`.
+`v_l2_settings_history` (§4.4), per-lever track record (§4.4), consolidator quality (§4.4,
+A18), pattern effectiveness (§4.5), `v_live_transfer` (§4.7). Polymorphic edges
+(`pattern_sources`, `weakness_evidence`) reference (`source_table`, `source_id`) pairs into
+`fold_results` / `epoch_snapshots` / `intent_records` / `intent_verdicts` / `backtest_trades`
+/ `fill_quality` / `patterns` — every referenceable table carries a `BIGINT` identity PK
+(A11/A16/A21). Standalone registries not drawn: `schema_migrations` (A7b). All eras/gate
+links to `season_results` apply per `result_version` row (A10).
 
 ### §4.13 Topic 3 decisions log
 
@@ -1103,7 +1191,7 @@ Derived surfaces (views, stored nowhere): `v_consolidation_corpus` (§4.6 quaran
 | D-T3.6 | Patterns: structured `claim` JSONB + QA stamp; sources point at structured records; **raw `memories` retired**; `pattern_outcomes` → view | S4 becomes a real test; consolidation input = keyed unit-declared records; a whole bug class removed |
 | D-T3.7 | Lifecycle: quarantine + evidence-based conflict resolution (recency never wins); conflicted barred from prompts; script-graded confirm/contradict; `pattern_links` edge DAG | The playbook meets the same evidence discipline as the coach; single self-pointer can't survive merges/splits |
 | D-T3.8 | `llm_calls` unified audit (provider + model columns, `prompt_version`, per-call-type identity CHECKs); `meta_decisions` retired | F3's NULL class dies structurally; "production-identical prompts" checkable; per-model advice quality attributable |
-| D-T3.9 | Intent records as two immutable tables (records + verdicts); `applied_change` runtime-written; no-UPDATE rule topic-wide | Tamper-evident history; the guardrail chain auditable end-to-end; kills the intent-blind `effective` flag |
+| D-T3.9 | Intent records as immutable tables (records + verdicts); applied change runtime-written *(per A13: in the `intent_applications` sidecar)*; no-UPDATE rule topic-wide | Tamper-evident history; the guardrail chain auditable end-to-end; kills the intent-blind `effective` flag |
 | D-T3.10 | `models` + append-only `ensemble_weight_history`; `final_train` run_type; `validation_sharpe` dropped | "What blend was live at time T" answerable forever; MT tilt lever's audit surface pre-built |
 | D-T3.11 | L2 settings history = view (`v_l2_settings_history`), K-season prompt digest | Never store the derivable; the "coach picks blind" gap closes with a query |
 | D-T3.12 | Harness: experiments + arm-labeled runs + replays; quarantine = `v_consolidation_corpus` + write-time source check | Pre-registration before any run; "scrimmages never pollute season stats" as a schema property |
@@ -1122,13 +1210,86 @@ Derived surfaces (views, stored nowhere): `v_consolidation_corpus` (§4.6 quaran
   (every §4 table vs today's writers); final cap values + trigger thresholds; harness minimum
   run-length table per (algo, lever); event-feed selection (FRED release calendar candidate);
   archive-and-drop runbook under the 🛑 backup gate; K (settings-history digest depth) yaml key.
+- **→ Implementation plan — pre-G1 review additions (A25):**
+  - **Grader orchestration**: a named owner (pipeline step / scheduler job) per grader class
+    (mid-fold verdicts, L2 season verdicts, trade-time verdicts, pattern season-close checks,
+    profile maintenance, `horizon_unreachable` sweep) + a **freshness alarm** ("N intents past
+    horizon and ungraded") — silent grader death must be loud within days, not a season.
+  - **Cutover runbook**: no season runs mid-transition; new schema deployed + write-verified
+    before iteration 5; old tables frozen via `REVOKE INSERT` at cutover (stragglers fail
+    loudly); `swingrl` + `swingrl-memory` containers rebuilt in lockstep; schema-fingerprint
+    assertion at container start (refuse to run against a stale schema — the
+    "merged ≠ deployed" guard).
+  - **Corpus protection**: nightly `pg_dump` of the new schema + a restore-and-rowcount drill
+    once per era. **→ Stage 3.5 hand-off**: `REVOKE UPDATE/DELETE` on all append-only tables;
+    separate DB roles per the §4 writer matrix (trainer / grader / consolidator / ingest /
+    execution) — the no-UPDATE and script-only-writer invariants become grants, not
+    conventions.
+  - **Alerting route**: Discord path from the epoch callback and the memory container
+    (neither is wired today — verified); season-close fail-open error-rate band that fails the
+    season report when exceeded; calendar staleness alarm (no future `calendar_events` beyond
+    N days ⇒ event-stamping is silently off).
+  - **L2 evidence-accrual decision (must pick one)**: accept the ~11-season scoped-verdict
+    timeline (1 L2 bet/scope/season × ≥10-bet minimum, graded one season later), or define
+    pooled/hierarchical lever-wide verdicts (~3 seasons, but must handle differing
+    `coach_config`s), or add cheaper L2 evidence (grading HP proposals against the §2.3
+    Stage-2 replay menu). Also pin ladder level 3's "agreed season count".
+  - **Misc**: S2 margin value (A1); per-table index plan (spine FKs, `fold_start_ts`,
+    (coach, lever), `trades.cycle_id`, (call_type, created_at)); era-0/gate-v0 bootstrap
+    migration incl. back-stamping the 574 kept rows (A7); S4 isolated-instance + dump
+    restore-verification instance (ephemeral Docker pg16 in `ci-homelab.sh`); key rotation
+    (2026-03-24 leak) as a precondition for standing up any new call type;
+    `operator_actions` append-only table decision (record human interventions outside the
+    pre-built slots); provider/tier assignment + cadence numbers per new `call_type`.
 - **→ Code-verification review:** F2 confirmation (instrument SAC rollout-end frequency; query
   the archived dump for `notable_event` distribution); backtest trade semantics
   (`agents/backtest.py` — round-trip vs per-rebalance; where win_rate/profit_factor computed);
   `fold_results` single-writer collapse feasibility; wrapper MDD redefinition to
   equity-fraction (behavior change); trend-window rate-cap correctness; the
   LLM-cannot-write-profiles ownership check; `learner_metrics` per-algo key contracts vs
-  actual SB3 log keys.
+  actual SB3 log keys. **Pre-G1 additions (A25):** per-fold seed-pinning fallback
+  pre-statement — if the review finds pinning infeasible (VecNormalize stats, data appends,
+  library drift), the L2 verdict mechanism falls back to **seed-pair replication** rather than
+  reopening §2.5; risk-penalty fix precondition (A3). **F1 turbulence bug re-triage:** still
+  fixed in Stage 4, but reclassified from "blocks live trading only" to **capture-quality
+  blocker** — it sits in the inference pipeline that produces `inference_cycles`/
+  `cycle_algo_proposals`, so §3.7 capture data collected before the fix is quietly
+  contaminated; fix before paper-trading capture begins.
+
+### §4.15 Pre-G1 amendment log (2026-07-06)
+
+Applied after a four-lens adversarial review (coherence / schema rigor / operational reality /
+blind spots; ~46 findings, **none reopening a locked decision**). Each amendment is inline at
+its section, tagged; this log is the traceability index. Lens key: COH / SCH / OPS / BLD.
+
+| # | Amendment (section) | Source |
+|---|---|---|
+| A1 | S2's "control" = reference season (†), test → `season_results`; margin → G2 (§1.3) | COH |
+| A2 | Editorial: forward refs `backtest_results` → `fold_results` era 1+ (§1.3) | COH |
+| A3 | Risk-penalty-discarded bug owned by §2.11; fix precondition of any L1 harness run | COH |
+| A4 | `training_runs.status`; retry = new attempt (§4.1) | SCH |
+| A5 | `run_type` + `l1_reearn_control` — dormant control arm's capture surface (§4.1) | COH |
+| A6 | Canonical-run rule: highest completed attempt; all views bind to it (§4.1) | SCH |
+| A7 | Era mechanics: creation actor, resolution rule, monotonicity CHECK, bootstrap → G2 (§4.1) | SCH |
+| A7b | `schema_migrations` ledger — 8th registry (§4.1) | SCH/BLD |
+| A8 | `schema_version` key in every structured JSONB payload (§4.2) | SCH |
+| A9 | Bet-metric menu = units-per-metric registry (§4.2/§4.4) | SCH |
+| A10 | `season_results.result_version` (no-UPDATE restored); ensemble `gate_passed`+`gate_components` (§4.3) | SCH |
+| A11 | `fold_results`: surrogate `id`, `seed` denorm, TIMESTAMPTZ fold bounds (§4.3) | SCH/COH |
+| A12 | `training_runs` provenance: `code_version`, `config_hash`/`config_snapshot`, `data_fingerprint` (§4.1) | BLD |
+| A13 | `applied_change` → append-only `intent_applications` sidecar (§4.4) | SCH |
+| A14 | Trade-time horizon type; MT commentary cap ≤1 intent/cycle (§4.4) | COH |
+| A15 | `llm_calls.cycle_id`; identity CHECK matrix for all 8 call_types (§4.4) | COH |
+| A16 | `verdict_id` PK; `horizon_unreachable`; terminal-verdict sweep guarantee (§4.4) | SCH |
+| A17 | Lever-enum inclusion rule stated (§4.4) | COH |
+| A18 | Consolidator-quality view; contradiction dominance ⇒ patterns withheld (§4.4) | BLD |
+| A19 | `v_consolidation_corpus` defined per record type incl. non-run-scoped (§4.6) | COH/SCH |
+| A20 | `deployed_iteration` demoted to derived; per-algo vintage authoritative; trade-time era rule (§4.7) | SCH |
+| A21 | `fill_quality`: `id` PK, `NUMERIC(18,8)` prices (§4.7) | SCH |
+| A22 | `models` artifact + vecnormalize sha256, verified at load (§4.4) | BLD |
+| A23 | S4 criterion 8 (grading completeness); CI canned-consolidator; iter-5 failure path (§4.11) | OPS |
+| A24 | Diagram: `intent_applications`, `cycle_id` edge, PK/registry notes (§4.12) | — |
+| A25 | §4.14 G2/review hand-off additions: grader orchestration + freshness alarm, cutover runbook, corpus backups + Stage 3.5 grants, alerting routes, **L2 evidence-accrual decision**, F1 re-triage, seed fallback, misc | OPS/BLD |
 
 ## §5 — Bug & finding catalogue (running; fix scope varies)
 
@@ -1141,11 +1302,11 @@ Derived surfaces (views, stored nowhere): `v_consolidation_corpus` (§4.6 quaran
 | Epoch logger used PPO-only SB3 keys | project memory (`project_epoch_logger_bug.md`) | **§4.3** — `learner_metrics` per-algo JSONB contract |
 | `_SAFE_DEFAULTS` ≠ `DEFAULT_WEIGHTS` (cold-start silently shifts weights) | C0 §4.2 | Topic 2 (unenumerated lever) |
 | Rolling window 500 steps vs SAC cooldown 20,000 | docs/training inventory | Topic 2 (observability) |
-| Risk penalty silently discarded when reward wrapper activates | `reward-shaping.md` known issue | Topic 2 (lever blast-radius) |
+| Risk penalty silently discarded when reward wrapper activates | `reward-shaping.md` known issue | **§2.11 (A3)** — fix is a precondition of any L1 harness run |
 | `pattern_outcomes` missing UNIQUE(iteration, env_name); Phase B duplicate-pattern risk on retry | docs/training inventory | **Retired — §4.5 (D-T3.6)**: effectiveness is a view; the table (and bug) cease to exist |
 | `pattern_presentations.iteration` NULL for 4,933/9,575 rows | live pg16 | **§4.5** — identity via mandatory FKs only; NULL structurally impossible |
 | `training_epochs` has only a PK index (850k-row seq scans) | live pg16 | **§4.9** (table archived) + §4.3 (new schema indexes via `run_pk`) |
 | JSON-as-text columns; `last_confirmed_at` + date columns as text; mixed timestamp/timestamptz | live pg16 | **§4.2 (D-T3.2)** — JSONB + DATE/TIMESTAMPTZ conventions across all new tables |
-| F1 turbulence column queried but doesn't exist (silent 0.0) | handoff Group F | **Out of scope** (Stage 4; blocks live trading) |
+| F1 turbulence column queried but doesn't exist (silent 0.0) | handoff Group F | **Out of scope** (Stage 4) — but **re-triaged as a capture-quality blocker** (A25): fix before §3.7 paper-trading capture begins |
 | Shadow promotion writes flat `models/active/{env}/`; live trader reads `{env}/{algo}/` | `validation-promotion.md` | **Out of scope** (record only) |
 | Live-trader model cache never invalidated (restart required) | `validation-promotion.md` | **Out of scope** (record only) |
