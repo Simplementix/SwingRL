@@ -1,14 +1,16 @@
 # Training-System Redesign (Stage 2.R) — Design Spec
 
-> **Status: SCOPING COMPLETE — awaiting full-spec G1 sign-off.** Written incrementally; each
-> topic section was locked during the Fable scoping sessions and committed as it closed.
+> **Status: G1 SIGNED OFF 2026-07-07** (full-spec end-to-end review, guided read). Written
+> incrementally; each topic section was locked during the Fable scoping sessions and
+> committed as it closed.
 > **§1 (Goal): LOCKED 2026-06-12.** **§2 (Topic 2): LOCKED 2026-07-06.** **§3 (Topic 2.5,
 > Meta-Trader): LOCKED 2026-07-06.** **§4 (Topic 3, data model): LOCKED 2026-07-06.**
-> **Pre-G1 amendments A1–A25 applied 2026-07-06 after a four-lens adversarial review — log:
-> §4.15.** **All topics locked — spec ready for full G1 sign-off.**
+> **Amendments: A1–A25 applied 2026-07-06 after a four-lens adversarial review; A26 applied
+> 2026-07-07 during the G1 read — log: §4.15.**
+> **Next: G2 implementation plan (writing-plans) → targeted code-verification review.**
 > **Kickoff:** `.planning/REDESIGN_SCOPING_KICKOFF.md` ·
 > **Tracker:** `.planning/V1.1_EXECUTION_PLAN.md` ▶ Stage 2.R
-> **Gates:** topic-level approval in conversation → full-spec G1 sign-off when all topics close
+> **Gates:** topic-level approval in conversation → full-spec G1 sign-off ✅ (2026-07-07)
 > → implementation plan (G2) → targeted code-verification review → only then run/replace the
 > Stage 2 runbook (A/B/D/E).
 
@@ -1234,6 +1236,21 @@ links to `season_results` apply per `result_version` row (A10).
     pooled/hierarchical lever-wide verdicts (~3 seasons, but must handle differing
     `coach_config`s), or add cheaper L2 evidence (grading HP proposals against the §2.3
     Stage-2 replay menu). Also pin ladder level 3's "agreed season count".
+    **Preferred direction (A26, 2026-07-07, G1 read — user-aligned):** layered counting.
+    (1) Pooled lever-wide verdicts (all 6 (env, algo) scopes, ~6 grades/season → 10-bet
+    minimum in ~2–3 seasons) power ladder **levels 2–3 only** — bench/remove decisions
+    arrive fast; an unhelpful coach is never carried ~11 seasons. (2) Per-scope tallies
+    continue underneath and remain the **sole basis for level-1 scoped demotions and any
+    authority expansion/re-earn** — asymmetric burden of proof: pooled evidence may only
+    *reduce* authority, never expand it. (3) A scripted per-scope **outlier alarm** below
+    the ≥10-bet threshold (statistically lopsided early record, e.g. ≤1 correct of 5 →
+    Discord escalation, human review only, no automatic action) covers the
+    one-bad-scope-hides-in-the-pool gap. (4) Pooling **stratifies by `coach_config`**
+    (the D-T3.5 stamp) — handles staircase heterogeneity (season-6 bare vs season-7
+    with-patterns). (5) Replay-menu grading of HP proposals is **excluded from outcome
+    verdicts** (different evidence kind; at most early-warning, decided at G2). G2
+    finalizes the numbers (pool thresholds, alarm trigger, level-3 season count) against
+    real bet volumes; D-T2.9's ≥10-bet minimum and script-only grading are unchanged.
   - **Misc**: S2 margin value (A1); per-table index plan (spine FKs, `fold_start_ts`,
     (coach, lever), `trades.cycle_id`, (call_type, created_at)); era-0/gate-v0 bootstrap
     migration incl. back-stamping the 574 kept rows (A7); S4 isolated-instance + dump
@@ -1261,6 +1278,8 @@ links to `season_results` apply per `result_version` row (A10).
 Applied after a four-lens adversarial review (coherence / schema rigor / operational reality /
 blind spots; ~46 findings, **none reopening a locked decision**). Each amendment is inline at
 its section, tagged; this log is the traceability index. Lens key: COH / SCH / OPS / BLD.
+Amendments from **A26** onward were added during the G1 read (dated inline, same
+explicit-approval discipline; source column = G1).
 
 | # | Amendment (section) | Source |
 |---|---|---|
@@ -1290,6 +1309,7 @@ its section, tagged; this log is the traceability index. Lens key: COH / SCH / O
 | A23 | S4 criterion 8 (grading completeness); CI canned-consolidator; iter-5 failure path (§4.11) | OPS |
 | A24 | Diagram: `intent_applications`, `cycle_id` edge, PK/registry notes (§4.12) | — |
 | A25 | §4.14 G2/review hand-off additions: grader orchestration + freshness alarm, cutover runbook, corpus backups + Stage 3.5 grants, alerting routes, **L2 evidence-accrual decision**, F1 re-triage, seed fallback, misc | OPS/BLD |
+| A26 | §4.14 L2 evidence-accrual: preferred direction — layered pooling (pooled → ladder L2/L3 + reduce-only; per-scope → L1 + authority expansion; outlier alarm; `coach_config` stratification; option 3 excluded from outcome verdicts); numbers → G2 (2026-07-07, G1 read) | G1 |
 
 ## §5 — Bug & finding catalogue (running; fix scope varies)
 
