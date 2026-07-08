@@ -6,7 +6,8 @@
 > **§1 (Goal): LOCKED 2026-06-12.** **§2 (Topic 2): LOCKED 2026-07-06.** **§3 (Topic 2.5,
 > Meta-Trader): LOCKED 2026-07-06.** **§4 (Topic 3, data model): LOCKED 2026-07-06.**
 > **Amendments: A1–A25 applied 2026-07-06 after a four-lens adversarial review; A26 applied
-> 2026-07-07 during the G1 read — log: §4.15.**
+> 2026-07-07 during the G1 read; A27–A29 applied 2026-07-07 during the G2 Plan A walkthrough —
+> log: §4.15.**
 > **Next: G2 implementation plan (writing-plans) → targeted code-verification review.**
 > **Kickoff:** `.planning/REDESIGN_SCOPING_KICKOFF.md` ·
 > **Tracker:** `.planning/V1.1_EXECUTION_PLAN.md` ▶ Stage 2.R
@@ -242,6 +243,16 @@ by nothing live.
   patterns withheld from the prompt) → iter 7 **L2 + regenerated patterns** (measures L3's
   marginal value) → iter 8+ decided by the track record and the §2.7 ladder.
 - **S1 amendment** recorded (see §1.3 footnote).
+- **Era-1 training environment — live parity (A28, 2026-07-07; full definition → Plan B):**
+  era-1 models train in an environment matching what they will face live: (a) **real
+  turbulence values** in the observation slot — era-0 models trained with that slot frozen
+  at 0.0 (bug F1b), so live inference zeroes the slot for them (`zero_turbulence_obs`
+  config flag); the flag retires when era-1 models deploy; (b) **live-parity circuit
+  breakers** inside the training env, so policies experience halts in training exactly as
+  they will in production; (c) turbulence enters the observation as **decomposed features**
+  (equity: magnitude + correlation surprise as percentile-ranks; crypto: signed volatility
+  z-score + signed correlation change), never the raw composite — per the adopted method
+  review (`.planning/research/turbulence-method-review.md`).
 
 ### §2.6 Observability (D-T2.7, D-T2.11; pillar 4)
 
@@ -529,11 +540,13 @@ written by training code.
 
 | Field | Type | Notes |
 |---|---|---|
-| `gate_version` | `SMALLINT` PK | Edition number |
+| `gate_version_id` | `SMALLINT` PK | **Surrogate key (A29)** — the version number cannot be the PK: per-fold v0 and ensemble v0 would collide |
 | `gate_type` | `TEXT` CHECK (`per_fold`,`ensemble`) | Both gates versioned here |
+| `version_number` | `SMALLINT` NOT NULL | Edition number within its `gate_type` |
 | `definition` | `JSONB` | Full rules machine-readable: each §2.8 requirement with per-env / per-(env,algo) thresholds |
 | `derivation_evidence` | `TEXT` | Pointer to the replay run / spec section justifying thresholds |
 | `approved_by`, `approved_at` | `TEXT`, `TIMESTAMPTZ` | No self-tuning (D-T2.10) |
+| UNIQUE(`gate_type`, `version_number`) | | Editions stay unique per gate type (A29) |
 
 **`eras`** — the comparability periods. A gate change (or any scoring-comparability break, e.g.
 a CPS formula fix) starts a new era; **cross-era CPS values are never compared**.
@@ -542,7 +555,7 @@ a CPS formula fix) starts a new era; **cross-era CPS values are never compared**
 |---|---|---|
 | `era_id` | `SMALLINT` PK | |
 | `reason` | `TEXT` | What started it |
-| `gate_version_per_fold`, `gate_version_ensemble` | `SMALLINT` → `gate_versions` | Editions in force this era |
+| `gate_version_per_fold`, `gate_version_ensemble` | `SMALLINT` → `gate_versions (gate_version_id)` | Editions in force this era (A29 surrogate; column names unchanged) |
 | `first_iteration` | `SMALLINT` | Seasons ≥ this belong to the era |
 | `started_at` | `TIMESTAMPTZ` | |
 
@@ -617,7 +630,7 @@ plain/rich two-writer split collapses — change-site in §4.14).
 | `id` | `BIGINT` identity PK | — | Surrogate PK for polymorphic addressability (A11) |
 | `run_pk` | `BIGINT` NOT NULL → `training_runs`, **UNIQUE** | — | One box score per run; read-time dedup dies |
 | `era_id` | `SMALLINT` NOT NULL → `eras` | — | Explicit stamp |
-| `gate_version` | `SMALLINT` NOT NULL → `gate_versions` | — | Explicit stamp |
+| `gate_version_id` | `SMALLINT` NOT NULL → `gate_versions (gate_version_id)` | — | Explicit stamp (A29 surrogate) |
 | `seed` | `INTEGER` NOT NULL | — | Denorm from the spine — honors D-T2.11's "pinned seed on every fold record" as written (A11) |
 | `fold_role` | `TEXT` CHECK (`neutral`,`chronic_failure`,`disaster`,…) | enum | §2.3 fold selection queries this |
 | `fold_start_ts` / `fold_end_ts` | `TIMESTAMPTZ` | UTC | Same-fold cross-season joins (D-T2.5); TIMESTAMPTZ not DATE — crypto 4H fold boundaries fall intra-day (A11) |
@@ -635,6 +648,7 @@ plain/rich two-writer split collapses — change-site in §4.14).
 | `gate_components` | `JSONB` | declared per key | …and the working: each §2.8 requirement with threshold + actual + pass — every verdict auditable and replayable |
 | `hmm_p_bull`, `hmm_p_bear` | `DOUBLE PRECISION` | probability 0–1 | Regime context (D-T1.3) |
 | `vix_mean` | `DOUBLE PRECISION` | index points | |
+| `turbulence_mean` | `DOUBLE PRECISION` | score (Mahalanobis distance) | Fold-window regime context alongside `hmm_*`/`vix_mean` (A27) — era-1 comparability with the trade-time stamp (§4.7) |
 | `created_at` | `TIMESTAMPTZ` | UTC | |
 
 **`season_results`** (replaces `iteration_results`) — one row per (iteration, environment,
@@ -646,7 +660,7 @@ columns (obsolete per D-T2.5) and `memory_enabled` (subsumed by `coach_config`).
 |---|---|---|---|
 | `iteration_number`, `environment`, `scope`, `result_version` | keys, UNIQUE together | — | **Recomputes and season re-runs are new `result_version` rows — never UPDATEs** (A10); the canonical row is the highest version, computed from canonical runs (A6) |
 | `era_id` | `SMALLINT` → `eras` | — | Explicit stamp |
-| `gate_version_per_fold`, `gate_version_ensemble` | `SMALLINT` → `gate_versions` | — | Explicit stamps |
+| `gate_version_per_fold`, `gate_version_ensemble` | `SMALLINT` → `gate_versions (gate_version_id)` | — | Explicit stamps (A29 surrogate) |
 | `gate_passed`, `gate_components` | `BOOLEAN`, `JSONB` | declared per key | **Ensemble-scope rows: the §2.8 ensemble-gate verdict + working** — the ensemble gate's home; D-T3.3's "every gate verdict auditable" now holds for both gates (A10) |
 | `coach_config` | `JSONB` NOT NULL | — | **The staircase stamp**: `{"l1": "benched", "l2": "live", "patterns_in_prompt": false, "reference_season": false}` — what keeps iter 6 vs 7 attributable forever (D-T2.6) |
 | `cps_v1`, `cps_v2`, `cps_v3` | `DOUBLE PRECISION` | score (v3 nullable) | |
@@ -909,6 +923,7 @@ Capture starts at **paper trading** (D-MT.7 cold-start avoidance).
 | `deployed_iteration` | `SMALLINT` | season | **Derived/display convenience only** (A20): iteration of the newest active model. Shadow promotion is per-model, so the blend can mix vintages — the **authoritative** per-algo vintage is `cycle_algo_proposals.model_id → models → run_pk`. Trade-time era rule: the era in force at `cycle_ts` (max `started_at ≤ cycle_ts`) governs verdict exclusion |
 | `hmm_p_bull`, `hmm_p_bear` | `DOUBLE PRECISION` | probability 0–1 | §3.7.2 regime stamp at decision time |
 | `vix` | `DOUBLE PRECISION` | index points | |
+| `turbulence` | `DOUBLE PRECISION` | score (Mahalanobis distance) | **A27:** decision-time sensor value, read out **before** the F1b zeroing of the era-0 observation slot — capture always sees the real value |
 | `active_event_ids` | `BIGINT[]` | → `calendar_events` | The hurricane stamp |
 | `blended_actions` | `JSONB` | per-symbol `target_weight_frac` | Post-blend, pre-risk-layer |
 | `created_at` | `TIMESTAMPTZ` | — | |
@@ -937,7 +952,7 @@ script from proposals-vs-blend geometry (formula → Meta-Trader spec).
 | `window_start`, `window_end` | `TIMESTAMPTZ` | **Materialized at ingest** from config in force — stamps stay stable if config changes later (same reasoning as gate eras) |
 | `importance` | `TEXT` CHECK (`high`,`medium`,`low`) | Feed data; *significance* is the Meta-Trader's §3.3.3 interpretation |
 | `source`, `ingested_at` | `TEXT`, `TIMESTAMPTZ` | |
-| UNIQUE(`event_type`,`symbol`,`scheduled_at`) | | Idempotent re-ingestion |
+| UNIQUE NULLS NOT DISTINCT (`event_type`,`symbol`,`scheduled_at`) | | Idempotent re-ingestion. NULLS NOT DISTINCT (pg16) is load-bearing: `symbol` is NULL for all current macro types, and default SQL UNIQUE never treats two NULLs as equal — a plain UNIQUE would admit duplicate macro rows (A27 editorial rider) |
 
 `event_outcomes`: `(event_id → calendar_events, payload JSONB` (e.g. `{"consensus": 3.2,
 "actual": 3.7, "unit": "cpi_yoy_pct"}`)`, recorded_at)` — post-release result as an appended
@@ -1278,8 +1293,9 @@ links to `season_results` apply per `result_version` row (A10).
 Applied after a four-lens adversarial review (coherence / schema rigor / operational reality /
 blind spots; ~46 findings, **none reopening a locked decision**). Each amendment is inline at
 its section, tagged; this log is the traceability index. Lens key: COH / SCH / OPS / BLD.
-Amendments from **A26** onward were added during the G1 read (dated inline, same
-explicit-approval discipline; source column = G1).
+Amendments from **A26** onward postdate the four-lens review (dated inline, same
+explicit-approval discipline; source column = G1 for the G1 read, G2 for the Plan A
+walkthrough).
 
 | # | Amendment (section) | Source |
 |---|---|---|
@@ -1310,6 +1326,9 @@ explicit-approval discipline; source column = G1).
 | A24 | Diagram: `intent_applications`, `cycle_id` edge, PK/registry notes (§4.12) | — |
 | A25 | §4.14 G2/review hand-off additions: grader orchestration + freshness alarm, cutover runbook, corpus backups + Stage 3.5 grants, alerting routes, **L2 evidence-accrual decision**, F1 re-triage, seed fallback, misc | OPS/BLD |
 | A26 | §4.14 L2 evidence-accrual: preferred direction — layered pooling (pooled → ladder L2/L3 + reduce-only; per-scope → L1 + authority expansion; outlier alarm; `coach_config` stratification; option 3 excluded from outcome verdicts); numbers → G2 (2026-07-07, G1 read) | G1 |
+| A27 | Turbulence capture: `inference_cycles.turbulence` decision-time pre-zeroing stamp (§4.7); `fold_results.turbulence_mean` fold regime context (§4.3); editorial: `calendar_events` UNIQUE NULLS NOT DISTINCT (§4.7) (2026-07-07, G2 Plan A walkthrough) | G2 |
+| A28 | Era-1 training-env live-parity definition pointer — real turbulence obs, live-parity breakers, decomposed features per adopted memo; full definition → Plan B (§2.5) (2026-07-07) | G2 |
+| A29 | `gate_versions` surrogate PK `gate_version_id` + `version_number` + UNIQUE(gate_type, version_number); FK ripple to `eras`, `fold_results`, `season_results` (§4.1, §4.3) (2026-07-07, signed off in-session) | G2 |
 
 ## §5 — Bug & finding catalogue (running; fix scope varies)
 
