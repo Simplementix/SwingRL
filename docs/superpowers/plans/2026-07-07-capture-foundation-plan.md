@@ -4,10 +4,15 @@
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps
 > use checkbox (`- [ ]`) syntax for tracking.
 
-> **Status: DRAFT — awaiting user detailed review (G2 gate).**
+> **Status: WALKTHROUGH-REVIEWED (2026-07-07); AMENDED 2026-07-11 after the
+> execution-path code review — now 21 implementation tasks (1–17 plus A–D, after the
+> Task 0 gate).**
+> Review findings + user-approved disposition:
+> `docs/superpowers/reviews/2026-07-07-execution-path-code-review.md` and the
+> "Code-review disposition" section below.
 > Companion: Plan B (`2026-07-07-training-redesign-plan.md`, written after Plan A is
 > settled). Spec: `docs/superpowers/specs/2026-06-12-training-system-redesign-design.md`
-> (G1 signed off; amendments A1–A28).
+> (G1 signed off; amendments A1–A29).
 
 **Goal:** Stand up the durable capture layer for paper trading — migration machinery,
 identity-spine subset, trade-time record tables (§3.7 / §4.7), the F1 + F1b turbulence
@@ -56,10 +61,11 @@ plain-English rule):
 
 ## Global Constraints
 
-- **Execution order gate:** Tasks 6+ (any change under `src/swingrl/execution/`) may only
-  be implemented **after the execution/inference-path code review** (user-requested)
-  has run and its findings are dispositioned. Tasks 1–5 are schema/tooling and may start
-  once this plan is approved.
+- **Execution order gate — SATISFIED 2026-07-11:** the execution/inference-path code
+  review ran (2026-07-07/08, four agents) and its findings were dispositioned by the user
+  (2026-07-11) — see the "Code-review disposition" section below. New ordering gates from
+  the disposition: **Tasks A and B complete before capture Tasks 9–10; Tasks C and D
+  complete before Task 16.** Tasks 1–5 remain free to start first.
 - **Key rotation: COMPLETED (user-confirmed 2026-07-07).** Task 12's runtime is
   unblocked in principle; the flag still defaults false until Task 16's go/no-go. Task 15
   Step 2 verifies the old keys were *revoked*, not just replaced.
@@ -112,16 +118,42 @@ plain-English rule):
 | P-A5 | Decision price for `fill_quality` = the `adapter.get_current_price()` value used for sizing (`pipeline.py:258`) | High | Execution-path review confirms what `get_current_price` returns per broker (Alpaca: quote vs last trade; sim: bar source); Task 10 test asserts captured `decision_price_usd` == the sizing price of that same order |
 | P-A6 | Release times (FRED gives dates only): CPI/NFP/GDP print at 08:30 ET; FOMC statement at 14:00 ET | High | Task 11: spot-check one historical print per event type against the publishing agency's archive before hardcoding; times are config per event_type so corrections are one-line |
 
+## Code-review disposition (2026-07-11, user-approved)
+
+The execution-path review (findings + evidence:
+`docs/superpowers/reviews/2026-07-07-execution-path-code-review.md`) found 2 critical +
+5 high defects. User-approved disposition — finding labels (C/H/M/L = severity) are
+defined in the review doc's glossary:
+
+| Destination | Findings |
+|---|---|
+| **Task A — Real portfolio valuation** | C1 (circular snapshots — breakers can never trip), M4 (cash math), global-breaker high-water mark in-memory |
+| **Task B — Fill lifecycle + schedule** | C2 (fire-and-forget fills + after-close cron → phantom $0 trades), M11 (FillResult has no timestamps), M10-equity (alert on record-after-fill failure) |
+| **Task C — Risk-layer honesty** | H4 (post-halt ramp never enforced), M1 (breaker trips never alerted), H5-minimal (crypto stop-loss: correct book + alert + record; auto-sell stays deferred, documented) |
+| **Task D — Model-loading hygiene** | H2 (promotion layout mismatch), H3 (cache never invalidated + empty-cache poison), M5 (blend crash/drift), M7 (silent raw obs on missing VecNormalize), M3 (emergency-sell ghosts), hardcoded-value sweep |
+| **Existing-task folds** | Task 6: M6 (single bounded turbulence compute). Task 9: M2-capture, canonical timestamp, early-exit capture, dry-run tag. Task 10: P-A5 resolution, M11 consumption. Task 13: sim-fidelity gap list, IEX-feed check, slippage-model outcome decision |
+| **Plan B inputs** | M8 (DDL type divergence → cutover runbook), M9 (unseeded eval env → seed-pinning task), A3 (risk penalty discarded — confirmed live; L1-harness precondition), all 11 training-side verdicts (review doc §6) |
+| **Documented deferrals** | Crypto stop auto-sell execution; crypto reconciliation (only meaningful against real Binance) |
+
+**User decisions locked with the disposition:** equity cycle moves to **~15:45 ET (before
+close, weekdays, market-calendar-gated)**; fill confirmation = short post-submit polling
+(follows from the timing choice — no persistent order stream needed at daily cadence).
+
+**Ordering:** Tasks A/B before Tasks 9–10 (capture must not record fictions); Tasks C/D
+before Task 16 (the go/no-go must test working breakers).
+
 ---
 
 ### Task 0: Preconditions gate (no code)
 
 **Files:** none.
 
-- [ ] **Step 1:** Confirm the execution/inference-path code review has been run and its
-  findings dispositioned (separate session; scope: `execution/pipeline.py`, adapters,
-  `fill_processor.py`, `risk_manager.py`, `order_validator.py`, model loading/caching,
-  `scheduler/jobs.py` cycle wrappers). Tasks 6–16 are blocked until this is checked.
+- [x] **Step 1: DONE 2026-07-11.** The execution/inference-path code review ran
+  (2026-07-07/08; findings doc:
+  `docs/superpowers/reviews/2026-07-07-execution-path-code-review.md`) and the user
+  approved the disposition (2026-07-11): 2 critical + 5 high findings become Tasks A–D
+  below; folds into Tasks 6/9/10/13; the rest → Plan B inputs or documented deferrals.
+  Remaining gates: Tasks A/B before Tasks 9–10; Tasks C/D before Task 16.
 - [x] **Step 2:** Key rotation — **COMPLETED, user-confirmed 2026-07-07.** Task 15
   Step 2 still verifies the old keys were revoked.
 - [ ] **Step 3:** Create branch `swingrl/2.R-A-capture-foundation` from
@@ -706,6 +738,13 @@ insert spine row (`fold_number = -1`, `code_version = 'unknown_era0'`,
   same `compute`/`compute_series`/`min_warmup` interface (drop-in).
 - Consumes: `BaseTurbulenceCalculator.compute_series(returns) -> np.ndarray` + `min_warmup`
   (`features/turbulence.py:30,47`) — verified interface.
+- **Review fold (2026-07-11, M6):** turbulence is computed **once per cycle** and the value
+  reused for both the halt check and the observation (today: two divergent computations,
+  one via a consume-once cache — `features/pipeline.py:557–559` — the other a recompute);
+  the obs-path recompute's `SELECT ... FROM ohlcv_daily WHERE date <= X` gets a lower bound
+  from the baseline-lookback config (today it scans the entire history every cycle,
+  `features/pipeline.py:565–572,607–613`). The single per-cycle value is what Task 9
+  captures.
 
 - [ ] **Step 1: Failing tests** (6a/6b tests per the sub-task notes above, plus:)
 
@@ -818,6 +857,161 @@ Delete the broken SQL and the bare `except` (narrow to `DataError`/`Exception` w
   variance here, STOP — F1b's premise is wrong for that model; escalate to the user.**
 - [ ] **Step 4:** Run tests — Expected: PASS
 - [ ] **Step 5: Commit** — `git commit -m "fix(2.R-A): F1b — zero turbulence obs slot for era-0 models; keep real value for capture"`
+
+### Task A: Real portfolio valuation (review C1, M4; global-breaker high-water mark)
+
+> Fixes the review's C1: `portfolio_snapshots.total_value` is the previous snapshot copied
+> forward (`position_tracker.py:47–72,162–196`), so drawdown/daily-loss breakers and the
+> emergency trigger compare against a value that never moves. Prerequisite for Task 16's
+> breaker proof and for any meaningful paper results. **Complete before Tasks 9–10.**
+
+**Files:**
+- Modify: `src/swingrl/execution/position_tracker.py` (`get_portfolio_value`,
+  `record_snapshot`, `get_daily_pnl`)
+- Modify: `src/swingrl/execution/pipeline.py` (snapshot block ~`:330–335`)
+- Modify: `src/swingrl/execution/risk/circuit_breaker.py` (global high-water mark)
+- Test: `tests/execution/test_position_tracker.py` (extend), `tests/execution/`
+
+**Interfaces:**
+- Produces: `PositionTracker.compute_portfolio_value(env: str, prices: dict[str, float])
+  -> float` = Σ(position qty × current price) + cash; **cash is derived, never stored as a
+  running balance**: initial capital (config `capital.{env}_usd`) + Σ signed fill flows −
+  commissions from `trades` (append-only-friendly; one SQL aggregate). `daily_pnl` =
+  today's value − last prior-day snapshot value. Global breaker high-water mark read from
+  `MAX(total_value)` over persisted snapshots, not process memory.
+- Consumes: the cycle's already-fetched `get_current_price` values (no extra API calls —
+  pass the price map from `execute_cycle`).
+
+- [ ] **Step 1: Failing tests** — (a) value moves when position prices move (no fills);
+  (b) cash reflects buys negative / sells positive, commissions deducted; (c) daily_pnl
+  compares against the previous *day*, not the previous cycle; (d) drawdown check trips
+  at the configured threshold with a genuinely fallen portfolio value; (e) global HWM
+  survives a simulated restart (re-read from snapshots).
+- [ ] **Step 2:** Run — Expected: FAIL
+- [ ] **Step 3: Implement.** Replace the `pipeline.py:330–335` snapshot block: compute
+  value from the cycle's price map + derived cash; drop the broken
+  `cash = value − Σ|qty×price|` line (M4). Keep snapshots append-only.
+- [ ] **Step 4:** Run tests — Expected: PASS
+- [ ] **Step 5: Commit** — `git commit -m "fix(2.R-A): mark-to-market portfolio valuation — breakers measure reality (review C1/M4)"`
+
+### Task B: Fill lifecycle + schedule (review C2, M11; market calendar)
+
+> Fixes the review's C2: submits are fire-and-forget (`alpaca_adapter.py:124–140`), the
+> equity cron fires at 16:15 ET after close, 7 days/week (`main.py:73–81`), and unfilled
+> orders are recorded as $0 trades that zero the position's price and trigger re-buys.
+> **User decisions (2026-07-11): cycle → ~15:45 ET before close; polling, not websocket.**
+> **Complete before Tasks 9–10.**
+
+**Files:**
+- Modify: `scripts/main.py` (equity cron from config), `src/swingrl/config/schema.py`
+  (`equity.cycle_time_et: str = "15:45"`, `equity.market_calendar_gate: bool = true`),
+  `config/swingrl.yaml` + `config/swingrl.prod.yaml.example`
+- Modify: `src/swingrl/execution/types.py` (`FillResult` + `status:
+  Literal["filled","pending","rejected"]`, `submitted_at`, `filled_at`)
+- Modify: `src/swingrl/execution/adapters/alpaca_adapter.py` (post-submit poll),
+  `src/swingrl/execution/pipeline.py` (only process filled results),
+  `src/swingrl/execution/fill_processor.py` (reject qty=0/price=0 defensively)
+- Test: `tests/execution/test_alpaca_adapter.py`, `tests/execution/test_fill_processor.py`
+
+**Interfaces:**
+- Produces: equity cycle at 15:45 ET **weekdays** (`day_of_week="mon-fri"`), gated by the
+  Alpaca clock API (`get_clock`): market closed/holiday → skip + info log; clock call
+  fails → skip + alert (fail-safe: when in doubt, don't trade). `submit_order` polls order
+  status after submit (bounded: `order_fill_timeout_s: int = 60`, poll every 2s); filled →
+  real fill price + `filled_at`; unfilled at timeout → **cancel + alert + return
+  status="pending" — never a $0 trades row** (`fill_processor.process` drops non-filled
+  results and `_record_trade` raises `DataError` on qty=0/price=0 as a backstop).
+  M10-equity: if `process()` raises after a real fill, alert critical (trade executed but
+  unrecorded).
+- Consumes: Task 10 reads `submitted_at`/`filled_at` for `time_to_fill_ms`;
+  `binance_sim` fills stay synchronous — it sets `status="filled"` + both timestamps.
+
+- [ ] **Step 1: Failing tests** — (a) submit that returns no fill → poll loop queried,
+  then cancel + status="pending", no trades row; (b) synchronous fill → status="filled",
+  timestamps set, trade recorded with the real price; (c) market-closed clock response →
+  cycle skipped, no orders; (d) `_record_trade` raises `DataError` on a zero-quantity fill;
+  (e) cron registration reads `equity.cycle_time_et` (no hardcoded hour).
+- [ ] **Step 2:** Run — Expected: FAIL
+- [ ] **Step 3: Implement.** Also verify at implementation (review honest-gap): OHLCV bar
+  freshness at 15:45 ET — the cycle logs a warning when the latest `ohlcv_daily` bar is
+  older than the previous trading day (data-freshness guard, log-only in this task).
+- [ ] **Step 4:** Run tests — Expected: PASS
+- [ ] **Step 5: Commit** — `git commit -m "fix(2.R-A): honest fill lifecycle + 15:45 ET market-gated cycle (review C2/M11)"`
+
+### Task C: Risk-layer honesty (review H4, M1, H5-minimal)
+
+> Post-halt ramp capacity is logged but never applied (`risk_manager.py:182–192`); breaker
+> trips/auto-resumes are never alerted (`circuit_breaker.py:189–208,129–132`); the crypto
+> stop-poller only logs, and against the wrong book (`stop_polling.py:128` BTCUSD vs fills
+> on BTCUSDT). **Complete before Task 16.**
+
+**Files:**
+- Modify: `src/swingrl/execution/risk_manager.py`, `src/swingrl/execution/risk/circuit_breaker.py`
+- Modify: `src/swingrl/execution/stop_polling.py`
+- Modify: `scripts/main.py` (inject `Alerter` into breakers/stop-poller)
+- Test: `tests/execution/test_risk_manager.py`, `tests/execution/test_circuit_breaker.py` (extend)
+
+**Interfaces:**
+- Produces: RAMPING state actually scales orders —
+  `dataclasses.replace(order, dollar_amount=order.dollar_amount * capacity_frac)` before
+  validation; Discord alert on **every** breaker trip (env, global, turbulence) and on
+  auto-resume, with state + trigger value in the embed; `stop_polling` reads config
+  symbols verbatim (same USDT book as fills), and on breach: Discord alert + one
+  `circuit_breaker_events`-style DB record (append-only). **Auto-sell on stop breach
+  remains out of scope — documented in the module docstring with the risk statement**
+  (paper-trading positions are not auto-protected; revisit before live).
+- Consumes: `Alerter` (wired in `scripts/main.py:248–255`, verified).
+
+- [ ] **Step 1: Failing tests** — (a) RAMPING at 25% halves-then-quarters a $1,000 order
+  to $250 before the validator sees it; (b) breaker trip calls `alerter.send_alert`;
+  (c) auto-resume alerts; (d) stop-poller queries the configured symbol string unchanged;
+  (e) stop breach writes the DB record and alerts.
+- [ ] **Step 2:** Run — Expected: FAIL
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4:** Run tests — Expected: PASS
+- [ ] **Step 5: Commit** — `git commit -m "fix(2.R-A): enforce ramp capacity; alert breaker trips; crypto stops on the right book (review H4/M1/H5)"`
+
+### Task D: Model-loading hygiene (review H2, H3, M5, M7, M3 + hardcode sweep)
+
+> Promotion writes a flat layout the loader never reads (`lifecycle.py:102–186` vs
+> `pipeline.py:364–365`); the model cache is never invalidated and caches empty forever
+> (`pipeline.py:354–355,407`); blending crashes or silently drifts on partial loads
+> (`ensemble.py:114`); missing VecNormalize silently feeds raw observations
+> (`pipeline.py:379,492–496`); emergency crypto sells leave ghost rows and no trade record
+> (`binance_sim.py:143–190`, `emergency.py:194,286–287`). **Complete before Task 16.**
+
+**Files:**
+- Create: `src/swingrl/execution/model_paths.py` (single source of the layout)
+- Modify: `src/swingrl/execution/pipeline.py` (`_load_models`, min-order constant),
+  `src/swingrl/shadow/lifecycle.py`, `src/swingrl/shadow/promoter.py`,
+  `src/swingrl/execution/ensemble.py`, `src/swingrl/execution/adapters/binance_sim.py`,
+  `src/swingrl/monitoring/emergency.py`, `src/swingrl/config/schema.py` (if
+  `equity.min_order_usd` needs surfacing)
+- Test: `tests/execution/test_model_loading.py`, `tests/shadow/` (extend)
+
+**Interfaces:**
+- Produces: `active_model_paths(models_dir: Path, env: str, algo: str) ->
+  tuple[Path, Path]` (model.zip, vec_normalize.pkl) used by loader, lifecycle
+  promote/archive/rollback (which now move **both** files per-algo), and
+  `_verify_deployment`; cache keyed by artifact mtimes — changed mtime or previously-empty
+  cache → reload; ensemble weights renormalized over actually-loaded algos (missing
+  `model_metadata` row → warn + equal-share, never KeyError); missing/failed VecNormalize
+  → **skip that algo + alert** (fail closed, per A22 direction); `emergency_sell` routes
+  through `fill_processor` (trades row + position DELETE — no zero-qty ghosts; tier-4
+  verification counts only `quantity > 0`); `$5` literal → `config.equity.min_order_usd`;
+  `1/3` → named `DEFAULT_ENSEMBLE_WEIGHT` constant.
+- Consumes: Task 5's `models` table is unaffected (disk layout only).
+
+- [ ] **Step 1: Failing tests** — (a) promote → loader finds the new model at the per-algo
+  path incl. vec_normalize; (b) touching model.zip mtime busts the cache; empty first load
+  is retried next cycle; (c) 2-of-3 models loaded → weights renormalize to sum 1.0;
+  (d) missing vec_normalize.pkl → algo excluded + alert, cycle proceeds with the rest;
+  (e) emergency sell → trades row written, position row deleted, tier-4 reports
+  all_closed=True; (f) min order honors config.
+- [ ] **Step 2:** Run — Expected: FAIL
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4:** Run tests — Expected: PASS
+- [ ] **Step 5: Commit** — `git commit -m "fix(2.R-A): unified model layout + cache invalidation + fail-closed loading (review H2/H3/M5/M7/M3)"`
 
 ### Task 8: V003 — trade-time tables (§4.7 + A27)
 
@@ -936,6 +1130,18 @@ CREATE TABLE event_outcomes (
     — public wrapper over `_get_hmm_probs` (`features/pipeline.py:465–487`) + VIX from
     `_get_macro_array` (`:414–463`, element 0 = `VIXCLS`).
 - Consumes: V003 tables; Task 7's `turbulence_at_decision`; Task 5's `models` rows.
+- **Review folds (2026-07-11):** (a) ONE canonical `cycle_ts` captured at cycle start and
+  reused everywhere (today `execute_cycle` calls `datetime.now(UTC)` several times);
+  (b) **early-exit cycles still write their `inference_cycles` row** with a halt/skip
+  reason (CB halt, turbulence halt, degraded features, NaN obs, zero portfolio —
+  `pipeline.py:151–242` exits) — otherwise halted cycles are invisible to capture;
+  (c) sub-minimum-delta skips (M2, `pipeline.py:252–253`) are recorded on the cycle
+  payload (per-symbol skip reason) so "model signaled, order too small" is
+  distinguishable from "model held"; (d) rows carry a `dry_run` tag (the `run_cycle.py`
+  CLI is a second writer process); (e) no shared mutable per-cycle state on the pipeline
+  object — equity and crypto cycles can overlap; (f) HMM/VIX values come from
+  `regime_snapshot`, turbulence from Task 6's single per-cycle value — never a re-call of
+  `compute_turbulence` (consume-once cache makes a third computation inconsistent).
 
 - [ ] **Step 1: Failing tests** — with `make_mock_db`: (a) `record_cycle` issues the
   `inference_cycles` INSERT (RETURNING cycle_id) then one `cycle_algo_proposals` INSERT
@@ -967,8 +1173,12 @@ CREATE TABLE event_outcomes (
   decision_price: float | None = None) -> None`; `trades` INSERT gains `cycle_id`;
   one `fill_quality` row per signal fill (never for adjustments — `record_adjustment`
   unchanged, `cycle_id` stays NULL there).
-- Consumes: Task 9's `cycle_id`; P-A5 (decision price = `current_price` from
-  `pipeline.py:258`).
+- Consumes: Task 9's `cycle_id`; P-A5 **as resolved by the review (2026-07-11)**:
+  `decision_price_usd` := the sizing-time `get_current_price()` value (`pipeline.py:258`).
+  Column comments must record the nuances: equity submits by notional (the price converts
+  dollars → quantity; Alpaca's source is the last IEX trade), and the crypto sim fetches a
+  second mid-price for the fill, so decision ≠ fill by construction. `time_to_fill_ms`
+  comes from Task B's `FillResult.submitted_at`/`filled_at` (M11).
 
 - [ ] **Step 1: Failing tests** — (a) `_record_trade` INSERT includes `cycle_id`;
   (b) `fill_quality` row computes side-aware slippage:
@@ -1113,7 +1323,15 @@ CREATE UNIQUE INDEX uq_llm_commentary_cycle
   divergence list (sim vs real Binance.US: fee schedule, min-notional and lot-size/step
   filters, price source, partial-fill behavior, time-in-force semantics); fixes for
   every divergence classified high-impact.
-- Consumes: `alpaca_adapter.py` call inventory from the execution-path review (Task 0).
+- Consumes: `alpaca_adapter.py` call inventory from the execution-path review (Task 0);
+  **the review's sim-fidelity gap list** (review doc §5) as the audit's starting inventory:
+  constant-slippage fills (captured slippage would be tautological), no
+  rejections/lot-size/min-notional/partial fills, hardcoded fee never deducted, USDT-book
+  thinness, zero time-to-fill, blocking retries. Plus the Alpaca IEX-feed check (free-plan
+  `StockHistoricalDataClient` default — decision prices can be stale/off-consolidated).
+- **Explicit Task 13 outcome decision:** improve the sim fill model (e.g. fill at best
+  bid/ask instead of mid ± constant) vs accept + document the distortion — decided with
+  the user when the audit's impact table exists.
 
 - [ ] **Step 1 (Alpaca):** Read the alpaca-py changelog from the currently-locked version
   to latest; list breaking changes touching the calls `alpaca_adapter.py` makes (order
@@ -1255,6 +1473,10 @@ Run on homelab against the paper deployment, after Tasks 1–15:
 | Dependency CVE audit in CI | Task 14 |
 | Paper-trading security hardening (incl. key rotation execution) | Task 15 |
 | Discord + circuit-breaker + capture end-to-end proof (go/no-go) | Task 16 |
+| **Code-review additions (2026-07-11):** mark-to-market valuation (C1/M4) | Task A |
+| Honest fill lifecycle + 15:45 ET market-gated schedule (C2/M11) | Task B |
+| Ramp enforcement + breaker alerting + crypto-stop book fix (H4/M1/H5) | Task C |
+| Unified model layout, cache invalidation, fail-closed loading (H2/H3/M5/M7/M3) | Task D |
 
 Deferred to Plan B: everything training-side (remaining §4 tables, caps/triggers, gate
 re-derivation, harness, graders + freshness alarms, A26 numbers, cutover runbook REVOKE
