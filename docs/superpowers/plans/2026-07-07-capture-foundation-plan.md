@@ -6,7 +6,10 @@
 
 > **Status: WALKTHROUGH-REVIEWED (2026-07-07); AMENDED 2026-07-11 after the
 > execution-path code review — now 21 implementation tasks (1–17 plus A–D, after the
-> Task 0 gate).**
+> Task 0 gate). AMENDED 2026-07-12: Task 5 selects the best-CPS era-0 vintage
+> (crypto iter 0, equity iter 4, from live `iteration_results`) and stamps real
+> iteration/seed — P-A1 sentinels demoted to fallback (vintages recoverable via
+> `models/iterations/`).**
 > Review findings + user-approved disposition:
 > `docs/superpowers/reviews/2026-07-07-execution-path-code-review.md` and the
 > "Code-review disposition" section below.
@@ -111,7 +114,7 @@ plain-English rule):
 
 | # | Assumption | Confidence | How it gets verified (task-wired, not hand-waved) |
 |---|---|---|---|
-| P-A1 | Era-0 model bootstrap sentinels: `seed=-1`, `iteration_number=-1`, `code_version='unknown_era0'`, `data_fingerprint='unknown_era0'` for back-filled `training_runs` rows (legacy models' true values are unrecoverable) | **SIGNED OFF (user, 2026-07-07)** | Task 5 test asserts era-0 sentinel rows never surface in canonical-run queries; grep-audit step: no new code compares/does arithmetic on `iteration_number`/`seed` without handling `-1` |
+| P-A1 | Era-0 model bootstrap sentinels: `seed=-1`, `iteration_number=-1`, `code_version='unknown_era0'`, `data_fingerprint='unknown_era0'` for back-filled `training_runs` rows (legacy models' true values are unrecoverable) — **PARTIALLY SUPERSEDED (user-approved 2026-07-12):** `models/iterations/iter_{0..5}/` on homelab makes deployed-model vintages recoverable, and era-0 seeds were per-algo constants (42/43/44) — Task 5 now stamps **real** iteration/seed and selects the **best-CPS vintage** (crypto iter 0, equity iter 4); sentinels remain the fallback for genuinely unresolvable pairs; `code_version`/`data_fingerprint` sentinels stand (still unrecoverable) | **SIGNED OFF (2026-07-07); amended 2026-07-12** | Task 5 test asserts real identity on resolvable pairs + sentinel fallback path; grep-audit step unchanged: no new code compares/does arithmetic on `iteration_number`/`seed` without handling `-1` |
 | P-A2 | `gate_versions` needs a **surrogate PK** (`gate_version_id`) — the spec's `gate_version SMALLINT PK` cannot hold per_fold v0 and ensemble v0 simultaneously. Proposed as **amendment A29** | High (schema arithmetic) | Provable by construction: Task 2's migration test inserts both v0 rows — under the spec's original PK this collides. Needs only the A29 sign-off |
 | P-A3 | Zeroing the raw obs turbulence slot *before* per-algo VecNormalize reproduces the training distribution for era-0 models (they trained on raw 0.0) | High | **Empirical, homelab, real artifacts (Task 7 Step 3b):** inspect each deployed `vec_normalize.pkl` — `obs_rms.mean[turb_idx]` must be ≈0 and `obs_rms.var[turb_idx]` ≈ epsilon (proof the dim never varied in training); then assert normalized obs + predicted action for a zeroed-slot input match the training-world case |
 | P-A4 | FRED release IDs: CPI=10, Employment Situation (NFP)=50, GDP=53; FOMC not in FRED → yaml-seeded schedule | Medium | Task 11 Step 0: one `curl "https://api.stlouisfed.org/fred/release?release_id={id}&api_key=$FRED_API_KEY&file_type=json"` per ID — response `name` must match the expected release; recorded in the test file header |
@@ -650,30 +653,67 @@ CREATE INDEX idx_ewh_model_from ON ensemble_weight_history (model_id, effective_
 - [ ] **Step 4:** Run tests — Expected: PASS
 - [ ] **Step 5: Commit** — `git commit -m "feat(2.R-A): V002 identity spine subset (training_runs, models, ensemble_weight_history)"`
 
-### Task 5: Era-0 deployed-model bootstrap script
+### Task 5: Era-0 deployed-model bootstrap script — best-CPS vintage selection (AMENDED 2026-07-12)
+
+> **Amendment (user-approved 2026-07-12).** Verified facts that reshaped this task:
+> (a) `~/swingrl/models/iterations/iter_{0..5}/active/{env}/{algo}/model.zip` +
+> `vec_normalize.pkl` exist for every iteration in the loader-expected layout — **model
+> vintages are recoverable by directory**, partially invalidating P-A1's "unrecoverable"
+> premise for the deployed set; (b) live `iteration_results.cps_v1_multiplicative` picks
+> **crypto iter 0 (0.1531 — the uncoached baseline beat every coached season)** and
+> **equity iter 4 (0.0153)** as the best era-0 vintages; (c) seeds are recoverable too —
+> era-0 used per-algo constants (`SEED_MAP` = 42/43/44, `trainer.py:71`).
+> Consequences: the bootstrap selects **best-CPS-per-env**, not newest-by-date; spine
+> rows carry **real** `iteration_number` + `seed`; sentinels remain the fallback for any
+> (env, algo) whose vintage genuinely can't be resolved. P-A1's sentinel machinery stays
+> (the fallback path + the grep-audit are unchanged).
 
 **Files:**
 - Create: `scripts/migrations/bootstrap_era0_models.py`
 - Test: `tests/data/test_bootstrap_era0_models.py`
 
 **Interfaces:**
-- Produces: one `training_runs` row (`run_type='final_train'`, era 0, sentinels per P-A1)
-  + one `models` row (+ initial `ensemble_weight_history` row, `set_by='training'`) per
-  **newest** `model_metadata` row per (environment, algorithm) — mirroring the dedup rule
-  the live reader uses (`pipeline.py:410–445`, first-seen on `training_end_date DESC`).
-  sha256 computed from disk when the artifact exists (homelab), else NULL + warning.
-- Consumes: V002 tables; live `model_metadata` (13 cols, verified shape).
+- Produces:
+  - `BEST_ERA0_VINTAGE: dict[str, int] = {"crypto": 0, "equity": 4}` — module constant
+    with the CPS evidence in a comment (values above, read from live pg16 2026-07-12);
+    revisit only if `iteration_results` changes (it is frozen era-0 evidence, so it
+    won't).
+  - One `training_runs` row (`run_type='final_train'`, era 0, **real
+    `iteration_number` from `BEST_ERA0_VINTAGE`**, **real `seed` from the era-0
+    per-algo constants 42/43/44**, `fold_number = -1`,
+    `code_version = 'unknown_era0'`, `data_fingerprint = 'unknown_era0'`) + one
+    `models` row (+ initial `ensemble_weight_history` row, `set_by='training'`) per
+    (environment, algorithm), pointing at
+    `models/iterations/iter_{N}/active/{env}/{algo}/` artifacts.
+  - **Deployment step (homelab, runbook'd in Task 17):** copy the selected vintage into
+    `models/active/{env}/{algo}/` (both files) so the live loader serves the best-CPS
+    set — replaces the implicit newest-by-date deployment. Recorded as an
+    `operator_actions`-style note in the deployment runbook (the table itself is Plan
+    B's V008).
+  - Sentinel fallback preserved (P-A1): any (env, algo) missing from
+    `models/iterations/` falls back to newest `model_metadata` + `-1` sentinels +
+    warning log.
+- Consumes: V002 tables; `models/iterations/` layout (verified on homelab 2026-07-12);
+  live `model_metadata` (13 cols, fallback path only).
 
-- [ ] **Step 1: Failing test** — seed `model_metadata` with two rows per (env, algo)
-  (older + newer) in the test DB, run `bootstrap_era0_models.main()`, assert: one
-  `models` row per (env, algo) pointing at the newer artifact; `training_runs` rows carry
-  `iteration_number = -1`, `seed = -1`, `era_id = 0`, `status = 'completed'`; re-running
-  is idempotent (ON CONFLICT DO NOTHING on `model_id`).
+- [ ] **Step 1: Failing test** — fixture a `models/iterations/` tree (tmp_path) with
+  iter_0 + iter_4 artifacts and a `model_metadata` fallback row; run
+  `bootstrap_era0_models.main()`; assert: `models` rows point at the
+  `BEST_ERA0_VINTAGE` artifacts per env; `training_runs` rows carry **real**
+  `iteration_number` (0 for crypto pairs, 4 for equity pairs), `seed` ∈ {42, 43, 44}
+  matching the algo, `era_id = 0`, `status = 'completed'`; an (env, algo) absent from
+  the iterations tree falls back to sentinels with a warning; re-running is idempotent
+  (ON CONFLICT DO NOTHING on `model_id`).
 - [ ] **Step 2:** Run — Expected: FAIL (module missing)
 - [ ] **Step 3: Implement** — core loop:
 
 ```python
-SENTINEL = -1  # legacy models: iteration/seed unrecoverable (P-A1)
+# CPS evidence (live pg16 iteration_results, read 2026-07-12):
+# crypto iter 0 = 0.1531 (baseline HPs — best era-0 crypto season);
+# equity iter 4 = 0.0153. Frozen era-0 evidence; values never change.
+BEST_ERA0_VINTAGE: dict[str, int] = {"crypto": 0, "equity": 4}
+ERA0_SEED_MAP: dict[str, int] = {"ppo": 42, "a2c": 43, "sac": 44}  # trainer.py:71
+SENTINEL = -1  # fallback only: vintage genuinely unresolvable (P-A1)
 
 def _sha256(path: Path) -> str | None:
     if not path.exists():
@@ -686,15 +726,16 @@ def _sha256(path: Path) -> str | None:
     return h.hexdigest()
 ```
 
-Select newest per (env, algo) via
-`SELECT DISTINCT ON (environment, algorithm) * FROM model_metadata ORDER BY environment, algorithm, training_end_date DESC`;
-insert spine row (`fold_number = -1`, `code_version = 'unknown_era0'`,
-`data_fingerprint = 'unknown_era0'`, `config_hash = NULL`); insert `models` row
-(`status='active'`, paths from `model_path`/`vec_normalize_path`); insert
-`ensemble_weight_history` row from `ensemble_weight`.
+For each (env, algo): resolve
+`models/iterations/iter_{BEST_ERA0_VINTAGE[env]}/active/{env}/{algo}/` — if both files
+exist, insert spine row with real `iteration_number`/`seed`; else fall back to newest
+`model_metadata` (`SELECT DISTINCT ON (environment, algorithm) * FROM model_metadata
+ORDER BY environment, algorithm, training_end_date DESC`) with `-1` sentinels + warning;
+insert `models` row (`status='active'`) + `ensemble_weight_history` row from
+`ensemble_weight`.
 
 - [ ] **Step 4:** Run tests — Expected: PASS
-- [ ] **Step 5: Commit** — `git commit -m "feat(2.R-A): era-0 deployed-model bootstrap (models + spine backfill)"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(2.R-A): era-0 bootstrap — best-CPS vintage selection (crypto iter 0, equity iter 4) + recoverable identity"`
 
 ### Task 6: F1 fix — turbulence baseline from `compute_series` (no schema change)
 
