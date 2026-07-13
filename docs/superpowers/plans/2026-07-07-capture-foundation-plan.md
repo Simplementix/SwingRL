@@ -1473,11 +1473,22 @@ CREATE UNIQUE INDEX uq_llm_commentary_cycle
 - [ ] **Step 5:** Run: `uv run pytest tests/execution/ -v` — Expected: PASS.
 - [ ] **Step 6: Commit** — `git commit -m "feat(2.R-A): alpaca-py pinned after changelog review; binance_sim fidelity audit + fixes"`
 
-### Task 14: Dependency CVE audit in CI
+### Task 14: CI health — dependency CVE audit + GHA Postgres (issue #18) (AMENDED 2026-07-13)
+
+> **Amendment (user-approved 2026-07-13):** Task 14 also closes **issue #18** — the
+> required GHA check `Tests (coverage >= 85%)` has been red on every PR since April
+> because `ci.yml` runs pytest with no Postgres service and no `DATABASE_URL`
+> (verified: `ci.yml:64,76`), so ~394 DB tests skip and coverage lands ~63%. With the
+> redesign about to produce a steady stream of PRs, a permanently-red required check is
+> an alarm-fatigue hazard and forces admin-bypass merges. The fix became cheap once
+> Tasks 1–2 exist: the migration runner gives GHA a schema. Spec §1.4's out-of-scope
+> line is overridden by this user decision for the *plan* (the spec governs the design,
+> not CI plumbing). Homelab CI remains the authoritative gate.
 
 **Files:**
 - Modify: `pyproject.toml` (dev dependency `pip-audit`)
 - Modify: `scripts/ci-homelab.sh` (new stage after lint)
+- Modify: `.github/workflows/ci.yml` (Postgres 16 service + `DATABASE_URL` + schema init)
 - Create: `docs/execution/cve-triage.md` (first-run findings + dispositions)
 
 - [ ] **Step 1:** Add `pip-audit>=2.7` to dev dependencies; run locally:
@@ -1489,8 +1500,23 @@ CREATE UNIQUE INDEX uq_llm_commentary_cycle
   following its existing echo/step conventions): `uv run pip-audit --strict` — CI fails
   on new findings. Known-accepted findings are suppressed via `--ignore-vuln <id>` flags
   read from the triage doc, each with an expiry note.
-- [ ] **Step 4:** Run homelab CI to prove the stage works and passes.
-- [ ] **Step 5: Commit** — `git commit -m "feat(2.R-A): pip-audit CVE stage in homelab CI + triage doc"`
+- [ ] **Step 4: GHA Postgres (issue #18).** In `ci.yml`'s test job: add a
+  `services: postgres:` block (image `postgres:16`, `POSTGRES_USER` / `POSTGRES_PASSWORD`
+  / `POSTGRES_DB` all set to the CI-only throwaway value `swingrl_test`, health-checked
+  on `pg_isready`); set `DATABASE_URL` on the test step to the standard
+  `postgresql://` URL for that service on `localhost:5432` (same throwaway
+  user/password/db — no real credential exists here); before pytest, initialize the
+  schema exactly as homelab CI does
+  (legacy `init_postgres_schema` + `scripts/apply_migrations.py` — mirror
+  `scripts/ci-homelab.sh:47–54`'s sequence). The Stage-1 `db_guard`/`db_cleanup`
+  fixtures handle per-test isolation unchanged.
+- [ ] **Step 5:** Push and verify the GHA run: DB tests execute (skip count drops from
+  ~394 to single digits), and coverage clears `--cov-fail-under=85`. **If coverage
+  lands below 85 with all tests running, STOP and present the actual number + gap
+  analysis to the user** — the threshold is adjusted or tests are added by decision,
+  never silently. Update issue #18 with the result and close it on green.
+- [ ] **Step 6:** Run homelab CI to prove the pip-audit stage works and passes.
+- [ ] **Step 7: Commit** — `git commit -m "feat(2.R-A): pip-audit CVE stage + GHA Postgres service (closes #18)"`
 
 ### Task 15: Paper-trading security hardening checklist
 
@@ -1593,7 +1619,7 @@ Run on homelab against the paper deployment, after Tasks 1–15:
 | Per-table index plan (trade-time subset: spine FKs, `trades.cycle_id`, `(call_type, created_at)`) | Tasks 4, 8, 12 DDL |
 | A14 trade-time volume cap (≤1 intent/cycle) | Task 12 partial unique indexes |
 | **User-added readiness scope (2026-07-07):** broker-API currency + sim fidelity | Task 13 |
-| Dependency CVE audit in CI | Task 14 |
+| Dependency CVE audit in CI + GHA Postgres (issue #18, user-added 2026-07-13) | Task 14 |
 | Paper-trading security hardening (incl. key rotation execution) | Task 15 |
 | Discord + circuit-breaker + capture end-to-end proof (go/no-go) | Task 16 |
 | **Code-review additions (2026-07-11):** mark-to-market valuation (C1/M4) | Task A |
