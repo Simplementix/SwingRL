@@ -9,7 +9,9 @@
 > budgets; N5 split per env); Task 5 MDD records both worst + mean sub-env (worst drives
 > triggers); approval-gates table G-1–G-9 added; Task 0 Step 5 pre-flight read of the two
 > unread large files; Discord routing pinned (all Plan B alarms from swingrl-container
-> scripts) + training-side delivery proof (`--test-alert`, Task 29).**
+> scripts) + training-side delivery proof (`--test-alert`, Task 29). AMENDED 2026-07-12
+> (A30): deploy-isolation constraint added — all Plan B deploys via the trainer service,
+> additive-only migrations while the trader runs (Plan A Task E owns the compose split).**
 > Companion: Plan A (`2026-07-07-capture-foundation-plan.md`) — the paper-trading capture
 > foundation; this plan owns everything training-side.
 > Spec: `docs/superpowers/specs/2026-06-12-training-system-redesign-design.md`
@@ -88,6 +90,16 @@ Coach/players/seasons analogy terms are tied to their concrete table or action.
 - **No season mid-transition** (A25 cutover rule): no training iteration runs between the
   first Phase 3 writer landing and Task 28's cutover completing. Iteration 5 starts only
   after Task 29's readiness checklist passes.
+- **Deploy isolation (A30, user-approved 2026-07-12):** once paper trading is live, every
+  Plan B homelab deploy goes through the **trainer service** (Plan A Task E's compose
+  split) — the trader container is never rebuilt or recreated by Plan B work. Corollary
+  rules that bind every Plan B task: migrations are **additive-only while the trader
+  runs** (never ALTER/DROP anything the deployed trader reads; V010's REVOKE executes
+  inside Task 28's cutover window, where the trader is deliberately stopped — the one
+  gated exception); training code **never writes `models/active/`** (Task E's tested
+  ban; era-1 deployment goes through gated promotion); the schema assertion is
+  floor-semantics (Plan A Task 1/3), so trainer-applied V005–V009 never brick the
+  running trader.
 - **Locked decisions bind throughout** (never re-litigate): D-T1.*/D-T2.*/D-T3.*/D-MT.*,
   amendments A1–A29, A26 stricter numbers (**pooled ≥12 bets AND ≥3 seasons; ladder level 3
   = 4 seasons**), turbulence memo adopted in full, P-A1 sentinels.

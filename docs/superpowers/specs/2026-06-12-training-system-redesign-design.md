@@ -1273,6 +1273,33 @@ links to `season_results` apply per `result_version` row (A10).
     (2026-03-24 leak) as a precondition for standing up any new call type;
     `operator_actions` append-only table decision (record human interventions outside the
     pre-built slots); provider/tier assignment + cadence numbers per new `call_type`.
+- **→ Implementation plans — steady-state deploy isolation (A30, 2026-07-12):** training
+  deploys must never interrupt running paper trading. Verified actuals that force this:
+  one `swingrl` compose service runs the trading scheduler (`CMD python scripts/main.py`)
+  **and** hosts training runs; code is baked into the image (bind mounts are data-only);
+  so an image rebuild + recreate kills the scheduler. Design (Plan A owns implementation,
+  Plan B binds to it):
+  1. **Trader/trainer service split, one image**: `swingrl-trader` (scheduler) pinned to
+     an explicit image tag bumped only deliberately; `swingrl-trainer` (compose
+     `profiles: ["training"]`, never auto-started) follows `latest`. `compose build`
+     never touches running containers; `up -d` only recreates services whose tag moved —
+     the trader's tag moves only by hand.
+  2. **Trader deploy windows**: trader tag bumps only in market-safe windows (equity
+     after the 15:45 ET cycle + fill polling complete; crypto between 4H cycles), with a
+     no-in-flight-cycle check. State lives in pg16 + bind mounts; the restart itself is
+     stateless-safe.
+  3. **Schema-assertion floor semantics**: `assert_schema_current` refuses when the DB
+     is *behind* the image's expected version (missing migrations) and **warns-and-runs
+     when the DB is ahead** (newer additive migrations applied by trainer-side deploys).
+     Exact-match semantics would brick the running trader's next restart on the first
+     Plan B migration.
+  4. **Additive-only migrations while the trader runs**: no ALTER/DROP of anything the
+     deployed trader reads outside a trader deploy window (the Plan B cutover is the
+     gated exception — the trader is deliberately stopped there).
+  5. **`models/active/` written only by gated promotion**: training writes
+     `models/iterations/` + shadow only — load-bearing because the live loader
+     hot-reloads on artifact mtime change (Plan A Task D); an unguarded training write
+     would silently change live behavior mid-flight.
 - **→ Code-verification review:** F2 confirmation (instrument SAC rollout-end frequency; query
   the archived dump for `notable_event` distribution); backtest trade semantics
   (`agents/backtest.py` — round-trip vs per-rebalance; where win_rate/profit_factor computed);
@@ -1329,6 +1356,7 @@ walkthrough).
 | A27 | Turbulence capture: `inference_cycles.turbulence` decision-time pre-zeroing stamp (§4.7); `fold_results.turbulence_mean` fold regime context (§4.3); editorial: `calendar_events` UNIQUE NULLS NOT DISTINCT (§4.7) (2026-07-07, G2 Plan A walkthrough) | G2 |
 | A28 | Era-1 training-env live-parity definition pointer — real turbulence obs, live-parity breakers, decomposed features per adopted memo; full definition → Plan B (§2.5) (2026-07-07) | G2 |
 | A29 | `gate_versions` surrogate PK `gate_version_id` + `version_number` + UNIQUE(gate_type, version_number); FK ripple to `eras`, `fold_results`, `season_results` (§4.1, §4.3) (2026-07-07, signed off in-session) | G2 |
+| A30 | Steady-state deploy isolation (§4.14): trader/trainer compose split (pinned trader tag), market-safe trader windows, schema-assertion **floor semantics**, additive-only migrations while trader runs, `models/active/` written only by gated promotion. Verified basis: single `swingrl` service runs scheduler + training; code baked into image; loader hot-reloads on mtime (2026-07-12, user-approved) | G2 |
 
 ## §5 — Bug & finding catalogue (running; fix scope varies)
 

@@ -9,7 +9,10 @@
 > Task 0 gate). AMENDED 2026-07-12: Task 5 selects the best-CPS era-0 vintage
 > (crypto iter 0, equity iter 4, from live `iteration_results`) and stamps real
 > iteration/seed — P-A1 sentinels demoted to fallback (vintages recoverable via
-> `models/iterations/`).**
+> `models/iterations/`). AMENDED 2026-07-12 (A30): new Task E — trader/trainer deploy
+> isolation (compose split, pinned trader tag, floor-semantics schema assertion,
+> `models/active/` write ban) — now 22 implementation tasks; Task E before Task 16 and
+> before any Plan B homelab deploy.**
 > Review findings + user-approved disposition:
 > `docs/superpowers/reviews/2026-07-07-execution-path-code-review.md` and the
 > "Code-review disposition" section below.
@@ -50,7 +53,7 @@ plain-English rule):
 | **Era 0** | The comparability label stamped on all pre-redesign data (iterations 0–4): kept as evidence, never score-compared with the new regime (spec §4.1) |
 | **Sentinel** | A documented placeholder (e.g. `-1`) meaning "genuinely unknown", used where legacy values are unrecoverable — instead of making the column nullable, which would weaken the rules for all future rows |
 | **Fail-open** | On error, step aside rather than block: if capture fails, the trade still executes and an alert fires. (Fail-closed = no record → no trade.) |
-| **Fingerprint assertion** | At startup the container checks the `schema_migrations` ledger against the version it was built for and refuses to run on mismatch — the guard against "code merged but database never migrated" |
+| **Fingerprint assertion** | At startup the container checks the `schema_migrations` ledger against the version it was built for: **behind → refuse to run** (code merged but database never migrated); **ahead → warn and run** (a newer additive migration landed via a trainer deploy — floor semantics, A30) |
 | **F1** | Turbulence bug 1: the live halt's *historical baseline* query reads a column that doesn't exist → silent 0.0 → the turbulence circuit breaker never fires (`execution/pipeline.py:537`, `:517`) |
 | **F1b** | Turbulence bug 2: models were *trained* with the turbulence observation input frozen at 0.0, so feeding real values at inference multiplies them by untrained weights = noise |
 | **MT / Meta-Trader** | The trade-time LLM coach (spec §3) — the "game-day manager" that watches paper/live trading and comments; distinct from the meta-*trainer* (the between-seasons coach). Advisory-only in this plan |
@@ -68,7 +71,10 @@ plain-English rule):
   review ran (2026-07-07/08, four agents) and its findings were dispositioned by the user
   (2026-07-11) — see the "Code-review disposition" section below. New ordering gates from
   the disposition: **Tasks A and B complete before capture Tasks 9–10; Tasks C and D
-  complete before Task 16.** Tasks 1–5 remain free to start first.
+  complete before Task 16.** Tasks 1–5 remain free to start first. **A30 addition
+  (2026-07-12): Task E (deploy isolation) completes before Task 16's go/no-go AND before
+  any Plan B code deploys to homelab** — once paper trading runs, all training-side
+  deploys go through the trainer service, never the trader.
 - **Key rotation: COMPLETED (user-confirmed 2026-07-07).** Task 12's runtime is
   unblocked in principle; the flag still defaults false until Task 16's go/no-go. Task 15
   Step 2 verifies the old keys were *revoked*, not just replaced.
@@ -172,9 +178,13 @@ before Task 16 (the go/no-go must test working breakers).
 
 **Interfaces:**
 - Produces: `apply_migrations(db: DatabaseManager, migrations_dir: Path | None = None) -> int`
-  (count of newly applied); `assert_schema_current(db: DatabaseManager) -> None` (raises
-  `ConfigError` on mismatch); module constant `EXPECTED_SCHEMA_VERSION: int` (bumped by
-  every task that adds a migration file); file naming contract `V{NNN}__{slug}.sql`.
+  (count of newly applied); `assert_schema_current(db: DatabaseManager) -> None` with
+  **floor semantics (A30, 2026-07-12)**: raises `ConfigError` when the DB version is
+  **behind** `EXPECTED_SCHEMA_VERSION` (missing migrations — genuinely broken);
+  **warns-and-returns when the DB is ahead** (newer additive migrations applied by a
+  trainer-side deploy — the running trader must survive its next restart); module
+  constant `EXPECTED_SCHEMA_VERSION: int` (bumped by every task that adds a migration
+  file); file naming contract `V{NNN}__{slug}.sql`.
 - Consumes: `DatabaseManager.connection()` (`src/swingrl/data/db.py`), `ConfigError`
   (`src/swingrl/utils/exceptions.py`).
 
@@ -556,7 +566,8 @@ def test_main_refuses_stale_schema(monkeypatch) -> None:
   a module constant `_EXPECTED_SCHEMA_VERSION` (same value, comment cross-referencing
   `migration_runner.py`; duplication is the established pattern there, converges in the
   Stage 3 refactor) and a check in `init_db()` that queries
-  `SELECT max(version) FROM schema_migrations` and raises `RuntimeError` on mismatch.
+  `SELECT max(version) FROM schema_migrations` — same floor semantics: raise
+  `RuntimeError` when behind, warn when ahead (A30).
 - [ ] **Step 4:** Run: `uv run pytest tests/test_smoke.py -v` — Expected: PASS
 - [ ] **Step 5: Commit** — `git commit -m "feat(2.R-A): schema-fingerprint assertion at container start"`
 
@@ -964,14 +975,33 @@ Delete the broken SQL and the bare `except` (narrow to `DataError`/`Exception` w
   results and `_record_trade` raises `DataError` on qty=0/price=0 as a backstop).
   M10-equity: if `process()` raises after a real fill, alert critical (trade executed but
   unrecorded).
+- **Restart semantics (A30 addendum, user-approved 2026-07-12):**
+  - `misfire_grace_time` on the cycle jobs — equity **720 s** (a restart shortly after
+    15:45 still runs the cycle late; the clock gate + freshness guard make a late run
+    safe, and past ~15:57 the graced window has lapsed → clean skip + log, never a
+    post-close submit), crypto **3600 s** (4H cadence — an hour late is immaterial).
+    Config: `scheduler.misfire_grace_s: dict[str, int] = {"equity": 720, "crypto": 3600}`
+    — no hardcoded values. Missed-beyond-grace cycles are **skipped, never replayed**
+    (documented behavior: at daily cadence a skipped cycle is one missed rebalance, and
+    the next cycle's target-weight diff self-corrects).
+  - **Startup reconciliation:** `scripts/main.py` runs the equity reconciliation job
+    once at boot (same function the 17:00 ET cron calls) so any fill/position drift from
+    downtime is audited immediately, not hours later. Skips with an info log when the
+    market data needed isn't available (e.g. overnight restart).
 - Consumes: Task 10 reads `submitted_at`/`filled_at` for `time_to_fill_ms`;
-  `binance_sim` fills stay synchronous — it sets `status="filled"` + both timestamps.
+  `binance_sim` fills stay synchronous — it sets `status="filled"` + both timestamps;
+  Task E's `deploy-process.md` references these restart semantics (trader restarts are
+  safe by design: durable state in pg16, breaker state DB-derived, worst case = one
+  graced-late or skipped cycle).
 
 - [ ] **Step 1: Failing tests** — (a) submit that returns no fill → poll loop queried,
   then cancel + status="pending", no trades row; (b) synchronous fill → status="filled",
   timestamps set, trade recorded with the real price; (c) market-closed clock response →
   cycle skipped, no orders; (d) `_record_trade` raises `DataError` on a zero-quantity fill;
-  (e) cron registration reads `equity.cycle_time_et` (no hardcoded hour).
+  (e) cron registration reads `equity.cycle_time_et` (no hardcoded hour); (f) cycle jobs
+  registered with `misfire_grace_time` from `scheduler.misfire_grace_s` (equity 720,
+  crypto 3600 under default config); (g) startup path invokes the equity reconciliation
+  once before the scheduler starts (mocked job function called exactly once at boot).
 - [ ] **Step 2:** Run — Expected: FAIL
 - [ ] **Step 3: Implement.** Also verify at implementation (review honest-gap): OHLCV bar
   freshness at 15:45 ET — the cycle logs a warning when the latest `ohlcv_daily` bar is
@@ -1053,6 +1083,58 @@ Delete the broken SQL and the bare `except` (narrow to `DataError`/`Exception` w
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** Run tests — Expected: PASS
 - [ ] **Step 5: Commit** — `git commit -m "fix(2.R-A): unified model layout + cache invalidation + fail-closed loading (review H2/H3/M5/M7/M3)"`
+
+### Task E: Trader/trainer deploy isolation (A30, user-approved 2026-07-12)
+
+Training deploys must never interrupt running paper trading. Verified basis: one
+`swingrl` compose service runs the scheduler (`Dockerfile` CMD `python scripts/main.py`)
+AND hosts training; code is baked into the image (bind mounts are data-only) — so today
+an image rebuild + recreate kills the scheduler, and (post-Task D) a training write to
+`models/active/` would hot-reload into the live trader.
+
+**Files:**
+- Modify: `docker-compose.yml`, `docker-compose.prod.yml`
+- Create: `docs/training/deploy-process.md`
+- Test: `tests/test_deploy_isolation.py` (new)
+
+**Interfaces:**
+- Produces:
+  - Compose service **`swingrl-trader`** (renames the `swingrl` service; same build,
+    scheduler CMD unchanged; `image:` pinned to an explicit tag, e.g.
+    `swingrl:trader-YYYY-MM-DD`, bumped only by hand in a deploy window) and
+    **`swingrl-trainer`** (same build context, `profiles: ["training"]` so plain
+    `up -d` never starts or recreates it; command = idle entrypoint; training invoked
+    via `docker compose run --rm swingrl-trainer python scripts/train_pipeline.py ...`).
+    Container name `swingrl` is kept on the trader service so existing runbooks/`docker
+    exec` references keep working.
+  - `docs/training/deploy-process.md` — the standing process: training deploy = build +
+    `compose run` (trader untouched); trading deploy = tag bump + recreate **only** in a
+    market-safe window (equity: after the 15:45 ET cycle + fill polling complete, ~16:05
+    ET or later; crypto: between 4H cycles) with a no-in-flight-cycle check
+    (`status/` heartbeat + log tail documented); additive-only migration rule while the
+    trader runs; rollback = re-pin the previous tag; **restart-semantics section** (per
+    Task B's A30 addendum): durable state in pg16, breaker state DB-derived, jobstore
+    persistent, misfire grace 720 s equity / 3600 s crypto, startup reconciliation at
+    boot — worst case of any restart = one graced-late or cleanly-skipped cycle.
+  - **`models/active/` write ban, tested**: a grep-based test (same pattern as the
+    layout-constant audits) asserting no module under `src/swingrl/training/`,
+    `src/swingrl/memory/training/`, or `scripts/train*` writes to `models/active` —
+    the only writers of the active tree are the promotion/lifecycle module and the
+    Task 5 bootstrap deployment step (both gated, documented).
+- Consumes: Task D's `active_model_paths` + mtime-cache behavior (the reason the write
+  ban is load-bearing); Task 3's floor-semantics assertion (the reason trainer-side
+  migrations don't brick the trader).
+
+- [ ] **Step 1: Failing tests** — (a) compose config test: `docker compose config`
+  parses; `swingrl-trainer` carries the `training` profile; `swingrl-trader` has an
+  explicit non-`latest` image tag; (b) the `models/active` grep ban (fails today only if
+  a violation exists — if it passes immediately, commit it as the regression guard, RED
+  step waived with a note).
+- [ ] **Step 2:** Implement compose split + write `deploy-process.md`.
+- [ ] **Step 3:** Verify on homelab (read-only to trading): `docker compose config`
+  renders both services; `docker compose up -d` with the stack down starts trader only.
+- [ ] **Step 4:** Run tests — PASS. Full suite green.
+- [ ] **Step 5: Commit** — `git commit -m "feat(2.R-A): trader/trainer deploy isolation (A30) — compose split + deploy process + models/active write ban"`
 
 ### Task 8: V003 — trade-time tables (§4.7 + A27)
 
@@ -1518,6 +1600,7 @@ Run on homelab against the paper deployment, after Tasks 1–15:
 | Honest fill lifecycle + 15:45 ET market-gated schedule (C2/M11) | Task B |
 | Ramp enforcement + breaker alerting + crypto-stop book fix (H4/M1/H5) | Task C |
 | Unified model layout, cache invalidation, fail-closed loading (H2/H3/M5/M7/M3) | Task D |
+| **A30 (2026-07-12):** trader/trainer deploy isolation — compose split, pinned trader tag, deploy windows, floor-semantics assertion, `models/active/` write ban | Task E (+ Task 1/3 semantics) |
 
 Deferred to Plan B: everything training-side (remaining §4 tables, caps/triggers, gate
 re-derivation, harness, graders + freshness alarms, A26 numbers, cutover runbook REVOKE
