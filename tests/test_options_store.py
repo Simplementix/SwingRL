@@ -5,10 +5,10 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
-from swingrl.data.options.store import OptionsStore
 
 from swingrl.config.schema import OptionsCollectorConfig
 from swingrl.data.options.chain_parser import ParsedChain
+from swingrl.data.options.store import OptionsStore
 
 
 def _store(tmp_path: Path) -> OptionsStore:
