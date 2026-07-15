@@ -8,6 +8,7 @@ from typing import Any
 
 import psycopg
 import structlog
+from psycopg import sql
 
 log = structlog.get_logger(__name__)
 
@@ -81,10 +82,9 @@ def ensure_monthly_partition(conn: psycopg.Connection[Any], quote_date: date) ->
     name, lo, hi = monthly_partition_bounds(quote_date)
     with conn.cursor() as cur:
         cur.execute(
-            # name is derived from quote_date (YYYY_MM), never user input — safe to interpolate.
-            f"CREATE TABLE IF NOT EXISTS {name} "  # noqa: S608  # nosec B608
-            f"PARTITION OF options_chains FOR VALUES FROM (%s) TO (%s)",
-            (lo, hi),
+            sql.SQL(
+                "CREATE TABLE IF NOT EXISTS {} PARTITION OF options_chains FOR VALUES FROM ({}) TO ({})"
+            ).format(sql.Identifier(name), sql.Literal(lo), sql.Literal(hi))
         )
     log.info("options_partition_ensured", partition=name)
     return name
