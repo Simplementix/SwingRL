@@ -4,6 +4,7 @@ import math
 from datetime import UTC, date, datetime
 
 import pytest
+
 from swingrl.data.options.chain_parser import (
     CONTRACT_COLUMNS,
     clean_sentinel,
