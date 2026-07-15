@@ -157,7 +157,7 @@ def run_offsite_backup(config: SwingRLConfig, alerter: Alerter | None = None) ->
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
         log.info("options_offsite_backup_ok", remote=backup.rclone_remote)
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+    except Exception as exc:
         log.error("options_offsite_backup_failed", error=str(exc))
         if alerter is not None:
             alerter.send_alert("warning", "Options offsite backup failed", str(exc))
