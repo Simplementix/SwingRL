@@ -521,7 +521,7 @@ fully-researched fallback path.
 | All 8 equity ETFs served by the same endpoint (`SPY.json` 13,730 rows … `VTI.json` 944 rows, real OI/IV) | Live pulls, all four spot-checked symbols 200 OK | **Verified** |
 | Quotes populated even ~23:38 ET — SPX trades overnight (global trading hours) | Same pull | Verified (bonus finding) |
 | Companion endpoint `…/charts/historical/{symbol}.json`: daily OHLCV, SPY→2004, **`_SPX` index →1975** (12,990 rows, current same-day) | Live pulls | **Verified** |
-| Data is 15-minute delayed; exact delay convention (payload `timestamp` vs wall clock) | Not yet measured intraday | **Unverified — plan T6 measures it on a trading day before trusting the decision label** |
+| Data is 15-minute delayed: **content delay = 15 m 27 s at both probes** (wall clock vs header `last_trade_time`, 15:50 + 16:05 ET). Top-level `timestamp` = UTC *generation* time (~23 s behind wall clock — not the quote time); `last_trade_time` = ET. Pull times 16:00/16:35 confirmed, unchanged. | T6 probe 2026-07-15, log `.superpowers/sdd/t6-probe-2026-07-15.log` (dev checkout) | **Verified** |
 | Endpoint stability / rate tolerance | Undocumented public feed powering cboe.com; widely used by open-source tooling; **no SLA** | Assumed — mitigated (health checks catch breakage same-day; two researched fallbacks behind the provider wrapper) |
 
 **Why CBOE wins for this collector:** zero auth (no token, no 7-day ritual, no secrets file,

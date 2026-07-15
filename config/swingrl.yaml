@@ -83,7 +83,7 @@ options_collector:
   rate_limit_per_sec: 1.0           # courtesy throttle; 9 GETs per run
   health_check_time_et: "17:15"
   health_lookback_days: 3           # D9: health check scans the last N trading days
-  snapshots:                        # pull trails market time by the feed delay (D8; verify at T6)
+  snapshots:                        # pull trails market time by the feed delay (D8; T6-measured 2026-07-15: content delay 15m27s — 16:00/16:35 confirmed)
     - { label: decision, market_time_et: "15:45", pull_time_et: "16:00", misfire_grace_s: 900 }
     - { label: eod,      market_time_et: "16:15", pull_time_et: "16:35", misfire_grace_s: 18000 }
   integrity:
