@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pandas as pd
+
+from swingrl.config.schema import SwingRLConfig
 from swingrl.data.options.audit import (
     AuditResult,
     audit_dataframe,
@@ -8,8 +10,6 @@ from swingrl.data.options.audit import (
     descriptive_stats,
     oi_stability_failures,
 )
-
-from swingrl.config.schema import SwingRLConfig
 
 
 def test_clean_frame_has_no_failures() -> None:
