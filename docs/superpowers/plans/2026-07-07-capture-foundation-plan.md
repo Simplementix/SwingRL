@@ -96,6 +96,13 @@ plain-English rule):
 - **Paper trading is not declared ready until Task 16's end-to-end verification passes**
   (Discord alerts proven, circuit breakers proven to trip, capture rows verified, sim
   fidelity audit accepted, CVE audit clean or triaged, security checklist executed).
+- **Quiet window (added 2026-07-14, master-sequence reconciliation):** once
+  `swingrl-collector` is live (Track C, Wave 1 — before this plan's main body), no
+  container recreation and no homelab CI runs spanning **15:30–16:45 ET** on trading
+  days. Prerequisite already landed in Wave 0: `ci-homelab.sh` cleanup is scoped to the
+  dev compose project (an unscoped `docker compose down` would kill always-on services
+  on every CI run). Task 11 is amended (2026-07-14): its calendar jobs register in the
+  collector's scheduler, adding a dependency on the collector being deployed.
 
 ## Verified change-site register (2026-07-07, read from code + live pg16)
 
@@ -1116,6 +1123,14 @@ an image rebuild + recreate kills the scheduler, and (post-Task D) a training wr
     Task B's A30 addendum): durable state in pg16, breaker state DB-derived, jobstore
     persistent, misfire grace 720 s equity / 3600 s crypto, startup reconciliation at
     boot — worst case of any restart = one graced-late or cleanly-skipped cycle.
+  - **Third service (amended 2026-07-14): `swingrl-collector`** — the deploy doc covers
+    the full 3-service topology. Collector rules (from the options plan D9/C4): its own
+    pinned image tag (Plan A/B image churn must never recreate it via bare `up -d` —
+    service-scoped compose commands only); recreation only **outside 15:30–16:45 ET** on
+    trading days (the shared quiet window — also protects the 15:45 equity cycle);
+    restarts are safe by design (persistent jobstore + boot self-check: reconcile +
+    lookback health check). The collector keeps running through trader deploys AND
+    through Plan B's cutover (its tables are untouched by V010).
   - **`models/active/` write ban, tested**: a grep-based test (same pattern as the
     layout-constant audits) asserting no module under `src/swingrl/training/`,
     `src/swingrl/memory/training/`, or `scripts/train*` writes to `models/active` —
@@ -1319,14 +1334,24 @@ CREATE TABLE event_outcomes (
 - [ ] **Step 4:** Run tests — Expected: PASS
 - [ ] **Step 5: Commit** — `git commit -m "feat(2.R-A): thread cycle_id through fills + fill_quality sidecar (§3.7.5)"`
 
-### Task 11: Event-calendar ingest (FRED + FOMC yaml) + staleness alarm
+### Task 11: Event-calendar ingest (FRED + FOMC yaml) + staleness alarm (AMENDED 2026-07-14)
+
+> **Amendment (user-approved 2026-07-14, master-sequence reconciliation):** the ingest +
+> staleness jobs register in the **`swingrl-collector` container's scheduler**
+> (`scripts/collector_main.py` — Track C, deployed in Wave 1 before this task runs), NOT
+> the trader's `scheduler/jobs.py`/`scripts/main.py`. Rationale: the collector is the
+> market-data plane (options plan D10); homing ingest there means calendar-code updates
+> never require trader rebuilds (A30). The ingestor code, config, tests, and backfill
+> Step 0a are unchanged. The staleness alarm sends Discord via the collector's own
+> `Alerter` (amended routing rule: trader scripts + collector send; memory never sends).
+> **New dependency: options plan T13/T14 merged + `swingrl-collector` deployed.** The
+> trader still *consumes* `calendar_events` at cycle time (Task 9) — reads only.
 
 **Files:**
 - Create: `src/swingrl/data/calendar.py`
 - Modify: `src/swingrl/config/schema.py` (new `CalendarConfig` section)
 - Modify: `config/swingrl.yaml`, `config/swingrl.prod.yaml.example`
-- Modify: `src/swingrl/scheduler/jobs.py` (weekly ingest job + daily staleness check)
-- Modify: `scripts/main.py` (register jobs)
+- Modify: `scripts/collector_main.py` (register weekly ingest job + daily staleness check — amended 2026-07-14; was `scheduler/jobs.py` + `scripts/main.py`)
 - Test: `tests/data/test_calendar.py`
 
 **Interfaces:**

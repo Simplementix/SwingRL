@@ -100,6 +100,15 @@ Coach/players/seasons analogy terms are tied to their concrete table or action.
   ban; era-1 deployment goes through gated promotion); the schema assertion is
   floor-semantics (Plan A Task 1/3), so trainer-applied V005–V009 never brick the
   running trader.
+- **Ops-jobs seam accepted (2026-07-14, master-sequence reconciliation D-4):** Tasks 19/27
+  register the grader / freshness / nightly-dump crons in the **trader's** scheduler as
+  written — meaning post-go-live grader tweaks ride trader rebuilds in market-safe windows.
+  Accepted (graders stabilize after cutover); documented escape hatch if rebuild churn
+  proves painful: re-home the training-ops crons to the `swingrl-collector` container's
+  scheduler (same pattern as Plan A Task 11's amended calendar jobs). Related Task 28 note:
+  **`swingrl-collector` keeps running through the cutover window** — its tables are not in
+  V010's REVOKE list and its lifecycle is independent (A30 3-service topology, Plan A
+  Task E as amended).
 - **Locked decisions bind throughout** (never re-litigate): D-T1.*/D-T2.*/D-T3.*/D-MT.*,
   amendments A1–A29, A26 stricter numbers (**pooled ≥12 bets AND ≥3 seasons; ladder level 3
   = 4 seasons**), turbulence memo adopted in full, P-A1 sentinels.
