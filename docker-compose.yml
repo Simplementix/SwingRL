@@ -94,6 +94,30 @@ services:
       - br0
     restart: unless-stopped
 
+  swingrl-collector:
+    container_name: swingrl-collector
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    # Pinned tag (D9): bumped by hand, only outside the 15:30-16:45 ET quiet window.
+    # A bare `docker compose up -d` after unrelated image builds must not recreate this.
+    image: swingrl-collector:2026-07-15
+    cpus: 2.0
+    env_file: .env
+    environment:
+      - TZ=America/New_York
+    command: ["python", "scripts/collector_main.py"]
+    volumes:
+      - ./data:/app/data
+      - ./db:/app/db
+      - ./config:/app/config
+      - ./logs:/app/logs
+    networks:
+      - default
+      - br0
+    restart: unless-stopped
+
   swingrl-dashboard:
     container_name: swingrl-dashboard
     build:

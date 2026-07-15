@@ -7,7 +7,9 @@
 #   [3/6] Run tests             — pytest inside container (MPS test skipped on Linux)
 #   [4/6] Lint + types          — ruff check + ruff format --check + mypy inside container
 #   [4a/6] Memory service lint  — build swingrl-memory and run ruff + mypy inside it
-#   [5/6] Cleanup               — docker compose down + prune dangling images
+#   [5/6] Cleanup               — dev-compose-project down + prune dangling images.
+#                                 Production compose is NEVER touched by cleanup:
+#                                 always-on services (trader, collector) must survive CI runs.
 #
 # Usage:
 #   bash ~/swingrl/scripts/ci-homelab.sh              # cached build (fast)
@@ -28,7 +30,12 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$HOME/swingrl}"
 NO_CACHE="${1:-}"
-DEV_COMPOSE="docker compose -f docker-compose-dev.yml"
+# Dev/CI runs under its OWN compose project name. Both compose files define a service
+# named "swingrl" under the same default project (the repo directory), so an unscoped
+# `docker compose -f docker-compose-dev.yml down` would match the labels of the
+# PRODUCTION trader container and stop it. -p isolates every dev command
+# (build/run/down) — and the dev image tag — from the production project.
+DEV_COMPOSE="docker compose -p swingrl-ci -f docker-compose-dev.yml"
 
 cd "$REPO_DIR"
 
@@ -66,8 +73,11 @@ docker compose run --rm --no-deps --entrypoint "" swingrl-memory sh -c \
 
 echo "=== [5/6] Cleanup ==="
 docker exec pg16 psql -U temporal -d postgres -c "DROP DATABASE IF EXISTS swingrl_test;" || true
+# Cleanup is scoped to the dev compose project ONLY. `docker compose down` against the
+# production project would stop every always-on service (trader, collector) on each CI
+# run. Production containers are managed by deployment, never by CI.
 $DEV_COMPOSE down
-docker compose down
+# Dangling (untagged) images only — never removes tagged images or images in use.
 docker image prune -f
 
 echo "=== CI PASSED ==="

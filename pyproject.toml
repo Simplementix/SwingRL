@@ -125,7 +125,7 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*", "fredapi.*", "exchange_calendars.*", "duckdb.*", "httpx.*", "yfinance.*", "stable_baselines3.*", "tenacity.*", "fastapi.*", "apscheduler.*", "starlette.*", "psycopg.*", "psycopg_pool.*"]
+module = ["pandas_ta.*", "hmmlearn.*", "alpaca.*", "stockstats.*", "pydantic_settings.*", "structlog.*", "fredapi.*", "exchange_calendars.*", "duckdb.*", "httpx.*", "yfinance.*", "stable_baselines3.*", "tenacity.*", "fastapi.*", "apscheduler.*", "starlette.*", "psycopg.*", "psycopg_pool.*", "pyarrow.*"]
 ignore_missing_imports = true
 
 [tool.bandit]
