@@ -57,6 +57,28 @@ def _hhmm(time_et: str) -> tuple[int, int]:
     return hour, minute
 
 
+# Process-global component registry (C1). A persistent SQLAlchemy jobstore can only
+# pickle a job's *func reference + primitive args* — never live objects that hold psycopg
+# pools. So the scheduler jobs are module-level functions that resolve their heavy
+# components from here at run time, mirroring the trader's arg-less job pattern
+# (scripts/main.py). This is what makes the jobs serializable.
+_components: dict[str, Any] | None = None
+
+
+def set_components(components: dict[str, Any]) -> None:
+    """Publish the built components for the module-level jobs to resolve (C1)."""
+    global _components
+    _components = components
+
+
+def get_components() -> dict[str, Any]:
+    """Return the components registry; raise if main() has not wired it yet (C1)."""
+    if _components is None:
+        log.error("options_collector_components_unset")
+        raise RuntimeError("collector components not initialized — call set_components() first")
+    return _components
+
+
 def build_app(config_path: str) -> dict[str, Any]:
     """Load config and wire logging, DB, alerter, and all collector components."""
     config = load_config(config_path)
@@ -163,31 +185,86 @@ def run_offsite_backup(config: SwingRLConfig, alerter: Alerter | None = None) ->
             alerter.send_alert("warning", "Options offsite backup failed", str(exc))
 
 
+def snapshot_job(label: str, pull_time_et: str) -> None:
+    """Picklable snapshot job (C1): resolve components, run a guarded snapshot (D8)."""
+    components = get_components()
+    now = datetime.now(UTC)
+    guarded_snapshot(
+        components["collector"],
+        label,
+        scheduled_pull_utc=_scheduled_pull_utc(pull_time_et, now),
+        now=now,
+    )
+
+
+def health_check_job() -> None:
+    """Picklable health-check job (C1): resolve components, run the lookback check (D9)."""
+    components = get_components()
+    run_health_check(
+        components["config"],
+        components["collector"],
+        components["store"],
+        components["alerter"],
+    )
+
+
+def data_audit_job() -> None:
+    """Picklable monthly data-quality audit job (C1)."""
+    components = get_components()
+    run_data_quality_audit(
+        config=components["config"],
+        db=components["db"],
+        alerter=components["alerter"],
+    )
+
+
+def offsite_backup_job() -> None:
+    """Picklable offsite-backup job (C1)."""
+    components = get_components()
+    run_offsite_backup(components["config"], components["alerter"])
+
+
+def remove_stale_jobs(scheduler: Any, config: SwingRLConfig) -> list[str]:
+    """Drop any persisted job whose id is no longer in the desired set (D4).
+
+    Defensive against a non-iterable scheduler (a MagicMock in unit tests): if get_jobs()
+    is not a real iterable of jobs, there is nothing persisted to clean up.
+    """
+    keep = set(all_job_ids(config))
+    removed: list[str] = []
+    try:
+        existing = list(scheduler.get_jobs())
+    except TypeError:
+        return removed
+    for job in existing:
+        job_id = getattr(job, "id", None)
+        if isinstance(job_id, str) and job_id not in keep:
+            scheduler.remove_job(job_id)
+            removed.append(job_id)
+    if removed:
+        log.info("options_stale_jobs_removed", removed=removed)
+    return removed
+
+
 def register_jobs(scheduler: Any, components: dict[str, Any]) -> None:
-    """Register per-snapshot + fixed cron jobs on the scheduler (D4, D8/D9)."""
+    """Register per-snapshot + fixed cron jobs, then drop any stale persisted jobs (D4, D8/D9).
+
+    Jobs are module-level functions with primitive-only args so the SQLAlchemy jobstore can
+    serialize them (C1). Heavy components are resolved from the process registry at run time.
+    """
     config: SwingRLConfig = components["config"]
     oc = config.options_collector
-    collector = components["collector"]
-    store = components["store"]
-    alerter = components["alerter"]
-    db = components["db"]
 
     for snap in oc.snapshots:
         sh, sm = _hhmm(snap.pull_time_et)
-
-        def _job(label: str = snap.label, pull: str = snap.pull_time_et) -> None:
-            now = datetime.now(UTC)
-            guarded_snapshot(
-                collector, label, scheduled_pull_utc=_scheduled_pull_utc(pull, now), now=now
-            )
-
         scheduler.add_job(
-            _job,
+            snapshot_job,
             trigger="cron",
             day_of_week="mon-fri",
             hour=sh,
             minute=sm,
             timezone="America/New_York",
+            args=[snap.label, snap.pull_time_et],
             id=_snapshot_job_id(snap.label),
             misfire_grace_time=snap.misfire_grace_s,
             replace_existing=True,
@@ -195,39 +272,38 @@ def register_jobs(scheduler: Any, components: dict[str, Any]) -> None:
 
     hh, hm = _hhmm(oc.health_check_time_et)
     scheduler.add_job(
-        run_health_check,
+        health_check_job,
         trigger="cron",
         day_of_week="mon-fri",
         hour=hh,
         minute=hm,
         timezone="America/New_York",
-        args=[config, collector, store, alerter],
         id="options_health_check",
         replace_existing=True,
     )
     ah, am = _hhmm(oc.integrity.audit_time_et)
     scheduler.add_job(
-        run_data_quality_audit,
+        data_audit_job,
         trigger="cron",
         day=oc.integrity.audit_day_of_month,
         hour=ah,
         minute=am,
         timezone="America/New_York",
-        kwargs={"config": config, "db": db, "alerter": alerter},
         id="options_data_audit",
         replace_existing=True,
     )
     bh, bm = _hhmm(oc.backup.time_et)
     scheduler.add_job(
-        run_offsite_backup,
+        offsite_backup_job,
         trigger="cron",
         hour=bh,
         minute=bm,
         timezone="America/New_York",
-        args=[config, alerter],
         id="options_offsite_backup",
         replace_existing=True,
     )
+
+    remove_stale_jobs(scheduler, config)
 
 
 def _make_signal_handler(
@@ -248,6 +324,7 @@ def main() -> int:
     args = parser.parse_args()
 
     components = build_app(args.config)
+    set_components(components)  # C1: module-level jobs resolve heavy components from here
     boot_self_check(components)  # D9: every restart is a self-audit
 
     scheduler = BackgroundScheduler(

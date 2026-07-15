@@ -8,7 +8,10 @@ from scripts.collector_main import (
     boot_self_check,
     guarded_snapshot,
     register_jobs,
+    remove_stale_jobs,
     run_health_check,
+    set_components,
+    snapshot_job,
 )
 from swingrl.config.schema import SwingRLConfig
 
@@ -117,3 +120,68 @@ def test_boot_self_check_runs_reconcile_and_health(monkeypatch) -> None:
     boot_self_check(components)
     components["store"].reconcile.assert_called_once()
     assert called["health"] == 1
+
+
+def test_jobs_are_serializable_in_sqlalchemy_jobstore(tmp_path) -> None:
+    """OPT-SCHED-8: real SQLAlchemyJobStore round-trip proves every job pickles (C1).
+
+    This is the regression test for the crash-loop: closures / live-object args could not
+    be serialized, so scheduler.start() raised ValueError at first boot.
+    """
+    from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+    from apscheduler.schedulers.background import BackgroundScheduler
+
+    cfg = SwingRLConfig()
+    scheduler = BackgroundScheduler(
+        jobstores={"default": SQLAlchemyJobStore(url=f"sqlite:///{tmp_path / 'jobs.sqlite'}")},
+        job_defaults={"coalesce": True, "max_instances": 1},
+    )
+    # Deliberately register with fakes that could NOT be pickled if they were job args —
+    # they are only reachable via the registry, never serialized into the jobstore.
+    set_components(
+        {
+            "config": cfg,
+            "collector": object(),
+            "store": object(),
+            "alerter": object(),
+            "db": object(),
+        }
+    )
+    register_jobs(scheduler, {"config": cfg})
+    scheduler.start(paused=True)  # flushes + serializes pending jobs to the jobstore
+    try:
+        ids = {job.id for job in scheduler.get_jobs()}
+        assert ids == set(all_job_ids(cfg))
+        assert len(ids) == 5
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+def test_remove_stale_jobs_drops_unknown_ids(tmp_path) -> None:
+    """OPT-SCHED-9: a persisted job id no longer in the desired set is removed (D4)."""
+    from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+    from apscheduler.schedulers.background import BackgroundScheduler
+
+    cfg = SwingRLConfig()
+    scheduler = BackgroundScheduler(
+        jobstores={"default": SQLAlchemyJobStore(url=f"sqlite:///{tmp_path / 'jobs.sqlite'}")},
+        job_defaults={"coalesce": True, "max_instances": 1},
+    )
+    set_components(_components(cfg))
+    register_jobs(scheduler, {"config": cfg})
+    scheduler.start(paused=True)
+    try:
+        scheduler.add_job(
+            snapshot_job,
+            trigger="cron",
+            hour=1,
+            args=["decision", "16:00"],
+            id="options_LEGACY_snapshot",
+            replace_existing=True,
+        )
+        assert "options_LEGACY_snapshot" in {j.id for j in scheduler.get_jobs()}
+        removed = remove_stale_jobs(scheduler, cfg)
+        assert removed == ["options_LEGACY_snapshot"]
+        assert "options_LEGACY_snapshot" not in {j.id for j in scheduler.get_jobs()}
+    finally:
+        scheduler.shutdown(wait=False)
