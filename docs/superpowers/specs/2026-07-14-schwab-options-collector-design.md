@@ -1,7 +1,13 @@
 # Schwab EOD Option-Chain Data Collector — Design Spec
 
+> **⚠ AMENDED 2026-07-14 (same day, user-approved): the primary provider is now CBOE, not
+> Schwab — see §17 (amendments C1–C4) before reading.** The Schwab design below is retained
+> in full as **shelved fallback #1**; §4/§7 (architecture, auth) are superseded for the
+> primary path. The plan (`2026-07-14-schwab-options-collector-plan.md`) is restructured
+> accordingly.
+
 - **Date:** 2026-07-14
-- **Status:** Draft for review
+- **Status:** Approved — amended C1–C4 (CBOE primary)
 - **Author:** vpanchal-code (with Claude)
 - **Related:** `~/thetadata_pull/SPX_DATA_SOURCING_SPEC.md`, `~/thetadata_pull/SPX_PREMIUM_DATA_SPEC.md` (prior intent), `docs/training/training-data-capture.md` (options table was scaffold-only)
 
@@ -494,3 +500,89 @@ Fixtures seeded from **one sanitized real chain response** captured during the b
 - The Schwab client library is reusable, unchanged, by the future SPX premium trader.
 - No silent data corruption: truncation and schema drift are detected and alerted; week-1 and monthly data-quality audits pass (sane greeks/OI/spreads, reconstructable IV surface, plausible decision→eod drift).
 - An offsite (3-2-1) backup of the un-backfillable captured data exists.
+
+---
+
+## 17. Amendments (2026-07-14, user-approved — session: three-plan master-sequence reconciliation)
+
+Numbered C1–C4, mirroring the redesign spec's amendment-log convention. Each states what
+it supersedes. The Schwab sections above are **not deleted** — they are the documented,
+fully-researched fallback path.
+
+### C1 — Primary provider = CBOE delayed-quotes endpoint (supersedes §4 architecture for the primary path)
+
+**Verified live 2026-07-14 (empirical pulls, this session):**
+
+| Claim | Evidence | Confidence |
+|---|---|---|
+| `https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json` returns the **full SPX chain, no auth**: 29,434 contracts (SPX + SPXW roots), 13 MB, 0.25 s | Live pull 2026-07-14 ~23:38 ET | **Verified** |
+| Per-contract fields: `bid/ask` **with sizes**, `iv`, `open_interest`, `volume`, `delta/gamma/theta/vega/rho`, `theo`, `last_trade_price/time`, `prev_day_close`, OHLC | Same pull, payload inspected | **Verified** |
+| Header (`data`): `current_price`, `bid/ask`, `iv30`, `seqno`, `last_trade_time`, top-level `timestamp` | Same pull | **Verified** |
+| All 8 equity ETFs served by the same endpoint (`SPY.json` 13,730 rows … `VTI.json` 944 rows, real OI/IV) | Live pulls, all four spot-checked symbols 200 OK | **Verified** |
+| Quotes populated even ~23:38 ET — SPX trades overnight (global trading hours) | Same pull | Verified (bonus finding) |
+| Companion endpoint `…/charts/historical/{symbol}.json`: daily OHLCV, SPY→2004, **`_SPX` index →1975** (12,990 rows, current same-day) | Live pulls | **Verified** |
+| Data is 15-minute delayed; exact delay convention (payload `timestamp` vs wall clock) | Not yet measured intraday | **Unverified — plan T6 measures it on a trading day before trusting the decision label** |
+| Endpoint stability / rate tolerance | Undocumented public feed powering cboe.com; widely used by open-source tooling; **no SLA** | Assumed — mitigated (health checks catch breakage same-day; two researched fallbacks behind the provider wrapper) |
+
+**Why CBOE wins for this collector:** zero auth (no token, no 7-day ritual, no secrets file,
+no OAuth machinery — deletes the design's single biggest operational burden and its whole
+failure class); SPX is CBOE's own exclusive product (primary source, not a broker re-serve);
+one GET per underlying; free. Costs accepted: 15-min delay (handled by C3), undocumented
+endpoint (handled by fallback ladder + guards), fewer metadata fields (strike/expiry/right
+parsed from the OSI symbol; no settlement/exercise-type or rate/dividend header — FRED
+covers rate/dividend if greeks are ever recomputed, per §6.5/data-caveats).
+
+### C2 — Provider fallback ladder (supersedes §7 for the primary path; §7 stays as fallback documentation)
+
+| Rank | Provider | Status | Why not primary |
+|---|---|---|---|
+| Primary | **CBOE delayed-quotes** | This spec, as amended | — |
+| Fallback #1 | **Schwab** (§4/§7 design, plan's shelved tasks) | App registered; design complete; **no token created — zero standing maintenance** | 7-day token = weekly human ritual; entitlement unverified |
+| Fallback #2 | **moomoo OpenAPI** | Researched 2026-07-14 (session record): free real-time OPRA LV1 w/ funded account, SPX in scope, snapshot path fits chain volumes | OpenD gateway auth churn (SMS/CAPTCHA on server-side whitelist expiry, hours–days; login-blocking forced upgrades) — unfit for unattended |
+| Rejected | E*TRADE | Researched 2026-07-14 | Daily hard token expiry at midnight ET, no refresh mechanism; SPX support unverifiable; platform stagnant |
+| Rejected | Headless-browser auth automation (any provider) | — | Full account credentials on disk + ToS risk + silent breakage — bad capital-preservation trade |
+
+The provider stays quarantined behind the wrapper (§2 dual-use design) — a swap touches the
+client module only, never parser/store/scheduler consumers' interfaces.
+
+### C3 — Timing model: pull time ≠ market time (amends §6.1/§11)
+
+- The stored record separates **`pull time`** (wall clock of the fetch) from **`quote/market
+  time`** (the moment the quotes represent, from the payload's own timestamp). Provenance
+  honesty replaces the entitlement question — §11's `isDelayed` first-run check is
+  superseded by a **delay-convention measurement** (plan T6): pull twice around 15:50/16:05
+  on a trading day, compare payload timestamps to wall clock, pin the offset.
+- **Decision snapshot: pull at ~16:00 ET to capture the ~15:45 market state** (15-min delay
+  assumed, verified at T6). The label's `market_time_et` stays 15:45; a late-fired pull
+  records `late_by_s` and alerts — a "decision" row must never silently contain post-close
+  state (lookahead-bias guard).
+- **EOD snapshot: pull at 16:35 ET unchanged** — options freeze by 16:15, so the delayed
+  view at 16:35 *is* the frozen close (decision D3's reasoning survives the provider swap).
+- **Live real-time chains are explicitly NOT this collector's problem**: the future premium
+  trader gets real-time data from its executing broker (ranked candidates: Schwab / moomoo /
+  Tradier-IBKR — session research on record). **Source-seam note (standing):** training
+  history = CBOE-delayed; live decisions = broker real-time; at premium go-live, run an
+  overlap period capturing both to measure the offset. Features built on z-scores/ratios/
+  spreads (per §6.5) wash out most level effects.
+
+### C4 — Restart-resilience decisions (amends §9/§10; user-approved in-session)
+
+The collector will be restarted many times while Plans A/B rework the same host. Locked:
+
+1. **Per-label misfire grace, config-driven** (replaces the single constant): decision
+   ~600–900 s (beyond that, skip + alert — never capture mislabeled state); eod ~4–6 h
+   (frozen close stays valid). Late fires stamp `late_by_s`.
+2. **Health check gains a lookback window** (last N trading days) and **also runs at boot** —
+   a watchdog that was down at 17:15 still catches yesterday's hole on the next start.
+3. **Boot-time self-check trio**: reconcile (already designed) + lookback health check
+   (+ the token-age check, applicable only if the Schwab fallback is ever activated).
+4. **`swingrl-collector`** (renamed from `swingrl-options` — it will absorb the FRED
+   calendar ingest per Plan A Task 11's amendment, and later a scheduled OHLCV refresh)
+   is **pinned to its own explicit image tag**; recreation only outside the
+   **15:30–16:45 ET quiet window** on trading days.
+5. **`ci-homelab.sh` cleanup must be scoped to the dev compose project** before the first
+   always-on deploy (verified: today's stage 5 `docker compose down` would kill any
+   always-on service on every CI run).
+
+Invariant achieved: any restart outside the quiet window is a non-event; downtime inside it
+either self-heals within grace or alerts loudly within hours — never silently.
