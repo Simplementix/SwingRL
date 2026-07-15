@@ -6,6 +6,7 @@ from datetime import date
 
 import psycopg
 import pytest
+
 from swingrl.data.options.schema import (
     ensure_monthly_partition,
     ensure_options_schema,
