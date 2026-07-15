@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from swingrl.config.schema import (
     OptionsCollectorConfig,
@@ -54,18 +55,27 @@ def test_options_config_env_override() -> None:
 
 
 def test_snapshot_label_must_be_known() -> None:
-    """OPT-CFG-6: snapshot label validated against the known set (spec §6.1, D4)."""
-    from swingrl.utils.exceptions import ConfigError
+    """OPT-CFG-6: snapshot label validated against the known set (spec §6.1, D4).
 
-    with pytest.raises(ConfigError):
+    OptionsSnapshotConfig raises ConfigError (a ValueError subclass) from a
+    field_validator; Pydantic v2 wraps validator-raised ValueErrors into a single
+    ValidationError for the model, same as EquityConfig/CryptoConfig's own
+    ConfigError-raising validators (see tests/test_config.py) — ConfigError does not
+    propagate unwrapped through model construction.
+    """
+    with pytest.raises(ValidationError) as exc_info:
         OptionsSnapshotConfig(label="lunchtime", market_time_et="12:00", pull_time_et="12:15")
+    assert "label" in str(exc_info.value)
 
 
 def test_snapshot_grace_positive_and_pull_not_before_market_time() -> None:
-    """OPT-CFG-7: misfire grace > 0; pull_time_et >= market_time_et (delayed feed, D8)."""
-    from swingrl.utils.exceptions import ConfigError
+    """OPT-CFG-7: misfire grace > 0; pull_time_et >= market_time_et (delayed feed, D8).
 
-    with pytest.raises(ConfigError):
+    See test_snapshot_label_must_be_known for why ValidationError (not ConfigError)
+    is asserted here.
+    """
+    with pytest.raises(ValidationError) as exc_info:
         OptionsSnapshotConfig(
             label="decision", market_time_et="15:45", pull_time_et="15:30", misfire_grace_s=900
         )
+    assert "pull_time_et" in str(exc_info.value)

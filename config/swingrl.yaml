@@ -69,6 +69,32 @@ backup:
   # offsite_host: ""                # rsync destination host (production only)
   # offsite_path: ""                # rsync destination path (production only)
 
+options_collector:
+  enabled: true
+  provider: cboe                    # primary (spec §17 C1); schwab/moomoo = fallbacks (C2)
+  endpoint_url_template: "https://cdn.cboe.com/api/global/delayed_quotes/options/{symbol}.json"
+  index_symbols: ["_SPX"]           # CBOE URL symbol; verified live 2026-07-14
+  include_equity_symbols: true      # also capture chains for config.equity.symbols
+  output_dir: "data/options_eod/cboe"
+  schema_version: "v1"
+  apscheduler_db_path: db/apscheduler_options.sqlite   # SEPARATE from the trader's jobstore
+  postgres_store_raw_json: true     # also store raw_json JSONB in Postgres; revisit at first-run
+  request_timeout_s: 30.0
+  rate_limit_per_sec: 1.0           # courtesy throttle; 9 GETs per run
+  health_check_time_et: "17:15"
+  health_lookback_days: 3           # D9: health check scans the last N trading days
+  snapshots:                        # pull trails market time by the feed delay (D8; verify at T6)
+    - { label: decision, market_time_et: "15:45", pull_time_et: "16:00", misfire_grace_s: 900 }
+    - { label: eod,      market_time_et: "16:15", pull_time_et: "16:35", misfire_grace_s: 18000 }
+  integrity:
+    contract_count_drop_warn_frac: 0.5   # partial-chain guard (CBOE has no truncation flag)
+    audit_day_of_month: 1
+    audit_time_et: "18:00"
+  backup:
+    enabled: true
+    rclone_remote: "b2:swingrl-options"
+    time_et: "02:30"
+
 shadow:
   equity_eval_days: 10              # trading days to evaluate shadow equity model
   crypto_eval_cycles: 30            # 4H cycles to evaluate shadow crypto model

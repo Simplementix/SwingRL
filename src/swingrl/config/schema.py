@@ -227,6 +227,86 @@ class BackupConfig(BaseModel):
     offsite_path: str = Field(default="")
 
 
+class OptionsSnapshotConfig(BaseModel):
+    """One scheduled snapshot: label, the market moment it represents, the pull time,
+    and its misfire grace (D8/D9 — pull time trails market time on a delayed feed)."""
+
+    label: str = Field(default="decision")
+    market_time_et: str = Field(default="15:45")  # the moment the data represents
+    pull_time_et: str = Field(default="16:00")  # when the cron fires (delay-adjusted)
+    misfire_grace_s: int = Field(default=900, gt=0)
+
+    @field_validator("label")
+    @classmethod
+    def label_known(cls, v: str) -> str:
+        """Recognized snapshot labels (config-driven; add times via YAML, not code)."""
+        allowed = {"open", "decision", "close", "eod"}
+        if v not in allowed:
+            raise ConfigError(f"options snapshot label must be one of {sorted(allowed)}, got {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def pull_not_before_market(self) -> OptionsSnapshotConfig:
+        """A delayed feed can never show the market time before it happened."""
+        if self.pull_time_et < self.market_time_et:  # HH:MM strings compare lexically
+            raise ConfigError(
+                f"snapshot {self.label!r}: pull_time_et {self.pull_time_et} precedes "
+                f"market_time_et {self.market_time_et}"
+            )
+        return self
+
+
+class OptionsIntegrityConfig(BaseModel):
+    """Silent-corruption guards + audit schedule (spec §10.5/§10.6, §17 C1)."""
+
+    # CBOE has no truncation flag; the partial-chain guard is a contract-count drop
+    # vs the previous same-label snapshot (fraction; 0.5 = warn on a >50% drop).
+    contract_count_drop_warn_frac: float = Field(default=0.5, gt=0.0, le=1.0)
+    audit_day_of_month: int = Field(default=1, ge=1, le=28)
+    audit_time_et: str = Field(default="18:00")
+
+
+class OptionsBackupConfig(BaseModel):
+    """Offsite 3-2-1 backup of the un-backfillable capture (spec §13)."""
+
+    enabled: bool = Field(default=True)
+    rclone_remote: str = Field(default="b2:swingrl-options")
+    time_et: str = Field(default="02:30")
+
+
+class OptionsCollectorConfig(BaseModel):
+    """EOD option-chain collector configuration (spec §5 as amended §17)."""
+
+    enabled: bool = Field(default=True)
+    provider: str = Field(default="cboe")
+    endpoint_url_template: str = Field(
+        default="https://cdn.cboe.com/api/global/delayed_quotes/options/{symbol}.json"
+    )
+    index_symbols: list[str] = Field(default_factory=lambda: ["_SPX"])
+    include_equity_symbols: bool = Field(default=True)
+    output_dir: str = Field(default="data/options_eod/cboe")
+    schema_version: str = Field(default="v1")
+    snapshots: list[OptionsSnapshotConfig] = Field(
+        default_factory=lambda: [
+            OptionsSnapshotConfig(
+                label="decision", market_time_et="15:45", pull_time_et="16:00", misfire_grace_s=900
+            ),
+            OptionsSnapshotConfig(
+                label="eod", market_time_et="16:15", pull_time_et="16:35", misfire_grace_s=18000
+            ),
+        ]
+    )
+    request_timeout_s: float = Field(default=30.0, gt=0.0)
+    rate_limit_per_sec: float = Field(default=1.0, gt=0.0)
+    health_check_time_et: str = Field(default="17:15")
+    health_lookback_days: int = Field(default=3, ge=1)  # D9 lookback window
+    apscheduler_db_path: str = Field(default="db/apscheduler_options.sqlite")
+    # Keep raw_json in Postgres JSONB too (bulky). Default on; revisit at first-run (decision D5).
+    postgres_store_raw_json: bool = Field(default=True)
+    integrity: OptionsIntegrityConfig = Field(default_factory=OptionsIntegrityConfig)
+    backup: OptionsBackupConfig = Field(default_factory=OptionsBackupConfig)
+
+
 class ShadowConfig(BaseModel):
     """Shadow model evaluation configuration."""
 
@@ -498,6 +578,7 @@ class SwingRLConfig(BaseSettings):
     alerting: AlertingConfig = Field(default_factory=AlertingConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
+    options_collector: OptionsCollectorConfig = Field(default_factory=OptionsCollectorConfig)
     shadow: ShadowConfig = Field(default_factory=ShadowConfig)
     sentiment: SentimentConfig = Field(default_factory=SentimentConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
