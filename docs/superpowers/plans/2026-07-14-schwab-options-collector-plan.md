@@ -742,20 +742,31 @@ git add scripts/capture_chain_fixture.py tests/fixtures/cboe_chain_spx.json test
 git commit -m "chore(options): capture-fixture helper + real CBOE SPX/SPY chain fixtures (D2)"
 ```
 
-- [ ] **Step 3: 🛑 Delay-convention measurement (human; needs one trading day, 15:45–16:10 ET window)**
+- [x] **Step 3: 🛑 Delay-convention measurement (human; needs one trading day, 15:45–16:10 ET window)** — DONE 2026-07-15
 
 Run `--probe` for `_SPX` at ~**15:50 ET** and again at ~**16:05 ET**. Compute
 `wall_clock − payload_timestamp` (and sanity-check `header_last_trade_time`). Record in
 this plan (below) and in spec §17 C1's table:
 
-- Measured offset at 15:50 ET: ________ (expected ≈ 15 min)
-- Measured offset at 16:05 ET: ________
-- Timestamp timezone convention confirmed: ________ (2026-07-14 observation: top-level
-  `timestamp` appears to be UTC)
+- Measured offset at 15:50 ET: **content delay 15 m 27 s** (wall 15:50:02 ET vs header
+  `last_trade_time` 15:34:35 ET). Payload `timestamp` was only ~23 s behind wall clock —
+  it is the UTC *generation* time, not the quote time; the 15-min delay lives in the
+  quote CONTENT, so the delay is measured against `last_trade_time`, not `timestamp`.
+- Measured offset at 16:05 ET: **content delay 15 m 27 s** (wall 16:05:02 ET vs header
+  `last_trade_time` 15:49:35 ET; payload `timestamp` again ~23 s behind).
+- Timestamp timezone convention confirmed: top-level `timestamp` = **UTC generation time**
+  (2026-07-14 observation confirmed); per-contract/header `last_trade_time` = **ET**
+  (read as UTC the 16:05 probe would imply a 4 h 16 m delay — impossible; the parser's
+  ET→UTC localization in `parse_cboe_ts` is empirically confirmed).
+- **Verdict: offset ≈ assumed 15 min → `snapshots[].pull_time_et` UNCHANGED** (decision
+  16:00 → content ≈15:44:33 ET, at-or-just-before the 15:45 label = zero lookahead; eod
+  16:35 → content ≈16:19:33 ET, safely past the 16:15 freeze). Probe log:
+  `.superpowers/sdd/t6-probe-2026-07-15.log` (dev checkout).
 
 **If the offset ≠ ~15 min, adjust `snapshots[].pull_time_et` in `config/swingrl.yaml`
 (T2) so the decision pull captures the 15:45 ET state — before T13's deploy.** A grossly
 different convention (e.g. no delay at all) is good news; just re-derive pull times.
+*(Resolved: offset matched the assumption; no adjustment needed.)*
 
 ---
 

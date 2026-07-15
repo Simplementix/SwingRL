@@ -23,23 +23,37 @@ Four separate timestamps exist per snapshot — never assume they're interchange
 per-contract `last_trade_time` is a naive wall-clock string that the fixtures show clustering in
 market hours (e.g. a 16:00:00 last trade = the ET close). The parser
 (`chain_parser.parse_cboe_ts`) therefore treats it as `America/New_York` and converts to UTC —
-so a 15:59:07 last trade is stored as 19:59:07Z in summer. This ET convention is **inferred from
-fixture evidence, to be confirmed by the T6 trading-day probe** — it is not yet empirically
-verified. If T6 shows the field is actually UTC, this one localization line is the only change.
+so a 15:59:07 last trade is stored as 19:59:07Z in summer. This ET convention is **empirically
+confirmed by the T6 probe (2026-07-15)**: at 16:05:02 ET wall clock the header
+`last_trade_time` read 15:49:35 — exactly a 15-min-delayed ET view of a continuously trading
+SPX; a UTC reading would imply a 4 h 16 m delay, which is impossible. The ET→UTC localization
+is correct as written — do not revert it.
 
-**Measured offset: PENDING T6 probe.** The 15-minute delay is a design assumption baked into
-`pull_time_et` (16:00 for `decision`, 16:35 for `eod` — both scheduled to trail their
-`market_time_et` by roughly the assumed delay plus buffer), not yet an empirically measured
-number. T6 pins the real offset by comparing `raw_header.payload_timestamp` to `pulled_at_utc`
-on a live trading day, mid-session. **Until that measurement lands here, do not tighten the
-misfire-grace windows or shift the pull times** — they're sized for the *assumed* delay with
-margin, not the confirmed one.
+**Measured offset (T6 probe, 2026-07-15): content delay 15 m 27 s**, identical at both
+mid-session probes (15:50:02 ET → header `last_trade_time` 15:34:35; 16:05:02 ET → 15:49:35).
+The delay applies to the quote **content** (`last_trade_time`), NOT to the top-level
+`timestamp` — that field is the feed's UTC *generation* time and tracked wall clock within
+~23–34 s all day (08:25:53 ET morning pull: 34 s behind; both afternoon probes: 23 s).
+Computing the delay as `wall_clock − payload_timestamp` measures nothing. Pull times and
+misfire-grace windows are now anchored on a *measured* delay, and the shipped values are
+confirmed: `decision` pulled 16:00 → content ≈15:44:33 ET, 27 s *before* the asserted 15:45
+label — the safe, no-lookahead side; `eod` pulled 16:35 → content ≈16:19:33 ET, past the
+16:15 freeze with ~4.5 min margin. **Do not shift the decision pull later** — content would
+land *after* the asserted label (lookahead bias). Probe log:
+`.superpowers/sdd/t6-probe-2026-07-15.log` (dev checkout).
 
-**2026-07-15 00:40 ET off-hours observation (informational only — not the T6 result):** a pull
-made at that hour showed `payload_timestamp` roughly 47 minutes behind wall clock. This was
-**not** a live trading-session measurement — the market was closed at 00:40 ET, so the feed was
-showing Tuesday's (2026-07-14) close state, and the gap reflects overnight feed staleness, not
-the intraday 15-minute delay. It's recorded here as context, not as the delay-convention answer.
+**Timestamp-convention evidence trail (2026-07-15, morning + off-hours):**
+
+- **08:24 ET browser check:** cboe.com quote page showed `timestamp` `2026-07-15 12:23:19` —
+  only sensible as UTC (12:23 UTC = 08:23 EDT). First direct evidence the top-level
+  `timestamp` is UTC.
+- **08:25:53 ET live pull:** `timestamp` `2026-07-15 12:25:19` — ~34 s behind wall clock,
+  i.e. the field is a near-real-time *generation* stamp, NOT itself 15-min delayed. This is
+  why the 15-minute delay must be judged against quote content, never against `timestamp`.
+- **00:40 ET off-hours pull (informational only — not the T6 result):** `payload_timestamp`
+  roughly 47 minutes behind wall clock. The market was closed, so the feed was showing
+  Tuesday's (2026-07-14) close state — overnight feed staleness, not the intraday delay
+  convention. Off-hours observations mislead; only the mid-session probe counts.
 
 ## `iv` is a decimal fraction, not a percent
 
