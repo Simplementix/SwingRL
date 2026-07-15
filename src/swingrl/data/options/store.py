@@ -125,6 +125,16 @@ class OptionsStore:
         """True if the Parquet file for this snapshot already exists (skip unit)."""
         return self.parquet_path(symbol, quote_date, snapshot_label).exists()
 
+    def last_snapshot_row_count(self, symbol: str, snapshot_label: str) -> int | None:
+        """Row count of the most recent stored Parquet for (symbol, label), else None."""
+        import pyarrow.parquet as pq
+
+        directory = self._root / self.symbol_to_dir(symbol)
+        candidates = sorted(directory.glob(f"*_{snapshot_label}.parquet"))
+        if not candidates:
+            return None
+        return int(pq.ParquetFile(candidates[-1]).metadata.num_rows)
+
     def write_snapshot(
         self, parsed: ParsedChain, symbol: str, quote_date: date, snapshot_label: str
     ) -> Path:
