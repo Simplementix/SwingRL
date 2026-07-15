@@ -14,7 +14,7 @@ automated monthly audit (`options_data_audit`, 1st of month) flags something and
 inspect the raw rows behind the alert.
 
 **Relationship to the automated monthly audit:** `src/swingrl/data/options/audit.py` already
-runs checks 2–3 below (delta range, crossed markets, OI-null, OI same-day stability)
+runs checks 2–4 below (delta range, crossed markets, OI-null, OI same-day stability)
 automatically every month and CRITICAL-alerts on failure. This runbook adds the checks that
 are **not** automated — the IV-surface shape (needs a human eyeball), the decision→eod drift
 plausibility check, and the delay-offset spot-check — plus gives you the SQL to look at the
@@ -116,10 +116,16 @@ near-the-money, widening sensibly for thin/far strikes.
 Same-day `decision` (15:45-labeled) vs `eod` (16:15-labeled) quotes should differ — a feed
 that's frozen/stuck would show zero drift everywhere, which is itself a bug signal.
 
+CBOE's payload has no `mark` field (the `options_chains.mark` column is carried by the DDL
+for schema compatibility but is never populated by the parser — see
+`docs/options/data-caveats.md`), so drift here is computed from the mid-price
+`(bid + ask) / 2.0` instead. Both sides of the join require non-`NULL` `bid` and `ask`.
+
 ```sql
 SELECT d.underlying_symbol, d.contract_symbol, d.strike, d.option_right,
-       d.mark AS decision_mark, e.mark AS eod_mark,
-       (e.mark - d.mark) AS drift
+       (d.bid + d.ask) / 2.0 AS decision_mid,
+       (e.bid + e.ask) / 2.0 AS eod_mid,
+       ((e.bid + e.ask) / 2.0 - (d.bid + d.ask) / 2.0) AS drift
 FROM options_chains d
 JOIN options_chains e
   ON d.underlying_symbol = e.underlying_symbol
@@ -128,13 +134,15 @@ JOIN options_chains e
 WHERE d.quote_date = '2026-07-15'
   AND d.snapshot_label = 'decision' AND e.snapshot_label = 'eod'
   AND d.underlying_symbol = '_SPX'
-ORDER BY ABS(e.mark - d.mark) DESC
+  AND d.bid IS NOT NULL AND d.ask IS NOT NULL
+  AND e.bid IS NOT NULL AND e.ask IS NOT NULL
+ORDER BY ABS((e.bid + e.ask) / 2.0 - (d.bid + d.ask) / 2.0) DESC
 LIMIT 25;
 ```
 
-**Pass:** a real, plausible spread of non-zero drift values (bigger on more volatile days,
-smaller on quiet ones) — not all zeros, and not implausibly large jumps that would suggest a
-mislabeled snapshot.
+**Pass:** a real, plausible spread of non-zero mid-price drift values (bigger on more volatile
+days, smaller on quiet ones) — not all zeros, and not implausibly large jumps that would
+suggest a mislabeled snapshot.
 
 ## 6. Delay-offset spot-check against the T6 finding
 
@@ -162,7 +170,7 @@ investigating before trusting that day's `decision` label.
 
 | Concern | File |
 |---|---|
-| Automated equivalent of checks 2–3 | `src/swingrl/data/options/audit.py` (`audit_dataframe`, `oi_stability_failures`) |
+| Automated equivalent of checks 2–4 | `src/swingrl/data/options/audit.py` (`audit_dataframe`, `oi_stability_failures`) |
 | `options_chains` / `options_snapshots` DDL | `src/swingrl/data/options/schema.py` |
 | Delay/timestamp field definitions | `docs/options/data-caveats.md` |
 | Monthly audit schedule + alerting | `docs/options/ops.md` |
@@ -170,3 +178,8 @@ investigating before trusting that day's `decision` label.
 ## Changelog
 
 - **2026-07-15** — Initial version (Task 15).
+- **2026-07-15** — Task-15 review fix: Check 5 used `mark`, which CBOE never sends and the
+  parser never populates (permanently `NULL`), so drift could never be non-zero. Rewrote to
+  compute mid-price `(bid + ask) / 2.0` instead, with a `bid`/`ask` non-`NULL` filter on both
+  sides of the join. Also fixed a stale "checks 2–3" cross-reference (should be 2–4) in two
+  places.

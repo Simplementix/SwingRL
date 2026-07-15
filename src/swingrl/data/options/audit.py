@@ -95,7 +95,7 @@ def _load_recent(conn: psycopg.Connection[Any], symbol: str, cutoff: date) -> pd
     with conn.cursor() as cur:
         cur.execute(
             "SELECT quote_date, snapshot_label, contract_symbol, delta, bid, ask, iv, "
-            "open_interest, mark FROM options_chains "
+            "open_interest FROM options_chains "
             "WHERE underlying_symbol = %s AND quote_date >= %s",
             (symbol, cutoff),
         )
