@@ -10,7 +10,6 @@ from scripts.collector_main import (
     register_jobs,
     run_health_check,
 )
-
 from swingrl.config.schema import SwingRLConfig
 
 
