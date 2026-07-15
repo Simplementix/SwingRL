@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import structlog
@@ -15,6 +16,7 @@ from swingrl.utils.exceptions import DataError
 
 log = structlog.get_logger(__name__)
 
+_ET = ZoneInfo("America/New_York")
 _SENTINELS = {-999.0, -999}
 _OSI_RE = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
 
@@ -79,15 +81,23 @@ def parse_osi(symbol: str) -> tuple[str, date, str, float]:
 
 
 def parse_cboe_ts(value: str | None) -> datetime | None:
-    """CBOE timestamp strings -> tz-aware UTC (convention verified at T6)."""
+    """CBOE last_trade_time strings -> tz-aware UTC.
+
+    The naive timestamp is treated as America/New_York, not UTC: the fixtures cluster in
+    market hours (e.g. an SPY last trade of 16:00:00 = the ET close), so it must be an ET
+    wall-clock. This convention is inferred from fixture evidence and is to be CONFIRMED by
+    the T6 trading-day probe — it is not yet empirically verified. Parse naive, localize ET,
+    then convert to UTC.
+    """
     if not value:
         return None
     normalized = value.replace("T", " ")
     try:
-        return datetime.strptime(normalized, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        naive = datetime.strptime(normalized, "%Y-%m-%d %H:%M:%S")
     except ValueError:
         log.warning("cboe_ts_unparsed", value=value)
         return None
+    return naive.replace(tzinfo=_ET).astimezone(UTC)
 
 
 def clean_sentinel(value: float | int | None, *, zero_is_missing: bool = False) -> float:

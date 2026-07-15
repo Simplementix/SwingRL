@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from datetime import UTC, date, datetime
 
+import pandas as pd
 import pytest
 
 from swingrl.data.options.chain_parser import (
@@ -124,6 +125,23 @@ def test_sentinel_greeks_become_nan() -> None:
     """OPT-PARSE-6: -999 greeks stored as NaN, never -999 (spec §6.3)."""
     df = _parse().contracts.set_index("contract_symbol")
     assert math.isnan(df.loc["SPX260918P04000000", "delta"])
+
+
+def test_trade_time_localized_from_et() -> None:
+    """OPT-PARSE-10: last_trade_time is ET; stored trade_time_utc converts to UTC (C2)."""
+    df = _parse().contracts.set_index("contract_symbol")
+    ts = df.loc["SPXW260724C07500000", "trade_time_utc"]
+    # Fixture last_trade_time "2026-07-14T15:59:07" is 15:59:07 ET (EDT) = 19:59:07 UTC.
+    assert pd.Timestamp(ts) == pd.Timestamp("2026-07-14 19:59:07", tz="UTC")
+
+
+def test_parse_cboe_ts_localizes_et_to_utc() -> None:
+    """OPT-PARSE-11: naive CBOE timestamp is ET, not UTC; None passes through (C2)."""
+    from swingrl.data.options.chain_parser import parse_cboe_ts
+
+    # 16:00:00 ET (EDT) close = 20:00:00 UTC — the +4h shift proves ET localization.
+    assert parse_cboe_ts("2026-07-14T16:00:00") == datetime(2026, 7, 14, 20, 0, 0, tzinfo=UTC)
+    assert parse_cboe_ts(None) is None
 
 
 def test_raw_json_populated_per_row() -> None:

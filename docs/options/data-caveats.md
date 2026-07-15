@@ -19,6 +19,14 @@ Four separate timestamps exist per snapshot — never assume they're interchange
 | `raw_header.payload_timestamp` | inside `options_snapshots.raw_header` (jsonb) | CBOE's own top-level `timestamp` field from the response — the feed's self-reported data-as-of time. |
 | `raw_header.late_by_s` | same | How late the job fired past its *scheduled* pull time (not the delay itself) — `0.0` unless the container was down/slow. Non-zero on a `decision` snapshot triggers a WARNING (lookahead-bias guard): a late-fired decision snapshot must never silently pass as genuine 15:45 data. |
 
+**`trade_time_utc` (from CBOE `last_trade_time`) is localized from ET, not UTC.** The feed's
+per-contract `last_trade_time` is a naive wall-clock string that the fixtures show clustering in
+market hours (e.g. a 16:00:00 last trade = the ET close). The parser
+(`chain_parser.parse_cboe_ts`) therefore treats it as `America/New_York` and converts to UTC —
+so a 15:59:07 last trade is stored as 19:59:07Z in summer. This ET convention is **inferred from
+fixture evidence, to be confirmed by the T6 trading-day probe** — it is not yet empirically
+verified. If T6 shows the field is actually UTC, this one localization line is the only change.
+
 **Measured offset: PENDING T6 probe.** The 15-minute delay is a design assumption baked into
 `pull_time_et` (16:00 for `decision`, 16:35 for `eod` — both scheduled to trail their
 `market_time_et` by roughly the assumed delay plus buffer), not yet an empirically measured
@@ -138,3 +146,5 @@ standing plan for that boundary:
 ## Changelog
 
 - **2026-07-15** — Initial version (Task 15). Delay convention marked PENDING T6 probe.
+- **2026-07-15** — Document `trade_time_utc` ET-localization convention (C2): `last_trade_time`
+  is parsed as ET and converted to UTC, inferred from fixtures, pending T6 confirmation.
