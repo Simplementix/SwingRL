@@ -82,7 +82,8 @@ class OptionsStore:
 
     def read_snapshot(self, symbol: str, quote_date: date, snapshot_label: str) -> ParsedChain:
         """Read a snapshot back, restoring raw_json dicts and header datetimes."""
-        df = pd.read_parquet(self.parquet_path(symbol, quote_date, snapshot_label))
+        pq_path = self.parquet_path(symbol, quote_date, snapshot_label)
+        df = pd.read_parquet(pq_path)
         df["raw_json"] = df["raw_json"].map(json.loads)
         header = self._read_header(self.header_path(symbol, quote_date, snapshot_label))
         # Reindex to the canonical column order only when the full contract grain is
@@ -91,6 +92,12 @@ class OptionsStore:
         # selecting CONTRACT_COLUMNS unconditionally would KeyError on those.
         if all(col in df.columns for col in CONTRACT_COLUMNS):
             df = df[CONTRACT_COLUMNS]
+        else:
+            log.warning(
+                "options_snapshot_partial_columns",
+                path=str(pq_path),
+                missing=sorted(set(CONTRACT_COLUMNS) - set(df.columns)),
+            )
         return ParsedChain(header=header, contracts=df)
 
     @staticmethod
