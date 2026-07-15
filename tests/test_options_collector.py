@@ -4,10 +4,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
-from swingrl.data.options.collector import OptionsCollector, check_schema_drift
+import pytest
 
 from swingrl.config.schema import SwingRLConfig
 from swingrl.data.options.chain_parser import ParsedChain
+from swingrl.data.options.collector import OptionsCollector, check_schema_drift
 from swingrl.utils.exceptions import DataError
 
 
@@ -126,3 +127,11 @@ def test_late_decision_fire_warns_and_stamps() -> None:
     _, kwargs = store.write_snapshot.call_args
     parsed: ParsedChain = store.write_snapshot.call_args.args[0]
     assert parsed.header["raw_header"]["late_by_s"] == 600.0
+
+
+def test_unknown_snapshot_label_raises_data_error() -> None:
+    """OPT-COLLECT-12: unknown snapshot_label raises typed DataError, not bare
+    StopIteration (repo convention: never raise bare exceptions)."""
+    c, _ = _collector(MagicMock(), _store_mock())
+    with pytest.raises(DataError, match="bogus"):
+        c.run_snapshot("bogus", now=datetime(2026, 7, 14, 20, 0, tzinfo=UTC))

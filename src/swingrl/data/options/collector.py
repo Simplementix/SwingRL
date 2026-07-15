@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from swingrl.config.schema import SwingRLConfig
     from swingrl.data.options.cboe_client import CboeChainClient
     from swingrl.data.options.store import OptionsStore
-    from swingrl.monitoring.alerter import Alerter
+    from swingrl.monitoring.alerter import Alerter, AlertLevel
 
 log = structlog.get_logger(__name__)
 _ET = ZoneInfo("America/New_York")
@@ -84,8 +84,11 @@ class OptionsCollector:
 
     def _market_time_utc(self, snapshot_label: str, quote_date: date) -> datetime:
         """The MARKET moment this label represents (D8) — never the pull time."""
-        time_et = next(s.market_time_et for s in self._oc.snapshots if s.label == snapshot_label)
-        hh, mm = (int(x) for x in time_et.split(":"))
+        snap = next((s for s in self._oc.snapshots if s.label == snapshot_label), None)
+        if snap is None:
+            log.error("options_unknown_snapshot_label", label=snapshot_label)
+            raise DataError(f"No snapshot config for label {snapshot_label!r}")
+        hh, mm = (int(x) for x in snap.market_time_et.split(":"))
         return datetime(
             quote_date.year, quote_date.month, quote_date.day, hh, mm, tzinfo=_ET
         ).astimezone(UTC)
@@ -189,6 +192,6 @@ class OptionsCollector:
                 f"succeeded={result.succeeded} skipped={result.skipped}",
             )
 
-    def _alert(self, level: str, title: str, message: str) -> None:
+    def _alert(self, level: AlertLevel, title: str, message: str) -> None:
         if self._alerter is not None:
-            self._alerter.send_alert(level, title, message)  # type: ignore[arg-type]
+            self._alerter.send_alert(level, title, message)
