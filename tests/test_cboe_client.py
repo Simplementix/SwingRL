@@ -4,9 +4,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from swingrl.data.options.cboe_client import CboeChainClient
 
 from swingrl.config.schema import OptionsCollectorConfig
+from swingrl.data.options.cboe_client import CboeChainClient
 from swingrl.utils.exceptions import DataError
 
 
