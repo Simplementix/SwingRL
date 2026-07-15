@@ -281,10 +281,14 @@ def remove_stale_jobs(scheduler: Any, config: SwingRLConfig) -> list[str]:
 
 
 def register_jobs(scheduler: Any, components: dict[str, Any]) -> None:
-    """Register per-snapshot + fixed cron jobs, then drop any stale persisted jobs (D4, D8/D9).
+    """Register per-snapshot + fixed cron jobs (D8/D9).
 
     Jobs are module-level functions with primitive-only args so the SQLAlchemy jobstore can
     serialize them (C1). Heavy components are resolved from the process registry at run time.
+
+    Stale-job removal (D4) is NOT done here: on a not-yet-started scheduler, get_jobs() does
+    not see the persistent jobstore, so a stale job would silently survive. Callers must invoke
+    remove_stale_jobs() AFTER scheduler.start() (see main()).
     """
     config: SwingRLConfig = components["config"]
     oc = config.options_collector
@@ -337,8 +341,6 @@ def register_jobs(scheduler: Any, components: dict[str, Any]) -> None:
         replace_existing=True,
     )
 
-    remove_stale_jobs(scheduler, config)
-
 
 def _make_signal_handler(
     scheduler: Any, stop_event: threading.Event
@@ -377,6 +379,10 @@ def main() -> int:
     signal.signal(signal.SIGTERM, handler)
     signal.signal(signal.SIGINT, handler)
     scheduler.start()
+    # D4: stale-job removal must run AFTER start() — get_jobs() on a not-yet-started
+    # scheduler does not see the persistent jobstore, so a stale job (e.g. a renamed
+    # snapshot label) would survive and keep firing forever (R1).
+    remove_stale_jobs(scheduler, components["config"])
     log.info("options_collector_started", jobs=all_job_ids(components["config"]))
     stop_event.wait()
     log.info("options_collector_exiting")

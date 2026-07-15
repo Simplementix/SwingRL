@@ -172,7 +172,13 @@ def test_jobs_are_serializable_in_sqlalchemy_jobstore(tmp_path) -> None:
 
 
 def test_remove_stale_jobs_drops_unknown_ids(tmp_path) -> None:
-    """OPT-SCHED-9: a persisted job id no longer in the desired set is removed (D4)."""
+    """OPT-SCHED-9: a persisted job id no longer in the desired set is removed (D4, R1).
+
+    Models the real production order (main()): a legacy job id is already persisted in the
+    jobstore (e.g. from a prior process with a since-renamed snapshot label). register_jobs()
+    runs first, then scheduler.start(), then remove_stale_jobs() — matching main(), since
+    get_jobs() on a not-yet-started scheduler cannot see the persistent jobstore (R1).
+    """
     from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
     from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -181,22 +187,27 @@ def test_remove_stale_jobs_drops_unknown_ids(tmp_path) -> None:
         jobstores={"default": SQLAlchemyJobStore(url=f"sqlite:///{tmp_path / 'jobs.sqlite'}")},
         job_defaults={"coalesce": True, "max_instances": 1},
     )
+    # Persist a legacy job id directly into the jobstore before anything else runs, standing
+    # in for a stale job left behind by a prior process (e.g. a renamed YAML snapshot label).
+    scheduler.add_job(
+        snapshot_job,
+        trigger="cron",
+        hour=1,
+        args=["decision", "16:00"],
+        id="options_LEGACY_snapshot",
+        replace_existing=True,
+    )
+
     set_components(_components(cfg))
     register_jobs(scheduler, {"config": cfg})
-    scheduler.start(paused=True)
+    scheduler.start()
     try:
-        scheduler.add_job(
-            snapshot_job,
-            trigger="cron",
-            hour=1,
-            args=["decision", "16:00"],
-            id="options_LEGACY_snapshot",
-            replace_existing=True,
-        )
-        assert "options_LEGACY_snapshot" in {j.id for j in scheduler.get_jobs()}
         removed = remove_stale_jobs(scheduler, cfg)
         assert removed == ["options_LEGACY_snapshot"]
-        assert "options_LEGACY_snapshot" not in {j.id for j in scheduler.get_jobs()}
+        ids = {j.id for j in scheduler.get_jobs()}
+        assert "options_LEGACY_snapshot" not in ids
+        assert ids == set(all_job_ids(cfg))
+        assert len(ids) == 5
     finally:
         scheduler.shutdown(wait=False)
 
