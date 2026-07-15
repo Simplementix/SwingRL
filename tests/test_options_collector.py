@@ -73,6 +73,31 @@ def test_per_symbol_isolation_one_fails_others_succeed() -> None:
     assert set(result.succeeded) == {"_SPX", "QQQ"}
 
 
+def test_per_symbol_isolation_non_dataerror() -> None:
+    """OPT-COLLECT-13: a non-DataError (e.g. transport/pool error) is isolated too (C4)."""
+    client = MagicMock()
+    client.get_option_chain.side_effect = lambda s: (
+        (_ for _ in ()).throw(RuntimeError("cdn down")) if s == "SPY" else _raw(s)
+    )
+    c, _ = _collector(client, _store_mock())
+    result = c.run_snapshot("decision", now=datetime(2026, 7, 14, 20, 0, tzinfo=UTC))
+    assert "SPY" in result.failed
+    assert set(result.succeeded) == {"_SPX", "QQQ"}
+
+
+def test_postgres_sync_failure_is_warning_not_failure() -> None:
+    """OPT-COLLECT-14: Parquet landed but DB sync failed -> succeeded + warning (C4)."""
+    client = MagicMock()
+    client.get_option_chain.side_effect = lambda s: _raw(s)
+    store = _store_mock()
+    store.sync_to_postgres.side_effect = RuntimeError("pg pool exhausted")
+    c, _ = _collector(client, store)
+    result = c.run_snapshot("decision", now=datetime(2026, 7, 14, 20, 0, tzinfo=UTC))
+    assert set(result.succeeded) == {"_SPX", "SPY", "QQQ"}
+    assert not result.failed
+    assert any("postgres sync failed" in w for w in result.warnings)
+
+
 def test_skip_already_captured() -> None:
     """OPT-COLLECT-7: existing Parquet snapshot is skipped (spec §10.1)."""
     store = _store_mock()

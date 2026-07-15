@@ -131,7 +131,9 @@ class OptionsCollector:
                     result,
                 )
                 result.succeeded.append(symbol)
-            except DataError as exc:
+            except Exception as exc:
+                # Broaden beyond DataError (C4): httpx.TransportError (CDN down post-retry),
+                # psycopg/pool errors, OSError must not abort the whole run without a summary.
                 log.error("options_symbol_failed", symbol=symbol, error=str(exc))
                 result.failed.append(symbol)
 
@@ -171,7 +173,13 @@ class OptionsCollector:
                 f"(possible partial chain — CBOE has no truncation flag)"
             )
         self._store.write_snapshot(parsed, symbol, quote_date, snapshot_label)
-        self._store.sync_to_postgres(parsed)
+        # Parquet-first design (C4): the durable capture already landed above. A Postgres
+        # sync failure is a WARNING, not a symbol failure — the next boot reconcile heals it.
+        try:
+            self._store.sync_to_postgres(parsed)
+        except Exception as exc:
+            log.warning("options_postgres_sync_failed", symbol=symbol, error=str(exc))
+            result.warnings.append(f"{symbol}: postgres sync failed ({exc}) — reconcile will heal")
 
     def _route_summary_alert(self, result: SnapshotResult) -> None:
         attempted = len(result.succeeded) + len(result.failed)

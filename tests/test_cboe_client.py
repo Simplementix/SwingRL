@@ -69,3 +69,10 @@ def test_non_json_raises_dataerror() -> None:
     with patch("swingrl.data.options.cboe_client.httpx.get", return_value=_response(None)):
         with pytest.raises(DataError):
             _client().get_option_chain("SPY")
+
+
+def test_json_array_body_raises_dataerror() -> None:
+    """OPT-CLIENT-6: a JSON array (not an object) body -> DataError, not AttributeError (C4)."""
+    with patch("swingrl.data.options.cboe_client.httpx.get", return_value=_response([1, 2, 3])):
+        with pytest.raises(DataError):
+            _client().get_option_chain("SPY")

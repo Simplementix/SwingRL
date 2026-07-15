@@ -54,10 +54,15 @@ class CboeChainClient:
             log.error("cboe_chain_http_error", symbol=symbol, status=resp.status_code)
             raise DataError(f"CBOE chain HTTP {resp.status_code} for {symbol}")
         try:
-            payload: dict[str, Any] = resp.json()
+            raw = resp.json()
         except ValueError as exc:
             log.error("cboe_chain_bad_json", symbol=symbol, error=str(exc))
             raise DataError(f"CBOE chain returned non-JSON for {symbol}") from exc
+        # A JSON array (or any non-object) body would AttributeError on .get below (C4/T5).
+        if not isinstance(raw, dict):
+            log.error("cboe_chain_not_object", symbol=symbol, type=type(raw).__name__)
+            raise DataError(f"CBOE chain for {symbol} was not a JSON object")
+        payload: dict[str, Any] = raw
         if not isinstance(payload.get("data"), dict) or "options" not in payload["data"]:
             log.error("cboe_chain_bad_shape", symbol=symbol, keys=sorted(payload)[:8])
             raise DataError(f"CBOE chain payload missing data.options for {symbol}")
