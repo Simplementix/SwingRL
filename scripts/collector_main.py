@@ -159,14 +159,30 @@ def run_health_check(
 
 
 def boot_self_check(components: dict[str, Any]) -> None:
-    """D9 boot trio: reconcile unsynced Parquet + lookback health check, every start."""
-    components["store"].reconcile()
-    run_health_check(
-        components["config"],
-        components["collector"],
-        components["store"],
-        components["alerter"],
-    )
+    """D9 boot trio: reconcile unsynced Parquet + lookback health check, every start.
+
+    Non-fatal (C3): a failure in either step is logged (and alerted when an alerter is
+    present) but must never stop the scheduler from starting — a crash-looping collector
+    captures nothing, which is the worst outcome for un-backfillable data.
+    """
+    alerter = components.get("alerter")
+    try:
+        components["store"].reconcile()
+    except Exception as exc:
+        log.error("options_boot_reconcile_failed", error=str(exc))
+        if alerter is not None:
+            alerter.send_alert("warning", "Options boot reconcile failed", str(exc))
+    try:
+        run_health_check(
+            components["config"],
+            components["collector"],
+            components["store"],
+            components["alerter"],
+        )
+    except Exception as exc:
+        log.error("options_boot_health_check_failed", error=str(exc))
+        if alerter is not None:
+            alerter.send_alert("warning", "Options boot health check failed", str(exc))
     log.info("options_boot_self_check_done")
 
 

@@ -108,6 +108,60 @@ def _parsed_n(n: int) -> ParsedChain:
     return ParsedChain(header=header, contracts=df)
 
 
+def test_db_value_maps_nat_to_none(tmp_path: Path) -> None:
+    """OPT-STORE-8: a Parquet-roundtripped missing trade_time_utc (NaT) -> SQL NULL (C3)."""
+    store = _store(tmp_path)
+    df = pd.DataFrame(
+        {
+            "contract_symbol": ["A", "B"],
+            "trade_time_utc": pd.to_datetime(
+                [datetime(2026, 7, 14, 19, 59, 7, tzinfo=UTC), None], utc=True
+            ),
+            "raw_json": [{"x": 1}, {"x": 2}],
+        }
+    )
+    header = {
+        "underlying_symbol": "_SPX",
+        "quote_date": date(2026, 7, 14),
+        "snapshot_label": "decision",
+        "snapshot_time_utc": datetime(2026, 7, 14, 19, 45, tzinfo=UTC),
+        "pulled_at_utc": datetime(2026, 7, 14, 19, 45, 3, tzinfo=UTC),
+        "number_of_contracts": 2,
+        "is_early_close": False,
+        "raw_header": {"symbol": "_SPX", "status": "SUCCESS"},
+    }
+    store.write_snapshot(ParsedChain(header=header, contracts=df), "_SPX", date(2026, 7, 14), "eod")
+    back = store.read_snapshot("_SPX", date(2026, 7, 14), "eod")
+    nat_value = back.contracts.iloc[1]["trade_time_utc"]
+    assert pd.isna(nat_value)  # the roundtrip really does yield NaT, not None
+    assert OptionsStore._db_value("trade_time_utc", nat_value) is None
+
+
+def test_reconcile_isolates_a_bad_file(tmp_path: Path, monkeypatch) -> None:
+    """OPT-STORE-9: a missing sidecar is skipped; other valid snapshots still load (C3)."""
+    from contextlib import contextmanager
+
+    class _FakeDB:
+        @contextmanager
+        def connection(self):
+            yield object()
+
+    cfg = OptionsCollectorConfig()
+    cfg.output_dir = str(tmp_path / "options_eod" / "cboe")
+    store = OptionsStore(cfg, db=_FakeDB())
+    store.write_snapshot(_parsed(), "_SPX", date(2026, 7, 14), "decision")
+    store.write_snapshot(_parsed_n(2), "_SPX", date(2026, 7, 15), "decision")
+    # Corrupt one snapshot: delete its header sidecar -> _read_header raises for it.
+    store.header_path("_SPX", date(2026, 7, 15), "decision").unlink()
+
+    written: list = []
+    monkeypatch.setattr(store, "snapshot_exists_db", lambda conn, s, d, label: False)
+    monkeypatch.setattr(store, "_write_db", lambda conn, parsed: written.append(parsed))
+    loaded = store.reconcile()
+    assert loaded == 1
+    assert len(written) == 1
+
+
 def test_last_snapshot_row_count_none_when_missing(tmp_path: Path) -> None:
     """OPT-STORE-6: no matching Parquet on disk -> None (spec §8.1)."""
     store = _store(tmp_path)

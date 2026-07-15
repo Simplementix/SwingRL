@@ -260,12 +260,15 @@ class OptionsStore:
 
     @staticmethod
     def _db_value(column: str, value: Any) -> Any:
-        """Adapt a Python/pandas value for psycopg (JSONB, NaN->NULL, date coercion)."""
+        """Adapt a Python/pandas value for psycopg (JSONB, NaN/NaT/NA->NULL, date coercion)."""
         if column in ("raw_json", "raw_header"):
             return Jsonb(value if isinstance(value, dict) else json.loads(value))
-        if isinstance(value, float) and math.isnan(value):
+        # Missing sentinels -> SQL NULL. A Parquet roundtrip turns a missing datetime (e.g.
+        # trade_time_utc for a never-traded contract) into pd.NaT, which psycopg would
+        # otherwise try to adapt as the literal string 'NaT' and reject (C3).
+        if value is None or value is pd.NaT or value is pd.NA:
             return None
-        if value is None:
+        if isinstance(value, float) and math.isnan(value):
             return None
         if column in _DATE_DB_COLS and isinstance(value, datetime):
             return value.date()
@@ -274,21 +277,30 @@ class OptionsStore:
         return value
 
     def reconcile(self) -> int:
-        """Load any Parquet snapshot with no parent DB row; self-heals outages (spec §8.2)."""
+        """Load any Parquet snapshot with no parent DB row; self-heals outages (spec §8.2).
+
+        Per-file isolation (C3): a corrupt/missing sidecar or bad Parquet logs a warning and
+        is skipped so the remaining valid snapshots still load. A boot reconcile must never
+        crash-loop the collector over one unreadable file — it captures nothing while down.
+        """
         if self._db is None:
             return 0
         loaded = 0
         with self._db.connection() as conn:
             for pq in sorted(self._root.glob("*/*.parquet")):
-                hdr = self._read_header(pq.with_suffix(".header.json"))
-                sym, qdate, label = (
-                    hdr["underlying_symbol"],
-                    hdr["quote_date"],
-                    hdr["snapshot_label"],
-                )
-                if self.snapshot_exists_db(conn, sym, qdate, label):
+                try:
+                    hdr = self._read_header(pq.with_suffix(".header.json"))
+                    sym, qdate, label = (
+                        hdr["underlying_symbol"],
+                        hdr["quote_date"],
+                        hdr["snapshot_label"],
+                    )
+                    if self.snapshot_exists_db(conn, sym, qdate, label):
+                        continue
+                    self._write_db(conn, self.read_snapshot(sym, qdate, label))
+                    loaded += 1
+                except Exception as exc:
+                    log.warning("options_reconcile_file_failed", path=str(pq), error=str(exc))
                     continue
-                self._write_db(conn, self.read_snapshot(sym, qdate, label))
-                loaded += 1
         log.info("options_reconcile_done", loaded=loaded)
         return loaded

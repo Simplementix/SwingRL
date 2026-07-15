@@ -122,6 +122,20 @@ def test_boot_self_check_runs_reconcile_and_health(monkeypatch) -> None:
     assert called["health"] == 1
 
 
+def test_boot_self_check_reconcile_failure_is_nonfatal(monkeypatch) -> None:
+    """OPT-SCHED-10: reconcile raising must not stop the health check or the boot (C3)."""
+    called = {"health": 0}
+    monkeypatch.setattr(
+        "scripts.collector_main.run_health_check",
+        lambda *a, **k: called.__setitem__("health", called["health"] + 1),
+    )
+    components = _components()
+    components["store"].reconcile.side_effect = RuntimeError("db down")
+    boot_self_check(components)  # must not raise
+    assert called["health"] == 1
+    assert any(c.args[0] == "warning" for c in components["alerter"].send_alert.call_args_list)
+
+
 def test_jobs_are_serializable_in_sqlalchemy_jobstore(tmp_path) -> None:
     """OPT-SCHED-8: real SQLAlchemyJobStore round-trip proves every job pickles (C1).
 
