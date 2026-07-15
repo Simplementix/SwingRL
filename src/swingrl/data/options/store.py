@@ -225,7 +225,9 @@ class OptionsStore:
             store_raw = self._config.postgres_store_raw_json
             records = [
                 tuple(
-                    None if (col == "raw_json" and not store_raw) else self._db_value(col, row[col])
+                    None
+                    if (col == "raw_json" and not store_raw)
+                    else self._db_value(col, row.get(col))
                     for col in DB_CHAIN_COLUMNS
                 )
                 for row in df.to_dict("records")
