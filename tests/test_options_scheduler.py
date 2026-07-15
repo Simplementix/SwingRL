@@ -199,3 +199,43 @@ def test_remove_stale_jobs_drops_unknown_ids(tmp_path) -> None:
         assert "options_LEGACY_snapshot" not in {j.id for j in scheduler.get_jobs()}
     finally:
         scheduler.shutdown(wait=False)
+
+
+def test_health_check_skips_today_not_yet_due(monkeypatch) -> None:
+    """OPT-SCHED-11: a daytime boot before pull times does not flag today MISSED (I1)."""
+    today = date(2026, 7, 14)
+    monkeypatch.setattr(
+        "scripts.collector_main.market_calendar.recent_sessions",
+        lambda as_of, n: [today],
+    )
+    cfg = SwingRLConfig()
+    cfg.equity.symbols = ["SPY"]
+    cfg.options_collector.index_symbols = ["_SPX"]
+    collector = MagicMock()
+    collector.symbols.return_value = ["_SPX", "SPY"]
+    store = MagicMock()
+    store.snapshot_exists_parquet.return_value = False  # nothing captured yet today
+    alerter = MagicMock()
+    # 13:00 ET (EDT) = 17:00 UTC — before every label's pull_time + misfire grace.
+    run_health_check(cfg, collector, store, alerter, now=datetime(2026, 7, 14, 17, 0, tzinfo=UTC))
+    alerter.send_alert.assert_not_called()
+
+
+def test_health_check_flags_today_after_due(monkeypatch) -> None:
+    """OPT-SCHED-12: once a label's window closes, a same-day hole is CRITICAL (I1 boundary)."""
+    today = date(2026, 7, 14)
+    monkeypatch.setattr(
+        "scripts.collector_main.market_calendar.recent_sessions",
+        lambda as_of, n: [today],
+    )
+    cfg = SwingRLConfig()
+    cfg.equity.symbols = ["SPY"]
+    cfg.options_collector.index_symbols = ["_SPX"]
+    collector = MagicMock()
+    collector.symbols.return_value = ["_SPX", "SPY"]
+    store = MagicMock()
+    store.snapshot_exists_parquet.return_value = False
+    alerter = MagicMock()
+    # 21:45 ET on 2026-07-14 = 01:45 UTC 2026-07-15 — past eod pull 16:35 + 18000s grace.
+    run_health_check(cfg, collector, store, alerter, now=datetime(2026, 7, 15, 1, 45, tzinfo=UTC))
+    assert any(c.args[0] == "critical" for c in alerter.send_alert.call_args_list)

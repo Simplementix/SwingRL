@@ -13,7 +13,7 @@ import subprocess  # nosec B404
 import sys
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -22,7 +22,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from swingrl.config.schema import SwingRLConfig, load_config
+from swingrl.config.schema import OptionsSnapshotConfig, SwingRLConfig, load_config
 from swingrl.data.db import DatabaseManager
 from swingrl.data.options import market_calendar
 from swingrl.data.options.audit import run_data_quality_audit
@@ -128,6 +128,19 @@ def _scheduled_pull_utc(pull_time_et: str, now: datetime) -> datetime:
     return local.replace(hour=hh, minute=mm, second=0, microsecond=0).astimezone(UTC)
 
 
+def _snapshot_due(snap: OptionsSnapshotConfig, now_et: datetime) -> bool:
+    """True once today's pull_time_et + misfire grace has elapsed (I1 alarm-fatigue guard).
+
+    On a trading-day boot before a label's window closes, that label is not yet MISSED —
+    it may still fire. Only past sessions and already-due labels get health-checked.
+    """
+    hh, mm = _hhmm(snap.pull_time_et)
+    deadline = now_et.replace(hour=hh, minute=mm, second=0, microsecond=0) + timedelta(
+        seconds=snap.misfire_grace_s
+    )
+    return now_et >= deadline
+
+
 def run_health_check(
     config: SwingRLConfig,
     collector: OptionsCollector,
@@ -137,11 +150,16 @@ def run_health_check(
 ) -> None:
     """Verify snapshots over the last health_lookback_days sessions (D9 lookback)."""
     now = now or datetime.now(UTC)
-    as_of = now.astimezone(_ET).date()
+    now_et = now.astimezone(_ET)
+    as_of = now_et.date()
     sessions = market_calendar.recent_sessions(as_of, config.options_collector.health_lookback_days)
     symbols = collector.symbols()
     for session in sessions:
         for snap in config.options_collector.snapshots:
+            # I1: today's labels that aren't due yet are not "missed" — skip to avoid
+            # false CRITICALs on every daytime restart. Past sessions are unaffected.
+            if session == as_of and not _snapshot_due(snap, now_et):
+                continue
             present = [s for s in symbols if store.snapshot_exists_parquet(s, session, snap.label)]
             if not present:
                 alerter.send_alert(
