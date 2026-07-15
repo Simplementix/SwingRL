@@ -71,6 +71,7 @@ def parse_osi(symbol: str) -> tuple[str, date, str, float]:
     """Split an OSI id into (root, expiration, CALL|PUT, strike) — CBOE sends no fields."""
     m = _OSI_RE.match(symbol)
     if not m:
+        log.error("options_osi_unparseable", symbol=symbol)
         raise DataError(f"Unparseable OSI option symbol: {symbol!r}")
     root, yymmdd, right, strike_milli = m.groups()
     expiration = datetime.strptime(yymmdd, "%y%m%d").date()
