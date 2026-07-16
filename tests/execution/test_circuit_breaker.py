@@ -205,6 +205,93 @@ class TestCBCooldown:
         assert crypto_cb.get_state() == CBState.ACTIVE
 
 
+class TestCBAlerts:
+    """Review M1: breaker trips and auto-resumes send Discord alerts."""
+
+    def test_trip_sends_critical_alert(
+        self, mock_db: DatabaseManager, exec_config: SwingRLConfig
+    ) -> None:
+        """M1 (b): a breaker trip sends a critical alert with state + trigger value."""
+        from unittest.mock import MagicMock
+
+        from swingrl.execution.risk.circuit_breaker import CircuitBreaker
+
+        alerter = MagicMock()
+        cb = CircuitBreaker(environment="equity", db=mock_db, config=exec_config, alerter=alerter)
+        # 12.5% drawdown (portfolio 350, HWM 400) > 10% equity threshold → trips.
+        cb.check_and_update(portfolio_value=350.0, high_water_mark=400.0, daily_pnl=0.0)
+
+        alerter.send_alert.assert_called_once()
+        _args, kwargs = alerter.send_alert.call_args
+        assert kwargs["level"] == "critical"
+        blob = f"{kwargs}"
+        assert "HALTED" in blob  # breaker state in the embed
+        assert "0.125" in blob  # trigger value 1 - 350/400 = 0.1250
+
+    def test_auto_resume_sends_alert(
+        self, mock_db: DatabaseManager, exec_config: SwingRLConfig
+    ) -> None:
+        """M1 (c): auto-resume after a full cooldown sends an alert."""
+        from unittest.mock import MagicMock
+
+        from swingrl.execution.risk.circuit_breaker import CBState, CircuitBreaker
+
+        alerter = MagicMock()
+        cb = CircuitBreaker(environment="crypto", db=mock_db, config=exec_config, alerter=alerter)
+        cb.check_and_update(portfolio_value=40.0, high_water_mark=47.0, daily_pnl=0.0)
+
+        # Fast-forward past the 3-day crypto cooldown → next state read auto-resumes.
+        triggered_at = (datetime.now(tz=UTC) - timedelta(days=4)).isoformat()
+        with mock_db.connection() as conn:
+            conn.execute(
+                "UPDATE circuit_breaker_events SET triggered_at = %s WHERE environment = 'crypto'",
+                (triggered_at,),
+            )
+        alerter.reset_mock()  # discard the trip alert; only the resume alert matters here
+
+        assert cb.get_state() == CBState.ACTIVE  # triggers resume()
+        alerter.send_alert.assert_called()
+        _args, kwargs = alerter.send_alert.call_args
+        blob = f"{kwargs}"
+        assert "esume" in blob or "ACTIVE" in blob  # "Auto-Resumed" title / ACTIVE state
+
+    def test_global_trip_sends_single_alert(
+        self, mock_db: DatabaseManager, exec_config: SwingRLConfig
+    ) -> None:
+        """M1 (b/global): a global-limit breach sends exactly one global alert.
+
+        The per-env cascade (_trigger_all) is suppressed so the single global embed
+        speaks for both environments rather than firing three redundant alerts.
+        """
+        from unittest.mock import MagicMock
+
+        from swingrl.execution.risk.circuit_breaker import CircuitBreaker, GlobalCircuitBreaker
+
+        alerter = MagicMock()
+        eq_cb = CircuitBreaker(
+            environment="equity", db=mock_db, config=exec_config, alerter=alerter
+        )
+        cr_cb = CircuitBreaker(
+            environment="crypto", db=mock_db, config=exec_config, alerter=alerter
+        )
+        global_cb = GlobalCircuitBreaker(
+            circuit_breakers={"equity": eq_cb, "crypto": cr_cb},
+            config=exec_config,
+            db=mock_db,
+            alerter=alerter,
+        )
+        # Combined 368 vs initial 447 → 17.7% drawdown > 15% global limit → trips.
+        result = global_cb.check_combined(
+            portfolio_values={"equity": 340.0, "crypto": 28.0},
+            daily_pnls={"equity": 0.0, "crypto": 0.0},
+        )
+        assert result is True
+        alerter.send_alert.assert_called_once()
+        _args, kwargs = alerter.send_alert.call_args
+        assert kwargs["level"] == "critical"
+        assert "combined_drawdown" in f"{kwargs}"
+
+
 class TestGlobalCircuitBreaker:
     """PAPER-04: Global CB aggregates across environments."""
 

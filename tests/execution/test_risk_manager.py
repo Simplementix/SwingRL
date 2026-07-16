@@ -169,6 +169,40 @@ class TestRiskManagerTurbulence:
         assert result is True  # signals liquidation
 
 
+class TestRiskManagerRampCapacity:
+    """Review H4: RAMPING state scales orders to the breaker capacity fraction."""
+
+    def test_ramp_scales_order_to_capacity(
+        self,
+        risk_manager: RiskManager,
+        mock_db: DatabaseManager,
+    ) -> None:
+        """H4 (a): a $1,000 order at 25% ramp capacity is scaled to $250 before validation."""
+        from datetime import UTC, datetime, timedelta
+
+        # Trip the crypto CB, then fast-forward one calendar day of the 3-day cooldown
+        # (~33% elapsed → ramp stage 1 = 0.25 capacity).
+        cb = risk_manager._circuit_breakers["crypto"]
+        cb.check_and_update(portfolio_value=40.0, high_water_mark=47.0, daily_pnl=0.0)
+        triggered_at = (datetime.now(tz=UTC) - timedelta(days=1)).isoformat()
+        with mock_db.connection() as conn:
+            conn.execute(
+                "UPDATE circuit_breaker_events SET triggered_at = %s WHERE environment = 'crypto'",
+                (triggered_at,),
+            )
+        assert cb.get_capacity_fraction() == pytest.approx(0.25)
+
+        order = _make_order(symbol="BTCUSDT", dollar_amount=1000.0, environment="crypto")
+        scaled = risk_manager.apply_ramp_capacity(order)
+        assert scaled.dollar_amount == pytest.approx(250.0)
+
+    def test_active_breaker_returns_order_unscaled(self, risk_manager: RiskManager) -> None:
+        """H4 (a): with an ACTIVE breaker (full capacity) the order is returned unchanged."""
+        order = _make_order(symbol="BTCUSDT", dollar_amount=1000.0, environment="crypto")
+        result = risk_manager.apply_ramp_capacity(order)
+        assert result.dollar_amount == pytest.approx(1000.0)
+
+
 class TestRiskManagerCBInteraction:
     """PAPER-04: Risk manager checks CB state before evaluation."""
 
