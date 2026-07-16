@@ -547,10 +547,42 @@ class TrainingBoundsConfig(BaseModel):
     )
 
 
+class TrainingWindowsConfig(BaseModel):
+    """Percent-of-fold rolling window sizes for reward-wrapper diagnostics (spec §2.6).
+
+    Replaces the fixed 500-step deque used for window MDD with two windows sized as
+    fractions of the fold's ACTUAL total_timesteps (escalated runs resize correctly --
+    MemoryVecRewardWrapper.configure_windows() is called once per fold from
+    model._total_timesteps, not from these fractions directly).
+    """
+
+    short_pct_of_fold: float = Field(
+        default=0.01,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Acute-detector window (N1): fraction of the fold's total_timesteps. "
+            "Override via SWINGRL_TRAINING__WINDOWS__SHORT_PCT_OF_FOLD."
+        ),
+    )
+    trend_pct_of_fold: float = Field(
+        default=0.15,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Decision-basis window (N2): fraction of the fold's total_timesteps. Must "
+            "cover at least one full adjustment-cooldown cycle for every algo -- enforced "
+            "by a startup guard (MemoryEpochCallback._on_training_start), not by this "
+            "schema. Override via SWINGRL_TRAINING__WINDOWS__TREND_PCT_OF_FOLD."
+        ),
+    )
+
+
 class TrainingConfig(BaseModel):
     """Training pipeline configuration."""
 
     bounds: TrainingBoundsConfig = Field(default_factory=TrainingBoundsConfig)
+    windows: TrainingWindowsConfig = Field(default_factory=TrainingWindowsConfig)
     sac_buffer_size: int = Field(
         default=500_000,
         gt=0,

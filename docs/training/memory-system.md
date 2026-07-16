@@ -379,6 +379,83 @@ Two distinct fallback shapes — both are dicts, never raise.
 
 The trainer never blocks, never raises, and never aborts the iteration on memory-service unavailability. Failed advice means baseline HPs / unchanged weights, and the iteration proceeds.
 
+## Training window observability (spec §2.6)
+
+**Task 5 (Plan B Phase 1).** Replaces the fixed 500-step deque design for window MDD
+(`_ROLLING_WINDOW = 500`, cumsum-of-shaped-rewards drawdown — unbounded scale) with two
+**percent-of-fold** windows sized as fractions of the fold's actual timestep budget.
+`rolling_sharpe()`, `rolling_win_rate()`, `rolling_trade_rate()`, and
+`baseline_trade_rate()` are **untouched** by this task — still `_ROLLING_WINDOW`-based;
+only window MDD moved to the new contract.
+
+### Config — `training.windows.*`
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `short_pct_of_fold` | `0.01` (N1) | Acute-detector window: fraction of the fold's `total_timesteps`. |
+| `trend_pct_of_fold` | `0.15` (N2) | Decision-basis window: fraction of the fold's `total_timesteps`. Must cover at least one full `adjustment_cooldown_steps` cycle for the running algo — enforced by a startup guard, not by this value alone. |
+
+Override via `SWINGRL_TRAINING__WINDOWS__SHORT_PCT_OF_FOLD` / `SWINGRL_TRAINING__WINDOWS__TREND_PCT_OF_FOLD`.
+
+### Contract
+
+`MemoryEpochCallback._on_training_start()` (an SB3 hook fired once before rollout
+collection begins for the fold) drives the whole flow:
+
+1. Reads `model._total_timesteps` — the run's REAL timestep budget, so an escalated
+   run (`ESCALATED_TIMESTEPS`, `pipeline_helpers.py:51-54`) resizes correctly rather
+   than inheriting a size baked in at wrapper-construction time.
+2. Computes `short_steps = round(short_pct_of_fold * total_timesteps)` and
+   `trend_steps = round(trend_pct_of_fold * total_timesteps)`.
+3. **Startup guard:** if `trend_steps < get_adjustment_cooldown(algo)` (Task 4's
+   config-backed cooldown getter, `bounds.py`), raises `ConfigError` — training refuses
+   to start. A trend window shorter than the algo's own adjustment cooldown could never
+   observe a full pre/post-adjustment cycle, so its evidence would be meaningless.
+4. Calls `wrapper.configure_windows(short_steps, trend_steps)`, which resizes the
+   wrapper's two internal deques (converting from total-timesteps units to
+   `step_wait()`-call units by dividing by `num_envs`) and starts both windows fresh.
+5. Logs `window_config` with **both units** (dual-unit capture, D-T2.7):
+   `{algo, env, run_id, total_timesteps, short_pct_of_fold, short_steps,
+   trend_pct_of_fold, trend_steps}`.
+
+`MemoryVecRewardWrapper.window_metrics(window: Literal["short", "trend"]) -> dict`
+returns:
+
+| Key | Meaning |
+|-----|---------|
+| `pct_of_fold` | The configured target fraction (config-sourced, independent of any one run). |
+| `steps` | The actual step count this window was configured to (from `configure_windows()` — the other half of dual-unit reporting). |
+| `sharpe_annualized` | Mean/std of shaped rewards pooled across sub-envs and the window, annualized by `periods_per_year` — same formula as the legacy `rolling_sharpe()`. |
+| `mdd_frac_worst` | **Safety-first basis.** Peak-to-trough drawdown fraction computed independently per sub-env's own portfolio-value curve (`info["portfolio_value"]`, `envs/base.py:399-401`), then the **worst** (largest-magnitude) sub-env is reported. Triggers and coach evidence must read this field. |
+| `mdd_frac_mean` | The **mean** drawdown fraction across sub-envs. Analysis / threshold-recalibration only — **never** the alarm basis (locked decision, 2026-07-12: worst drives triggers, mean rides along). The two bases are never mixed. |
+| `win_rate` | Fraction of pooled per-sub-env shaped rewards `> 0.0` in the window. |
+| `trade_rate` | Mean of summed-per-call `trades_this_step` across the window. |
+
+All metrics default to `0.0` when the window has fewer than 2 recorded steps (including
+before `configure_windows()` has ever been called — the underlying deques start at
+`maxlen=0`, so every `step_wait()` append up to that point is silently discarded).
+
+### `rolling_mdd()` — deprecated alias
+
+Retained **only** so existing call sites (`_should_store`, `_collect_metrics`,
+`_ingest_adjustment_trigger`, `_resolve_pending_adjustment` — all in
+`epoch_callback.py`) keep working without modification this task. Now implemented as:
+
+```python
+-window_metrics("trend")["mdd_frac_worst"]
+```
+
+i.e. the trend window's worst-sub-env drawdown, **negated** to preserve the historical
+"negative means drawdown" sign convention, even though the new underlying metric itself
+is a non-negative magnitude. **Honest gap:** `NOTABLE_MDD_THRESHOLD = -25.0`
+(`epoch_callback.py`, calibrated for the old unbounded cumsum scale) is left untouched
+by this task — against the new `[-1.0, 0.0]`-range `rolling_mdd()`, that threshold can
+now never fire. Recalibrating it (and rewiring these four call sites directly onto
+`window_metrics()`) is Task 6's job. The `leading_indicators.rolling_mdd` field sent to
+the LLM (`/training/epoch_advice`, above) is affected the same way — its plumbing is
+unchanged, but as of this task it now carries an equity-fraction magnitude via the
+alias rather than the old cumsum value.
+
 ## Composite scoring
 
 Source: `db.py:666-697` (the ORDER BY clause inside `get_active_consolidations()`).
@@ -518,6 +595,7 @@ Knobs live under `memory_agent.*` in `config/swingrl.yaml`. Roughly:
 - `cloud_block_on_429` — enable calendar-day blocking (default `true`)
 - Per-provider `model_name`, `timeout_sec`, `max_tokens` (sub-blocks under each provider key)
 - Per-algo epoch-advice cadence — see [`reward-shaping.md`](reward-shaping.md) and [`agent-architecture.md`](agent-architecture.md)
+- `training.windows.short_pct_of_fold` / `training.windows.trend_pct_of_fold` — percent-of-fold window sizes (defaults 0.01 / 0.15); see "Training window observability (spec §2.6)" above
 
 **Honest gap:** the exact `memory_agent.*` block was not exhaustively re-audited against `src/swingrl/config/schema.py` for this doc — re-verify field names and validators before changing any production value.
 
@@ -589,3 +667,4 @@ Knobs live under `memory_agent.*` in `config/swingrl.yaml`. Roughly:
 ## Changelog
 
 - **2026-05-05** — Initial version.
+- **2026-07-16** — Task 5 (spec §2.6): added "Training window observability" section — percent-of-fold windows (`training.windows.*`), `configure_windows()`/`window_metrics()` contract, the `_on_training_start` startup guard, and the `rolling_mdd()` deprecated alias.

@@ -360,9 +360,22 @@ class TestTrainerFoldNumberWiring:
         tiny_equity_features: np.ndarray,
         tiny_equity_prices: np.ndarray,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """C1-WIRING-01: fold_number=7 passed to train() reaches MemoryEpochCallback."""
         from swingrl.training.trainer import TrainingOrchestrator
+
+        # Task 5 (spec §2.6): _on_training_start's startup guard refuses to start if
+        # the trend window (trend_pct_of_fold * total_timesteps) is shorter than the
+        # algo's adjustment cooldown. This test's total_timesteps=500 is a synthetic
+        # fast-wiring value, not a real fold budget (real PPO cooldown is 24,576 --
+        # ~163,840 total_timesteps would be needed to satisfy the guard at the default
+        # 0.15 trend_pct_of_fold, which would force many extra PPO rollouts here).
+        # This test verifies fold_number wiring, not the guard, so pin the cooldown low.
+        monkeypatch.setattr(
+            "swingrl.memory.training.bounds.get_adjustment_cooldown",
+            lambda algo: 1,
+        )
 
         client = _make_mock_memory_client()
         # Patch epoch_advice to avoid actual HTTP; return stop_training immediately

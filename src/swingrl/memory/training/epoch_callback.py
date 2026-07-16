@@ -79,6 +79,14 @@ NOTABLE_MDD_THRESHOLD: float = -25.0
 # Epochs to wait before resolving pending adjustment
 ADJUSTMENT_RESOLVE_EPOCHS: int = 10
 
+# Fallback percent-of-fold window targets (spec §2.6, N1/N2) for _on_training_start's
+# startup guard, used only if config load fails entirely. Must match
+# TrainingWindowsConfig's pydantic defaults (config/schema.py) and
+# reward_wrapper.py's own copy of these constants (each module independently
+# config-loads and falls back, per this codebase's established bounds.py pattern).
+_FALLBACK_SHORT_PCT_OF_FOLD: float = 0.01
+_FALLBACK_TREND_PCT_OF_FOLD: float = 0.15
+
 
 class MemoryEpochCallback(BaseCallback):
     """Stable-Baselines3 callback that ingests epoch snapshots and drives reward adjustments.
@@ -329,6 +337,72 @@ class MemoryEpochCallback(BaseCallback):
             True unconditionally.
         """
         return True
+
+    def _on_training_start(self) -> None:
+        """SB3 hook fired once before rollout collection begins for this fold.
+
+        Computes percent-of-fold window sizes from the run's ACTUAL total_timesteps
+        (model._total_timesteps -- set by SB3's _setup_learn() before this hook
+        fires, so an escalated run, spec: ESCALATED_TIMESTEPS, resizes correctly
+        rather than inheriting a size baked in at construction time), configures the
+        wrapper's short/trend windows, and enforces the §2.6 startup guard: the
+        trend window must be long enough to observe at least one full
+        adjustment-cooldown cycle for this fold's algo, or training refuses to start.
+        Logs window_config with both units (dual-unit capture, D-T2.7).
+
+        Raises:
+            ConfigError: the trend window is shorter than this algo's adjustment
+                cooldown -- refuses to start training (spec §2.6 guard).
+        """
+        from swingrl.config.schema import load_config
+        from swingrl.memory.training.bounds import get_adjustment_cooldown
+        from swingrl.utils.exceptions import ConfigError
+
+        total_timesteps = int(getattr(self.model, "_total_timesteps", 0))
+
+        try:
+            cfg = load_config()
+            short_pct = cfg.training.windows.short_pct_of_fold
+            trend_pct = cfg.training.windows.trend_pct_of_fold
+        except Exception as exc:
+            log.warning("training_windows_config_load_failed", error=str(exc))
+            short_pct = _FALLBACK_SHORT_PCT_OF_FOLD
+            trend_pct = _FALLBACK_TREND_PCT_OF_FOLD
+
+        short_steps = max(1, round(short_pct * total_timesteps))
+        trend_steps = max(1, round(trend_pct * total_timesteps))
+
+        cooldown = get_adjustment_cooldown(self._algo)
+        if trend_steps < cooldown:
+            log.error(
+                "trend_window_shorter_than_cooldown",
+                algo=self._algo,
+                env=self._env,
+                run_id=self._run_id,
+                trend_steps=trend_steps,
+                cooldown=cooldown,
+                total_timesteps=total_timesteps,
+            )
+            raise ConfigError(
+                f"trend window ({trend_steps} steps) is shorter than the "
+                f"{self._algo} adjustment cooldown ({cooldown} steps) for run "
+                f"{self._run_id!r} -- refusing to start training (spec §2.6 "
+                "startup guard)."
+            )
+
+        self._wrapper.configure_windows(short_steps, trend_steps)
+
+        log.info(
+            "window_config",
+            algo=self._algo,
+            env=self._env,
+            run_id=self._run_id,
+            total_timesteps=total_timesteps,
+            short_pct_of_fold=short_pct,
+            short_steps=short_steps,
+            trend_pct_of_fold=trend_pct,
+            trend_steps=trend_steps,
+        )
 
     def _on_rollout_end(self) -> None:
         """Called at the end of each rollout (epoch). Main callback entry point.

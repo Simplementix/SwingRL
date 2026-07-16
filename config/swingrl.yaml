@@ -225,6 +225,11 @@ training:
       ppo: 24576                     # 2 × 2048 × 6 (value function recovery)
       a2c: 500                       # ~100 short rollouts (stability window)
       sac: 20000                     # replay buffer rotation
+  windows:                          # §2.6: percent-of-fold rolling windows (replaces fixed 500-step deque for MDD)
+    short_pct_of_fold: 0.01         # N1 — acute detector window (1% of fold total_timesteps)
+    trend_pct_of_fold: 0.15         # N2 — decision-basis window (15% of fold total_timesteps);
+                                    # must cover every algo's adjustment_cooldown_steps above —
+                                    # enforced by a startup guard, not by this value alone.
   sac_buffer_size: 200000           # SAC replay buffer. Was 500K; reduced per research (smaller=better for non-stationary)
   n_envs: 6                         # Parallel envs per training (SubprocVecEnv). 6 × 3 algo workers = 18 processes.
   vecenv_backend: subproc            # "subproc" for parallel SubprocVecEnv, "dummy" for sequential DummyVecEnv

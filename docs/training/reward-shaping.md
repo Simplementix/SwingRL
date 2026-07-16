@@ -115,7 +115,7 @@ Stored on the wrapper; populated in `step_wait` from **shaped** rewards (`reward
 |--------|---------|------|
 | `rolling_mean_reward` | `sum(history) / len(history)` | `reward_wrapper.py:205-213` |
 | `rolling_sharpe` | `mean / std(ddof=1) × √periods_per_year` | `reward_wrapper.py:175-189` |
-| `rolling_mdd` | `min(cumsum − cumulative_max(cumsum))` (negative) | `reward_wrapper.py:191-203` |
+| `rolling_mdd` | **Deprecated (spec §2.6, Task 5).** No longer this cumsum formula — now a compatibility alias returning `-window_metrics("trend")["mdd_frac_worst"]` (per-sub-env equity-fraction drawdown, negated). See [`memory-system.md`](memory-system.md#training-window-observability-spec-26). | `reward_wrapper.py` |
 | `rolling_win_rate` | fraction of steps with shaped reward > 0 | `reward_wrapper.py:215-223` |
 | `rolling_trade_rate` | mean of `info["trades_this_step"]` per step over rolling window; missing key counts as 0 | `reward_wrapper.py` |
 | `baseline_trade_rate` | first-full-window `rolling_trade_rate`, locked permanently at fold start; 0.0 until window fills | `reward_wrapper.py` |
