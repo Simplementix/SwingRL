@@ -99,6 +99,7 @@ options_collector:
     contract_count_drop_warn_frac: 0.5   # partial-chain guard (CBOE has no truncation flag)
     audit_day_of_month: 1
     audit_time_et: "18:00"
+    late_warn_s: 30.0                    # cron-jitter tolerance before a lateness warning fires (2026-07-16)
   backup:
     enabled: true
     rclone_remote: "b2:swingrl-options"

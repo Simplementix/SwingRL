@@ -3155,7 +3155,8 @@ cd ~/swingrl && docker compose build --no-cache swingrl-collector \
 ```
 Confirm `options_boot_self_check_done` then `options_collector_started` with the 5 job ids.
 
-- [ ] **Step 5: First live snapshots — RECORD the first-run findings**
+- [x] **Step 5: First live snapshots — RECORD the first-run findings** *(done 2026-07-16:
+  metadata.json + spec §17 C1 row; delay 15 m 26 s confirmed; 9/9 both labels; INFO proven)*
 
 Wait for the 16:00/16:35 crons (or trigger once manually inside the container via
 `build_app` + `guarded_snapshot`). Record in `data/options_eod/cboe/metadata.json` + spec
@@ -3165,7 +3166,10 @@ symbol (drift-guard baselines), **(c)** iv-zero sentinel behavior on illiquid na
 Discord INFO digest arrived — **this is also the system's first end-to-end Discord proof**
 (predates Plan A Task 16's trader-path proof; different container, same Alerter class).
 
-- [ ] **Step 6: Stand up the offsite backup** (spec §13)
+- [x] **Step 6: Stand up the offsite backup** (spec §13) *(SUPERSEDED 2026-07-16, user
+  decision: Duplicati → separate local drive backs up `~/swingrl` nightly incl. Parquet +
+  `backups/`; nightly host-cron `pg_dump -Fc swingrl` added; collector's rclone/B2 job
+  disabled via `SWINGRL_OPTIONS__BACKUP__ENABLED=false` — no B2, no storage fees)*
 
 Configure the `rclone` remote (`b2:swingrl-options`), then verify:
 ```bash
@@ -3180,7 +3184,8 @@ Confirm `options_offsite_backup_ok` and that objects appear at the remote.
   past day in a scratch copy — or simply review its log output); confirm daily INFO
   digests. (No token watch — there is no token.)
 
-- [ ] **Step 8: Commit findings/tuning**
+- [x] **Step 8: Commit findings/tuning** *(this commit, 2026-07-16 — rides the
+  `swingrl/2.R-C-collector-alert-fix` branch)*
 
 ```bash
 git add config/swingrl.yaml docs/superpowers/specs/2026-07-14-schwab-options-collector-design.md docs/options/data-caveats.md

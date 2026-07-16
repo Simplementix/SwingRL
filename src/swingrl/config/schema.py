@@ -348,6 +348,9 @@ class OptionsIntegrityConfig(BaseModel):
     contract_count_drop_warn_frac: float = Field(default=0.5, gt=0.0, le=1.0)
     audit_day_of_month: int = Field(default=1, ge=1, le=28)
     audit_time_et: str = Field(default="18:00")
+    # Cron always fires a little late (millisecond-scale jitter is normal). Only warn on
+    # the decision snapshot once lateness exceeds this tolerance (D8 lookahead guard).
+    late_warn_s: float = Field(default=30.0, ge=0.0)
 
 
 class OptionsBackupConfig(BaseModel):

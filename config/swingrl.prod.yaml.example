@@ -67,6 +67,14 @@ backup:
   offsite_host: ""                  # SET: rsync destination host for off-site backups
   offsite_path: ""                  # SET: rsync destination path
 
+# NOTE: only the field changed by the 2026-07-16 alert fix is annotated here — the rest
+# of options_collector (provider, symbols, snapshots, backup, ...) is not yet curated
+# into this reference file and falls back to OptionsCollectorConfig's schema defaults,
+# same as config/swingrl.yaml's dev values (see config/swingrl.yaml for the full block).
+options_collector:
+  integrity:
+    late_warn_s: 30.0                # cron-jitter tolerance before a lateness warning fires
+
 shadow:
   equity_eval_days: 10              # 10 trading days shadow evaluation window
   crypto_eval_cycles: 30            # 30 crypto 4H cycles shadow evaluation
