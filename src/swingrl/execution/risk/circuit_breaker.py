@@ -36,6 +36,21 @@ RAMP_STAGES: list[float] = [0.25, 0.50, 0.75, 1.00]
 # explicit astimezone conflates ET and UTC calendars between 20:00 and 24:00 ET.)
 _ET = ZoneInfo("America/New_York")
 
+# Reason marker for the crypto stop-poller's AUDIT-ONLY rows (user ruling). A stop
+# breach records a ``circuit_breaker_events`` row for audit + Discord alerting, but
+# it is NOT a halt: a HALTED crypto breaker vetoes ALL crypto orders — including the
+# very sell that would close the breached position — so halting on breach would
+# freeze the exact position that needs to exit. The breaker's state readers
+# (:meth:`CircuitBreaker._latest_event`, :meth:`CircuitBreaker.resume`) EXCLUDE any
+# row whose ``reason`` starts with this marker, so a stop-breach row is provably
+# inert to ``get_state`` / ``get_capacity_fraction`` — it can never flip the breaker,
+# even when it is the most recent row while a genuine halt is unresolved. The marker
+# contains no SQL ``LIKE`` wildcard characters (no ``_`` or ``%``), so the exclusion
+# pattern below matches exactly these rows and nothing else. The stop-poller builds
+# each reason as ``STOP_BREACH_REASON_MARKER + symbol``.
+STOP_BREACH_REASON_MARKER = "stop-breach-audit:"
+_STOP_BREACH_LIKE = f"{STOP_BREACH_REASON_MARKER}%"
+
 
 class CBState(enum.Enum):
     """Circuit breaker states."""
@@ -196,10 +211,15 @@ class CircuitBreaker:
         """Mark latest halt event as resumed and alert on the auto-resume (review M1)."""
         now = datetime.now(tz=UTC).isoformat()
         with self._db.connection() as conn:
+            # Exclude audit-only stop-breach rows: they are never "resumed" (they
+            # are not halts), and stamping resumed_at on them would both violate
+            # their append-only audit semantics and break the stop-poller's
+            # ``resumed_at IS NULL`` dedup guard.
             conn.execute(
                 "UPDATE circuit_breaker_events SET resumed_at = %s "
-                "WHERE environment = %s AND resumed_at IS NULL",
-                (now, self._environment),
+                "WHERE environment = %s AND resumed_at IS NULL "
+                "AND COALESCE(reason, '') NOT LIKE %s",
+                (now, self._environment, _STOP_BREACH_LIKE),
             )
         log.info("circuit_breaker_resumed", environment=self._environment)
 
@@ -268,12 +288,21 @@ class CircuitBreaker:
             )
 
     def _latest_event(self) -> dict[str, str | float | None] | None:
-        """Load the latest circuit breaker event for this environment."""
+        """Load the latest halt event for this environment for state derivation.
+
+        Audit-only stop-breach rows (``reason`` prefixed with
+        ``STOP_BREACH_REASON_MARKER``) are excluded so a stop breach is inert to
+        ``get_state`` / ``get_capacity_fraction`` — the row is skipped even when it
+        is the most recent event, so a genuine unresolved halt underneath it still
+        drives the state. ``COALESCE`` keeps NULL-reason rows (legacy/genuine)
+        visible.
+        """
         with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT * FROM circuit_breaker_events "
-                "WHERE environment = %s ORDER BY triggered_at DESC LIMIT 1",
-                (self._environment,),
+                "WHERE environment = %s AND COALESCE(reason, '') NOT LIKE %s "
+                "ORDER BY triggered_at DESC LIMIT 1",
+                (self._environment, _STOP_BREACH_LIKE),
             ).fetchone()
         if row is None:
             return None

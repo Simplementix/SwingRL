@@ -4,15 +4,19 @@ Polls open crypto positions every 60 seconds and checks if current price
 has hit stop-loss or take-profit levels. Prices are fetched from the SAME book
 the fills are recorded on (the configured symbol, e.g. ``BTCUSDT``) — never a
 remapped ``BTCUSD`` book (review H5). On a stop-loss breach the poller records an
-append-only ``circuit_breaker_events`` row and sends a Discord alert.
+append-only ``circuit_breaker_events`` audit row and sends a Discord alert.
 
-RISK — auto-sell is OUT of scope (revisit before live):
-    A stop-loss breach records the event, halts new crypto trading via the
-    circuit breaker, and alerts a human — but it does NOT liquidate the position.
-    Paper-trading positions are therefore NOT auto-protected: the breached
-    position is not sold automatically; a human must act on the alert. Automated
-    liquidation is deferred to a later hardening pass and must be built before
-    live trading.
+RISK — a stop breach AUDITS + ALERTS ONLY; it does NOT halt and does NOT
+auto-sell (revisit before live):
+    A stop-loss breach records an append-only audit row and alerts a human. It
+    deliberately does NOT halt the crypto circuit breaker (user ruling): a HALTED
+    breaker vetoes ALL crypto orders — including the sell that would close the
+    breached position — so halting on breach would freeze the exact position that
+    needs to exit. The audit row carries a distinct ``STOP_BREACH_REASON_MARKER``
+    reason that the breaker's state readers exclude, so ``get_state()`` is
+    unaffected. The position is also NOT auto-sold; a human must act on the alert.
+    Automated liquidation is deferred to a later hardening pass and must be built
+    before live trading.
 
 Usage:
     from swingrl.scheduler.stop_polling import start_stop_polling_thread
@@ -29,6 +33,7 @@ from uuid import uuid4
 
 import structlog
 
+from swingrl.execution.risk.circuit_breaker import STOP_BREACH_REASON_MARKER
 from swingrl.scheduler.halt_check import is_halted
 
 if TYPE_CHECKING:
@@ -182,13 +187,20 @@ def _record_stop_breach(
     stop_loss: float,
     alerter: Alerter | None,
 ) -> None:
-    """Record a stop-loss breach as an append-only circuit_breaker_events row.
+    """Record a stop-loss breach as an append-only, audit-only circuit_breaker_events row.
 
-    Mirrors the ``CircuitBreaker._trigger`` writer pattern (same table, ``resumed_at``
-    left NULL) so the breach halts new crypto trading until the cooldown elapses.
-    Deduped per symbol: while an unresolved breach row already exists for this
+    Writes into the ``circuit_breaker_events`` table (same ledger as genuine halts,
+    no new table) but tags the row with ``STOP_BREACH_REASON_MARKER`` so it is
+    AUDIT + ALERT ONLY and is provably inert to breaker state (user ruling): the
+    breaker's state readers exclude marker rows, so this record never makes
+    ``get_state()`` return HALTED. That is deliberate — a HALTED crypto breaker
+    would veto the very sell that closes the breached position, freezing it.
+
+    Deduped per symbol: while an unresolved marker row already exists for this
     symbol the poll (which runs every 60s) neither re-records nor re-alerts, so a
-    persistent breach does not flood the ledger or Discord.
+    persistent breach does not flood the ledger or Discord. Marker rows keep
+    ``resumed_at`` NULL for their whole life (``resume()`` skips them), so the dedup
+    guard stays valid.
 
     Auto-sell stays out of scope — the position is not liquidated here.
 
@@ -199,7 +211,7 @@ def _record_stop_breach(
         stop_loss: The stop-loss level that was breached.
         alerter: Optional Discord alerter.
     """
-    reason = f"stop_loss_breach_{symbol}"
+    reason = f"{STOP_BREACH_REASON_MARKER}{symbol}"
     with db.connection() as conn:
         existing = conn.execute(
             "SELECT 1 FROM circuit_breaker_events "
@@ -235,9 +247,9 @@ def _record_stop_breach(
             level="critical",
             title=f"Crypto Stop-Loss Breached — {symbol}",
             message=(
-                f"State: HALTED (crypto)\n{symbol} price {current_price} <= stop "
-                f"{stop_loss}. New crypto trading halted; the position is NOT "
-                "auto-sold — manual action required."
+                f"{symbol} price {current_price} <= stop {stop_loss}. Recorded for "
+                "audit. Trading is NOT halted and the position is NOT auto-sold — "
+                "manual action required to exit the position."
             ),
             environment="crypto",
         )

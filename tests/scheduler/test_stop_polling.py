@@ -193,7 +193,12 @@ class TestStopBreachRecordAndAlert:
         DatabaseManager.reset()
 
     def test_stop_breach_records_and_alerts(self, real_db) -> None:  # type: ignore[no-untyped-def]
-        """H5 (e): a stop-loss breach writes one circuit_breaker_events row and alerts once."""
+        """H5 (e): a stop-loss breach writes one audit row, alerts once, and does NOT halt."""
+        from swingrl.execution.risk.circuit_breaker import (
+            STOP_BREACH_REASON_MARKER,
+            CBState,
+            CircuitBreaker,
+        )
         from swingrl.scheduler.stop_polling import _check_stop_levels
 
         alerter = MagicMock()
@@ -212,15 +217,22 @@ class TestStopBreachRecordAndAlert:
             # Second call while the breach is unresolved is deduped (no flood).
             _check_stop_levels(row, MagicMock(), real_db, alerter=alerter)
 
+        # (b) exactly one append-only audit row exists and is queryable.
         with real_db.connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM circuit_breaker_events "
-                "WHERE environment = 'crypto' AND reason LIKE %s",
-                ("stop_loss_breach_BTCUSDT%",),
+                "SELECT * FROM circuit_breaker_events WHERE environment = 'crypto' AND reason = %s",
+                (f"{STOP_BREACH_REASON_MARKER}BTCUSDT",),
             ).fetchall()
         assert len(rows) == 1
         assert float(rows[0]["trigger_value"]) == pytest.approx(40000.0)
         assert float(rows[0]["threshold"]) == pytest.approx(50000.0)
+
+        # (a) end-to-end: the audit row does NOT halt the crypto breaker.
+        from swingrl.config.schema import SwingRLConfig
+
+        crypto_cb = CircuitBreaker(environment="crypto", db=real_db, config=SwingRLConfig())
+        assert crypto_cb.get_state() == CBState.ACTIVE
+        assert crypto_cb.get_capacity_fraction() == pytest.approx(1.0)
 
         alerter.send_alert.assert_called_once()
         _args, kwargs = alerter.send_alert.call_args

@@ -208,13 +208,17 @@ class RiskManager:
         The circuit breaker re-enters trading gradually after a cooldown (25% → 50%
         → 75% → 100% capacity). The old code logged the capacity but never applied
         it, so full-size orders went to the broker during ramp-up. This scales the
-        order's dollar amount by the current capacity fraction *before* validation
-        and submission, so the broker (Alpaca notional) actually sizes down. Call it
-        before ``validate``/``evaluate`` so both the risk checks and the submitted
-        order see the scaled amount.
+        order down by the current capacity fraction *before* validation and
+        submission. Call it before ``validate``/``evaluate`` so both the risk checks
+        and the submitted order see the scaled order.
 
-        Only the ``dollar_amount`` is scaled (per the ramp contract); an ACTIVE
-        breaker (capacity 1.0) returns the order unchanged.
+        Both ``dollar_amount`` and ``quantity`` are scaled by the capacity fraction
+        (user ruling, supersedes the dollar-only contract): the equity broker
+        (Alpaca) fills by ``notional=dollar_amount`` while the crypto sim adapter
+        (``BinanceSimAdapter``) fills by ``quantity`` — so the ramp only genuinely
+        shrinks the order in *both* environments if it scales both fields. Scaling
+        dollars alone would leave the crypto fill full size. An ACTIVE breaker
+        (capacity 1.0) returns the order unchanged.
 
         Args:
             order: The sized order about to be validated.
@@ -229,7 +233,11 @@ class RiskManager:
         if capacity >= 1.0:
             return order
 
-        scaled = dataclasses.replace(order, dollar_amount=order.dollar_amount * capacity)
+        scaled = dataclasses.replace(
+            order,
+            dollar_amount=order.dollar_amount * capacity,
+            quantity=order.quantity * capacity,
+        )
         log.info(
             "order_scaled_by_ramp",
             environment=order.environment,
@@ -237,6 +245,8 @@ class RiskManager:
             capacity=capacity,
             original_amount=order.dollar_amount,
             scaled_amount=scaled.dollar_amount,
+            original_quantity=order.quantity,
+            scaled_quantity=scaled.quantity,
         )
         return scaled
 
