@@ -314,7 +314,8 @@ class TestTrainingEndpoints:
         assert response.status_code == 200
         body = response.json()
         assert body["rationale"] == "cold_start_defaults"
-        assert body["reward_weights"]["profit"] == pytest.approx(0.4)
+        # U2 (spec Section 2.2): cold-start fallback = DEFAULT_WEIGHTS (was 0.4 pre-fix)
+        assert body["reward_weights"]["profit"] == pytest.approx(0.50)
 
     def test_epoch_advice_returns_valid_shape(
         self, api_client: Any, auth_headers: dict[str, str]

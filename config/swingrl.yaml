@@ -191,6 +191,13 @@ memory_agent:
         default_model: "moonshotai/kimi-k2.5"
 
 training:
+  # Config lifecycle note: `bounds` below is loaded once into module-level constants
+  # at import time (src/swingrl/memory/training/bounds.py:HYPERPARAM_BOUNDS/REWARD_BOUNDS/
+  # ADJUSTMENT_COOLDOWN_STEPS/MAX_REWARD_DELTA) -- a container restart is required for
+  # edits here to take effect. `windows` and `notable_events` below are re-read from
+  # disk at the start of every fold (epoch_callback.py's _on_training_start /
+  # _load_notable_events), so edits to those two blocks take effect on the next fold
+  # with no restart needed.
   bounds:
     hyperparam_bounds:
       learning_rate: [0.00001, 0.001]
@@ -204,6 +211,42 @@ training:
       sharpe: [0.10, 0.60]
       drawdown: [0.05, 0.50]
       turnover: [0.00, 0.20]
+    # D-T2.1: L1 lever (mid-fold reward-weight nudges from epoch advice) is BENCHED.
+    # All six algo/env pairs ship at 0.0 (disabled) — do NOT raise any value above
+    # 0.0 without a passing lever-verification harness run first (spec Section 2.3,
+    # docs/superpowers/specs/2026-06-12-training-system-redesign-design.md).
+    # Prior research values (pre-bench) are documented in
+    # .planning/research/algo-reward-shaping.md and kept as bounds.py's fail-open
+    # fallback for config-load failure only.
+    max_reward_delta:
+      ppo:
+        equity: 0.0
+        crypto: 0.0
+      a2c:
+        equity: 0.0
+        crypto: 0.0
+      sac:
+        equity: 0.0
+        crypto: 0.0
+    adjustment_cooldown_steps:       # minimum timesteps between successive L1 adjustments (unchanged by the bench)
+      ppo: 24576                     # 2 × 2048 × 6 (value function recovery)
+      a2c: 500                       # ~100 short rollouts (stability window)
+      sac: 20000                     # replay buffer rotation
+  windows:                          # §2.6: percent-of-fold rolling windows (replaces fixed 500-step deque for MDD)
+    short_pct_of_fold: 0.01         # N1 — acute detector window (1% of fold total_timesteps)
+    trend_pct_of_fold: 0.15         # N2 — decision-basis window (15% of fold total_timesteps);
+                                    # must cover every algo's adjustment_cooldown_steps above —
+                                    # enforced by a startup guard, not by this value alone.
+  notable_events:                   # §4.10 (D-T3.19): F2 trigger set + rate/hard caps (retires
+                                    # NOTABLE_KL_THRESHOLD / NOTABLE_MDD_THRESHOLD module constants)
+    kl_spike_threshold: 0.10         # N3 — approx_kl above this fires kl_spike (unchanged value)
+    mdd_breach_frac:                 # N3 — window_metrics("short")["mdd_frac_worst"] ceiling, per env
+      equity: 0.10
+      crypto: 0.12
+    trade_shy_ratio: 0.5             # N3 — trade_rate < 0.5x locked baseline_trade_rate -> trade_shy
+    churning_ratio: 3.0              # N3 — trade_rate > 3x locked baseline_trade_rate -> churning
+    hard_cap_per_run: 50             # N4 — total event rows/run; past this, rows drop + one alarm
+                                    # (cadence heartbeat rows are never capped)
   sac_buffer_size: 200000           # SAC replay buffer. Was 500K; reduced per research (smaller=better for non-stationary)
   n_envs: 6                         # Parallel envs per training (SubprocVecEnv). 6 × 3 algo workers = 18 processes.
   vecenv_backend: subproc            # "subproc" for parallel SubprocVecEnv, "dummy" for sequential DummyVecEnv

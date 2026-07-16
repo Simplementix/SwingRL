@@ -252,6 +252,7 @@ class BaseTradingEnv(gymnasium.Env):
             transaction_cost=cost,
             reward_components=reward_components,
             trades_this_step=trades_this_step,
+            risk_penalty=risk_penalty,
         )
 
         # Update previous value for next step
@@ -379,6 +380,7 @@ class BaseTradingEnv(gymnasium.Env):
         transaction_cost: float,
         reward_components: dict[str, float] | None = None,
         trades_this_step: int = 0,
+        risk_penalty: float = 0.0,
     ) -> dict[str, Any]:
         """Build info dict for step/reset return.
 
@@ -392,6 +394,12 @@ class BaseTradingEnv(gymnasium.Env):
                 during this step's rebalance call.  Consumed by the memory reward
                 wrapper's rolling trade-activity indicator.  Defaults to 0 for
                 the reset()-path call where no trades occur.
+            risk_penalty: The soft risk penalty (position concentration + drawdown,
+                always >= 0) that the raw reward already subtracts (A3, spec §2.11).
+                Exposed unconditionally so MemoryVecRewardWrapper can subtract it
+                outside the weighted component sum -- the safety term is never
+                reweightable. Defaults to 0.0 for the reset()-path call where no
+                penalty has been computed yet.
 
         Returns:
             Info dictionary with required keys.
@@ -403,6 +411,7 @@ class BaseTradingEnv(gymnasium.Env):
             "turbulence": self._get_turbulence(),
             "step": self._step_count,
             "trades_this_step": trades_this_step,
+            "risk_penalty": risk_penalty,
         }
         if reward_components is not None:
             info["reward_components"] = reward_components

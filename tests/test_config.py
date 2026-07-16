@@ -254,3 +254,53 @@ def test_all_new_sections_load_from_yaml(tmp_path: Path) -> None:
     assert config.sentiment.enabled is True
     assert config.sentiment.max_headlines_per_asset == 20
     assert config.security.key_rotation_days == 60
+
+
+# ── Task 4: L1 bench — lever limits move to config ─────────────────────────
+
+
+class TestTrainingBoundsLeverLimits:
+    """D-T2.1: L1 lever (mid-fold reward-weight nudges) limits are config-owned.
+
+    Shipped posture is BENCHED — max_reward_delta defaults to 0.0 for every
+    algo/env pair. adjustment_cooldown_steps keeps its pre-existing values,
+    now sourced from config instead of hardcoded module constants.
+    """
+
+    def test_max_reward_delta_benched_by_default(self, loaded_config: object) -> None:
+        """D-T2.1: shipped posture is L1 benched everywhere — max delta 0.0 for all pairs."""
+        for algo in ("ppo", "a2c", "sac"):
+            for env in ("equity", "crypto"):
+                assert loaded_config.training.bounds.max_reward_delta[algo][env] == 0.0  # type: ignore[union-attr]
+
+    def test_adjustment_cooldown_steps_defaults(self, loaded_config: object) -> None:
+        """D-T2.1: cooldown defaults unchanged in value, now config-sourced."""
+        cooldowns = loaded_config.training.bounds.adjustment_cooldown_steps  # type: ignore[union-attr]
+        assert cooldowns["ppo"] == 24_576
+        assert cooldowns["a2c"] == 500
+        assert cooldowns["sac"] == 20_000
+
+    def test_max_reward_delta_yaml_override_flows_through(self, tmp_path: Path) -> None:
+        """D-T2.1: a yaml override for one pair flows through load_config()."""
+        override_yaml = tmp_path / "lever_override.yaml"
+        override_yaml.write_text(
+            textwrap.dedent("""\
+                trading_mode: paper
+                training:
+                  bounds:
+                    max_reward_delta:
+                      ppo:
+                        equity: 0.03
+                        crypto: 0.0
+                      a2c:
+                        equity: 0.0
+                        crypto: 0.0
+                      sac:
+                        equity: 0.0
+                        crypto: 0.0
+            """)
+        )
+        config = load_config(override_yaml)
+        assert config.training.bounds.max_reward_delta["ppo"]["equity"] == 0.03
+        assert config.training.bounds.max_reward_delta["ppo"]["crypto"] == 0.0
+        assert config.training.bounds.max_reward_delta["a2c"]["equity"] == 0.0

@@ -20,6 +20,7 @@ import pytest
 
 from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.data.db import DatabaseManager
+from swingrl.envs.equity import StockTradingEnv
 from tests.db_guard import SAFE_DB_NAMES, classify_db_url, resolve_target_db_url
 
 # Autouse fixture — imported so it registers globally (wipes test DB after each test).
@@ -261,6 +262,20 @@ def equity_prices_array() -> np.ndarray:
     base_prices = np.array([470, 400, 220, 140, 110, 80, 40, 190], dtype=np.float32)
     returns = 1.0 + rng.normal(0.0002, 0.01, (300, 8))
     return (base_prices * np.cumprod(returns, axis=0)).astype(np.float32)
+
+
+@pytest.fixture
+def equity_env(
+    equity_features_array: np.ndarray,
+    equity_prices_array: np.ndarray,
+    equity_env_config: SwingRLConfig,
+) -> StockTradingEnv:
+    """StockTradingEnv wired with synthetic features/prices/config, not yet reset."""
+    return StockTradingEnv(
+        features=equity_features_array,
+        prices=equity_prices_array,
+        config=equity_env_config,
+    )
 
 
 @pytest.fixture

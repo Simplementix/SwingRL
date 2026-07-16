@@ -63,6 +63,31 @@ security:
   key_rotation_days: 90             # 90-day rotation reminder for API keys
   env_file_permissions: "600"       # .env must be owner-only readable
 
+training:
+  bounds:
+    # D-T2.1: L1 lever (mid-fold reward-weight nudges from epoch advice) is BENCHED.
+    # All six algo/env pairs ship at 0.0 (disabled) — do NOT raise any value above
+    # 0.0 without a passing lever-verification harness run first (spec Section 2.3,
+    # docs/superpowers/specs/2026-06-12-training-system-redesign-design.md).
+    # Prior research values (pre-bench) are documented in
+    # .planning/research/algo-reward-shaping.md and kept as bounds.py's fail-open
+    # fallback for config-load failure only. OVERRIDE via
+    # SWINGRL_TRAINING__BOUNDS__MAX_REWARD_DELTA (JSON-encoded dict).
+    max_reward_delta:
+      ppo:
+        equity: 0.0
+        crypto: 0.0
+      a2c:
+        equity: 0.0
+        crypto: 0.0
+      sac:
+        equity: 0.0
+        crypto: 0.0
+    adjustment_cooldown_steps:       # minimum timesteps between successive L1 adjustments (unchanged by the bench)
+      ppo: 24576                     # 2 × 2048 × 6 (value function recovery)
+      a2c: 500                       # ~100 short rollouts (stability window)
+      sac: 20000                     # replay buffer rotation
+
 features:
   equity_zscore_window: 252        # rolling z-score window for equity (trading days)
   crypto_zscore_window: 360        # rolling z-score window for crypto (4H bars ~60 days)

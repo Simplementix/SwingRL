@@ -112,6 +112,21 @@ Source: `ENV_PARAMS` dict at `src/swingrl/agents/backtest.py:44-59`. Same `gener
 7. `check_validation_gates(sharpe, mdd, profit_factor, overfit_gap)` (`:431-436`).
 8. Build `FoldResult` (`:438-452`); enqueue to `fold_queue` for real-time DB write (`:456-460`); legacy DB write via `self._store_results` (`:465`); post-fold attribution closure via `record_fold_attribution` (`:466-491`, fail-open).
 
+### Per-fold seed pinning (D-T2.5, M9)
+
+D-T2.5's same-fold season-over-season comparison needs the fold's advice/no-advice lever to be the *only* variable. `fold_seed(algo_name, fold_number) = SEED_MAP[algo_name] * 1000 + fold_number` (`src/swingrl/training/trainer.py:74-94`) gives disjoint per-algo seed ranges (ppo: 42000+, a2c: 43000+, sac: 44000+) so seeds never collide across algorithms for the same fold.
+
+When `Trainer.train(..., fold_number=...)` is called (the walk-forward call site at `backtest.py:387-400` always passes `fold_number=fold_idx`):
+
+- The model is constructed with `seed=fold_seed(algo_name, fold_number)`.
+- The training VecEnv is explicitly seeded with the same value (`vec_env.seed(seed)` + `vec_env.action_space.seed(seed)`), on top of SB3's own internal `set_random_seed()` auto-seeding of `self.env`.
+- The **eval VecEnv** — used internally by `EvalCallback`'s early-stop, and previously entirely unseeded (M9) — is seeded with a distinct stream, `fold_seed(...) + 1`, via `eval_vec_env.seed(eval_seed)` + `eval_vec_env.action_space.seed(eval_seed)`. Before this fix, the eval env's `self.np_random` was entropy-seeded from the OS at first reset, making early-stop timing nondeterministic across otherwise-identical runs.
+- The seed actually used is recorded on `TrainingResult.seed`; both seeds are logged via `seed_pinned` (`algo_name, fold_number, seed, eval_seed`).
+
+`fold_number=None` (ad-hoc / non-walk-forward runs, e.g. the tuning-round calls at `train_pipeline.py:2456` and `:2541`) keeps today's per-algo `SEED_MAP` constants and skips explicit env seeding entirely — this is an opt-in behavior change per call site, not a global default.
+
+**Coach-free vs advice-enabled folds:** pinning holds for coach-free folds. Advice-enabled folds are inherently irreproducible — the LLM call itself is not seeded, so identical seeds do not guarantee an identical run when memory/advice is active. **Seed-pair replication is the fallback** for advice-enabled folds (A25 pre-statement, verbatim): "per-fold seed-pinning fallback pre-statement — if the review finds pinning infeasible (VecNormalize stats, data appends, library drift), the L2 verdict mechanism falls back to seed-pair replication rather than reopening §2.5."
+
 ### Control vs treatment folds
 
 Yaml-driven via `memory_agent.control_folds_equity` / `control_folds_crypto` at `config/swingrl.yaml:114-115`:
@@ -331,3 +346,4 @@ CLI flags override yaml defaults for: `--config` path itself, `--iterations`, `-
 
 - **2026-05-07** — Initial version.
 - **2026-06-11** — Updated `run_id` format references: canonical source is now `fold_run_id()` at `backtest.py:63`, not inline f-string at `:375`.
+- **2026-07-16** — Added "Per-fold seed pinning (D-T2.5, M9)": `fold_seed()`, model/train-env/eval-env seeding, `TrainingResult.seed`, coach-free-vs-advice-enabled fallback (A25 pre-statement).

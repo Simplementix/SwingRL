@@ -1,8 +1,9 @@
 """Memory epoch callback for training-time event ingestion and LLM advice.
 
 MemoryEpochCallback fires on every rollout end and:
-1. Stores epoch snapshots to memory every 5th epoch or on notable events
-   (KL spike, MDD breach)
+1. Stores epoch snapshots to memory on a per-algo cadence or on a rate/hard-capped
+   notable-event trigger (kl_spike, mdd_breach, trade_shy, churning, numeric_anomaly
+   -- spec §4.10, D-T3.19)
 2. Queries LLM for epoch advice (reward weight adjustments) — fail-open
 3. Implements two-pass adjustment tracking: ingests trigger immediately,
    ingests outcome 10 epochs later
@@ -21,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -70,14 +72,31 @@ _ALGO_LOGGER_KEYS: dict[str, dict[str, str | None]] = {
         "clip_fraction": None,
     },
 }
-# Thresholds for "notable" epoch events (P99/P1 based on iter 1 data analysis).
-# Previous values (0.02 KL, -0.08 MDD) fired on 80% of epochs, generating 2.8M
-# memories instead of the target ~45K. These thresholds capture only the top/bottom
-# ~1% of events.
-NOTABLE_KL_THRESHOLD: float = 0.10
-NOTABLE_MDD_THRESHOLD: float = -25.0
+# §4.10 (D-T3.19, F2 class-fix) fallback notable-event trigger thresholds -- used only
+# if config load fails entirely. Must match NotableEventsConfig's pydantic defaults
+# (config/schema.py), same fail-open pattern as _FALLBACK_SHORT_PCT_OF_FOLD /
+# _FALLBACK_TREND_PCT_OF_FOLD below. RETIRES the old NOTABLE_KL_THRESHOLD=0.10 /
+# NOTABLE_MDD_THRESHOLD=-25.0 pair: KL survives unchanged (well-defined, rare) but MDD
+# moves off a cumsum-of-shaped-rewards scale (quasi-permanently true for crypto SAC --
+# Task 5 made rolling_mdd() a bounded [-1, 0] equity fraction, which left -25.0
+# permanently FALSE, i.e. the old trigger was silently inert) onto Task 5's
+# window_metrics("short")["mdd_frac_worst"] equity-fraction basis, with three siblings
+# (trade_shy, churning, numeric_anomaly) added per the redesigned five-trigger set.
+_FALLBACK_KL_SPIKE_THRESHOLD: float = 0.10
+_FALLBACK_MDD_BREACH_FRAC: dict[str, float] = {"equity": 0.10, "crypto": 0.12}
+_FALLBACK_TRADE_SHY_RATIO: float = 0.5
+_FALLBACK_CHURNING_RATIO: float = 3.0
+_FALLBACK_HARD_CAP_PER_RUN: int = 50
 # Epochs to wait before resolving pending adjustment
 ADJUSTMENT_RESOLVE_EPOCHS: int = 10
+
+# Fallback percent-of-fold window targets (spec §2.6, N1/N2) for _on_training_start's
+# startup guard, used only if config load fails entirely. Must match
+# TrainingWindowsConfig's pydantic defaults (config/schema.py) and
+# reward_wrapper.py's own copy of these constants (each module independently
+# config-loads and falls back, per this codebase's established bounds.py pattern).
+_FALLBACK_SHORT_PCT_OF_FOLD: float = 0.01
+_FALLBACK_TREND_PCT_OF_FOLD: float = 0.15
 
 
 class MemoryEpochCallback(BaseCallback):
@@ -168,6 +187,22 @@ class MemoryEpochCallback(BaseCallback):
         self._curriculum_window_active: str = "unknown"
         self._curriculum_window_year_range: str = "unknown"
 
+        # §4.10 (D-T3.19): F2 trigger-set thresholds, env-scoped, config-sourced once
+        # per fold (same fail-open pattern as _load_cadence). Sets self._kl_spike_threshold,
+        # self._mdd_breach_frac, self._trade_shy_ratio, self._churning_ratio,
+        # self._hard_cap_per_run.
+        self._load_notable_events()
+
+        # Event-path bounding (§4.10): rate cap = one row per trigger TYPE per trend
+        # window; hard cap = total event rows per run. The cadence path above is never
+        # subject to either -- it is arithmetically bounded (total_epochs / cadence)
+        # already, and must always flow (fail-safe direction: lose telemetry, never the
+        # heartbeat).
+        self._events_this_window: dict[str, int] = {}
+        self._event_rows_this_run: int = 0
+        self._trend_window_idx: int = 0
+        self._hard_cap_alarm_fired: bool = False
+
         # Tracks whether epoch_advice has failed at least once (for log-level escalation)
         self._advice_failed_once: bool = False
 
@@ -185,6 +220,11 @@ class MemoryEpochCallback(BaseCallback):
         self._pending_adjustment: dict[str, Any] | None = None
         self._sharpe_at_trigger: float = 0.0
         self._mdd_at_trigger: float = 0.0
+
+        # U1 (spec §2.2): stop_training is advice-only. Requests are recorded here
+        # (epoch, timestep, pct_complete, reason) for Task 17's intent writer; the
+        # runtime never actuates them — folds always run to completion.
+        self._stop_requests: list[dict[str, Any]] = []
 
     @staticmethod
     def _load_cadence(algo: str) -> int:
@@ -219,6 +259,34 @@ class MemoryEpochCallback(BaseCallback):
             )
             return EPOCH_STORE_CADENCE
         return cadence
+
+    def _load_notable_events(self) -> None:
+        """Load training.notable_events from validated config, env-scoped (§4.10).
+
+        Same fail-open pattern as _load_cadence / _on_training_start's window-pct
+        load: reads once per fold (call site: __init__) so config changes take
+        effect on the next fold without a container restart. Falls back to the
+        hardcoded _FALLBACK_* module constants if config load fails entirely.
+        """
+        try:
+            from swingrl.config.schema import load_config
+
+            cfg = load_config()
+            ne = cfg.training.notable_events
+            self._kl_spike_threshold: float = ne.kl_spike_threshold
+            self._mdd_breach_frac: float = ne.mdd_breach_frac.get(
+                self._env.lower(), _FALLBACK_MDD_BREACH_FRAC.get(self._env.lower(), 0.10)
+            )
+            self._trade_shy_ratio: float = ne.trade_shy_ratio
+            self._churning_ratio: float = ne.churning_ratio
+            self._hard_cap_per_run: int = ne.hard_cap_per_run
+        except Exception as exc:  # Fail-open: config load failure → use hardcoded defaults
+            log.warning("notable_events_config_load_failed", error=str(exc))
+            self._kl_spike_threshold = _FALLBACK_KL_SPIKE_THRESHOLD
+            self._mdd_breach_frac = _FALLBACK_MDD_BREACH_FRAC.get(self._env.lower(), 0.10)
+            self._trade_shy_ratio = _FALLBACK_TRADE_SHY_RATIO
+            self._churning_ratio = _FALLBACK_CHURNING_RATIO
+            self._hard_cap_per_run = _FALLBACK_HARD_CAP_PER_RUN
 
     @property
     def advice_stats(self) -> dict[str, Any]:
@@ -317,27 +385,102 @@ class MemoryEpochCallback(BaseCallback):
     def _on_step(self) -> bool:
         """Check if training should continue.
 
+        U1 (spec §2.2): stop_training is advice-only. This always returns True —
+        the LLM cannot halt a fold; it can only log a stop request for review.
+
         Returns:
-            False if stop_training was set (e.g. by LLM advice), True otherwise.
+            True unconditionally.
         """
-        return not getattr(self.model, "stop_training", False)
+        return True
+
+    def _on_training_start(self) -> None:
+        """SB3 hook fired once before rollout collection begins for this fold.
+
+        Computes percent-of-fold window sizes from the run's ACTUAL total_timesteps
+        (model._total_timesteps -- set by SB3's _setup_learn() before this hook
+        fires, so an escalated run, spec: ESCALATED_TIMESTEPS, resizes correctly
+        rather than inheriting a size baked in at construction time), configures the
+        wrapper's short/trend windows, and enforces the §2.6 startup guard: the
+        trend window must be long enough to observe at least one full
+        adjustment-cooldown cycle for this fold's algo, or training refuses to start.
+        Logs window_config with both units (dual-unit capture, D-T2.7).
+
+        Raises:
+            ConfigError: the trend window is shorter than this algo's adjustment
+                cooldown -- refuses to start training (spec §2.6 guard).
+        """
+        from swingrl.config.schema import load_config
+        from swingrl.memory.training.bounds import get_adjustment_cooldown
+        from swingrl.utils.exceptions import ConfigError
+
+        total_timesteps = int(getattr(self.model, "_total_timesteps", 0))
+
+        try:
+            cfg = load_config()
+            short_pct = cfg.training.windows.short_pct_of_fold
+            trend_pct = cfg.training.windows.trend_pct_of_fold
+        except Exception as exc:
+            log.warning("training_windows_config_load_failed", error=str(exc))
+            short_pct = _FALLBACK_SHORT_PCT_OF_FOLD
+            trend_pct = _FALLBACK_TREND_PCT_OF_FOLD
+
+        short_steps = max(1, round(short_pct * total_timesteps))
+        trend_steps = max(1, round(trend_pct * total_timesteps))
+
+        cooldown = get_adjustment_cooldown(self._algo)
+        if trend_steps < cooldown:
+            log.error(
+                "trend_window_shorter_than_cooldown",
+                algo=self._algo,
+                env=self._env,
+                run_id=self._run_id,
+                trend_steps=trend_steps,
+                cooldown=cooldown,
+                total_timesteps=total_timesteps,
+            )
+            raise ConfigError(
+                f"trend window ({trend_steps} steps) is shorter than the "
+                f"{self._algo} adjustment cooldown ({cooldown} steps) for run "
+                f"{self._run_id!r} -- refusing to start training (spec §2.6 "
+                "startup guard)."
+            )
+
+        self._wrapper.configure_windows(short_steps, trend_steps)
+
+        log.info(
+            "window_config",
+            algo=self._algo,
+            env=self._env,
+            run_id=self._run_id,
+            total_timesteps=total_timesteps,
+            short_pct_of_fold=short_pct,
+            short_steps=short_steps,
+            trend_pct_of_fold=trend_pct,
+            trend_steps=trend_steps,
+        )
 
     def _on_rollout_end(self) -> None:
         """Called at the end of each rollout (epoch). Main callback entry point.
 
-        Note: SAC uses a continuous replay buffer rather than explicit rollouts,
-        so SB3 calls _on_rollout_end less frequently for SAC than for PPO/A2C.
-        Epoch snapshots will therefore be sparser during SAC training — this is
-        expected and does not affect correctness.
+        Honest correction (§4.10, D-T3.19; this docstring previously claimed the
+        opposite): SAC does NOT fire _on_rollout_end less often than PPO/A2C. SAC's
+        train_freq=1 (continuous replay buffer, off-policy) means SB3 calls
+        _on_rollout_end roughly every environment step -- ~167K times per fold, vs
+        PPO's ~82 rollouts/fold. "Epoch" is therefore not a fixed unit of training
+        progress across algos; the per-algo cadence (ALGO_EPOCH_CADENCE) and the
+        §4.10 event-path rate/hard caps in _should_store exist BECAUSE of this fact,
+        not despite it -- the old design's silent 688K-row blowup (F2) was this
+        exact gap between assumption and reality. See _on_training_end's
+        rollout_cadence_observed log for the actual per-fold fire count.
         """
         self._epoch += 1
 
         kl_key = _ALGO_LOGGER_KEYS.get(self._algo, _ALGO_LOGGER_KEYS["ppo"])["approx_kl"]
         approx_kl = float(self.logger.name_to_value.get(kl_key, 0.0)) if kl_key else 0.0
-        rolling_mdd = self._wrapper.rolling_mdd()
+        mean_reward = self._wrapper.rolling_mean_reward()
 
         # Check if epoch should be stored
-        should_store, notable_event = self._should_store(self._epoch, approx_kl, rolling_mdd)
+        should_store, notable_event = self._should_store(self._epoch, approx_kl, mean_reward)
 
         if should_store:
             metrics = self._collect_metrics(notable_event)
@@ -352,29 +495,183 @@ class MemoryEpochCallback(BaseCallback):
         # Query LLM for epoch advice (fail-open)
         self._query_epoch_advice()
 
+    def _on_training_end(self) -> None:
+        """SB3 hook fired once when model.learn() completes for this fold.
+
+        F2 instrumentation (§4.10, D-T3.19): logs the actual _on_rollout_end fire
+        count for this fold (self._epoch), replacing the prior undocumented and
+        incorrect assumption with a measured fact, once per run.
+        """
+        log.info(
+            "rollout_cadence_observed",
+            run_id=self._run_id,
+            algo=self._algo,
+            env=self._env,
+            rollout_end_count=self._epoch,
+            event_rows_this_run=self._event_rows_this_run,
+            hard_cap_per_run=self._hard_cap_per_run,
+        )
+
     def _should_store(
         self,
         epoch: int,
         approx_kl: float,
-        rolling_mdd: float,
+        mean_reward: float,
     ) -> tuple[bool, str | None]:
-        """Determine if this epoch warrants a snapshot.
+        """Determine if this epoch warrants a snapshot (§4.10, D-T3.19 trigger set).
+
+        The cadence path (``epoch % cadence == 0``) is unconditional and uncapped --
+        it always returns ``(True, None)`` regardless of rate/hard cap state, so the
+        fold's heartbeat telemetry is never starved by event-storm bookkeeping.
+
+        Otherwise, evaluates five triggers against Task 5's short (acute-detector)
+        window plus this call's ``approx_kl``/``mean_reward``, in numeric_anomaly-first
+        precedence (a NaN/inf reading makes every other metric this epoch suspect --
+        checked before trusting kl/mdd/trade-rate values that may themselves be
+        corrupted): ``numeric_anomaly``, ``kl_spike``, ``mdd_breach``, ``trade_shy``,
+        ``churning``. A fired trigger is subject to two independent bounds:
+
+        - **Rate cap:** at most one event row per trigger TYPE per trend window
+          (``self._events_this_window``, reset at each trend-window boundary via
+          ``_roll_trend_window_if_needed``). A second occurrence of the same trigger
+          type inside the same trend window is suppressed -- the onset is the signal.
+        - **Hard cap:** at most ``self._hard_cap_per_run`` event rows per run
+          (``self._event_rows_this_run``). Past it, the row drops and a
+          ``capture_alarm`` fires exactly once (``self._hard_cap_alarm_fired``) --
+          fail-safe direction: lose telemetry, never the run.
+
+        Perf note: once the hard cap has been breached (``self._hard_cap_alarm_fired``
+        is True), every remaining epoch this run would be dropped regardless of which
+        trigger -- if any -- fires (``self._event_rows_this_run`` never decreases), so
+        trigger evaluation is skipped entirely for the rest of the run rather than
+        paying ``_fired_trigger``'s ``window_metrics("short")`` cost (measured 0.55
+        ms/call) for a result that would be discarded anyway.
 
         Args:
             epoch: Current epoch number.
             approx_kl: Approximate KL divergence from training logs.
-            rolling_mdd: Rolling maximum drawdown.
+            mean_reward: Wrapper's rolling mean shaped reward (numeric_anomaly probe).
 
         Returns:
             Tuple of (should_store, notable_event_label or None).
         """
+        self._roll_trend_window_if_needed()
+
         if epoch % self._cadence == 0:
             return True, None
-        if approx_kl > NOTABLE_KL_THRESHOLD:
-            return True, "kl_spike"
-        if rolling_mdd < NOTABLE_MDD_THRESHOLD:
-            return True, "mdd_breach"
-        return False, None
+
+        if self._hard_cap_alarm_fired:
+            return False, None
+
+        trigger = self._fired_trigger(approx_kl, mean_reward)
+        if trigger is None:
+            return False, None
+
+        if self._events_this_window.get(trigger, 0) >= 1:
+            log.debug("notable_event_rate_capped", trigger=trigger, epoch=epoch)
+            return False, None
+
+        if self._event_rows_this_run >= self._hard_cap_per_run:
+            self._fire_hard_cap_alarm_once(trigger)
+            return False, None
+
+        self._events_this_window[trigger] = self._events_this_window.get(trigger, 0) + 1
+        self._event_rows_this_run += 1
+        return True, trigger
+
+    def _fired_trigger(self, approx_kl: float, mean_reward: float) -> str | None:
+        """Evaluate the five §4.10 triggers, numeric_anomaly-first.
+
+        Args:
+            approx_kl: Approximate KL divergence from training logs.
+            mean_reward: Wrapper's rolling mean shaped reward.
+
+        Returns:
+            The first trigger label that fires, or None if the epoch is healthy.
+        """
+        if (
+            math.isnan(mean_reward)
+            or math.isinf(mean_reward)
+            or math.isnan(approx_kl)
+            or math.isinf(approx_kl)
+        ):
+            return "numeric_anomaly"
+
+        if approx_kl > self._kl_spike_threshold:
+            return "kl_spike"
+
+        short = self._wrapper.window_metrics("short")
+        if float(short.get("mdd_frac_worst", 0.0)) > self._mdd_breach_frac:
+            return "mdd_breach"
+
+        # trade_shy/churning read the wrapper's LOCKED baseline_trade_rate (existing
+        # lock mechanism, reward_wrapper.py: set once the first full _ROLLING_WINDOW
+        # fills, never overwritten thereafter). baseline == 0.0 means the window
+        # hasn't locked yet (or locked on a zero-trade fold) -- both triggers are
+        # disabled until then, matching cps_diagnosis.diagnose_rolling's own guard.
+        baseline = self._wrapper.baseline_trade_rate()
+        if baseline > 0.0:
+            trade_rate = float(short.get("trade_rate", 0.0))
+            if trade_rate < self._trade_shy_ratio * baseline:
+                return "trade_shy"
+            if trade_rate > self._churning_ratio * baseline:
+                return "churning"
+
+        return None
+
+    def _roll_trend_window_if_needed(self) -> None:
+        """Reset the per-trend-window rate-cap bookkeeping at each trend-window boundary.
+
+        Trend-window index = ``num_timesteps // trend_steps`` (Task 5's
+        ``configure_windows`` sizing) -- a tumbling (non-overlapping) count, distinct
+        from the wrapper's own sliding deque used for metric computation.
+        ``trend_steps == 0`` (windows not yet configured, e.g. before
+        ``_on_training_start`` has run) means no boundary tracking is possible;
+        treated as a single window 0 (rate cap effectively suspended until windows
+        are configured, matching this callback's established fail-open posture).
+
+        Reads ``self._wrapper.trend_steps`` (an O(1) property) rather than
+        ``window_metrics("trend")["steps"]`` -- this method runs on every
+        ``_on_rollout_end``, and the full deque-iteration + numpy recompute behind
+        ``window_metrics()`` was measured at 7.7 ms/call at crypto-SAC scale (~167K
+        rollout-ends/fold, ~21+ min/fold wasted just to read a per-fold constant).
+        """
+        trend_steps = int(self._wrapper.trend_steps)
+        window_idx = self.num_timesteps // trend_steps if trend_steps > 0 else 0
+        if window_idx != self._trend_window_idx:
+            self._trend_window_idx = window_idx
+            self._events_this_window = {}
+
+    def _fire_hard_cap_alarm_once(self, trigger: str) -> None:
+        """Fire the D-T3.19 hard-cap alarm exactly once per run.
+
+        Training containers have no Discord alerter today (Discord wiring lands in
+        Task 19 with the grader alarms). This surfaces the breach through the memory
+        client's existing ingest path as a ``capture_alarm`` row plus a structlog
+        error, so the event-storm is recorded rather than silent -- noted, not silent.
+
+        Args:
+            trigger: The trigger label that was being evaluated when the hard cap
+                was hit (for diagnostic context only -- the row itself still drops).
+        """
+        if self._hard_cap_alarm_fired:
+            return
+        self._hard_cap_alarm_fired = True
+
+        text = (
+            f"CAPTURE_ALARM: run_id={self._run_id} algo={self._algo} env={self._env} "
+            f"epoch={self._epoch} hard_cap_per_run={self._hard_cap_per_run} "
+            f"trigger_at_breach={trigger} reason=event_rows_exceeded_hard_cap"
+        )
+        ok = self._client.ingest_training(text, source=f"capture_alarm:{self._env}:{self._algo}")
+        log.error(
+            "notable_event_hard_cap_breached",
+            run_id=self._run_id,
+            epoch=self._epoch,
+            hard_cap_per_run=self._hard_cap_per_run,
+            trigger_at_breach=trigger,
+            ingest_ok=ok,
+        )
 
     def _collect_metrics(self, notable_event: str | None) -> dict[str, Any]:
         """Collect epoch metrics from the training logger and model state.
@@ -693,23 +990,28 @@ class MemoryEpochCallback(BaseCallback):
 
             stop_training = body.get("stop_training", False)
             if stop_training:
+                # U1 (spec §2.2): advice-only — 0 stop requests in 850,430 live epochs,
+                # no case for keeping actuation. The request is logged and recorded for
+                # Task 17's intent writer; model.stop_training is never set.
                 from swingrl.memory.training.bounds import MIN_TRAINING_PROGRESS
 
                 progress = self.num_timesteps / max(getattr(self.model, "_total_timesteps", 1), 1)
-                if progress < MIN_TRAINING_PROGRESS:
-                    log.info(
-                        "stop_training_ignored_too_early",
-                        progress=f"{progress:.1%}",
-                        min_required="20%",
-                        epoch=self._epoch,
-                    )
-                else:
-                    log.warning(
-                        "llm_advises_stop_training",
-                        epoch=self._epoch,
-                        reason=reason,
-                    )
-                    self.model.stop_training = True  # type: ignore[attr-defined]
+                log.warning(
+                    "llm_stop_request_advice_only",
+                    epoch=self._epoch,
+                    timestep=self.num_timesteps,
+                    pct_complete=round(progress, 4),
+                    min_required=MIN_TRAINING_PROGRESS,
+                    reason=reason,
+                )
+                self._stop_requests.append(
+                    {
+                        "epoch": self._epoch,
+                        "timestep": self.num_timesteps,
+                        "pct_complete": round(progress, 4),
+                        "reason": reason,
+                    }
+                )
                 return
 
             new_weights = body.get("reward_weights")

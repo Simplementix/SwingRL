@@ -126,12 +126,14 @@ _SAFE_DEFAULTS: dict[str, Any] = {
     "n_epochs": 10,
     "batch_size": 64,
     "gamma": 0.99,
-    "reward_weights": {"profit": 0.4, "sharpe": 0.35, "drawdown": 0.20, "turnover": 0.05},
+    # U2: must equal reward_wrapper.DEFAULT_WEIGHTS — cross-checked by test
+    "reward_weights": {"profit": 0.50, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.10},
     "rationale": "cold_start_defaults",
 }
 
 _SAFE_EPOCH_DEFAULTS: dict[str, Any] = {
-    "reward_weights": {"profit": 0.4, "sharpe": 0.35, "drawdown": 0.20, "turnover": 0.05},
+    # U2: must equal reward_wrapper.DEFAULT_WEIGHTS — cross-checked by test
+    "reward_weights": {"profit": 0.50, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.10},
     "stop_training": False,
     "rationale": "cold_start_defaults",
     "provider": "none",

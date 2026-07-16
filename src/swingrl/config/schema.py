@@ -518,16 +518,133 @@ class RewardBoundsConfig(BaseModel):
 
 
 class TrainingBoundsConfig(BaseModel):
-    """Combined bounds config for hyperparameters and reward weights."""
+    """Combined bounds config for hyperparameters, reward weights, and the L1 lever."""
 
     hyperparam_bounds: HyperparamBoundsConfig = Field(default_factory=HyperparamBoundsConfig)
     reward_bounds: RewardBoundsConfig = Field(default_factory=RewardBoundsConfig)
+    max_reward_delta: dict[str, dict[str, float]] = Field(
+        default_factory=lambda: {
+            "ppo": {"equity": 0.0, "crypto": 0.0},
+            "a2c": {"equity": 0.0, "crypto": 0.0},
+            "sac": {"equity": 0.0, "crypto": 0.0},
+        },
+        description=(
+            "D-T2.1: L1 lever (mid-fold reward-weight nudges from epoch advice) is BENCHED. "
+            "Shipped default is 0.0 (disabled) for every algo/env pair. Do not raise any "
+            "value above 0.0 without a passing lever-verification harness run — see "
+            "spec Section 2.3 (.planning/research/algo-reward-shaping.md for prior research). "
+            "Override via SWINGRL_TRAINING__BOUNDS__MAX_REWARD_DELTA."
+        ),
+    )
+    adjustment_cooldown_steps: dict[str, int] = Field(
+        default_factory=lambda: {"ppo": 24_576, "a2c": 500, "sac": 20_000},
+        description=(
+            "Minimum timesteps between successive L1 reward-weight adjustments per algo. "
+            "PPO: 2 rollouts (n_steps=2048, n_envs=6) for value function recovery. "
+            "A2C: ~100 short rollouts for stability window. SAC: replay buffer rotation. "
+            "Override via SWINGRL_TRAINING__BOUNDS__ADJUSTMENT_COOLDOWN_STEPS."
+        ),
+    )
+
+
+class TrainingWindowsConfig(BaseModel):
+    """Percent-of-fold rolling window sizes for reward-wrapper diagnostics (spec §2.6).
+
+    Replaces the fixed 500-step deque used for window MDD with two windows sized as
+    fractions of the fold's ACTUAL total_timesteps (escalated runs resize correctly --
+    MemoryVecRewardWrapper.configure_windows() is called once per fold from
+    model._total_timesteps, not from these fractions directly).
+    """
+
+    short_pct_of_fold: float = Field(
+        default=0.01,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Acute-detector window (N1): fraction of the fold's total_timesteps. "
+            "Override via SWINGRL_TRAINING__WINDOWS__SHORT_PCT_OF_FOLD."
+        ),
+    )
+    trend_pct_of_fold: float = Field(
+        default=0.15,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Decision-basis window (N2): fraction of the fold's total_timesteps. Must "
+            "cover at least one full adjustment-cooldown cycle for every algo -- enforced "
+            "by a startup guard (MemoryEpochCallback._on_training_start), not by this "
+            "schema. Override via SWINGRL_TRAINING__WINDOWS__TREND_PCT_OF_FOLD."
+        ),
+    )
+
+
+class NotableEventsConfig(BaseModel):
+    """Notable-event trigger thresholds for mid-fold epoch capture (spec §4.10, D-T3.19).
+
+    Replaces the retired NOTABLE_KL_THRESHOLD / NOTABLE_MDD_THRESHOLD module constants
+    in epoch_callback.py -- the MDD threshold was calibrated against a cumsum-of-shaped-
+    rewards quantity and became quasi-permanently true for crypto SAC (F2 root cause).
+    All five triggers are evaluated against Task 5's short (acute-detector) window
+    (window_metrics("short")) plus the current epoch's approx_kl/mean_reward.
+    """
+
+    kl_spike_threshold: float = Field(
+        default=0.10,
+        gt=0.0,
+        description=(
+            "approx_kl above this fires kl_spike. Unchanged value from the retired "
+            "NOTABLE_KL_THRESHOLD constant (well-defined, rare). Override via "
+            "SWINGRL_TRAINING__NOTABLE_EVENTS__KL_SPIKE_THRESHOLD."
+        ),
+    )
+    mdd_breach_frac: dict[str, float] = Field(
+        default_factory=lambda: {"equity": 0.10, "crypto": 0.12},
+        description=(
+            "Per-env equity-fraction drawdown ceiling for window_metrics('short')"
+            "['mdd_frac_worst'] (the worst-sub-env basis -- never mdd_frac_mean) that "
+            "fires mdd_breach. Sane units vs. per-env risk caps -- replaces the dead "
+            "-25.0 cumsum threshold. Override via "
+            "SWINGRL_TRAINING__NOTABLE_EVENTS__MDD_BREACH_FRAC (JSON dict)."
+        ),
+    )
+    trade_shy_ratio: float = Field(
+        default=0.5,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "trade_rate below this fraction of the locked baseline_trade_rate fires "
+            "trade_shy (mid-fold activity collapse). Override via "
+            "SWINGRL_TRAINING__NOTABLE_EVENTS__TRADE_SHY_RATIO."
+        ),
+    )
+    churning_ratio: float = Field(
+        default=3.0,
+        gt=1.0,
+        description=(
+            "trade_rate above this multiple of the locked baseline_trade_rate fires "
+            "churning (the opposite disease). Override via "
+            "SWINGRL_TRAINING__NOTABLE_EVENTS__CHURNING_RATIO."
+        ),
+    )
+    hard_cap_per_run: int = Field(
+        default=50,
+        gt=0,
+        description=(
+            "Total event rows (cadence heartbeats excluded) allowed per training run "
+            "before further event rows drop and a capture_alarm fires once (D-T3.19 "
+            "three-layer bounding -- expected x10 headroom above the ~3-4x structural "
+            "maximum of a healthy run). Override via "
+            "SWINGRL_TRAINING__NOTABLE_EVENTS__HARD_CAP_PER_RUN."
+        ),
+    )
 
 
 class TrainingConfig(BaseModel):
     """Training pipeline configuration."""
 
     bounds: TrainingBoundsConfig = Field(default_factory=TrainingBoundsConfig)
+    windows: TrainingWindowsConfig = Field(default_factory=TrainingWindowsConfig)
+    notable_events: NotableEventsConfig = Field(default_factory=NotableEventsConfig)
     sac_buffer_size: int = Field(
         default=500_000,
         gt=0,

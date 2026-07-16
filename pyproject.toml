@@ -106,6 +106,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "integration: requires real API keys and network access (skipped in CI)",
+    "slow: long-running determinism/reproducibility tests (included in CI, no network)",
 ]
 timeout = 600
 

@@ -9,11 +9,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from swingrl.memory.training.epoch_callback import (
-    NOTABLE_KL_THRESHOLD,
-    NOTABLE_MDD_THRESHOLD,
-    MemoryEpochCallback,
-)
+import pytest
+
+from swingrl.memory.training.epoch_callback import MemoryEpochCallback
+from swingrl.utils.exceptions import ConfigError
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -29,7 +28,13 @@ def _make_mock_memory_client() -> MagicMock:
 
 
 def _make_mock_wrapper(n_envs: int = 1) -> MagicMock:
-    """Create a mock MemoryVecRewardWrapper."""
+    """Create a mock MemoryVecRewardWrapper.
+
+    ``window_metrics("short" | "trend")`` returns a copy of ``mock._window_data[window]``
+    -- tests that need to drive §4.10 triggers mutate that dict directly (e.g.
+    ``wrapper._window_data["short"]["mdd_frac_worst"] = 0.11``) rather than
+    reconfiguring the MagicMock's side_effect each time.
+    """
     mock = MagicMock()
     mock.num_envs = n_envs
     mock.observation_space = MagicMock()
@@ -41,6 +46,35 @@ def _make_mock_wrapper(n_envs: int = 1) -> MagicMock:
     mock.rolling_trade_rate.return_value = 0.12
     mock.baseline_trade_rate.return_value = 0.10
     mock.weights = {"profit": 0.50, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.10}
+
+    window_data = {
+        "short": {
+            "pct_of_fold": 0.01,
+            "steps": 1_000,
+            "sharpe_annualized": 1.2,
+            "mdd_frac_worst": 0.02,
+            "mdd_frac_mean": 0.01,
+            "win_rate": 0.55,
+            "trade_rate": 0.10,
+        },
+        "trend": {
+            "pct_of_fold": 0.15,
+            "steps": 15_000,
+            "sharpe_annualized": 1.2,
+            "mdd_frac_worst": 0.02,
+            "mdd_frac_mean": 0.01,
+            "win_rate": 0.55,
+            "trade_rate": 0.10,
+        },
+    }
+    mock._window_data = window_data
+    mock.window_metrics.side_effect = lambda window: dict(window_data[window])
+    # trend_steps is now an O(1) property on the real wrapper (perf fix: avoids paying
+    # window_metrics("trend")'s full deque-iteration cost just to read the size) --
+    # mirror window_data["trend"]["steps"] so _roll_trend_window_if_needed's trend-window
+    # index math (num_timesteps // trend_steps) still works against a real int, not an
+    # auto-generated MagicMock attribute.
+    mock.trend_steps = window_data["trend"]["steps"]
     return mock
 
 
@@ -85,50 +119,170 @@ def _make_callback(
 
 
 class TestEpochCallbackShouldStore:
-    """TRAIN-10: _should_store() returns correct (should_store, event_label) tuples."""
+    """§4.10 (D-T3.19): _should_store() five-trigger set + rate cap + hard cap.
 
-    def test_should_store_every_5th_epoch(self) -> None:
-        """TRAIN-10: Cadence epoch (multiple of callback cadence) returns (True, None)."""
+    Replaces the retired NOTABLE_KL_THRESHOLD/NOTABLE_MDD_THRESHOLD pure-thresholding
+    design. The default mock wrapper (``_make_mock_wrapper``) starts "healthy": short
+    window mdd_frac_worst=0.02 (< equity ceiling 0.10), trade_rate=0.10 == baseline
+    (neither trade_shy nor churning), and callbacks default to approx_kl=0.0 /
+    mean_reward=1.5 (finite) unless a test overrides them.
+    """
+
+    def test_should_store_cadence_epoch_returns_true(self) -> None:
+        """Cadence epoch (multiple of callback cadence) returns (True, None) unconditionally."""
         cb = _make_callback()
-        # Use the callback's actual cadence (loaded from config, e.g. 60 for PPO)
-        should, event = cb._should_store(cb._cadence, 0.0, -0.01)
+        should, event = cb._should_store(cb._cadence, 0.0, 1.5)
         assert should is True
         assert event is None
 
-    def test_should_store_not_on_non_cadence_epoch(self) -> None:
-        """TRAIN-10: Non-cadence epoch without notable event returns (False, None)."""
+    def test_should_store_healthy_epoch_returns_false(self) -> None:
+        """Non-cadence epoch with all triggers healthy returns (False, None)."""
         cb = _make_callback()
-        should, event = cb._should_store(3, 0.0, -0.01)
+        should, event = cb._should_store(3, 0.0, 1.5)
         assert should is False
         assert event is None
 
     def test_should_store_kl_spike(self) -> None:
-        """TRAIN-10: approx_kl > NOTABLE_KL_THRESHOLD returns (True, 'kl_spike')."""
+        """approx_kl > kl_spike_threshold (config default 0.10) returns (True, 'kl_spike')."""
         cb = _make_callback()
-        kl_above = NOTABLE_KL_THRESHOLD + 0.001
-        should, event = cb._should_store(3, kl_above, -0.01)
+        should, event = cb._should_store(3, 0.101, 1.5)
         assert should is True
         assert event == "kl_spike"
 
-    def test_should_store_mdd_breach(self) -> None:
-        """TRAIN-10: rolling_mdd < NOTABLE_MDD_THRESHOLD returns (True, 'mdd_breach')."""
+    def test_should_store_kl_boundary(self) -> None:
+        """approx_kl == kl_spike_threshold (not >) returns (False, None)."""
         cb = _make_callback()
-        mdd_below = NOTABLE_MDD_THRESHOLD - 0.001
-        should, event = cb._should_store(3, 0.0, mdd_below)
+        should, event = cb._should_store(3, 0.10, 1.5)
+        assert should is False
+        assert event is None
+
+    def test_should_store_mdd_breach_uses_worst_not_mean(self) -> None:
+        """mdd_breach fires on mdd_frac_worst 0.11 (equity ceiling 0.10) even when
+        mdd_frac_mean is 0.03 -- the worst basis is load-bearing (spec 2026-07-12
+        locked decision), not the old cumsum scale, and never the mean."""
+        cb = _make_callback(env="equity")
+        cb._wrapper._window_data["short"]["mdd_frac_worst"] = 0.11
+        cb._wrapper._window_data["short"]["mdd_frac_mean"] = 0.03
+        should, event = cb._should_store(3, 0.0, 1.5)
         assert should is True
         assert event == "mdd_breach"
 
-    def test_should_store_kl_boundary(self) -> None:
-        """TRAIN-10: approx_kl == NOTABLE_KL_THRESHOLD (not >) returns False."""
-        cb = _make_callback()
-        should, event = cb._should_store(3, NOTABLE_KL_THRESHOLD, -0.01)
-        assert should is False
-
     def test_should_store_mdd_boundary(self) -> None:
-        """TRAIN-10: rolling_mdd == NOTABLE_MDD_THRESHOLD (not <) returns False."""
-        cb = _make_callback()
-        should, event = cb._should_store(3, 0.0, NOTABLE_MDD_THRESHOLD)
+        """mdd_frac_worst == mdd_breach_frac ceiling (not >) returns (False, None)."""
+        cb = _make_callback(env="equity")
+        cb._wrapper._window_data["short"]["mdd_frac_worst"] = 0.10
+        should, event = cb._should_store(3, 0.0, 1.5)
         assert should is False
+        assert event is None
+
+    def test_should_store_trade_shy(self) -> None:
+        """trade_rate < 0.5x locked baseline_trade_rate fires trade_shy."""
+        cb = _make_callback()
+        cb._wrapper.baseline_trade_rate.return_value = 0.10
+        cb._wrapper._window_data["short"]["trade_rate"] = 0.04
+        should, event = cb._should_store(3, 0.0, 1.5)
+        assert should is True
+        assert event == "trade_shy"
+
+    def test_should_store_churning(self) -> None:
+        """trade_rate > 3x locked baseline_trade_rate fires churning."""
+        cb = _make_callback()
+        cb._wrapper.baseline_trade_rate.return_value = 0.10
+        cb._wrapper._window_data["short"]["trade_rate"] = 0.35
+        should, event = cb._should_store(3, 0.0, 1.5)
+        assert should is True
+        assert event == "churning"
+
+    def test_should_store_trade_shy_and_churning_disabled_before_baseline_locks(self) -> None:
+        """baseline_trade_rate() == 0.0 (window not yet locked) disables both triggers,
+        matching cps_diagnosis.diagnose_rolling's own guard -- not a false alarm."""
+        cb = _make_callback()
+        cb._wrapper.baseline_trade_rate.return_value = 0.0
+        cb._wrapper._window_data["short"]["trade_rate"] = 0.0
+        should, event = cb._should_store(3, 0.0, 1.5)
+        assert should is False
+        assert event is None
+
+    def test_should_store_numeric_anomaly_on_nan_reward(self) -> None:
+        """numeric_anomaly fires on NaN mean_reward."""
+        cb = _make_callback()
+        should, event = cb._should_store(3, 0.0, float("nan"))
+        assert should is True
+        assert event == "numeric_anomaly"
+
+    def test_should_store_numeric_anomaly_on_inf_approx_kl(self) -> None:
+        """numeric_anomaly fires on +inf approx_kl."""
+        cb = _make_callback()
+        should, event = cb._should_store(3, float("inf"), 1.5)
+        assert should is True
+        assert event == "numeric_anomaly"
+
+    def test_should_store_numeric_anomaly_precedes_kl_spike(self) -> None:
+        """When both numeric_anomaly and kl_spike would fire, numeric_anomaly wins
+        (checked first -- a NaN/inf reading makes every other metric this epoch
+        suspect, so it is reported ahead of a comparison against a possibly
+        corrupted approx_kl)."""
+        cb = _make_callback()
+        should, event = cb._should_store(3, 0.5, float("nan"))
+        assert should is True
+        assert event == "numeric_anomaly"
+
+    def test_should_store_rate_cap_suppresses_second_same_trigger_in_window(self) -> None:
+        """Rate cap: the same trigger type firing twice inside one trend window ->
+        the second occurrence is suppressed (should_store=False)."""
+        cb = _make_callback()
+        should1, event1 = cb._should_store(3, 0.20, 1.5)
+        should2, event2 = cb._should_store(5, 0.20, 1.5)
+        assert (should1, event1) == (True, "kl_spike")
+        assert (should2, event2) == (False, None)
+
+    def test_should_store_rate_cap_resets_on_new_trend_window(self) -> None:
+        """Rate cap resets once num_timesteps crosses into a new trend window."""
+        cb = _make_callback()
+        trend_steps = cb._wrapper._window_data["trend"]["steps"]
+        cb.num_timesteps = 0
+        should1, event1 = cb._should_store(3, 0.20, 1.5)
+        cb.num_timesteps = trend_steps  # crosses into trend-window index 1
+        should2, event2 = cb._should_store(5, 0.20, 1.5)
+        assert (should1, event1) == (True, "kl_spike")
+        assert (should2, event2) == (True, "kl_spike")
+
+    def test_should_store_hard_cap_drops_row_51_and_fires_alarm_once(self) -> None:
+        """Hard cap (default 50/run): 51 distinct events (each in its own trend
+        window, so the rate cap never suppresses them) -> row 51 is dropped, a
+        capture_alarm ingests + logs exactly once, and the run's next cadence
+        epoch is STILL stored (fail-safe direction: lose telemetry, never the
+        heartbeat)."""
+        cb = _make_callback()
+        trend_steps = cb._wrapper._window_data["trend"]["steps"]
+
+        for i in range(50):
+            cb.num_timesteps = i * trend_steps
+            should, event = cb._should_store(3, 0.20, 1.5)
+            assert (should, event) == (True, "kl_spike"), f"event {i} should be accepted"
+        assert cb._event_rows_this_run == 50
+        assert cb._hard_cap_alarm_fired is False
+        cb._client.ingest_training.assert_not_called()
+
+        # 51st distinct-window event: hard cap reached -> dropped + alarm fires once.
+        cb.num_timesteps = 50 * trend_steps
+        should_51, event_51 = cb._should_store(3, 0.20, 1.5)
+        assert (should_51, event_51) == (False, None)
+        assert cb._hard_cap_alarm_fired is True
+        assert cb._event_rows_this_run == 50  # dropped row does not increment
+        cb._client.ingest_training.assert_called_once()
+        call = cb._client.ingest_training.call_args
+        assert call.kwargs["source"] == f"capture_alarm:{cb._env}:{cb._algo}"
+
+        # A second breach past the cap must NOT fire a second alarm.
+        cb.num_timesteps = 51 * trend_steps
+        should_52, event_52 = cb._should_store(3, 0.20, 1.5)
+        assert (should_52, event_52) == (False, None)
+        cb._client.ingest_training.assert_called_once()  # still just the one call
+
+        # Cadence path is uncapped: the next cadence epoch still stores.
+        should_cadence, event_cadence = cb._should_store(cb._cadence, 0.20, 1.5)
+        assert (should_cadence, event_cadence) == (True, None)
 
 
 # ---------------------------------------------------------------------------
@@ -570,15 +724,32 @@ class TestEnrichedEpochPayload:
 
 
 class TestAttributionIdentity:
-    """C5-ATTR-01: trigger row carries fold/iteration/advice_id/cps_before."""
+    """C5-ATTR-01: trigger row carries fold/iteration/advice_id/cps_before.
+
+    D-T2.1: the L1 lever is benched by default (max_reward_delta=0.0 for every
+    algo/env pair), which would short-circuit acceptance before the attribution
+    logic under test ever runs. These tests simulate a re-earned/harness-passed
+    lever by monkeypatching get_max_reward_delta() back to a nonzero value for
+    the PPO/equity pair used here — the attribution mechanics are independent
+    of the bench posture and must keep working once a lever is re-earned.
+    """
 
     def _make_accepted_advice_callback(
         self,
+        monkeypatch: pytest.MonkeyPatch,
         fold_number: int = 3,
         iteration: int = 6,
         prev_iter_cps_v1: float | None = 0.034,
     ) -> MemoryEpochCallback:
         """Create a callback where advice is accepted (big enough delta) with DB url."""
+        # Minor (Task 4 review): use a MagicMock (not a bare lambda) so callers can
+        # assert it was invoked with the expected (algo, env) pair — the callback's
+        # run_id ("equity_ppo_fold{N}") parses to algo="ppo", env="equity".
+        mock_get_max_reward_delta = MagicMock(return_value=0.03)
+        monkeypatch.setattr(
+            "swingrl.memory.training.bounds.get_max_reward_delta",
+            mock_get_max_reward_delta,
+        )
         client = _make_mock_memory_client()
         # Return weights with a delta large enough to exceed the 0.01 min
         client.epoch_advice.return_value = {
@@ -619,12 +790,21 @@ class TestAttributionIdentity:
             "protected_winner_folds": [],
             "prev_iter_cps_v1": prev_iter_cps_v1,
         }
+        cb._test_max_delta_mock = mock_get_max_reward_delta  # noqa: SLF001
         return cb
 
-    def test_adjustment_trigger_row_has_attribution_tail(self) -> None:
+    def test_adjustment_trigger_row_has_attribution_tail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """C5-ATTR-01: queue row tail = (fold_number, iteration, advice_id, cps_before)."""
-        cb = self._make_accepted_advice_callback(fold_number=3, iteration=6, prev_iter_cps_v1=0.034)
+        cb = self._make_accepted_advice_callback(
+            monkeypatch, fold_number=3, iteration=6, prev_iter_cps_v1=0.034
+        )
         cb._query_epoch_advice()  # noqa: SLF001
+
+        # Minor (Task 4 review): confirm the lever check was actually exercised for
+        # this callback's (algo, env) pair, not just returning a stubbed constant.
+        cb._test_max_delta_mock.assert_called_once_with("ppo", "equity")  # noqa: SLF001
 
         assert len(cb._adjustment_trigger_queue) == 1, (
             "Expected one trigger row in queue after accepted advice"
@@ -651,9 +831,9 @@ class TestAttributionIdentity:
             f"fold_cps_v1_before should be 0.034, got {cps_before_col}"
         )
 
-    def test_advice_id_is_unique_per_call(self) -> None:
+    def test_advice_id_is_unique_per_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """C5-ATTR-01: each accepted advice produces a distinct advice_id UUID."""
-        cb = self._make_accepted_advice_callback()
+        cb = self._make_accepted_advice_callback(monkeypatch)
         # First call
         cb._query_epoch_advice()  # noqa: SLF001
         row1 = cb._adjustment_trigger_queue[0]
@@ -668,13 +848,84 @@ class TestAttributionIdentity:
 
         assert advice_id_1 != advice_id_2, "Each advice call should produce a unique advice_id"
 
-    def test_attribution_none_cps_when_no_context(self) -> None:
+    def test_attribution_none_cps_when_no_context(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """C5-ATTR-01: fold_cps_v1_before is None when prev_iter_cps_v1 not set."""
-        cb = self._make_accepted_advice_callback(prev_iter_cps_v1=None)
+        cb = self._make_accepted_advice_callback(monkeypatch, prev_iter_cps_v1=None)
         cb._query_epoch_advice()  # noqa: SLF001
 
         row = cb._adjustment_trigger_queue[0]
         assert row[-1] is None, f"cps_before should be None when no prior iter, got {row[-1]}"
+
+
+# ---------------------------------------------------------------------------
+# TestL1BenchDefaultVetoesEndToEnd
+# ---------------------------------------------------------------------------
+
+
+class TestL1BenchDefaultVetoesEndToEnd:
+    """Finding 2 (Task 4 review): prove the shipped all-zero default actually vetoes.
+
+    TestAttributionIdentity deliberately monkeypatches get_max_reward_delta back to
+    a nonzero value to exercise attribution mechanics for a re-earned lever. Nothing
+    previously proved the OPPOSITE: that the real shipped config (all algo/env pairs
+    at 0.0, config/swingrl.yaml training.bounds.max_reward_delta) actually vetoes a
+    reward-weight adjustment at the enforcement site in _query_epoch_advice(). This
+    test drives that path with nothing monkeypatched — get_max_reward_delta and
+    get_adjustment_cooldown resolve through the real load_config().
+    """
+
+    def test_default_config_vetoes_nonzero_delta_advice(self) -> None:
+        """D-T2.1: shipped max_reward_delta=0.0 vetoes the reward-weight adjustment."""
+        client = _make_mock_memory_client()
+        client.epoch_advice.return_value = {
+            "reward_weights": {
+                "profit": 0.62,  # was 0.50 -> delta 0.12, well above the 0.01 no-op floor
+                "sharpe": 0.20,
+                "drawdown": 0.12,
+                "turnover": 0.06,
+            },
+            "stop_training": False,
+            "rationale": "test",
+            "provider": "test",
+            "model": "test",
+        }
+        wrapper = _make_mock_wrapper()
+        original_weights = dict(wrapper.weights)
+        cb = MemoryEpochCallback(
+            memory_client=client,
+            wrapper=wrapper,
+            run_id="equity_ppo_fold3",
+            algo="PPO",
+            env="equity",
+            verbose=0,
+            advice_enabled=True,
+            iteration=6,
+            fold_number=3,
+            database_url="postgresql://fake:fake@localhost/fake",  # pragma: allowlist secret
+        )
+        mock_logger = MagicMock()
+        mock_logger.name_to_value = {}
+        cb.model = MagicMock()
+        cb.model.logger = mock_logger
+        cb.num_timesteps = 0
+        cb._epoch = cb._cadence  # noqa: SLF001  # storage epoch
+        # Pre-inject fold context to bypass the lazy DB load
+        cb._fold_context = {  # noqa: SLF001
+            "fold_role": "neutral",
+            "chronic_failure_folds": [],
+            "protected_winner_folds": [],
+            "prev_iter_cps_v1": 0.034,
+        }
+
+        cb._query_epoch_advice()  # noqa: SLF001
+
+        assert cb._adjustment_trigger_queue == [], (
+            "shipped default (0.0) must veto: no trigger row should be queued"
+        )
+        wrapper.update_weights.assert_not_called()
+        assert wrapper.weights == original_weights, (
+            "wrapper weights must be untouched when the L1 lever is benched"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -747,3 +998,86 @@ class TestNaNContextGuard:
         assert cb._advice_timed_out == 1, (
             f"expected 1 advice_timed_out (skipped via exception), got {cb._advice_timed_out}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestStopTrainingAdviceOnly
+# ---------------------------------------------------------------------------
+
+
+class TestStopTrainingAdviceOnly:
+    """U1 (spec §2.2): stop_training advice is logged/recorded, never actuated."""
+
+    def _callback_with_mock_client(self) -> MemoryEpochCallback:
+        """Create a callback whose model has enough progress to pass the floor check.
+
+        Mirrors the brief's `callback_with_mock_client` fixture (no such fixture exists
+        in this file's helper set — `_make_callback` is the equivalent local pattern).
+        """
+        cb = _make_callback()
+        # _make_callback() sets cb.num_timesteps = 1000 and cb.model = MagicMock().
+        # MagicMock auto-vivifies unset attrs, so getattr(model, "_total_timesteps", 1)
+        # would return a MagicMock (not the intended default) and blow up the
+        # progress-floor comparison in _query_epoch_advice. Pin it explicitly so
+        # progress >= MIN_TRAINING_PROGRESS and the real branch under test executes.
+        cb.model._total_timesteps = 1000  # noqa: SLF001
+        # Real SB3 models start with stop_training=False; a bare MagicMock would
+        # auto-vivify this attr to a truthy Mock on first access, which would make
+        # "never actuated" trivially unverifiable. Pin the real initial state.
+        cb.model.stop_training = False
+        return cb
+
+    def test_stop_training_advice_is_never_actuated(self) -> None:
+        """U1 (spec §2.2): a stop_training=true response must not stop the run."""
+        cb = self._callback_with_mock_client()
+        cb._client.epoch_advice.return_value = {  # noqa: SLF001
+            "reward_weights": {},
+            "stop_training": True,
+            "rationale": "test stop",
+        }
+        cb._epoch = cb._cadence - 1  # noqa: SLF001  # next rollout end is an advice epoch
+        cb._on_rollout_end()  # noqa: SLF001
+
+        assert getattr(cb.model, "stop_training", False) is False
+        assert cb._on_step() is True  # noqa: SLF001
+        assert len(cb._stop_requests) == 1  # noqa: SLF001
+        assert cb._stop_requests[0]["reason"] == "test stop"  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# TestOnTrainingStartWindowConfig (Task 5, spec §2.6)
+# ---------------------------------------------------------------------------
+
+
+class TestOnTrainingStartWindowConfig:
+    """Task 5 (spec §2.6): _on_training_start sizes the wrapper's percent-of-fold
+    windows from the run's REAL total_timesteps and enforces the startup guard.
+
+    Both tests resolve get_adjustment_cooldown() and training.windows.*_pct_of_fold
+    through the REAL load_config() (nothing monkeypatched) -- same style as
+    TestL1BenchDefaultVetoesEndToEnd, proving the actual shipped defaults behave as
+    documented: trend_pct_of_fold=0.15 (N2), SAC adjustment_cooldown_steps=20_000.
+    """
+
+    def test_on_training_start_configures_wrapper_windows(self) -> None:
+        """Happy path: PPO/equity at 1,000,000 total_timesteps (DEFAULT_TIMESTEPS,
+        pipeline_helpers.py:45-48) -> both windows sized from the real 0.01/0.15
+        pct_of_fold defaults; no guard trip (trend 150,000 >> PPO cooldown 24,576)."""
+        cb = _make_callback(run_id="equity_ppo_fold0", algo="PPO", env="equity")
+        cb.model._total_timesteps = 1_000_000  # noqa: SLF001
+
+        cb._on_training_start()  # noqa: SLF001
+
+        cb._wrapper.configure_windows.assert_called_once_with(10_000, 150_000)
+
+    def test_on_training_start_guard_raises_when_trend_window_too_short(self) -> None:
+        """Guard (spec §2.6): trend_steps < get_adjustment_cooldown(algo) -> ConfigError.
+        At a 100,000-step fold, trend_pct_of_fold=0.15 -> trend_steps=15,000, which is
+        below the real SAC adjustment_cooldown_steps=20,000 -- refuses to start."""
+        cb = _make_callback(run_id="equity_sac_fold0", algo="SAC", env="equity")
+        cb.model._total_timesteps = 100_000  # noqa: SLF001
+
+        with pytest.raises(ConfigError):
+            cb._on_training_start()  # noqa: SLF001
+
+        cb._wrapper.configure_windows.assert_not_called()

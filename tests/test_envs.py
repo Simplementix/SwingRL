@@ -572,6 +572,21 @@ class TestStockTradingEnvRiskPenalties:
         assert isinstance(reward, float)
 
 
+class TestStepInfoExposesRiskPenalty:
+    """A3: the risk penalty the raw reward already uses must survive into info."""
+
+    def test_step_info_exposes_risk_penalty(self, equity_env) -> None:  # type: ignore[no-untyped-def]
+        """A3: every step's info dict must carry the risk penalty the reward already uses."""
+        equity_env.reset()
+        _, reward, _, _, info = equity_env.step(equity_env.action_space.sample())
+        assert "risk_penalty" in info
+        assert info["risk_penalty"] >= 0.0
+        # reward identity: sharpe component minus penalty
+        assert reward == pytest.approx(
+            info["reward_components"]["sharpe"] - info["risk_penalty"], abs=1e-9
+        )
+
+
 class TestStockTradingEnvRawObservations:
     """Observations are raw (not normalized)."""
 

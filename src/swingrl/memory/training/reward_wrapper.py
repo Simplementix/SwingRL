@@ -13,16 +13,23 @@ Usage:
 from __future__ import annotations
 
 from collections import deque
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import structlog
 from stable_baselines3.common.vec_env import VecEnvWrapper
 
+from swingrl.config.schema import load_config
+
 log = structlog.get_logger(__name__)
 
 # Component keys expected in the info dict from environments
 REWARD_COMPONENT_KEYS = ("profit", "sharpe", "drawdown", "turnover")
+
+# Info dict key carrying the env's built-in risk penalty (position concentration +
+# drawdown). A3 (spec §2.11): this is a safety term, never reweightable -- it is
+# subtracted outside the weighted component sum rather than folded into it.
+RISK_PENALTY_INFO_KEY = "risk_penalty"
 
 # Default weights before any LLM advice
 DEFAULT_WEIGHTS: dict[str, float] = {
@@ -34,6 +41,12 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 
 # Rolling window for Sharpe / MDD / win-rate metrics
 _ROLLING_WINDOW = 500
+
+# Fallback percent-of-fold window targets (spec §2.6, N1/N2) — used only if config
+# load fails entirely. Must match TrainingWindowsConfig's pydantic defaults
+# (config/schema.py) so a config-load failure degrades to the shipped intent.
+_FALLBACK_SHORT_PCT_OF_FOLD: float = 0.01
+_FALLBACK_TREND_PCT_OF_FOLD: float = 0.15
 
 
 class MemoryVecRewardWrapper(VecEnvWrapper):
@@ -79,9 +92,22 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         self._baseline_trade_rate: float = 0.0
         self._baseline_locked: bool = False
 
+        # Percent-of-fold windows (spec §2.6): short = acute detector, trend = decision
+        # basis. Percent targets are config-sourced (dual-unit reporting in
+        # window_metrics()); actual sizes (in steps) start at 0/empty until the
+        # callback's _on_training_start calls configure_windows() with the run's REAL
+        # total_timesteps -- so escalated runs (ESCALATED_TIMESTEPS) resize correctly.
+        self._short_pct_of_fold, self._trend_pct_of_fold = self._load_window_pcts()
+        self._short_steps: int = 0
+        self._trend_steps: int = 0
+        self._short_window: deque[dict[str, Any]] = deque(maxlen=0)
+        self._trend_window: deque[dict[str, Any]] = deque(maxlen=0)
+
         log.info(
             "reward_wrapper_init",
             weights=self._weights,
+            short_pct_of_fold=self._short_pct_of_fold,
+            trend_pct_of_fold=self._trend_pct_of_fold,
         )
 
     @property
@@ -118,6 +144,19 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
             )
             self._baseline_locked = True
 
+        # Percent-of-fold window storage (spec §2.6): one entry per step_wait() call,
+        # carrying per-sub-env shaped rewards and portfolio values (needed for the
+        # per-sub-env drawdown decomposition) plus this call's summed trade count.
+        # No-ops until configure_windows() sets a nonzero maxlen (deque(maxlen=0)
+        # silently discards every append).
+        entry = {
+            "rewards": [float(r) for r in shaped],
+            "portfolio_values": [float(info.get("portfolio_value", 0.0)) for info in infos],
+            "trades": trades,
+        }
+        self._short_window.append(entry)
+        self._trend_window.append(entry)
+
         return obs, shaped, dones, infos
 
     def reset(self) -> np.ndarray:
@@ -132,6 +171,8 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         self._trades_per_step.clear()
         self._baseline_trade_rate = 0.0
         self._baseline_locked = False
+        self._short_window.clear()
+        self._trend_window.clear()
         return obs
 
     def _shape_rewards(
@@ -142,7 +183,9 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         """Apply weighted shaping to raw rewards.
 
         If info dict contains 'reward_components' with matching keys, compute
-        a weighted sum. Otherwise, pass raw reward through unchanged.
+        a weighted sum and then subtract the env's risk penalty (info['risk_penalty'],
+        default 0.0) outside that sum -- the safety term is never reweightable
+        (A3, spec §2.11). Otherwise, pass raw reward through unchanged.
 
         Args:
             rewards: Raw reward array from environment.
@@ -169,6 +212,9 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
                 weight = self._weights.get(key, 0.0)
                 weighted_reward += weight * float(val)
 
+            # A3: the risk penalty is a safety term, never reweightable — it is
+            # subtracted outside the weighted component sum (spec §2.11, amendment A3).
+            weighted_reward -= float(info.get(RISK_PENALTY_INFO_KEY, 0.0))
             shaped[i] = weighted_reward
 
         return shaped
@@ -206,18 +252,198 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         return float(mean / std * np.sqrt(self._periods_per_year))
 
     def rolling_mdd(self) -> float:
-        """Compute maximum drawdown over the rolling window.
+        """DEPRECATED (spec §2.6, Task 5): use window_metrics("trend")["mdd_frac_worst"].
+
+        Honest correction (this alias's docstring previously overclaimed removal):
+        retained as a compatibility alias for the three value-read call sites that
+        legitimately keep using it -- MemoryEpochCallback._collect_metrics,
+        _ingest_adjustment_trigger, _resolve_pending_adjustment -- which read it purely
+        as a current-MDD scalar for logging / trigger-effectiveness comparisons and are
+        self-consistent regardless of scale. Task 6 rewired only _should_store's trigger
+        comparison directly onto window_metrics("short") (the one call site whose
+        threshold comparison was actually broken); the other three were never broken and
+        this alias is not scheduled for removal. No longer the cumsum-of-shaped-rewards
+        design (unbounded scale); now the trend window's worst-sub-env equity-fraction
+        drawdown in [-1, 0] (Task 5), negated to preserve the historical
+        negative-means-drawdown sign convention even though the underlying metric is a
+        non-negative magnitude.
 
         Returns:
-            Maximum drawdown as a negative float (e.g., -0.05 for 5% DD). 0.0 if empty.
+            Negative equity-fraction drawdown (e.g. -0.10 for a 10% worst-sub-env
+            drawdown in the trend window). 0.0 if the window has no data yet.
         """
-        if not self._reward_history:
+        return -float(self.window_metrics("trend")["mdd_frac_worst"])
+
+    @property
+    def trend_steps(self) -> int:
+        """Configured trend-window size, in total-timesteps units (D-T2.7 dual-unit basis).
+
+        O(1) accessor for the per-fold constant set by configure_windows() -- added so
+        callers that only need the window's size (e.g. MemoryEpochCallback's
+        trend-window-boundary bookkeeping) don't have to pay window_metrics("trend")'s
+        full deque-iteration + numpy recompute just to read one field.
+
+        Returns:
+            The trend window size in total-timesteps units. 0 if configure_windows()
+            has not yet been called this fold.
+        """
+        return self._trend_steps
+
+    def configure_windows(self, short_steps: int, trend_steps: int) -> None:
+        """Size the short/trend percent-of-fold windows (spec §2.6).
+
+        Called once by MemoryEpochCallback._on_training_start with the run's REAL
+        total_timesteps (model._total_timesteps) -- so escalated runs (spec:
+        ESCALATED_TIMESTEPS) resize correctly rather than inheriting a size baked in
+        at construction time. Both step counts are retained (alongside the
+        config-sourced percent targets from __init__) so window_metrics() can report
+        dual units. Always starts both windows fresh (empty) at the new size.
+
+        Args:
+            short_steps: Short (acute-detector) window size, in total-timesteps units
+                (same units as model.num_timesteps / model._total_timesteps).
+            trend_steps: Trend (decision-basis) window size, in total-timesteps units.
+        """
+        self._short_steps = int(short_steps)
+        self._trend_steps = int(trend_steps)
+
+        # total-timesteps units advance by num_envs per step_wait() call, so the
+        # window's call-count (deque maxlen) is the timestep size divided by num_envs.
+        n_envs = max(self.num_envs, 1)
+        short_calls = max(1, round(self._short_steps / n_envs))
+        trend_calls = max(1, round(self._trend_steps / n_envs))
+        self._short_window = deque(maxlen=short_calls)
+        self._trend_window = deque(maxlen=trend_calls)
+
+        log.info(
+            "reward_wrapper_windows_configured",
+            short_steps=self._short_steps,
+            trend_steps=self._trend_steps,
+            short_calls=short_calls,
+            trend_calls=trend_calls,
+            num_envs=self.num_envs,
+        )
+
+    def window_metrics(self, window: Literal["short", "trend"]) -> dict[str, Any]:
+        """Dual-unit metrics for the short (acute) or trend (decision) window (spec §2.6).
+
+        MDD is computed per sub-env from that sub-env's own portfolio-value curve
+        (peak-to-trough fraction within the window), then both the worst sub-env and
+        the mean across sub-envs are recorded (locked decision, 2026-07-12): triggers
+        and coach evidence must read mdd_frac_worst (safety-first, conservative);
+        mdd_frac_mean rides along for analysis/threshold recalibration only -- never
+        the alarm basis. The two bases are never mixed.
+
+        Args:
+            window: Which window to summarize -- "short" or "trend".
+
+        Returns:
+            Dict with pct_of_fold, steps (dual-unit observability, D-T2.7),
+            sharpe_annualized, mdd_frac_worst, mdd_frac_mean, win_rate, and trade_rate.
+            All metrics default to 0.0 when the window has fewer than 2 recorded steps.
+
+        Raises:
+            ValueError: window is not "short" or "trend".
+        """
+        if window == "short":
+            pct_of_fold = self._short_pct_of_fold
+            steps = self._short_steps
+            buf = self._short_window
+        elif window == "trend":
+            pct_of_fold = self._trend_pct_of_fold
+            steps = self._trend_steps
+            buf = self._trend_window
+        else:
+            raise ValueError(f"window must be 'short' or 'trend', got {window!r}")
+
+        all_rewards: list[float] = []
+        all_trades: list[float] = []
+        n_envs = self.num_envs
+        per_env_curves: list[list[float]] = [[] for _ in range(n_envs)]
+
+        for entry in buf:
+            all_rewards.extend(entry["rewards"])
+            all_trades.append(entry["trades"])
+            for i, pv in enumerate(entry["portfolio_values"]):
+                if i < n_envs:
+                    per_env_curves[i].append(pv)
+
+        mdd_frac_worst, mdd_frac_mean = self._portfolio_mdd_fracs(per_env_curves)
+
+        return {
+            "pct_of_fold": pct_of_fold,
+            "steps": steps,
+            "sharpe_annualized": self._annualized_sharpe(all_rewards),
+            "mdd_frac_worst": mdd_frac_worst,
+            "mdd_frac_mean": mdd_frac_mean,
+            "win_rate": (
+                float(sum(1 for r in all_rewards if r > 0.0)) / len(all_rewards)
+                if all_rewards
+                else 0.0
+            ),
+            "trade_rate": float(sum(all_trades) / len(all_trades)) if all_trades else 0.0,
+        }
+
+    def _annualized_sharpe(self, rewards: list[float]) -> float:
+        """Mean/std annualized Sharpe over an arbitrary reward sample.
+
+        Args:
+            rewards: Flat list of per-sub-env shaped rewards pooled across a window.
+
+        Returns:
+            Annualized Sharpe ratio. 0.0 if fewer than 2 observations or std < 1e-10.
+        """
+        if len(rewards) < 2:
             return 0.0
-        arr = np.array(self._reward_history)
-        cumsum = np.cumsum(arr)
-        running_max = np.maximum.accumulate(cumsum)
-        drawdown = cumsum - running_max
-        return float(np.min(drawdown))
+        arr = np.array(rewards)
+        mean = float(np.mean(arr))
+        std = float(np.std(arr, ddof=1))
+        if std < 1e-10:
+            return 0.0
+        return float(mean / std * np.sqrt(self._periods_per_year))
+
+    @staticmethod
+    def _portfolio_mdd_fracs(curves: list[list[float]]) -> tuple[float, float]:
+        """Peak-to-trough drawdown fraction per sub-env curve -> (worst, mean).
+
+        Args:
+            curves: One portfolio-value time series per sub-env, computed within the
+                window only (no external/pre-window running peak carried in).
+
+        Returns:
+            Tuple of (mdd_frac_worst, mdd_frac_mean) -- both non-negative fractions.
+            (0.0, 0.0) if no sub-env curve has at least 2 points yet.
+        """
+        per_env_dd: list[float] = []
+        for curve in curves:
+            if len(curve) < 2:
+                continue
+            arr = np.array(curve)
+            running_max = np.maximum.accumulate(arr)
+            safe_max = np.where(running_max > 0.0, running_max, 1.0)
+            drawdown = (arr - running_max) / safe_max
+            per_env_dd.append(float(-np.min(drawdown)))  # magnitude, non-negative
+
+        if not per_env_dd:
+            return 0.0, 0.0
+        return max(per_env_dd), float(sum(per_env_dd) / len(per_env_dd))
+
+    @staticmethod
+    def _load_window_pcts() -> tuple[float, float]:
+        """Load percent-of-fold window targets from config, with hardcoded fallback.
+
+        Returns:
+            Tuple of (short_pct_of_fold, trend_pct_of_fold).
+        """
+        try:
+            cfg = load_config()
+            return (
+                cfg.training.windows.short_pct_of_fold,
+                cfg.training.windows.trend_pct_of_fold,
+            )
+        except Exception as exc:
+            log.warning("training_windows_config_load_failed", error=str(exc), fallback="hardcoded")
+            return _FALLBACK_SHORT_PCT_OF_FOLD, _FALLBACK_TREND_PCT_OF_FOLD
 
     def rolling_mean_reward(self) -> float:
         """Compute mean reward over the rolling window.

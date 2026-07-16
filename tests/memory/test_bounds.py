@@ -5,7 +5,12 @@ TRAIN-01, TRAIN-02: Bounds enforcement for LLM hyperparameter suggestions.
 
 from __future__ import annotations
 
+import textwrap
+from pathlib import Path
+
 import pytest
+
+from swingrl.config.schema import load_config
 
 
 class TestClampRunConfig:
@@ -156,6 +161,132 @@ class TestClampRewardWeights:
         assert sum(result.values()) == pytest.approx(1.0, abs=1e-9)
         # all four keys should be present
         assert set(result.keys()) == {"profit", "sharpe", "drawdown", "turnover"}
+
+
+class TestLeverLimits:
+    """D-T2.1: L1 lever limits (max_reward_delta + cooldown) are config-owned.
+
+    Shipped default config (config/swingrl.yaml) benches the L1 lever for every
+    algo/env pair — get_max_reward_delta() must return 0.0 across the board.
+    """
+
+    def test_max_reward_delta_zero_for_all_pairs_under_default_config(self) -> None:
+        """D-T2.1: max delta is 0.0 for every algo/env pair under the shipped config."""
+        from swingrl.memory.training.bounds import get_max_reward_delta
+
+        for algo in ("ppo", "a2c", "sac"):
+            for env in ("equity", "crypto"):
+                assert get_max_reward_delta(algo, env) == 0.0, (
+                    f"expected benched (0.0) for {algo}/{env}, got a nonzero delta"
+                )
+
+    def test_get_max_reward_delta_a2c_crypto_is_zero(self) -> None:
+        """D-T2.1: a2c/crypto used to return 0.05 (pre-bench); now 0.0 under default config."""
+        from swingrl.memory.training.bounds import get_max_reward_delta
+
+        assert get_max_reward_delta("a2c", "crypto") == 0.0
+
+    def test_get_adjustment_cooldown_values_unchanged(self) -> None:
+        """D-T2.1: cooldown values are unchanged in value, just config-sourced."""
+        from swingrl.memory.training.bounds import get_adjustment_cooldown
+
+        assert get_adjustment_cooldown("ppo") == 24_576
+        assert get_adjustment_cooldown("a2c") == 500
+        assert get_adjustment_cooldown("sac") == 20_000
+
+    def test_get_max_reward_delta_case_insensitive(self) -> None:
+        """D-T2.1: algo/env lookups are case-insensitive (existing behavior preserved)."""
+        from swingrl.memory.training.bounds import get_max_reward_delta
+
+        assert get_max_reward_delta("PPO", "EQUITY") == 0.0
+
+    def test_partial_override_absent_pairs_stay_benched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Finding 1 (Task 4 review, CRITICAL): partial override must not un-bench pairs.
+
+        max_reward_delta is a plain dict field — pydantic REPLACES the whole dict on
+        override, it does not deep-merge. A yaml override that only sets ppo/equity
+        must leave every OTHER (algo, env) pair BENCHED (0.0), never silently
+        re-enabled at the old fail-open fallback (0.03). D-T2.1: an absent pair
+        means the operator never re-earned it — absent must mean benched.
+        """
+        import swingrl.memory.training.bounds as bounds_mod
+
+        override_yaml = tmp_path / "partial_lever_override.yaml"
+        override_yaml.write_text(
+            textwrap.dedent("""\
+                trading_mode: paper
+                training:
+                  bounds:
+                    max_reward_delta:
+                      ppo:
+                        equity: 0.03
+            """)
+        )
+        cfg = load_config(override_yaml)
+        # Sanity: pydantic replaced the whole dict wholesale — a2c/sac are gone.
+        assert cfg.training.bounds.max_reward_delta == {"ppo": {"equity": 0.03}}
+
+        monkeypatch.setattr(bounds_mod, "load_config", lambda: cfg)
+        max_reward_delta, adjustment_cooldown_steps = bounds_mod._load_lever_limits()
+        monkeypatch.setattr(bounds_mod, "MAX_REWARD_DELTA", max_reward_delta)
+        monkeypatch.setattr(bounds_mod, "ADJUSTMENT_COOLDOWN_STEPS", adjustment_cooldown_steps)
+
+        assert bounds_mod.get_max_reward_delta("ppo", "equity") == 0.03
+        assert bounds_mod.get_max_reward_delta("a2c", "crypto") == 0.0, (
+            "absent (a2c, crypto) pair must be benched, not fall back to 0.03"
+        )
+        assert bounds_mod.get_max_reward_delta("sac", "equity") == 0.0, (
+            "absent (sac, equity) pair must be benched, not fall back to 0.03"
+        )
+
+    def test_total_config_load_failure_falls_back_to_benched_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """User ruling 2026-07-16: total config-load failure stays benched, not un-benched.
+
+        _load_lever_limits()'s except branch used to fall back to the old nonzero
+        pre-bench research deltas (_FALLBACK_MAX_REWARD_DELTA, e.g. ppo/equity 0.03).
+        That un-benches the L1 lever exactly when config is broken — the opposite of
+        fail-safe. The fallback must now be 0.0 for every (algo, env) pair, same as
+        the healthy-config benched posture. The cooldown fallback is UNCHANGED
+        (nonzero) — a missing cooldown is the unsafe direction, so it keeps the old
+        asymmetry (see the module-level comment above _FALLBACK_ADJUSTMENT_COOLDOWN_STEPS).
+        The warning log must still fire — fail-open COUNTED, never silent.
+        """
+        from structlog.testing import capture_logs
+
+        import swingrl.memory.training.bounds as bounds_mod
+
+        def _raise() -> None:
+            raise RuntimeError("simulated total config-load failure")
+
+        monkeypatch.setattr(bounds_mod, "load_config", _raise)
+
+        with capture_logs() as cap_logs:
+            max_reward_delta, adjustment_cooldown_steps = bounds_mod._load_lever_limits()
+
+        monkeypatch.setattr(bounds_mod, "MAX_REWARD_DELTA", max_reward_delta)
+        monkeypatch.setattr(bounds_mod, "ADJUSTMENT_COOLDOWN_STEPS", adjustment_cooldown_steps)
+
+        for algo in ("ppo", "a2c", "sac"):
+            for env in ("equity", "crypto"):
+                assert bounds_mod.get_max_reward_delta(algo, env) == 0.0, (
+                    f"expected benched (0.0) fallback for {algo}/{env} on config-load "
+                    "failure, got a nonzero delta"
+                )
+
+        # Cooldown fallback stays nonzero — unchanged from the pre-existing behavior.
+        assert bounds_mod.get_adjustment_cooldown("ppo") == 24_576
+        assert bounds_mod.get_adjustment_cooldown("a2c") == 500
+        assert bounds_mod.get_adjustment_cooldown("sac") == 20_000
+
+        warning_events = [
+            entry for entry in cap_logs if entry.get("event") == "lever_limits_config_load_failed"
+        ]
+        assert len(warning_events) == 1, "fallback must be logged, never silent"
+        assert warning_events[0]["log_level"] == "warning"
 
 
 class TestMemoryClientIngest:

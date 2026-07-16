@@ -98,27 +98,68 @@ MIN_TRAINING_PROGRESS: float = 0.20  # hard floor — never lower
 MAX_EPOCHS: int = 200
 
 # ---------------------------------------------------------------------------
-# Per-algo reward adjustment limits (epoch advice)
+# Per-algo reward adjustment limits (epoch advice) — D-T2.1 L1 lever
 # ---------------------------------------------------------------------------
-# Max absolute reward weight delta per adjustment. Prevents treatment harm
-# identified in iter 4 pattern analysis (patterns 157, 163, 169).
-# PPO crypto disabled (0.0): control folds outperform treatment by 29.5%.
-# A2C equity capped low: equity is lower-variance, more sensitive to reward changes.
-# See .planning/research/algo-reward-shaping.md for research backing.
+# D-T2.1: the L1 lever (mid-fold reward-weight nudges from epoch advice) is
+# BENCHED. Limits are read from SwingRLConfig.training.bounds (config/swingrl.yaml);
+# the shipped default is 0.0 (disabled) for every algo/env pair — see
+# get_max_reward_delta(). Re-earning any pair above 0.0 requires a passing
+# lever-verification harness run (spec Section 2.3); the hardcoded values below
+# are ALSO all-zero — the fail-open fallback used only if config load fails
+# ENTIRELY (see _load_lever_limits()'s except branch) stays at the benched
+# posture rather than reverting to the pre-bench research values (see the user
+# ruling below for why).
+#
+# Fail-safe (Task 4 review, Finding 1): under a SUCCESSFULLY loaded config, an
+# (algo, env) pair absent from MAX_REWARD_DELTA must resolve to 0.0 (benched),
+# never to a nonzero fallback. max_reward_delta is a plain dict field and
+# pydantic does not deep-merge dict overrides — a yaml/env override that only
+# sets one pair (e.g. {ppo: {equity: 0.03}}) silently drops every other pair
+# from the loaded dict. Falling back to a nonzero default for those dropped
+# pairs would silently UN-BENCH them, which an operator never re-earned.
+# get_max_reward_delta() therefore has NO per-key nonzero default — see below.
+#
+# User ruling (2026-07-16, supersedes this module's prior Task 4 plan text):
+# a TOTAL config-load failure (_load_lever_limits()'s except branch, e.g. the
+# yaml is unreadable or fails schema validation entirely) ALSO falls back to
+# all-zero — never to a nonzero fallback. Un-benching the L1 lever precisely
+# when config is broken is the wrong direction for a fail-safe; broken config
+# must be at least as conservative as healthy config, never less. The old
+# pre-bench research deltas below (iter 4 pattern analysis, patterns 157, 163,
+# 169 — see .planning/research/algo-reward-shaping.md) are kept ONLY as a
+# historical record, not read by any code path. Re-earning any pair above 0.0
+# requires a passing lever-verification harness run (spec Section 2.3).
+#
+# _OLD_FALLBACK_MAX_REWARD_DELTA_PRE_BENCH_RESEARCH = {
+#     "ppo": {"equity": 0.03, "crypto": 0.0},
+#     "a2c": {"equity": 0.02, "crypto": 0.05},
+#     "sac": {"equity": 0.02, "crypto": 0.02},
+# }
 
-_MAX_REWARD_DELTA: dict[str, dict[str, float]] = {
-    "ppo": {"equity": 0.03, "crypto": 0.0},
-    "a2c": {"equity": 0.02, "crypto": 0.05},
-    "sac": {"equity": 0.02, "crypto": 0.02},
+_FALLBACK_MAX_REWARD_DELTA: dict[str, dict[str, float]] = {
+    "ppo": {"equity": 0.0, "crypto": 0.0},
+    "a2c": {"equity": 0.0, "crypto": 0.0},
+    "sac": {"equity": 0.0, "crypto": 0.0},
 }
-_DEFAULT_MAX_DELTA: float = 0.03
 
-# Per-algo cooldown (minimum steps between reward adjustments).
+# Per-algo cooldown (minimum steps between reward adjustments) — config-owned,
+# fallback values below are unchanged from the original research and only
+# apply if config load fails:
 # PPO: 2 rollouts for value function recovery (n_steps=2048, n_envs=6).
 # A2C: 500 steps (~100 short rollouts) for stability window.
 # SAC: 20K steps for replay buffer rotation.
+#
+# Cooldown's per-key fallback stays NONZERO (unlike max_reward_delta's), and
+# this asymmetry holds for BOTH failure modes above: a partial per-key miss
+# (get_adjustment_cooldown()'s _DEFAULT_COOLDOWN) and a total config-load
+# failure (_FALLBACK_ADJUSTMENT_COOLDOWN_STEPS, used by _load_lever_limits()'s
+# except branch below). A missing cooldown entry means "no minimum gap
+# enforced between adjustments" — i.e. 0 would be LESS safe, the opposite
+# direction from the delta fallback's all-zero. _DEFAULT_COOLDOWN is the
+# safe-side floor for an algo missing from a partial override; 5000 steps is
+# a conservative gap for any of the three algos.
 
-_ADJUSTMENT_COOLDOWN_STEPS: dict[str, int] = {
+_FALLBACK_ADJUSTMENT_COOLDOWN_STEPS: dict[str, int] = {
     "ppo": 24_576,  # 2 × 2048 × 6
     "a2c": 500,
     "sac": 20_000,
@@ -126,8 +167,47 @@ _ADJUSTMENT_COOLDOWN_STEPS: dict[str, int] = {
 _DEFAULT_COOLDOWN: int = 5_000
 
 
+def _load_lever_limits() -> tuple[dict[str, dict[str, float]], dict[str, int]]:
+    """Load L1 lever limits from config YAML, falling back to hardcoded defaults.
+
+    Returns:
+        Tuple of (max_reward_delta, adjustment_cooldown_steps) dicts.
+    """
+    try:
+        cfg = load_config()
+        max_reward_delta = {
+            algo: dict(envs) for algo, envs in cfg.training.bounds.max_reward_delta.items()
+        }
+        adjustment_cooldown_steps = dict(cfg.training.bounds.adjustment_cooldown_steps)
+        return max_reward_delta, adjustment_cooldown_steps
+    except Exception as exc:
+        log.warning("lever_limits_config_load_failed", error=str(exc), fallback="hardcoded")
+        return (
+            {algo: dict(envs) for algo, envs in _FALLBACK_MAX_REWARD_DELTA.items()},
+            dict(_FALLBACK_ADJUSTMENT_COOLDOWN_STEPS),
+        )
+
+
+MAX_REWARD_DELTA: dict[str, dict[str, float]]
+ADJUSTMENT_COOLDOWN_STEPS: dict[str, int]
+MAX_REWARD_DELTA, ADJUSTMENT_COOLDOWN_STEPS = _load_lever_limits()
+
+
 def get_max_reward_delta(algo: str, env: str) -> float:
     """Return the maximum allowed reward weight delta for this algo/env pair.
+
+    D-T2.1: the shipped config default is 0.0 (L1 lever benched) for every
+    algo/env pair — see config/swingrl.yaml training.bounds.max_reward_delta.
+
+    Fail-safe (Task 4 review, Finding 1): any (algo, env) pair ABSENT from the
+    loaded config's max_reward_delta dict returns 0.0 (benched) — never a
+    nonzero fallback. A partial override that drops a pair must not silently
+    re-enable it; absent means the operator never re-earned that pair.
+
+    User ruling (2026-07-16): this also applies when config load fails
+    ENTIRELY — the fallback used by `_load_lever_limits()` is all-zero, not
+    the old pre-bench research values. Broken config must never be less
+    conservative than healthy config.
 
     Args:
         algo: Algorithm name (ppo, a2c, sac).
@@ -136,8 +216,8 @@ def get_max_reward_delta(algo: str, env: str) -> float:
     Returns:
         Maximum absolute weight change per component. 0.0 means disabled.
     """
-    algo_map = _MAX_REWARD_DELTA.get(algo.lower(), {})
-    return algo_map.get(env.lower(), _DEFAULT_MAX_DELTA)
+    algo_map = MAX_REWARD_DELTA.get(algo.lower(), {})
+    return algo_map.get(env.lower(), 0.0)
 
 
 def get_adjustment_cooldown(algo: str) -> int:
@@ -149,7 +229,7 @@ def get_adjustment_cooldown(algo: str) -> int:
     Returns:
         Minimum timesteps that must elapse between successive reward adjustments.
     """
-    return _ADJUSTMENT_COOLDOWN_STEPS.get(algo.lower(), _DEFAULT_COOLDOWN)
+    return ADJUSTMENT_COOLDOWN_STEPS.get(algo.lower(), _DEFAULT_COOLDOWN)
 
 
 MIN_WINDOW_YEARS: float = 1.0
