@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from swingrl.config.schema import SwingRLConfig
 from swingrl.data.options.chain_parser import ParsedChain
 from swingrl.data.options.collector import OptionsCollector, check_schema_drift
+from swingrl.monitoring.alerter import Alerter
 from swingrl.utils.exceptions import DataError
 
 
@@ -256,3 +258,35 @@ def test_all_failed_sends_critical_only() -> None:
     c.run_snapshot("decision", now=datetime(2026, 7, 14, 20, 0, tzinfo=UTC))
     assert alerter.send_alert.call_count == 1
     assert alerter.send_alert.call_args.args[0] == "critical"
+
+
+def test_capture_failure_warning_bypasses_suppression_reaches_webhook(mocker: Any) -> None:
+    """OPT-COLLECT-20 (2026-07-16, user-directed scope addition): with a REAL Alerter
+    gated at consecutive_failures_before_alert=3, a single some-failed capture run still
+    reaches the webhook on the FIRST occurrence. A capture failure is same-day,
+    un-backfillable data loss (spec §13) -- it must not wait for 3 consecutive identical
+    days like a routine warning would. Uses a real Alerter (not a MagicMock) so the
+    suppression gate is actually exercised, not just recorded as "called"."""
+    mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+    mock_post.return_value = MagicMock(status_code=204)
+    mock_post.return_value.raise_for_status = MagicMock()
+
+    real_alerter = Alerter(
+        webhook_url="https://discord.com/api/webhooks/test/token",
+        cooldown_minutes=30,
+        consecutive_failures_before_alert=3,
+    )
+    client = MagicMock()
+    client.get_option_chain.side_effect = lambda s: (
+        (_ for _ in ()).throw(DataError("boom")) if s == "SPY" else _raw(s)
+    )
+    c = OptionsCollector(_cfg(), client, _store_mock(), alerter=real_alerter)
+
+    c.run_snapshot("decision", now=datetime(2026, 7, 14, 20, 0, tzinfo=UTC))
+
+    # Two posts on the FIRST run: the info "captured" (successes) and the warning
+    # (failures) -- neither suppressed, despite threshold=3.
+    assert mock_post.call_count == 2
+    titles = [call[1]["json"]["embeds"][0]["title"] for call in mock_post.call_args_list]
+    assert any("captured" in t for t in titles)
+    assert any("completed with issues" in t for t in titles)
