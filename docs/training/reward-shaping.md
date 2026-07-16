@@ -9,7 +9,7 @@ Living reference for SwingRL's reward system. Source-of-truth for the per-step r
 | Pathway | When active | Formula | Wrapper |
 |---------|-------------|---------|---------|
 | Raw | `memory_client=None` in `trainer.train()` | `rolling_sharpe_20(daily_return) − risk_penalty` | none |
-| Shaped | memory client wired (production) | `Σ weight_k × components[k]` for k ∈ {profit, sharpe, drawdown, turnover} | `MemoryVecRewardWrapper` |
+| Shaped | memory client wired (production) | `Σ weight_k × components[k] − risk_penalty` for k ∈ {profit, sharpe, drawdown, turnover} | `MemoryVecRewardWrapper` |
 
 **Stack order when shaping is active:** `Base VecEnv → MemoryVecRewardWrapper → VecNormalize` (`training/trainer.py:189-215`). The eval env mirrors this stack (`trainer.py:230-249`). On model save, the wrapper is unwrapped so the `VecNormalize` stats file is a plain `VecNormalize` instance (`trainer.py:510-531`).
 
@@ -68,6 +68,8 @@ Attached to `info["reward_components"]` on every `step` (not on `reset`). Comput
 
 **Critical:** these are **observations**, not reward terms in the raw pathway. The raw reward formula is `sharpe − risk_penalty`; it never reads `reward_components`. The dict exists so `MemoryVecRewardWrapper` can synthesize a shaped reward downstream.
 
+**`info["risk_penalty"]`** (A3, spec §2.11): the same `risk_penalty` value the raw formula subtracts, exposed as its own top-level info key — not part of `reward_components` — on every `step()` call via `_build_info` (`base.py:376-419`). Always present (default `0.0`), always `≥ 0`. Unlike `reward_components`, this key is unconditionally included (present on the `reset()` path too, where it is `0.0` since no penalty has been computed yet). Consumed directly by `MemoryVecRewardWrapper._shape_rewards` (`RISK_PENALTY_INFO_KEY`, `reward_wrapper.py:30`) so the safety term survives shaping.
+
 ## Shaped reward (`MemoryVecRewardWrapper`)
 
 Source: `memory/training/reward_wrapper.py`. Wraps a `VecEnv` (base class `VecEnvWrapper`, `reward_wrapper.py:39`); overrides `step_wait` (89-107) and `reset` (109-118).
@@ -76,10 +78,11 @@ Source: `memory/training/reward_wrapper.py`. Wraps a `VecEnv` (base class `VecEn
 
 Per-env in the vectorized batch:
 
-1. If `info["reward_components"]` is missing, not a `dict`, or shares no keys with `REWARD_COMPONENT_KEYS = ("profit","sharpe","drawdown","turnover")` → **pass raw reward through unchanged** (`reward_wrapper.py:141-146`).
-2. Otherwise compute `weighted = Σ_k weight[k] × components.get(k, 0.0)` (missing keys default to `0.0`) and **replace the raw reward entirely** (`reward_wrapper.py:149-155`).
+1. If `info["reward_components"]` is missing, not a `dict`, or shares no keys with `REWARD_COMPONENT_KEYS = ("profit","sharpe","drawdown","turnover")` → **pass raw reward through unchanged** (`reward_wrapper.py:163-170`).
+2. Otherwise compute `weighted = Σ_k weight[k] × components.get(k, 0.0)` (missing keys default to `0.0`) (`reward_wrapper.py:172-177`).
+3. Subtract `info.get("risk_penalty", 0.0)` from `weighted` **outside** the weighted sum, then use that as the shaped reward (`reward_wrapper.py:179-182`). Missing key defaults to `0.0` (old envs / unit fixtures) — unchanged behavior.
 
-The raw `sharpe − risk_penalty` signal is **silently discarded** when shaping activates. `risk_penalty` has no representation in `reward_components` and therefore does not survive into the shaped pathway.
+**Fixed (A3, spec §2.11):** prior to this fix, step 3 did not exist — the weighted sum from step 2 replaced the raw reward entirely, and the raw `sharpe − risk_penalty` signal's penalty term had no representation in `reward_components`, so it was silently discarded whenever shaping activated. Every shaped run trained penalty-free. `risk_penalty` is a safety term and is deliberately **never reweightable** — it is not one of `REWARD_COMPONENT_KEYS` and cannot be scaled via `update_weights`/LLM advice.
 
 ### Default weights
 
@@ -227,7 +230,8 @@ Fallback (hardcoded when yaml absent): PPO 60 / A2C 8000 / SAC 40000 / unknown 5
 | Value | Location | Current |
 |-------|----------|---------|
 | `REWARD_COMPONENT_KEYS` | `reward_wrapper.py:25` | `("profit","sharpe","drawdown","turnover")` |
-| `DEFAULT_WEIGHTS` | `reward_wrapper.py:28-33` | profit 0.50 / sharpe 0.25 / drawdown 0.15 / turnover 0.10 |
+| `RISK_PENALTY_INFO_KEY` | `reward_wrapper.py:30` | `"risk_penalty"` — deliberately not in `REWARD_COMPONENT_KEYS` (A3: never reweightable) |
+| `DEFAULT_WEIGHTS` | `reward_wrapper.py:33-38` | profit 0.50 / sharpe 0.25 / drawdown 0.15 / turnover 0.10 |
 | `_ROLLING_WINDOW` | `reward_wrapper.py:36` | 500 |
 | `rolling_sharpe` std floor | `reward_wrapper.py:186` | `1e-10` |
 | Default `periods_per_year` | `reward_wrapper.py:55` | 252 (overridden to 2191.5 for crypto via `ENV_PARAMS`) |
@@ -269,7 +273,7 @@ Both tables are consumed by analysis notebooks / dashboards; `reward_adjustments
 
 ## Invariants
 
-- Raw reward is always `sharpe − risk_penalty`; shaped reward **replaces** it (does not add). `risk_penalty` is therefore absent from the shaped pathway.
+- Raw reward is always `sharpe − risk_penalty`. Shaped reward is `Σ weight_k × components[k] − risk_penalty` (A3, spec §2.11): the weighted sum **replaces** the raw sharpe/profit/drawdown/turnover blend, but `risk_penalty` is subtracted a second time, outside the sum, so the safety term is never diluted or reweighted away.
 - Wrapper weights always satisfy `Σ weights = 1.0` and `weights ≥ 0` (post-normalization). Any zero-total input collapses to `DEFAULT_WEIGHTS`.
 - Every LLM weight suggestion passes through `clamp_reward_weights` before reaching the wrapper — no path bypasses it.
 - `reward_components` is attached only on `step()`, never on `reset()`. Callers must tolerate its absence on episode start.
@@ -280,7 +284,7 @@ Both tables are consumed by analysis notebooks / dashboards; `reward_adjustments
 ## Known issues / open questions
 
 - **PPO-crypto shaping disabled** (`bounds.py:105, 110`) — iter-4 pattern analysis (patterns 157/163/169) found treatment folds underperforming control by ~29.5%; `_MAX_REWARD_DELTA["ppo"]["crypto"] = 0.0` blocks all updates. Research: `.planning/research/algo-reward-shaping.md`.
-- **Risk-penalty invisibility under shaping** — once `MemoryVecRewardWrapper` activates, the agent's reward signal loses the position / drawdown penalty entirely unless `drawdown` component weight is raised. Current default weights put only 15% on drawdown and 0% on position limits.
+- ~~**Risk-penalty invisibility under shaping**~~ — **FIXED (A3, spec §2.11, Task 1 of the training-engine track).** Previously, once `MemoryVecRewardWrapper` activated, the agent's reward signal lost the position / drawdown penalty entirely — the weighted component sum replaced the raw reward wholesale and `risk_penalty` had no representation in `reward_components`. Every shaped run trained penalty-free. Fix: the env now exposes `info["risk_penalty"]` unconditionally (`base.py::_build_info`, `376-419`); the wrapper subtracts it outside the weighted sum via `RISK_PENALTY_INFO_KEY` (`reward_wrapper.py:30, 179-182`), so the safety term always applies regardless of `drawdown`/turnover weight settings. Missing key (old envs, unit fixtures) defaults to `0.0` — no behavior change for callers that don't populate it. See "Shaping math" and `info["risk_penalty"]` above.
 - **Inconsistent std floors** — env `RollingSharpeReward` uses `1e-8` (`rewards.py:48`); wrapper `rolling_sharpe` uses `1e-10` (`reward_wrapper.py:186`). Probably benign but easy to miss.
 - **Rolling-metric horizon vs adjustment cooldown** — wrapper metrics are over the last 500 shaped steps, but SAC's cooldown is 20,000 steps; the LLM sees a metric window that is 40× shorter than its minimum action interval for SAC.
 - **Cadence drift PPO** — yaml cadence `epoch_cadence_ppo=20` (was 60) produces ~4 calls/fold; reverting to the code-level default of 60 would deliver ~1.4 calls/fold (comment in `epoch_callback.py:37`).
@@ -306,3 +310,4 @@ Both tables are consumed by analysis notebooks / dashboards; `reward_adjustments
 - **2026-04-16** — Initial version.
 - **2026-05-15** — Added file:line citations for `max_position_size` / `max_drawdown_pct` defaults (schema + read sites). Clarified `peak_value` scope as episode-level (reset on `env.reset()`).
 - **2026-06-11** — Added `rolling_trade_rate` and `baseline_trade_rate` to the rolling-metrics table. These track per-fold trade activity using `info["trades_this_step"]` emitted by the envs (Task 4). `baseline_trade_rate` locks on the first full window so Task 8 mid-fold advice can detect "trade-shy collapse" against the fold's own starting rate. Updated `reward_adjustments` column list to include the 6 attribution columns added in Stage 2 Group C; corrected DDL line reference.
+- **2026-07-15** — **A3 fix (spec §2.11, Plan B Task 1):** the risk penalty now survives reward shaping. Env exposes `info["risk_penalty"]` unconditionally via `_build_info` (both equity and crypto, `base.py:376-419`); `MemoryVecRewardWrapper._shape_rewards` subtracts it outside the weighted component sum via `RISK_PENALTY_INFO_KEY` (`reward_wrapper.py:30, 179-182`) — the safety term is never reweightable. Updated the pathway table, "Reward components dict", "Shaping math", hardcoded-values table, invariants, and known-issues entry (marked fixed) accordingly.

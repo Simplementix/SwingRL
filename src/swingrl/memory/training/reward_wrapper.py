@@ -24,6 +24,11 @@ log = structlog.get_logger(__name__)
 # Component keys expected in the info dict from environments
 REWARD_COMPONENT_KEYS = ("profit", "sharpe", "drawdown", "turnover")
 
+# Info dict key carrying the env's built-in risk penalty (position concentration +
+# drawdown). A3 (spec §2.11): this is a safety term, never reweightable -- it is
+# subtracted outside the weighted component sum rather than folded into it.
+RISK_PENALTY_INFO_KEY = "risk_penalty"
+
 # Default weights before any LLM advice
 DEFAULT_WEIGHTS: dict[str, float] = {
     "profit": 0.50,
@@ -142,7 +147,9 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
         """Apply weighted shaping to raw rewards.
 
         If info dict contains 'reward_components' with matching keys, compute
-        a weighted sum. Otherwise, pass raw reward through unchanged.
+        a weighted sum and then subtract the env's risk penalty (info['risk_penalty'],
+        default 0.0) outside that sum -- the safety term is never reweightable
+        (A3, spec §2.11). Otherwise, pass raw reward through unchanged.
 
         Args:
             rewards: Raw reward array from environment.
@@ -169,6 +176,9 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
                 weight = self._weights.get(key, 0.0)
                 weighted_reward += weight * float(val)
 
+            # A3: the risk penalty is a safety term, never reweightable — it is
+            # subtracted outside the weighted component sum (spec §2.11, amendment A3).
+            weighted_reward -= float(info.get(RISK_PENALTY_INFO_KEY, 0.0))
             shaped[i] = weighted_reward
 
         return shaped
