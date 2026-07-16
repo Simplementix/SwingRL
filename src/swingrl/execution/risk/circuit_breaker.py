@@ -24,6 +24,7 @@ import structlog
 if TYPE_CHECKING:
     from swingrl.config.schema import SwingRLConfig
     from swingrl.data.db import DatabaseManager
+    from swingrl.monitoring.alerter import Alerter
 
 log = structlog.get_logger(__name__)
 
@@ -51,13 +52,23 @@ class CircuitBreaker:
         environment: "equity" or "crypto".
         db: DatabaseManager for database access.
         config: SwingRLConfig for thresholds and initial capital.
+        alerter: Optional Discord alerter. When provided, every trip and every
+            auto-resume sends a critical alert (review M1). None disables alerting
+            (unit tests, contexts without a webhook).
     """
 
-    def __init__(self, environment: str, db: DatabaseManager, config: SwingRLConfig) -> None:
+    def __init__(
+        self,
+        environment: str,
+        db: DatabaseManager,
+        config: SwingRLConfig,
+        alerter: Alerter | None = None,
+    ) -> None:
         """Initialize circuit breaker for an environment."""
         self._environment = environment
         self._db = db
         self._config = config
+        self._alerter = alerter
 
         if environment == "equity":
             self._max_dd = config.equity.max_drawdown_pct
@@ -182,7 +193,7 @@ class CircuitBreaker:
         return RAMP_STAGES[stage_idx]
 
     def resume(self) -> None:
-        """Mark latest halt event as resumed."""
+        """Mark latest halt event as resumed and alert on the auto-resume (review M1)."""
         now = datetime.now(tz=UTC).isoformat()
         with self._db.connection() as conn:
             conn.execute(
@@ -192,8 +203,40 @@ class CircuitBreaker:
             )
         log.info("circuit_breaker_resumed", environment=self._environment)
 
-    def _trigger(self, trigger_value: float, threshold: float, reason: str) -> None:
-        """Insert a halt event into circuit_breaker_events."""
+        # Auto-resume is a state change operators must see. Critical is the only
+        # level with guaranteed immediate delivery (warning is gated by the
+        # consecutive-failure counter; info buffers into a digest that the trader
+        # has no flush job for) — so a one-shot resume would otherwise be lost.
+        if self._alerter is not None:
+            self._alerter.send_alert(
+                level="critical",
+                title=f"Circuit Breaker Auto-Resumed — {self._environment}",
+                message=(
+                    f"State: ACTIVE\nCooldown complete — {self._environment} trading "
+                    "capacity restored."
+                ),
+                environment=self._environment,
+            )
+
+    def _trigger(
+        self,
+        trigger_value: float,
+        threshold: float,
+        reason: str,
+        *,
+        alert: bool = True,
+    ) -> None:
+        """Insert a halt event into circuit_breaker_events and alert on the trip.
+
+        Args:
+            trigger_value: The breaching metric value (drawdown/loss fraction, or the
+                turbulence value).
+            threshold: The limit that was breached.
+            reason: Machine-readable reason string persisted with the event.
+            alert: Send a Discord alert for this trip. Set False for the per-env
+                cascade of a global trip — the single global alert speaks for both
+                environments (see ``GlobalCircuitBreaker._trigger_all``).
+        """
         event_id = str(uuid4())
         triggered_at = datetime.now(tz=UTC).isoformat()
 
@@ -212,6 +255,17 @@ class CircuitBreaker:
             threshold=threshold,
             reason=reason,
         )
+
+        if alert and self._alerter is not None:
+            self._alerter.send_alert(
+                level="critical",
+                title=f"Circuit Breaker Halted — {self._environment}",
+                message=(
+                    f"State: HALTED\nReason: {reason}\n"
+                    f"Trigger value: {trigger_value:.4f} (threshold {threshold:.4f})"
+                ),
+                environment=self._environment,
+            )
 
     def _latest_event(self) -> dict[str, str | float | None] | None:
         """Load the latest circuit breaker event for this environment."""
@@ -291,6 +345,8 @@ class GlobalCircuitBreaker:
         circuit_breakers: Dict mapping environment name to CircuitBreaker.
         config: SwingRLConfig for initial capital values.
         db: DatabaseManager for reading persisted portfolio snapshots.
+        alerter: Optional Discord alerter. When provided, a global trip sends one
+            critical alert (review M1). None disables alerting.
     """
 
     GLOBAL_MAX_DD: float = 0.15
@@ -301,11 +357,13 @@ class GlobalCircuitBreaker:
         circuit_breakers: dict[str, CircuitBreaker],
         config: SwingRLConfig,
         db: DatabaseManager,
+        alerter: Alerter | None = None,
     ) -> None:
         """Initialize global circuit breaker."""
         self._circuit_breakers = circuit_breakers
         self._config = config
         self._db = db
+        self._alerter = alerter
         self._total_initial = config.capital.equity_usd + config.capital.crypto_usd
         self._total_hwm: float = self._total_initial
 
@@ -374,6 +432,7 @@ class GlobalCircuitBreaker:
                 combined_dd=combined_dd,
                 threshold=self.GLOBAL_MAX_DD,
             )
+            self._alert_global("combined_drawdown", combined_dd, self.GLOBAL_MAX_DD)
             self._trigger_all("combined_drawdown")
             return True
 
@@ -389,16 +448,39 @@ class GlobalCircuitBreaker:
                     combined_loss_pct=combined_loss_pct,
                     threshold=self.GLOBAL_DAILY_LIMIT,
                 )
+                self._alert_global(
+                    "combined_daily_loss", combined_loss_pct, self.GLOBAL_DAILY_LIMIT
+                )
                 self._trigger_all("combined_daily_loss")
                 return True
 
         return False
 
+    def _alert_global(self, reason: str, trigger_value: float, threshold: float) -> None:
+        """Send the single global-trip alert (review M1)."""
+        if self._alerter is None:
+            return
+        self._alerter.send_alert(
+            level="critical",
+            title="Global Circuit Breaker Triggered",
+            message=(
+                f"State: HALTED (all environments)\nReason: {reason}\n"
+                f"Trigger value: {trigger_value:.4f} (threshold {threshold:.4f})"
+            ),
+            environment="Global",
+        )
+
     def _trigger_all(self, reason: str) -> None:
-        """Trigger all per-environment circuit breakers."""
+        """Trigger all per-environment circuit breakers.
+
+        The per-env alerts are suppressed (``alert=False``): the single global
+        alert emitted by ``check_combined`` already speaks for both environments,
+        so cascading three redundant embeds would only add alarm fatigue.
+        """
         for _env, cb in self._circuit_breakers.items():
             cb._trigger(
                 trigger_value=0.0,
                 threshold=0.0,
                 reason=f"global_{reason}",
+                alert=False,
             )

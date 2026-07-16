@@ -98,12 +98,12 @@ class ExecutionPipeline:
         self._position_tracker = PositionTracker(db=db, config=config)
         self._fill_processor = FillProcessor(db=db)
 
-        # Circuit breakers
+        # Circuit breakers — alerter injected so every trip/auto-resume alerts (review M1)
         self._circuit_breakers: dict[str, CircuitBreaker] = {
-            "equity": CircuitBreaker("equity", db, config),
-            "crypto": CircuitBreaker("crypto", db, config),
+            "equity": CircuitBreaker("equity", db, config, alerter=alerter),
+            "crypto": CircuitBreaker("crypto", db, config, alerter=alerter),
         }
-        self._global_cb = GlobalCircuitBreaker(self._circuit_breakers, config, db)
+        self._global_cb = GlobalCircuitBreaker(self._circuit_breakers, config, db, alerter=alerter)
 
         # Risk manager
         self._risk_manager = RiskManager(
@@ -321,6 +321,12 @@ class ExecutionPipeline:
                 # cycle's fetched prices, not the last stored snapshot, so a held-position
                 # drawdown is visible even when no order fills.
                 fresh_value = self._position_tracker.compute_portfolio_value(env_name, cycle_prices)
+
+                # Post-halt ramp enforcement (review H4): scale the order to the
+                # breaker's current capacity fraction BEFORE validation and submission,
+                # so the validator, the broker, and the fill record all see the scaled
+                # amount (an ACTIVE breaker returns it unchanged).
+                sized_order = self._risk_manager.apply_ramp_capacity(sized_order)
 
                 # Risk validation (guardrail)
                 validated_order = self._order_validator.validate(

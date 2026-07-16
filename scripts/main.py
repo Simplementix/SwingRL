@@ -304,7 +304,7 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
 
     create_scheduler_and_register_jobs(scheduler, config)
 
-    start_stop_polling_thread(config, db)
+    start_stop_polling_thread(config, db, alerter)
 
     # Startup reconciliation (A30 restart addendum): audit any fill/position drift from
     # downtime once at boot — the same job the 17:00 ET cron runs — so drift is caught

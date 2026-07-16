@@ -14,6 +14,7 @@ Check order (Doc 04):
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -189,17 +190,6 @@ class RiskManager:
             self._record_decision(decision)
             raise CircuitBreakerError("Global circuit breaker triggered; all trading suspended")
 
-        # Scale order if CB is ramping
-        if cb is not None:
-            capacity = cb.get_capacity_fraction()
-            if capacity < 1.0:
-                log.info(
-                    "order_scaled_by_ramp",
-                    environment=env,
-                    capacity=capacity,
-                    original_amount=order.dollar_amount,
-                )
-
         # All checks passed
         decision = self._make_decision(order, order.side, "none", "approved")
         self._record_decision(decision)
@@ -211,6 +201,44 @@ class RiskManager:
             environment=env,
         )
         return decision
+
+    def apply_ramp_capacity(self, order: SizedOrder) -> SizedOrder:
+        """Scale an order to the environment's post-halt ramp capacity (review H4).
+
+        The circuit breaker re-enters trading gradually after a cooldown (25% → 50%
+        → 75% → 100% capacity). The old code logged the capacity but never applied
+        it, so full-size orders went to the broker during ramp-up. This scales the
+        order's dollar amount by the current capacity fraction *before* validation
+        and submission, so the broker (Alpaca notional) actually sizes down. Call it
+        before ``validate``/``evaluate`` so both the risk checks and the submitted
+        order see the scaled amount.
+
+        Only the ``dollar_amount`` is scaled (per the ramp contract); an ACTIVE
+        breaker (capacity 1.0) returns the order unchanged.
+
+        Args:
+            order: The sized order about to be validated.
+
+        Returns:
+            The order scaled to the current ramp capacity (unchanged when ACTIVE).
+        """
+        cb = self._circuit_breakers.get(order.environment)
+        if cb is None:
+            return order
+        capacity = cb.get_capacity_fraction()
+        if capacity >= 1.0:
+            return order
+
+        scaled = dataclasses.replace(order, dollar_amount=order.dollar_amount * capacity)
+        log.info(
+            "order_scaled_by_ramp",
+            environment=order.environment,
+            symbol=order.symbol,
+            capacity=capacity,
+            original_amount=order.dollar_amount,
+            scaled_amount=scaled.dollar_amount,
+        )
+        return scaled
 
     def check_turbulence(
         self,
