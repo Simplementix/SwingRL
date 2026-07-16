@@ -3,6 +3,7 @@
 import importlib
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -143,3 +144,47 @@ def test_models_directories_exist() -> None:
         assert d.is_dir(), f"models/{subdir}/ directory missing"
         gitkeep = d / ".gitkeep"
         assert gitkeep.exists(), f"models/{subdir}/.gitkeep missing"
+
+
+def _mock_main_config() -> MagicMock:
+    """Build a MagicMock SwingRLConfig with the attrs build_app touches before the guard."""
+    config = MagicMock()
+    config.scheduler.apscheduler_db_path = "db/test_jobs.sqlite"
+    config.scheduler.misfire_grace_time = 300
+    config.scheduler.max_workers = 4
+    config.alerting.alerts_webhook_url = ""
+    config.alerting.daily_webhook_url = ""
+    config.alerting.alert_cooldown_minutes = 30
+    config.alerting.consecutive_failures_before_alert = 3
+    config.logging.json_logs = False
+    config.logging.level = "INFO"
+    return config
+
+
+@patch("scripts.main.init_emergency_flags")
+@patch("scripts.main.load_config")
+@patch("scripts.main.configure_logging")
+def test_main_refuses_stale_schema(
+    mock_logging: MagicMock,
+    mock_load_config: MagicMock,
+    mock_init_flags: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A25 cutover: container start asserts ledger version (merged != deployed guard).
+
+    build_app() must call assert_schema_current(db) right after db.init_schema() so a
+    trader container never runs against a database missing required migrations.
+    """
+    from swingrl.data import migration_runner as mr
+    from swingrl.utils.exceptions import ConfigError
+    from tests.conftest import make_mock_db
+
+    mock_load_config.return_value = _mock_main_config()
+    db, _conn = make_mock_db(fetchone_returns=[{"v": 0}])
+    monkeypatch.setattr(mr, "EXPECTED_SCHEMA_VERSION", 3)
+
+    from scripts.main import build_app
+
+    with patch("scripts.main.DatabaseManager", return_value=db):
+        with pytest.raises(ConfigError):
+            build_app(config_path="config/test.yaml")

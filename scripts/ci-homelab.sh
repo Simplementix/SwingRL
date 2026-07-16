@@ -57,6 +57,32 @@ TEST_DB_URL="postgresql://swingrl:${PG_PASS}@pg16:5432/swingrl_test"
 docker exec pg16 psql -U temporal -d postgres -c "DROP DATABASE IF EXISTS swingrl_test;"
 docker exec pg16 psql -U temporal -d postgres -c "CREATE DATABASE swingrl_test OWNER swingrl;"
 
+echo "=== [2.7/6] Apply schema migrations to test database ==="
+# Fresh swingrl_test has no schema_migrations ledger — every DB-gated test that
+# calls services/memory/db.py::init_db() (V001+ guard) fails without this.
+# -e DATABASE_URL="$TEST_DB_URL" (not SWINGRL_SYSTEM__DATABASE_URL): DatabaseManager
+# reads plain DATABASE_URL from the environment FIRST, ahead of config.system.database_url
+# (src/swingrl/data/db.py) — and env_file: .env already put the PRODUCTION DATABASE_URL
+# into this container's environment, so only the same override Stage 3 uses is guaranteed
+# to win. Runs in the same swingrl-ci container/venv as Stage 3, so the code applying
+# migrations matches the code under test.
+# init_schema() first: V001 ALTERs backtest_results/iteration_results, which only exist
+# once DatabaseManager.init_schema() (legacy postgres_schema.py DDL) has run — the same
+# order tests/data/conftest.py's db_with_legacy_schema fixture uses. Inline (not
+# scripts/init_db.py): that script's post-init verification step has a pre-existing
+# dict-row bug (`result[0]`) unrelated to this change that makes it exit non-zero even
+# though schema creation itself succeeds — this inline call only ever touches the two
+# calls actually needed here.
+$DEV_COMPOSE run --rm --entrypoint "" -e DATABASE_URL="$TEST_DB_URL" swingrl uv run python -c "
+from swingrl.config.schema import load_config
+from swingrl.data.db import DatabaseManager
+from swingrl.data.migration_runner import apply_migrations, current_schema_version
+db = DatabaseManager(load_config('config/swingrl.yaml'))
+db.init_schema()
+n = apply_migrations(db)
+print(f'applied={n} current_version={current_schema_version(db)}')
+"
+
 echo "=== [3/6] Run tests ==="
 $DEV_COMPOSE run --rm --entrypoint "" -e DATABASE_URL="$TEST_DB_URL" swingrl uv run pytest tests/ -v
 

@@ -45,21 +45,44 @@ def ensure_wipe_target_is_test_db(db_url: str) -> bool:
     return True
 
 
+# Migration-managed registry tables — append-only, owned by
+# src/swingrl/data/migration_runner.py, NOT test data. Excluded from the
+# per-test TRUNCATE:
+#   - schema_migrations: the migration ledger itself. Wiping it desyncs the
+#     ledger from the tables it describes -- a later apply_migrations() call
+#     sees an empty ledger, tries to re-run a V-file whose CREATE TABLE already
+#     exists (relation "gate_versions" already exists), and errors instead of
+#     no-opping. This is exactly the CI failure this exclusion fixes: CI
+#     pre-applies V001/V002 to fresh swingrl_test (stage 2.7) before any test
+#     runs, so the first TRUNCATE after any test would otherwise blow away that
+#     pre-applied ledger for the rest of the run.
+#   - eras, gate_versions: the V001 registry seed rows (era 0, gate version 1).
+#     Truncating "eras" also breaks every later insert into back-stamped tables
+#     whose era_id DEFAULT 0 FK needs era row 0 to still exist.
+# Extend this list when a future migration (Task 8 / V003+) adds another
+# registry table -- data tables created BY migrations (training_runs, models,
+# ensemble_weight_history, and the back-stamped legacy tables) are NOT
+# registries and STAY in the wipe.
+_MIGRATION_REGISTRY_TABLES = frozenset({"schema_migrations", "eras", "gate_versions"})
+
+
 def _truncate_all_public_tables(db_url: str) -> None:
-    """TRUNCATE every table in the public schema of the connected test database.
+    """TRUNCATE every non-registry table in the public schema of the test database.
 
     Uses a dedicated short-lived autocommit connection (not the pooled
     DatabaseManager connection) to avoid pool-affinity surprises, with a bounded
     ``lock_timeout`` so a stray lock from a misbehaving test fails fast rather
     than hanging CI. Catalog-enumerates tables so ad-hoc tables created by raw
     tests are covered; a single ``TRUNCATE … CASCADE`` handles FK ordering.
+    Migration-managed registry tables (``_MIGRATION_REGISTRY_TABLES``) are
+    excluded -- see that constant's docstring for why.
     """
     with psycopg.connect(db_url, autocommit=True) as conn:
         conn.execute("SET lock_timeout = '10s'")
         rows = conn.execute(
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
         ).fetchall()
-        tables = [row[0] for row in rows]
+        tables = [row[0] for row in rows if row[0] not in _MIGRATION_REGISTRY_TABLES]
         if not tables:
             return
         statement = sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(

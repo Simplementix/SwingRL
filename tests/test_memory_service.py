@@ -25,6 +25,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from swingrl.config.schema import SwingRLConfig
+from swingrl.data.db import DatabaseManager
+from swingrl.data.migration_runner import (
+    EXPECTED_SCHEMA_VERSION,
+    apply_migrations,
+    current_schema_version,
+)
+
 # Add services/memory to sys.path so the service modules can be imported
 # This mirrors how uvicorn serves app.py with WORKDIR=/app/services/memory
 _MEMORY_SERVICE_DIR = Path(__file__).parent.parent / "services" / "memory"
@@ -70,10 +78,21 @@ def _patch_consolidation_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def memory_db_env(monkeypatch: pytest.MonkeyPatch) -> str:
+def memory_db_env(monkeypatch: pytest.MonkeyPatch, loaded_config: SwingRLConfig) -> str:
     """Set DATABASE_URL and required env vars for memory service tests.
 
     Skips test if DATABASE_URL is not set (no PostgreSQL available).
+
+    Also ensures the DB is migrated to swingrl.data.migration_runner's
+    EXPECTED_SCHEMA_VERSION before any test calls services/memory/db.py's
+    init_db() -- init_db()'s _assert_memory_schema_current() guard refuses to
+    run against a schema behind that floor, and the service itself cannot
+    import swingrl.* to fix that (separate container). On a fresh/local run
+    this fixture applies the migrations once, here, using swingrl.* (tests
+    CAN import it). On CI, stage 2.7 already pre-applies V001/V002 to fresh
+    swingrl_test before any test runs, and tests/fixtures/db_cleanup.py
+    excludes the migration ledger from the per-test wipe -- so this becomes a
+    cheap no-op SELECT for every test after the first.
     """
     db_url = os.environ.get("DATABASE_URL", "")
     if not db_url:
@@ -81,6 +100,14 @@ def memory_db_env(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv("DATABASE_URL", db_url)
     monkeypatch.setenv("MEMORY_API_KEY", "test-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+
+    DatabaseManager.reset()
+    db = DatabaseManager(loaded_config)
+    if current_schema_version(db) < EXPECTED_SCHEMA_VERSION:
+        db.init_schema()
+        apply_migrations(db)
+    DatabaseManager.reset()
+
     return db_url
 
 

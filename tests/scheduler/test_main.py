@@ -147,13 +147,19 @@ class TestMainInitSequence:
         mock_load_config.return_value = mock_config
 
         from scripts.main import build_app
+        from tests.conftest import make_mock_db
 
         mock_scheduler = MagicMock()
+        # Schema version far ahead of EXPECTED_SCHEMA_VERSION: assert_schema_current only
+        # warns (never raises) when ahead (A30 floor semantics) — robust to future version
+        # bumps, unlike EXPECTED_SCHEMA_VERSION's old accidental match with MagicMock's
+        # default __int__() == 1.
+        mock_db, _ = make_mock_db(fetchone_returns=[{"v": 999}])
 
         with patch("scripts.main.BackgroundScheduler", return_value=mock_scheduler):
             with patch("scripts.main.SQLAlchemyJobStore"):
                 with patch("scripts.main.ThreadPoolExecutor"):
-                    with patch("scripts.main.DatabaseManager"):
+                    with patch("scripts.main.DatabaseManager", return_value=mock_db):
                         with patch("scripts.main.ExecutionPipeline"):
                             with patch("scripts.main.Alerter"):
                                 with patch("scripts.main.start_stop_polling_thread"):
@@ -178,15 +184,19 @@ class TestMainInitSequence:
         mock_load_config.return_value = mock_config
 
         from scripts.main import build_app
+        from tests.conftest import make_mock_db
 
         mock_scheduler = MagicMock()
         mock_pipeline_cls = MagicMock()
         mock_feature_pipeline_cls = MagicMock()
+        # Schema version far ahead of EXPECTED_SCHEMA_VERSION: assert_schema_current only
+        # warns (never raises) when ahead (A30 floor semantics).
+        mock_db, _ = make_mock_db(fetchone_returns=[{"v": 999}])
 
         with patch("scripts.main.BackgroundScheduler", return_value=mock_scheduler):
             with patch("scripts.main.SQLAlchemyJobStore"):
                 with patch("scripts.main.ThreadPoolExecutor"):
-                    with patch("scripts.main.DatabaseManager"):
+                    with patch("scripts.main.DatabaseManager", return_value=mock_db):
                         with patch("scripts.main.ExecutionPipeline", mock_pipeline_cls):
                             with patch("scripts.main.Alerter"):
                                 with patch("scripts.main.start_stop_polling_thread"):
@@ -227,14 +237,18 @@ class TestMainInitSequence:
         mock_config.paths.models_dir = "models"
 
         from scripts.main import build_app
+        from tests.conftest import make_mock_db
 
         mock_scheduler = MagicMock()
         mock_pipeline_cls = MagicMock()
+        # Schema version far ahead of EXPECTED_SCHEMA_VERSION: assert_schema_current only
+        # warns (never raises) when ahead (A30 floor semantics).
+        mock_db, _ = make_mock_db(fetchone_returns=[{"v": 999}])
 
         with patch("scripts.main.BackgroundScheduler", return_value=mock_scheduler):
             with patch("scripts.main.SQLAlchemyJobStore"):
                 with patch("scripts.main.ThreadPoolExecutor"):
-                    with patch("scripts.main.DatabaseManager"):
+                    with patch("scripts.main.DatabaseManager", return_value=mock_db):
                         with patch("scripts.main.ExecutionPipeline", mock_pipeline_cls):
                             with patch("scripts.main.Alerter"):
                                 with patch("scripts.main.start_stop_polling_thread"):
