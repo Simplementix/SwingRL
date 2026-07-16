@@ -146,6 +146,94 @@ class TestSubmitBracketOrder:
         assert result.environment == "equity"
 
 
+class TestFillLifecycle:
+    """PAPER fill-lifecycle (review C2): honest fill status, timestamps, poll+cancel."""
+
+    def test_synchronous_fill_sets_status_and_timestamps(
+        self,
+        adapter: AlpacaAdapter,
+        validated_order: ValidatedOrder,
+        mock_alpaca_response: MagicMock,
+    ) -> None:
+        """(b) An immediately filled order → status='filled', submitted_at/filled_at set."""
+        adapter._client.submit_order.return_value = mock_alpaca_response
+
+        result = adapter.submit_order(validated_order)
+
+        assert result.status == "filled"
+        assert result.fill_price == 150.25
+        assert result.quantity == 2.5
+        # Both lifecycle timestamps must be populated (Task 10 consumes them).
+        assert result.submitted_at is not None
+        assert result.filled_at is not None
+        # No poll needed for an immediate fill.
+        adapter._client.get_order_by_id.assert_not_called()
+
+    def test_unfilled_order_polls_then_cancels_returns_pending(
+        self,
+        adapter: AlpacaAdapter,
+        validated_order: ValidatedOrder,
+    ) -> None:
+        """(a) A submit that never fills → poll loop runs, order cancelled, status='pending'.
+
+        Critically: quantity/price stay 0 but status='pending' — the pipeline drops it,
+        so it never becomes a $0 trades row (review C2/M11).
+        """
+        unfilled = MagicMock()
+        unfilled.id = "alpaca-order-unfilled"
+        unfilled.status = "new"
+        unfilled.filled_avg_price = None
+        unfilled.filled_qty = "0"
+
+        adapter._client.submit_order.return_value = unfilled
+        adapter._client.get_order_by_id.return_value = unfilled
+
+        # Bound the poll to two iterations for a fast, deterministic test.
+        adapter._config.equity.order_fill_timeout_s = 4
+        adapter._config.equity.order_poll_interval_s = 2
+
+        with patch("swingrl.execution.adapters.alpaca_adapter.time.sleep"):
+            result = adapter.submit_order(validated_order)
+
+        # Poll loop was actually queried (bounded: timeout/interval = 2 polls).
+        assert adapter._client.get_order_by_id.call_count == 2
+        # Unfilled order was cancelled.
+        adapter._client.cancel_order_by_id.assert_called_once_with("alpaca-order-unfilled")
+        # Honest pending result — never recordable as a trade.
+        assert result.status == "pending"
+        assert result.quantity == 0.0
+        assert result.fill_price == 0.0
+        assert result.submitted_at is not None
+        assert result.filled_at is None
+
+    def test_poll_catches_delayed_fill(
+        self,
+        adapter: AlpacaAdapter,
+        validated_order: ValidatedOrder,
+        mock_alpaca_response: MagicMock,
+    ) -> None:
+        """(a/b) An order that fills during the poll window → status='filled', real price."""
+        pending = MagicMock()
+        pending.id = "alpaca-order-delayed"
+        pending.status = "new"
+        pending.filled_avg_price = None
+        pending.filled_qty = "0"
+
+        adapter._client.submit_order.return_value = pending
+        # First poll still pending, second poll filled.
+        filled = mock_alpaca_response
+        adapter._client.get_order_by_id.side_effect = [pending, filled]
+        adapter._config.equity.order_fill_timeout_s = 60
+        adapter._config.equity.order_poll_interval_s = 2
+
+        with patch("swingrl.execution.adapters.alpaca_adapter.time.sleep"):
+            result = adapter.submit_order(validated_order)
+
+        assert result.status == "filled"
+        assert result.fill_price == 150.25
+        adapter._client.cancel_order_by_id.assert_not_called()
+
+
 class TestRetryLogic:
     """Verify exponential backoff retry on TradingClient failures."""
 
