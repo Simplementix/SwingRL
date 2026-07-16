@@ -185,12 +185,15 @@ class OptionsCollector:
             result.warnings.append(f"{symbol}: postgres sync failed ({exc}) — reconcile will heal")
 
     def _route_summary_alert(self, result: SnapshotResult) -> None:
-        """Route the summary alert (user design 2026-07-16).
+        """Route the summary alert (user design 2026-07-16; follow-up same day).
 
-        Any symbol succeeding always sends the info "captured" message (with warnings
-        folded in inline) -- warnings must never suppress or replace it. Any symbol
-        failing additionally sends a warning listing the failures. All-attempted-failed
-        remains critical-only (unchanged).
+        Any symbol succeeding OR skipped always sends the info "captured" message
+        (with warnings folded in inline) -- warnings must never suppress or replace it,
+        and an all-skipped run (idempotent re-fire) must not go silent even if it still
+        carries a warning (e.g. a late-fire beyond tolerance). A run with zero attempts
+        and zero skips (empty symbol list) stays silent. Any symbol failing additionally
+        sends a warning listing the failures. All-attempted-failed remains
+        critical-only (unchanged).
         """
         attempted = len(result.succeeded) + len(result.failed)
         if attempted > 0 and not result.succeeded:
@@ -199,7 +202,7 @@ class OptionsCollector:
             )
             return
 
-        if result.succeeded:
+        if result.succeeded or result.skipped:
             message = f"succeeded={result.succeeded} skipped={result.skipped}"
             if result.warnings:
                 message += f" | warnings: {'; '.join(result.warnings)}"

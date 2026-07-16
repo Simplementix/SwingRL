@@ -260,6 +260,36 @@ def test_all_failed_sends_critical_only() -> None:
     assert alerter.send_alert.call_args.args[0] == "critical"
 
 
+def test_all_skipped_with_warning_sends_single_info_call() -> None:
+    """OPT-COLLECT-21 (2026-07-16 follow-up, coordinator adjudication of concern 1): an
+    all-skipped run (idempotent re-fire) that still carries a warning (e.g. a late-fire
+    beyond tolerance) must not go silent -- the capture summary must always tell Discord
+    what happened. The INFO gate extends from "any succeeded" to "any succeeded OR any
+    skipped"."""
+    store = _store_mock()
+    store.snapshot_exists_parquet.return_value = True
+    client = MagicMock()
+    c, alerter = _collector(client, store)
+    result = c.run_snapshot(
+        "decision",
+        now=datetime(2026, 7, 14, 20, 0, 45, tzinfo=UTC),  # 45s late
+        scheduled_pull_utc=datetime(2026, 7, 14, 20, 0, 0, tzinfo=UTC),
+    )
+
+    client.get_option_chain.assert_not_called()
+    assert not result.succeeded
+    assert not result.failed
+    assert set(result.skipped) == {"_SPX", "SPY", "QQQ"}
+    assert len(result.warnings) == 1
+
+    assert alerter.send_alert.call_count == 1
+    level, title, message = alerter.send_alert.call_args.args[:3]
+    assert level == "info"
+    assert "captured" in title
+    assert "SPY" in message  # skipped list present
+    assert "late" in message  # warning folded in inline
+
+
 def test_capture_failure_warning_bypasses_suppression_reaches_webhook(mocker: Any) -> None:
     """OPT-COLLECT-20 (2026-07-16, user-directed scope addition): with a REAL Alerter
     gated at consecutive_failures_before_alert=3, a single some-failed capture run still
