@@ -222,7 +222,7 @@ class TestGlobalCircuitBreaker:
         eq_cb = CircuitBreaker(environment="equity", db=mock_db, config=exec_config)
         cr_cb = CircuitBreaker(environment="crypto", db=mock_db, config=exec_config)
         global_cb = GlobalCircuitBreaker(
-            circuit_breakers={"equity": eq_cb, "crypto": cr_cb}, config=exec_config
+            circuit_breakers={"equity": eq_cb, "crypto": cr_cb}, config=exec_config, db=mock_db
         )
 
         # Total initial: 400 + 47 = 447
@@ -248,7 +248,7 @@ class TestGlobalCircuitBreaker:
         eq_cb = CircuitBreaker(environment="equity", db=mock_db, config=exec_config)
         cr_cb = CircuitBreaker(environment="crypto", db=mock_db, config=exec_config)
         global_cb = GlobalCircuitBreaker(
-            circuit_breakers={"equity": eq_cb, "crypto": cr_cb}, config=exec_config
+            circuit_breakers={"equity": eq_cb, "crypto": cr_cb}, config=exec_config, db=mock_db
         )
 
         # Total initial: 447, 3% = 13.41

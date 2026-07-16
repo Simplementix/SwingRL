@@ -282,9 +282,15 @@ class GlobalCircuitBreaker:
     Triggers when combined portfolio drawdown exceeds -15% or
     combined daily loss exceeds -3% of total initial capital.
 
+    The combined high-water mark is reconstructed from persisted snapshots on
+    every check (``MAX(total_value)`` per environment, summed) so it survives a
+    process restart — the old process-memory HWM reset to initial capital on
+    restart and a real drawdown from a prior peak went undetected (review C1).
+
     Args:
         circuit_breakers: Dict mapping environment name to CircuitBreaker.
         config: SwingRLConfig for initial capital values.
+        db: DatabaseManager for reading persisted portfolio snapshots.
     """
 
     GLOBAL_MAX_DD: float = 0.15
@@ -294,12 +300,39 @@ class GlobalCircuitBreaker:
         self,
         circuit_breakers: dict[str, CircuitBreaker],
         config: SwingRLConfig,
+        db: DatabaseManager,
     ) -> None:
         """Initialize global circuit breaker."""
         self._circuit_breakers = circuit_breakers
         self._config = config
+        self._db = db
         self._total_initial = config.capital.equity_usd + config.capital.crypto_usd
         self._total_hwm: float = self._total_initial
+
+    def _persisted_combined_hwm(self) -> float:
+        """Reconstruct the combined high-water mark from persisted snapshots.
+
+        Sums each environment's peak ``total_value`` and floors at total initial
+        capital. Independent per-environment peaks may not have coincided, so the
+        sum is a conservative (never-understated) HWM — the safe direction for a
+        capital-preservation breaker, since it can only make a drawdown look
+        larger, never smaller.
+
+        Returns:
+            Combined high-water mark as float.
+        """
+        envs = list(self._circuit_breakers.keys())
+        if not envs:
+            return self._total_initial
+        placeholders = ", ".join(["%s"] * len(envs))
+        with self._db.connection() as conn:
+            rows = conn.execute(
+                f"SELECT environment, MAX(total_value) AS peak FROM portfolio_snapshots "  # noqa: S608
+                f"WHERE environment IN ({placeholders}) GROUP BY environment",  # nosec B608
+                tuple(envs),
+            ).fetchall()
+        peak_sum = sum(float(r["peak"]) for r in rows if r["peak"] is not None)
+        return max(self._total_initial, peak_sum)
 
     def check_combined(
         self,
@@ -318,8 +351,9 @@ class GlobalCircuitBreaker:
         total_value = sum(portfolio_values.values())
         total_daily_pnl = sum(daily_pnls.values())
 
-        # Update high-water mark
-        self._total_hwm = max(self._total_hwm, total_value)
+        # High-water mark from persisted snapshots (survives restart), folding in
+        # the current combined value in case it is a fresh peak not yet persisted.
+        self._total_hwm = max(self._persisted_combined_hwm(), total_value)
 
         # Check combined drawdown against high-water mark
         combined_dd = 1.0 - total_value / self._total_hwm if self._total_hwm > 0 else 0.0

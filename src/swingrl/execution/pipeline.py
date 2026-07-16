@@ -102,7 +102,7 @@ class ExecutionPipeline:
             "equity": CircuitBreaker("equity", db, config),
             "crypto": CircuitBreaker("crypto", db, config),
         }
-        self._global_cb = GlobalCircuitBreaker(self._circuit_breakers, config)
+        self._global_cb = GlobalCircuitBreaker(self._circuit_breakers, config, db)
 
         # Risk manager
         self._risk_manager = RiskManager(
@@ -262,6 +262,9 @@ class ExecutionPipeline:
             self._config.equity.symbols if env_name == "equity" else self._config.crypto.symbols
         )
         fills: list[FillResult] = []
+        # Prices fetched this cycle, reused to mark the portfolio to market for the
+        # end-of-cycle snapshot (review C1 — no extra broker calls).
+        cycle_prices: dict[str, float] = {}
         adapter = self._get_adapter(env_name)
         portfolio_value = self._position_tracker.get_portfolio_value(env_name)
 
@@ -287,6 +290,9 @@ class ExecutionPipeline:
                 if current_price <= 0:
                     log.warning("zero_price_skip", symbol=symbol)
                     continue
+
+                # Record the fresh price to mark the portfolio to market later.
+                cycle_prices[symbol] = current_price
 
                 quantity = abs(delta_value) / current_price
 
@@ -355,11 +361,16 @@ class ExecutionPipeline:
                 )
                 continue
 
-        # Step 10: Record portfolio snapshot
+        # Step 10: Record portfolio snapshot (review C1/M4)
+        # Mark positions to this cycle's fetched prices and derive cash from the
+        # trades ledger so total_value reflects reality — not the previous
+        # snapshot copied forward. Snapshots stay append-only.
         if fills:
-            new_portfolio_value = self._position_tracker.get_portfolio_value(env_name)
-            daily_pnl = self._position_tracker.get_daily_pnl(env_name)
-            cash = new_portfolio_value - sum(abs(f.quantity * f.fill_price) for f in fills)
+            cash = self._position_tracker.compute_cash(env_name)
+            new_portfolio_value = self._position_tracker.compute_portfolio_value(
+                env_name, cycle_prices
+            )
+            daily_pnl = self._position_tracker.compute_daily_pnl(env_name, new_portfolio_value)
             self._position_tracker.record_snapshot(env_name, new_portfolio_value, cash, daily_pnl)
 
         log.info(

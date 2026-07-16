@@ -27,7 +27,7 @@ def risk_manager(
     eq_cb = CircuitBreaker(environment="equity", db=mock_db, config=exec_config)
     cr_cb = CircuitBreaker(environment="crypto", db=mock_db, config=exec_config)
     global_cb = GlobalCircuitBreaker(
-        circuit_breakers={"equity": eq_cb, "crypto": cr_cb}, config=exec_config
+        circuit_breakers={"equity": eq_cb, "crypto": cr_cb}, config=exec_config, db=mock_db
     )
     return RiskManager(
         config=exec_config,
