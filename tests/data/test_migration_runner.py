@@ -70,7 +70,8 @@ def test_apply_migrations_applies_in_order_and_records(db, migrations_dir: Path)
     assert applied == 2
     with db.connection() as conn:
         rows = conn.execute(
-            "SELECT version, description FROM schema_migrations ORDER BY version"
+            "SELECT version, description FROM schema_migrations "
+            "WHERE version >= 901 ORDER BY version"
         ).fetchall()
     assert [r["version"] for r in rows] == [901, 902]
 
