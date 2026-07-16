@@ -1008,11 +1008,22 @@ Delete the broken SQL and the bare `except` (narrow to `DataError`/`Exception` w
   (e) cron registration reads `equity.cycle_time_et` (no hardcoded hour); (f) cycle jobs
   registered with `misfire_grace_time` from `scheduler.misfire_grace_s` (equity 720,
   crypto 3600 under default config); (g) startup path invokes the equity reconciliation
-  once before the scheduler starts (mocked job function called exactly once at boot).
+  once before the scheduler starts (mocked job function called exactly once at boot);
+  (h) a NO-FILL cycle still persists a portfolio snapshot whose `total_value` reflects
+  moved prices; (i) a held-position crash on a no-fill cycle trips the drawdown breaker
+  at that cycle's risk evaluation (amendment below).
 - [ ] **Step 2:** Run — Expected: FAIL
 - [ ] **Step 3: Implement.** Also verify at implementation (review honest-gap): OHLCV bar
   freshness at 15:45 ET — the cycle logs a warning when the latest `ohlcv_daily` bar is
   older than the previous trading day (data-freshness guard, log-only in this task).
+
+> **Amendment (2026-07-16, user ruling — closes Task A review Q1):** the cycle persists a
+> portfolio snapshot EVERY cycle (mark-to-market via `compute_portfolio_value` from the
+> cycle's already-fetched price map) — the `if fills:` gate on the snapshot write is
+> removed; and the pre-trade risk evaluation consumes the FRESH computed value, not the
+> last stored snapshot, so a held-position drawdown with zero fills is visible to the
+> drawdown/daily-loss breakers at every cycle. No extra broker API calls (prices come
+> from the cycle's existing fetch). Tests (h)/(i) above pin both behaviors.
 - [ ] **Step 4:** Run tests — Expected: PASS
 - [ ] **Step 5: Commit** — `git commit -m "fix(2.R-A): honest fill lifecycle + 15:45 ET market-gated cycle (review C2/M11)"`
 

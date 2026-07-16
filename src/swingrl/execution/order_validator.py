@@ -47,11 +47,14 @@ class OrderValidator:
         self._config = config
         self._risk_manager = risk_manager
 
-    def validate(self, order: SizedOrder) -> ValidatedOrder:
+    def validate(self, order: SizedOrder, portfolio_value: float | None = None) -> ValidatedOrder:
         """Validate an order through cost gate and risk checks.
 
         Args:
             order: Sized order from PositionSizer.
+            portfolio_value: Freshly computed mark-to-market portfolio value for this
+                cycle, forwarded to the RiskManager so the drawdown/daily-loss breakers
+                measure moved prices, not the last stored snapshot (amendment 2026-07-16).
 
         Returns:
             ValidatedOrder with list of passed check names.
@@ -77,7 +80,7 @@ class OrderValidator:
             )
 
         # Step 2: Risk manager delegation (may raise RiskVetoError or CircuitBreakerError)
-        self._risk_manager.evaluate(order)
+        self._risk_manager.evaluate(order, portfolio_value=portfolio_value)
 
         # All checks passed
         passed_checks = [

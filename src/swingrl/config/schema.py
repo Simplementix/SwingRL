@@ -55,6 +55,15 @@ class EquityConfig(BaseModel):
     max_drawdown_pct: float = Field(default=0.10, gt=0.0, lt=1.0)
     daily_loss_limit_pct: float = Field(default=0.02, gt=0.0, lt=1.0)
     min_order_usd: float = Field(default=1.0, ge=1.0)  # Alpaca $1 floor for fractional shares
+    # Daily rebalance time (ET, HH:MM). 15:45 fires 15m before the 16:00 close so fills
+    # land intraday, not post-close (review C2). The scheduler restricts it to weekdays.
+    cycle_time_et: str = Field(default="15:45")
+    # Gate the equity cycle on the Alpaca market clock (skip on closed/holiday). Fail-safe.
+    market_calendar_gate: bool = Field(default=True)
+    # Post-submit fill polling bounds (review C2): wait up to timeout, polling each interval,
+    # before cancelling an unfilled order. Never a $0 trade.
+    order_fill_timeout_s: int = Field(default=60, ge=1)
+    order_poll_interval_s: int = Field(default=2, ge=1)
 
     @field_validator("symbols")
     @classmethod
@@ -63,6 +72,28 @@ class EquityConfig(BaseModel):
         if not v:
             raise ConfigError("equity.symbols must not be empty")
         return v
+
+    @field_validator("cycle_time_et")
+    @classmethod
+    def cycle_time_is_hh_mm(cls, v: str) -> str:
+        """Validate cycle_time_et parses as a 24h HH:MM clock time."""
+        parts = v.split(":")
+        if len(parts) != 2 or not all(p.isdigit() for p in parts):
+            raise ConfigError(f"equity.cycle_time_et must be HH:MM, got {v!r}")
+        hour, minute = int(parts[0]), int(parts[1])
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ConfigError(f"equity.cycle_time_et out of range, got {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def poll_interval_within_timeout(self) -> EquityConfig:
+        """The poll interval must fit within the fill timeout (at least one poll)."""
+        if self.order_poll_interval_s > self.order_fill_timeout_s:
+            raise ConfigError(
+                f"equity.order_poll_interval_s ({self.order_poll_interval_s}) must not exceed "
+                f"equity.order_fill_timeout_s ({self.order_fill_timeout_s})"
+            )
+        return self
 
     @model_validator(mode="after")
     def daily_loss_below_drawdown(self) -> EquityConfig:
@@ -252,7 +283,23 @@ class SchedulerConfig(BaseModel):
     enabled: bool = Field(default=True)
     apscheduler_db_path: str = Field(default="db/apscheduler_jobs.sqlite")
     misfire_grace_time: int = Field(default=300, ge=60)
+    # Per-env misfire grace for the trading cycle jobs (A30 restart addendum). Equity 720s:
+    # a restart shortly after 15:45 still runs the cycle late, but past the graced window it
+    # cleanly skips (never a post-close submit). Crypto 3600s: an hour late is immaterial on
+    # a 4H cadence. Missed-beyond-grace cycles are skipped, never replayed.
+    misfire_grace_s: dict[str, int] = Field(default_factory=lambda: {"equity": 720, "crypto": 3600})
     max_workers: int = Field(default=4, ge=1)
+
+    @field_validator("misfire_grace_s")
+    @classmethod
+    def misfire_grace_has_both_envs(cls, v: dict[str, int]) -> dict[str, int]:
+        """Both cycle environments need a positive misfire grace."""
+        for env in ("equity", "crypto"):
+            if env not in v:
+                raise ConfigError(f"scheduler.misfire_grace_s must include '{env}'")
+            if v[env] <= 0:
+                raise ConfigError(f"scheduler.misfire_grace_s['{env}'] must be positive")
+        return v
 
 
 class BackupConfig(BaseModel):

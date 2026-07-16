@@ -59,7 +59,7 @@ class RiskManager:
         self._circuit_breakers = circuit_breakers
         self._global_cb = global_cb
 
-    def evaluate(self, order: SizedOrder) -> RiskDecision:
+    def evaluate(self, order: SizedOrder, portfolio_value: float | None = None) -> RiskDecision:
         """Evaluate an order against all risk rules.
 
         Checks in order: CB state, position size, exposure, drawdown,
@@ -67,6 +67,12 @@ class RiskManager:
 
         Args:
             order: Sized order to evaluate.
+            portfolio_value: Freshly computed mark-to-market portfolio value for this
+                cycle (amendment 2026-07-16). When provided, the drawdown/daily-loss
+                breakers measure this value — marked to the cycle's fetched prices — not
+                the last stored snapshot, so a held-position drawdown with zero fills is
+                visible at that cycle's risk evaluation. Falls back to the stored snapshot
+                value (and stored daily P&L) when ``None``.
 
         Returns:
             RiskDecision indicating approval.
@@ -93,8 +99,13 @@ class RiskManager:
                 )
                 raise CircuitBreakerError(f"Circuit breaker halted for {env}; trading suspended")
 
-        # Get portfolio state for remaining checks
-        portfolio_value = self._tracker.get_portfolio_value(env)
+        # Get portfolio state for remaining checks. Prefer the freshly computed
+        # mark-to-market value (and matching daily P&L) when the caller supplies it.
+        if portfolio_value is None:
+            portfolio_value = self._tracker.get_portfolio_value(env)
+            daily_pnl = self._tracker.get_daily_pnl(env)
+        else:
+            daily_pnl = self._tracker.compute_daily_pnl(env, portfolio_value)
         env_config = self._config.equity if env == "equity" else self._config.crypto
 
         # 2. Position size check
@@ -129,7 +140,7 @@ class RiskManager:
                     cb.check_and_update(
                         portfolio_value=portfolio_value,
                         high_water_mark=hwm,
-                        daily_pnl=self._tracker.get_daily_pnl(env),
+                        daily_pnl=daily_pnl,
                     )
                 decision = self._make_decision(
                     order,
@@ -143,7 +154,6 @@ class RiskManager:
                 )
 
         # 5. Daily loss check (use HWM as denominator — consistent with circuit_breaker)
-        daily_pnl = self._tracker.get_daily_pnl(env)
         if daily_pnl < 0 and hwm > 0:
             daily_loss_pct = abs(daily_pnl) / hwm
             if daily_loss_pct >= env_config.daily_loss_limit_pct:

@@ -427,7 +427,11 @@ class TestMarketGateAndSnapshotLifecycle:
                     "sac": (mock_model, None),
                 },
             ),
-            patch.object(pipeline, "_get_ensemble_weights", return_value={"ppo": 1.0}),
+            patch.object(
+                pipeline,
+                "_get_ensemble_weights",
+                return_value={"ppo": 0.4, "a2c": 0.3, "sac": 0.3},
+            ),
             patch.object(pipeline, "_normalize_observation", return_value=_per_algo_obs_dict(obs)),
             patch("swingrl.execution.pipeline.process_actions", return_value=target),
         ):
@@ -485,7 +489,11 @@ class TestMarketGateAndSnapshotLifecycle:
                     "sac": (mock_model, None),
                 },
             ),
-            patch.object(pipeline, "_get_ensemble_weights", return_value={"ppo": 1.0}),
+            patch.object(
+                pipeline,
+                "_get_ensemble_weights",
+                return_value={"ppo": 0.4, "a2c": 0.3, "sac": 0.3},
+            ),
             patch.object(pipeline, "_normalize_observation", return_value=_per_algo_obs_dict(obs)),
             patch("swingrl.execution.pipeline.process_actions", return_value=target),
         ):

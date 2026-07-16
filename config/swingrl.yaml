@@ -12,6 +12,10 @@ equity:
   max_drawdown_pct: 0.10        # circuit breaker: halt equity env at 10% DD
   daily_loss_limit_pct: 0.02    # circuit breaker: halt equity env at 2% daily loss
   min_order_usd: 1.0            # Alpaca minimum order floor ($1.00 fractional shares)
+  cycle_time_et: "15:45"        # daily rebalance time (ET); 15m before close so fills land intraday
+  market_calendar_gate: true    # gate the equity cycle on the Alpaca market clock (fail-safe)
+  order_fill_timeout_s: 60      # cancel an unfilled order after N seconds (never a $0 trade)
+  order_poll_interval_s: 2      # poll order status every N seconds during the fill wait
 
 crypto:
   symbols: [BTCUSDT, ETHUSDT]
@@ -61,7 +65,10 @@ alerting:
 scheduler:
   enabled: true                           # set true for live/paper trading; false during training-only
   apscheduler_db_path: db/apscheduler_jobs.sqlite  # SEPARATE from trading_ops.db
-  misfire_grace_time: 300                  # seconds to tolerate late job execution
+  misfire_grace_time: 300                  # default grace (seconds) for non-cycle jobs
+  misfire_grace_s:                         # per-env grace for the trading cycle jobs (A30)
+    equity: 720                            # a restart shortly after 15:45 still runs late; past ~15:57 it skips
+    crypto: 3600                           # 4H cadence — an hour late is immaterial
   max_workers: 4                           # APScheduler thread pool size
 
 backup:

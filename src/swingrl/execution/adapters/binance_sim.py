@@ -92,6 +92,8 @@ class BinanceSimAdapter:
         commission = sized.dollar_amount * _COMMISSION_RATE
         slippage_amount = abs(fill_price - mid_price) * sized.quantity
         trade_id = str(uuid.uuid4())
+        # Simulated fills are synchronous — status and both lifecycle timestamps are set here.
+        now = datetime.now(UTC).isoformat()
 
         log.info(
             "simulated_fill",
@@ -114,6 +116,9 @@ class BinanceSimAdapter:
             slippage=slippage_amount,
             environment=sized.environment,
             broker="binance_us",
+            status="filled",
+            submitted_at=now,
+            filled_at=now,
         )
 
     def get_positions(self) -> list[dict[str, object]]:
@@ -158,6 +163,7 @@ class BinanceSimAdapter:
         commission = quantity * fill_price * _COMMISSION_RATE
         slippage_amount = abs(fill_price - mid_price) * quantity
         trade_id = str(uuid.uuid4())
+        now = datetime.now(UTC).isoformat()
 
         # Update position in DB
         try:
@@ -187,6 +193,9 @@ class BinanceSimAdapter:
             slippage=slippage_amount,
             environment="crypto",
             broker="binance_us",
+            status="filled",
+            submitted_at=now,
+            filled_at=now,
         )
 
     def cancel_order(self, order_id: str) -> bool:

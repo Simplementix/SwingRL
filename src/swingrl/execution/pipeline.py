@@ -12,9 +12,10 @@ Usage:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import structlog
@@ -169,6 +170,15 @@ class ExecutionPipeline:
             log.warning("cycle_halted_by_turbulence", env=env_name)
             return []
 
+        # Step 2.5: Equity market-calendar gate (fail-safe). Crypto trades 24/7.
+        # Market closed/holiday -> skip + info log; clock unreachable -> skip + alert
+        # (when in doubt, don't trade — review C2).
+        if env_name == "equity" and self._config.equity.market_calendar_gate:
+            if not self._equity_market_open():
+                return []
+            # Data-freshness guard (log-only): warn on a stale latest daily bar.
+            self._warn_if_stale_ohlcv(env_name)
+
         # Step 3: Get observation from FeaturePipeline
         env_literal: Literal["equity", "crypto"] = "equity" if env_name == "equity" else "crypto"
         observation = self._feature_pipeline.get_observation(env_literal, current_date_str)
@@ -306,8 +316,16 @@ class ExecutionPipeline:
                     environment=env_literal,
                 )
 
+                # Fresh mark-to-market value for the pre-trade risk evaluation
+                # (amendment 2026-07-16): the drawdown/daily-loss breakers see this
+                # cycle's fetched prices, not the last stored snapshot, so a held-position
+                # drawdown is visible even when no order fills.
+                fresh_value = self._position_tracker.compute_portfolio_value(env_name, cycle_prices)
+
                 # Risk validation (guardrail)
-                validated_order = self._order_validator.validate(sized_order)
+                validated_order = self._order_validator.validate(
+                    sized_order, portfolio_value=fresh_value
+                )
 
                 # Dry-run: log but skip broker submission
                 if dry_run:
@@ -325,8 +343,39 @@ class ExecutionPipeline:
                 # caused by network timeouts (Alpaca bracket orders are atomic).
                 fill = adapter.submit_order(validated_order)
 
-                # Fill processing
-                self._fill_processor.process(fill, sized_order=sized_order)
+                # Only real fills are recorded (review C2). A pending/rejected result
+                # (unfilled + cancelled) is dropped — never a $0 trades row.
+                if fill.status != "filled":
+                    log.warning(
+                        "order_unfilled_skipped",
+                        symbol=fill.symbol,
+                        side=fill.side,
+                        status=fill.status,
+                    )
+                    continue
+
+                # M10-equity backstop: a real fill that fails to record is money that
+                # moved without a ledger entry — alert critical for manual reconciliation.
+                try:
+                    self._fill_processor.process(fill, sized_order=sized_order)
+                except Exception:
+                    log.critical(
+                        "fill_recorded_failed_after_execution",
+                        symbol=fill.symbol,
+                        trade_id=fill.trade_id,
+                        exc_info=True,
+                    )
+                    if self._alerter is not None:
+                        self._alerter.send_alert(
+                            level="critical",
+                            title="Fill Executed But Not Recorded",
+                            message=(
+                                f"{env_name} {fill.symbol} {fill.side} executed but recording "
+                                "failed — manual reconciliation required."
+                            ),
+                            environment=env_literal,
+                        )
+                    continue
 
                 fills.append(fill)
 
@@ -361,11 +410,12 @@ class ExecutionPipeline:
                 )
                 continue
 
-        # Step 10: Record portfolio snapshot (review C1/M4)
-        # Mark positions to this cycle's fetched prices and derive cash from the
-        # trades ledger so total_value reflects reality — not the previous
-        # snapshot copied forward. Snapshots stay append-only.
-        if fills:
+        # Step 10: Record portfolio snapshot EVERY cycle (review C1/M4 + amendment
+        # 2026-07-16). Mark positions to this cycle's fetched prices and derive cash from
+        # the trades ledger so total_value reflects reality — including moved prices on a
+        # zero-fill cycle — not the previous snapshot copied forward. Snapshots stay
+        # append-only. Dry-run is a simulation and never writes a snapshot.
+        if not dry_run:
             cash = self._position_tracker.compute_cash(env_name)
             new_portfolio_value = self._position_tracker.compute_portfolio_value(
                 env_name, cycle_prices
@@ -613,6 +663,79 @@ class ExecutionPipeline:
                 weights[i] = abs(pos["quantity"] * (pos["last_price"] or 0.0)) / portfolio_value
 
         return weights
+
+    def _equity_market_open(self) -> bool:
+        """Return True if the equity market is open per the Alpaca clock (fail-safe).
+
+        Market closed/holiday -> False + info log. Clock unreachable (any error, incl.
+        adapter construction) -> False + critical alert: when in doubt, don't trade.
+
+        Returns:
+            True only when the clock explicitly reports the market open.
+        """
+        try:
+            adapter = self._get_adapter("equity")
+            clock = adapter.get_clock()
+        except Exception:
+            log.error("market_clock_check_failed", env="equity", exc_info=True)
+            if self._alerter is not None:
+                self._alerter.send_alert(
+                    level="critical",
+                    title="Market Clock Unreachable",
+                    message="Alpaca clock check failed — skipping equity cycle (fail-safe).",
+                    environment="equity",
+                )
+            return False
+
+        is_open = bool(getattr(clock, "is_open", False))
+        if not is_open:
+            log.info("equity_cycle_skipped_market_closed")
+        return is_open
+
+    def _warn_if_stale_ohlcv(self, env_name: str) -> None:
+        """Log a warning when the latest ``ohlcv_daily`` bar is older than the prior session.
+
+        Log-only data-freshness guard (never raises, never halts the cycle): a stale
+        latest bar at decision time means the cycle would trade on old prices.
+
+        Args:
+            env_name: Environment name (only "equity" has a daily-bar table here).
+        """
+        try:
+            symbols = self._config.equity.symbols
+            with self._db.connection() as conn:
+                row = conn.execute(
+                    "SELECT MAX(date) AS latest FROM ohlcv_daily WHERE symbol = ANY(%s)",
+                    (symbols,),
+                ).fetchone()
+            latest = row["latest"] if row is not None else None
+            if latest is None:
+                log.warning("ohlcv_freshness_no_data", env=env_name)
+                return
+
+            import exchange_calendars  # noqa: PLC0415
+
+            nyse = exchange_calendars.get_calendar("XNYS")
+            today_et = datetime.now(tz=UTC).astimezone(ZoneInfo("America/New_York")).date()
+            sessions = nyse.sessions_in_range(
+                today_et - timedelta(days=10), today_et - timedelta(days=1)
+            )
+            if len(sessions) == 0:
+                return
+            prev_session_date = sessions[-1].date()
+
+            latest_date = (
+                latest if isinstance(latest, date) else datetime.fromisoformat(str(latest)).date()
+            )
+            if latest_date < prev_session_date:
+                log.warning(
+                    "ohlcv_stale_bar",
+                    env=env_name,
+                    latest_bar=latest_date.isoformat(),
+                    expected_min=prev_session_date.isoformat(),
+                )
+        except Exception:
+            log.warning("ohlcv_freshness_check_failed", exc_info=True)
 
     def _get_current_date_str(self, env_name: str) -> str:
         """Get current date string for the environment.
