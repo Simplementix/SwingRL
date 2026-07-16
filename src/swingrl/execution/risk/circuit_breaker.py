@@ -17,6 +17,7 @@ import enum
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -28,6 +29,11 @@ log = structlog.get_logger(__name__)
 
 # Ramp stages: capacity fractions at each stage
 RAMP_STAGES: list[float] = [0.25, 0.50, 0.75, 1.00]
+
+# NYSE sessions are ET calendar dates; business-day math must use ET on BOTH sides.
+# (pg16 returns TIMESTAMPTZ tz-aware in the server timezone — .date() without an
+# explicit astimezone conflates ET and UTC calendars between 20:00 and 24:00 ET.)
+_ET = ZoneInfo("America/New_York")
 
 
 class CBState(enum.Enum):
@@ -244,8 +250,8 @@ class CircuitBreaker:
         """Compute fraction of business day cooldown elapsed using NYSE calendar.
 
         Args:
-            triggered_at: UTC datetime when CB was triggered.
-            now: Current UTC datetime.
+            triggered_at: tz-aware datetime when CB was triggered.
+            now: Current tz-aware datetime.
 
         Returns:
             Fraction between 0.0 and 1.0+.
@@ -254,8 +260,8 @@ class CircuitBreaker:
 
         nyse = exchange_calendars.get_calendar("XNYS")
 
-        start_date = triggered_at.date()
-        end_date = now.date()
+        start_date = triggered_at.astimezone(_ET).date()
+        end_date = now.astimezone(_ET).date()
 
         if end_date <= start_date:
             return 0.0

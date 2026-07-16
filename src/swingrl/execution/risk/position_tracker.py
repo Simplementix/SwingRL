@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import structlog
@@ -116,24 +117,31 @@ class PositionTracker:
         )
         return fallback
 
-    def get_daily_pnl(self, env: str) -> float:
+    def get_daily_pnl(self, env: str, now: datetime | None = None) -> float:
         """Return today's P&L for environment.
+
+        "Today" is the ET trading date on both sides of the comparison — a bare
+        ``timestamp::date`` renders in the server session timezone while a Python
+        UTC date does not, which made the lookup miss between 20:00 and 24:00 ET.
 
         Returns 0.0 if no snapshot exists for today.
 
         Args:
             env: "equity" or "crypto".
+            now: Injectable tz-aware current time; defaults to ``datetime.now(UTC)``.
 
         Returns:
             Daily P&L as float.
         """
-        today_prefix = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+        now = now or datetime.now(tz=UTC)
+        today_et = now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
         with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT daily_pnl FROM portfolio_snapshots "
-                "WHERE environment = %s AND timestamp::date = %s::date "
+                "WHERE environment = %s "
+                "AND (timestamp AT TIME ZONE 'America/New_York')::date = %s::date "
                 "ORDER BY timestamp DESC LIMIT 1",
-                (env, today_prefix),
+                (env, today_et),
             ).fetchone()
         if row is not None:
             return float(row["daily_pnl"])
