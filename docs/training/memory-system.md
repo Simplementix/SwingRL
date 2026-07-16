@@ -2,7 +2,7 @@
 
 Living reference for SwingRL's memory subsystem — the LLM-backed pattern store that ingests training events, consolidates them into reusable patterns, and feeds them back as run-config and epoch-level advice. The subsystem lives in its own FastAPI service (`services/memory/`, container `swingrl-memory`); the trainer talks to it over HTTP via `src/swingrl/memory/client.py` only — never SQL.
 
-**Last verified against code:** 2026-06-11 (attribution table updated to reflect 6 columns after Task 9 post-fold closure; prior Tasks 8/10 already updated payload schemas)
+**Last verified against code:** 2026-07-15 (U2 fix — cold-start fallback `reward_weights` now equal canonical `DEFAULT_WEIGHTS`; prior verification 2026-06-11: attribution table updated to reflect 6 columns after Task 9 post-fold closure; prior Tasks 8/10 already updated payload schemas)
 
 **Honest-gap policy:** every concrete claim is `file:line`-cited. Where a behavior or writer is referenced from project memory but cannot be located in current code, the gap is flagged inline and aggregated in [Known issues](#known-issues--open-questions). Discrepancies between code and `MEMORY.md` are surfaced rather than silently corrected.
 
@@ -360,12 +360,14 @@ Two distinct fallback shapes — both are dicts, never raise.
 {
   "learning_rate": 3e-4, "entropy_coeff": 0.01, "clip_range": 0.2,
   "n_epochs": 10, "batch_size": 64, "gamma": 0.99,
-  "reward_weights": {"profit": 0.4, "sharpe": 0.35, "drawdown": 0.20, "turnover": 0.05},
+  "reward_weights": {"profit": 0.50, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.10},
   "rationale": "cold_start_defaults"
 }
 ```
 
 `meta_orchestrator.py:160` clamps the result through `clamp_run_config(...)` against per-algo bounds before merging into the actual run config.
+
+**U2 fix (spec §2.2):** `reward_weights` above was `{profit: 0.4, sharpe: 0.35, drawdown: 0.20, turnover: 0.05}` prior to the fix — diverged from the canonical `DEFAULT_WEIGHTS` (`reward_wrapper.py:33-38`). Both `_SAFE_DEFAULTS` and `_SAFE_EPOCH_DEFAULTS` (`query.py:122-137`) now equal `DEFAULT_WEIGHTS` exactly, cross-checked by `tests/memory/test_query_safe_defaults.py`.
 
 **`advise_epoch()`** returns `dict(_SAFE_EPOCH_DEFAULTS)` (`query.py:1234`): same weights, `stop_training=False`, `provider="none"`, `model="none"`.
 

@@ -2,7 +2,7 @@
 
 Living reference for the LLM-driven hyperparameter advice loop. Covers the request/response chain (`MetaTrainingOrchestrator` ↔ memory service `/training/run_config` ↔ cloud LLM), the double-clamp safety layer, the cold-start guard, and the audit trail across pg16 tables. Update when any referenced module changes.
 
-**Last verified against code:** 2026-05-07
+**Last verified against code:** 2026-07-15 (U2 fix — cold-start fallback `reward_weights` now equal canonical `DEFAULT_WEIGHTS`)
 
 For the mechanistic background of each HP (what it controls, financial-RL ranges, diagnostic patterns) see `.planning/research/hp-tuning-reference.md`. For the SB3 baseline `HYPERPARAMS` dict, see [`agent-architecture.md`](agent-architecture.md).
 
@@ -289,11 +289,13 @@ Reward-weight bounds (`training.bounds.reward_bounds.*`) are documented in [`rew
 
 ```
 learning_rate=3e-4, entropy_coeff=0.01, clip_range=0.2, n_epochs=10, batch_size=64, gamma=0.99,
-reward_weights={profit: 0.4, sharpe: 0.35, drawdown: 0.20, turnover: 0.05},
+reward_weights={profit: 0.50, sharpe: 0.25, drawdown: 0.15, turnover: 0.10},
 rationale="cold_start_defaults"
 ```
 
 Returned by `advise_run_config` when both cloud tiers fail. Not used on the trainer side directly — the trainer falls back to `HYPERPARAMS` baseline when `_query_run_config` returns `{}`.
+
+**U2 fix (spec §2.2):** `reward_weights` in the fallback was `{profit: 0.4, sharpe: 0.35, drawdown: 0.20, turnover: 0.05}` prior to the fix — a value that diverged from the canonical `DEFAULT_WEIGHTS` (`reward_wrapper.py:33-38`). It now equals `DEFAULT_WEIGHTS` exactly, cross-checked by `tests/memory/test_query_safe_defaults.py`.
 
 ### 429 backoff schedule (`query.py:381-408`)
 
