@@ -241,6 +241,53 @@ class TestLeverLimits:
             "absent (sac, equity) pair must be benched, not fall back to 0.03"
         )
 
+    def test_total_config_load_failure_falls_back_to_benched_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """User ruling 2026-07-16: total config-load failure stays benched, not un-benched.
+
+        _load_lever_limits()'s except branch used to fall back to the old nonzero
+        pre-bench research deltas (_FALLBACK_MAX_REWARD_DELTA, e.g. ppo/equity 0.03).
+        That un-benches the L1 lever exactly when config is broken — the opposite of
+        fail-safe. The fallback must now be 0.0 for every (algo, env) pair, same as
+        the healthy-config benched posture. The cooldown fallback is UNCHANGED
+        (nonzero) — a missing cooldown is the unsafe direction, so it keeps the old
+        asymmetry (see the module-level comment above _FALLBACK_ADJUSTMENT_COOLDOWN_STEPS).
+        The warning log must still fire — fail-open COUNTED, never silent.
+        """
+        from structlog.testing import capture_logs
+
+        import swingrl.memory.training.bounds as bounds_mod
+
+        def _raise() -> None:
+            raise RuntimeError("simulated total config-load failure")
+
+        monkeypatch.setattr(bounds_mod, "load_config", _raise)
+
+        with capture_logs() as cap_logs:
+            max_reward_delta, adjustment_cooldown_steps = bounds_mod._load_lever_limits()
+
+        monkeypatch.setattr(bounds_mod, "MAX_REWARD_DELTA", max_reward_delta)
+        monkeypatch.setattr(bounds_mod, "ADJUSTMENT_COOLDOWN_STEPS", adjustment_cooldown_steps)
+
+        for algo in ("ppo", "a2c", "sac"):
+            for env in ("equity", "crypto"):
+                assert bounds_mod.get_max_reward_delta(algo, env) == 0.0, (
+                    f"expected benched (0.0) fallback for {algo}/{env} on config-load "
+                    "failure, got a nonzero delta"
+                )
+
+        # Cooldown fallback stays nonzero — unchanged from the pre-existing behavior.
+        assert bounds_mod.get_adjustment_cooldown("ppo") == 24_576
+        assert bounds_mod.get_adjustment_cooldown("a2c") == 500
+        assert bounds_mod.get_adjustment_cooldown("sac") == 20_000
+
+        warning_events = [
+            entry for entry in cap_logs if entry.get("event") == "lever_limits_config_load_failed"
+        ]
+        assert len(warning_events) == 1, "fallback must be logged, never silent"
+        assert warning_events[0]["log_level"] == "warning"
+
 
 class TestMemoryClientIngest:
     """Tests for MemoryClient fail-open behavior."""

@@ -105,10 +105,10 @@ MAX_EPOCHS: int = 200
 # the shipped default is 0.0 (disabled) for every algo/env pair — see
 # get_max_reward_delta(). Re-earning any pair above 0.0 requires a passing
 # lever-verification harness run (spec Section 2.3); the hardcoded values below
-# are the fail-open fallback used only if config load fails ENTIRELY (see
-# _load_lever_limits()'s except branch), and reflect the pre-bench research
-# values from iter 4 pattern analysis (patterns 157, 163, 169) — see
-# .planning/research/algo-reward-shaping.md for that backing.
+# are ALSO all-zero — the fail-open fallback used only if config load fails
+# ENTIRELY (see _load_lever_limits()'s except branch) stays at the benched
+# posture rather than reverting to the pre-bench research values (see the user
+# ruling below for why).
 #
 # Fail-safe (Task 4 review, Finding 1): under a SUCCESSFULLY loaded config, an
 # (algo, env) pair absent from MAX_REWARD_DELTA must resolve to 0.0 (benched),
@@ -118,11 +118,28 @@ MAX_EPOCHS: int = 200
 # from the loaded dict. Falling back to a nonzero default for those dropped
 # pairs would silently UN-BENCH them, which an operator never re-earned.
 # get_max_reward_delta() therefore has NO per-key nonzero default — see below.
+#
+# User ruling (2026-07-16, supersedes this module's prior Task 4 plan text):
+# a TOTAL config-load failure (_load_lever_limits()'s except branch, e.g. the
+# yaml is unreadable or fails schema validation entirely) ALSO falls back to
+# all-zero — never to a nonzero fallback. Un-benching the L1 lever precisely
+# when config is broken is the wrong direction for a fail-safe; broken config
+# must be at least as conservative as healthy config, never less. The old
+# pre-bench research deltas below (iter 4 pattern analysis, patterns 157, 163,
+# 169 — see .planning/research/algo-reward-shaping.md) are kept ONLY as a
+# historical record, not read by any code path. Re-earning any pair above 0.0
+# requires a passing lever-verification harness run (spec Section 2.3).
+#
+# _OLD_FALLBACK_MAX_REWARD_DELTA_PRE_BENCH_RESEARCH = {
+#     "ppo": {"equity": 0.03, "crypto": 0.0},
+#     "a2c": {"equity": 0.02, "crypto": 0.05},
+#     "sac": {"equity": 0.02, "crypto": 0.02},
+# }
 
 _FALLBACK_MAX_REWARD_DELTA: dict[str, dict[str, float]] = {
-    "ppo": {"equity": 0.03, "crypto": 0.0},
-    "a2c": {"equity": 0.02, "crypto": 0.05},
-    "sac": {"equity": 0.02, "crypto": 0.02},
+    "ppo": {"equity": 0.0, "crypto": 0.0},
+    "a2c": {"equity": 0.0, "crypto": 0.0},
+    "sac": {"equity": 0.0, "crypto": 0.0},
 }
 
 # Per-algo cooldown (minimum steps between reward adjustments) — config-owned,
@@ -132,11 +149,15 @@ _FALLBACK_MAX_REWARD_DELTA: dict[str, dict[str, float]] = {
 # A2C: 500 steps (~100 short rollouts) for stability window.
 # SAC: 20K steps for replay buffer rotation.
 #
-# Cooldown's per-key fallback stays NONZERO (unlike max_reward_delta's). A
-# missing cooldown entry means "no minimum gap enforced between adjustments" —
-# i.e. 0 would be LESS safe, the opposite direction from the delta fallback.
-# _DEFAULT_COOLDOWN is the safe-side floor for an algo missing from a partial
-# override; 5000 steps is a conservative gap for any of the three algos.
+# Cooldown's per-key fallback stays NONZERO (unlike max_reward_delta's), and
+# this asymmetry holds for BOTH failure modes above: a partial per-key miss
+# (get_adjustment_cooldown()'s _DEFAULT_COOLDOWN) and a total config-load
+# failure (_FALLBACK_ADJUSTMENT_COOLDOWN_STEPS, used by _load_lever_limits()'s
+# except branch below). A missing cooldown entry means "no minimum gap
+# enforced between adjustments" — i.e. 0 would be LESS safe, the opposite
+# direction from the delta fallback's all-zero. _DEFAULT_COOLDOWN is the
+# safe-side floor for an algo missing from a partial override; 5000 steps is
+# a conservative gap for any of the three algos.
 
 _FALLBACK_ADJUSTMENT_COOLDOWN_STEPS: dict[str, int] = {
     "ppo": 24_576,  # 2 × 2048 × 6
@@ -182,6 +203,11 @@ def get_max_reward_delta(algo: str, env: str) -> float:
     loaded config's max_reward_delta dict returns 0.0 (benched) — never a
     nonzero fallback. A partial override that drops a pair must not silently
     re-enable it; absent means the operator never re-earned that pair.
+
+    User ruling (2026-07-16): this also applies when config load fails
+    ENTIRELY — the fallback used by `_load_lever_limits()` is all-zero, not
+    the old pre-bench research values. Broken config must never be less
+    conservative than healthy config.
 
     Args:
         algo: Algorithm name (ppo, a2c, sac).
