@@ -215,6 +215,18 @@ class EnvironmentConfig(BaseModel):
     signal_deadzone: float = Field(default=0.02, ge=0.0, le=0.1)
     position_penalty_coeff: float = Field(default=10.0, ge=0.0)
     drawdown_penalty_coeff: float = Field(default=5.0, ge=0.0)
+    zero_turbulence_obs: bool = Field(
+        default=True,
+        description=(
+            "F1b: freeze the turbulence observation slot at 0.0 before inference. "
+            "Era-0 models were trained with this slot frozen at 0.0, so feeding a real "
+            "value would multiply it by untrained weights (pure noise). The real sensor "
+            "value is still read out and kept for capture before the slot is zeroed. Flip "
+            "to false once era-1 models (trained with a live turbulence input) deploy -- "
+            "Plan B automates this off the models table. Override via "
+            "SWINGRL_ENVIRONMENT__ZERO_TURBULENCE_OBS."
+        ),
+    )
 
 
 class SystemConfig(BaseModel):

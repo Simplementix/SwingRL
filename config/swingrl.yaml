@@ -44,6 +44,8 @@ environment:
   signal_deadzone: 0.02                  # hold threshold: suppress weight changes < 2%
   position_penalty_coeff: 10.0           # soft penalty for position limit breach
   drawdown_penalty_coeff: 5.0            # soft penalty for drawdown threshold breach
+  zero_turbulence_obs: true              # F1b: freeze turbulence obs slot at 0.0 for era-0 models
+                                         # (real value still captured); flip to false at era-1 cutover
 
 system:
   database_url: ""                       # PostgreSQL — override via DATABASE_URL env var in Docker

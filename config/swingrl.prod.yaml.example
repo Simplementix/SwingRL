@@ -40,6 +40,14 @@ alerting:
   alert_cooldown_minutes: 30               # minimum minutes between repeat alerts
   consecutive_failures_before_alert: 3     # failures before triggering alert
 
+environment:
+  zero_turbulence_obs: true                # F1b: freeze the turbulence obs slot at 0.0 before
+                                           # inference — era-0 models trained with it frozen, so a
+                                           # live value would hit untrained weights (noise). The real
+                                           # sensor value is still captured. Flip to false ONLY at the
+                                           # era-1 cutover (Plan B automates this off the models table).
+                                           # Override: SWINGRL_ENVIRONMENT__ZERO_TURBULENCE_OBS=false
+
 backup:
   backup_retention_days: 14         # keep 2 weeks of database backups
   duckdb_rotate: true               # rotate DuckDB snapshots in production

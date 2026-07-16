@@ -26,6 +26,7 @@ from swingrl.execution.risk.circuit_breaker import CBState, CircuitBreaker, Glob
 from swingrl.execution.risk.position_tracker import PositionTracker
 from swingrl.execution.risk.risk_manager import RiskManager
 from swingrl.execution.types import FillResult, SizedOrder
+from swingrl.features.assembler import turbulence_obs_index
 from swingrl.features.health import FeatureHealthTracker
 from swingrl.utils.exceptions import CircuitBreakerError, DataError, RiskVetoError
 
@@ -87,6 +88,10 @@ class ExecutionPipeline:
 
         # Per-(env, date) turbulence halt-baseline cache (one delegate call/cycle)
         self._turb_baseline_cache: dict[tuple[str, str], float] = {}
+
+        # Real turbulence sensor value read from the observation before the F1b
+        # slot-zeroing (kept for capture — §4.7 / A27). None until the first cycle.
+        self._turbulence_at_decision: float | None = None
 
         # Eagerly create components that don't need lazy loading
         self._position_tracker = PositionTracker(db=db, config=config)
@@ -199,6 +204,23 @@ class ExecutionPipeline:
         if had_nan:
             log.warning("nan_observation_detected", env=env_name)
             return []
+
+        # Step 3d: F1b — era-0 models were trained with the turbulence slot frozen
+        # at 0.0, so feeding a real value would multiply it by untrained weights
+        # (noise). Read the real sensor value out FIRST for capture (§4.7 / A27),
+        # then zero the slot in the observation handed to the models. The flag is
+        # flipped off once era-1 models (trained with a live turbulence input) deploy.
+        env_symbols = (
+            self._config.equity.symbols if env_name == "equity" else self._config.crypto.symbols
+        )
+        turb_idx = turbulence_obs_index(
+            env_name,
+            len(env_symbols),
+            self._config.sentiment.enabled if env_name == "equity" else False,
+        )
+        self._turbulence_at_decision = float(observation[turb_idx])
+        if self._config.environment.zero_turbulence_obs:
+            observation[turb_idx] = 0.0
 
         # Step 4: Get portfolio state (used by ObservationAssembler in future)
         _portfolio_state = self._position_tracker.get_portfolio_state_array(env_name)

@@ -66,6 +66,35 @@ def equity_per_asset_dim(sentiment_enabled: bool = False) -> int:
     return EQUITY_PER_ASSET_BASE + (SENTIMENT_FEATURES_PER_ASSET if sentiment_enabled else 0)
 
 
+def turbulence_obs_index(env_name: str, n_symbols: int, sentiment_enabled: bool = False) -> int:
+    """Return the flat index of the turbulence slot in the assembled observation.
+
+    Derived from the layout constants (never a magic number): the turbulence
+    scalar sits immediately after the per-asset block, the shared macro block,
+    and the HMM regime block, in both the equity and crypto layouts.
+
+    Args:
+        env_name: "equity" or "crypto".
+        n_symbols: Number of symbols for the environment.
+        sentiment_enabled: Whether sentiment features widen the per-asset block
+            (equity only; ignored for crypto).
+
+    Returns:
+        Zero-based index of the turbulence slot.
+
+    Raises:
+        DataError: If env_name is neither "equity" nor "crypto".
+    """
+    if env_name == "equity":
+        per_asset = equity_per_asset_dim(sentiment_enabled)
+    elif env_name == "crypto":
+        per_asset = CRYPTO_PER_ASSET
+    else:
+        log.error("turbulence_obs_index_unknown_env", env=env_name)
+        raise DataError(f"turbulence_obs_index: unknown env_name {env_name!r}")
+    return (per_asset * n_symbols) + SHARED_MACRO + HMM_REGIME
+
+
 def equity_obs_dim(sentiment_enabled: bool = False, n_equity_symbols: int = 8) -> int:
     """Return total equity observation dimension.
 
