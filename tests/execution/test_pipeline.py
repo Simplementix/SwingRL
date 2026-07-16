@@ -187,6 +187,41 @@ class TestExecuteCycle:
             assert result == []
 
 
+class TestTurbulenceHaltBaseline:
+    """F1 regression (Task 6c): the nonzero baseline reaches RiskManager."""
+
+    def test_check_turbulence_reaches_risk_manager(self, pipeline: ExecutionPipeline) -> None:
+        """A nonzero baseline must reach RiskManager.check_turbulence.
+
+        Old code queried a phantom ``turbulence`` column (always 0.0) so the
+        ``_check_turbulence`` guard short-circuited and the halt never fired.
+        The baseline now comes from FeaturePipeline.turbulence_halt_baseline.
+        """
+        fp = pipeline._feature_pipeline
+        fp.compute_turbulence.return_value = 5.0
+        fp.turbulence_halt_baseline.return_value = 2.0
+
+        risk_manager = MagicMock()
+        risk_manager.check_turbulence.return_value = True
+        pipeline._risk_manager = risk_manager
+
+        result = pipeline._check_turbulence("equity", "2026-07-07")
+
+        risk_manager.check_turbulence.assert_called_once_with("equity", 5.0, 2.0)
+        assert result is True
+
+    def test_baseline_cached_per_env_date(self, pipeline: ExecutionPipeline) -> None:
+        """The obs-path baseline is cached per (env, date) — one delegate call/cycle."""
+        fp = pipeline._feature_pipeline
+        fp.turbulence_halt_baseline.return_value = 3.0
+
+        first = pipeline._get_turbulence_90th_pct("equity", "2026-07-07")
+        second = pipeline._get_turbulence_90th_pct("equity", "2026-07-07")
+
+        assert first == second == 3.0
+        fp.turbulence_halt_baseline.assert_called_once_with("equity", "2026-07-07")
+
+
 class TestNormalizeObservation:
     """Test per-algo VecNormalize observation normalization."""
 
