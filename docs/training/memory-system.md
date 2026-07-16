@@ -280,7 +280,7 @@ Fields are nullable so the LLM can choose to leave a knob alone. `rationale` is 
 
 ### `/training/epoch_advice`
 
-**Call site:** `epoch_callback.py` per cadence (PPO 20, A2C 8000, SAC 40000 epochs) plus notable events (KL > 0.10, MDD < -25.0). Cadence detail in [`reward-shaping.md`](reward-shaping.md).
+**Call site:** `epoch_callback.py` per cadence (PPO 20, A2C 8000, SAC 40000 epochs) plus the §4.10 notable-event trigger set (`kl_spike`, `mdd_breach`, `trade_shy`, `churning`, `numeric_anomaly` — rate-capped + hard-capped, see "Notable-event trigger set" below). Cadence detail in [`reward-shaping.md`](reward-shaping.md).
 
 **Inputs:** env, algo, iteration, current epoch metrics — **plus within-fold adjustment history** and a compact per-fold context block. When the `run_id` is present, `query.py:1123-1172` fetches the most recent 5 `REWARD_ADJUSTMENT_OUTCOME` memories from the same fold and embeds extracted fields (`epoch_triggered`, `post_adjustment_sharpe_delta`, `post_adjustment_mdd_delta`, `adjustment_effective`, `weights_before/after`) into the user message. This prevents the LLM from re-recommending an adjustment that just failed.
 
@@ -437,9 +437,9 @@ before `configure_windows()` has ever been called — the underlying deques star
 
 ### `rolling_mdd()` — deprecated alias
 
-Retained **only** so existing call sites (`_should_store`, `_collect_metrics`,
-`_ingest_adjustment_trigger`, `_resolve_pending_adjustment` — all in
-`epoch_callback.py`) keep working without modification this task. Now implemented as:
+Retained so three call sites (`_collect_metrics`, `_ingest_adjustment_trigger`,
+`_resolve_pending_adjustment` — all in `epoch_callback.py`) keep working without
+modification. Implemented as:
 
 ```python
 -window_metrics("trend")["mdd_frac_worst"]
@@ -447,14 +447,80 @@ Retained **only** so existing call sites (`_should_store`, `_collect_metrics`,
 
 i.e. the trend window's worst-sub-env drawdown, **negated** to preserve the historical
 "negative means drawdown" sign convention, even though the new underlying metric itself
-is a non-negative magnitude. **Honest gap:** `NOTABLE_MDD_THRESHOLD = -25.0`
-(`epoch_callback.py`, calibrated for the old unbounded cumsum scale) is left untouched
-by this task — against the new `[-1.0, 0.0]`-range `rolling_mdd()`, that threshold can
-now never fire. Recalibrating it (and rewiring these four call sites directly onto
-`window_metrics()`) is Task 6's job. The `leading_indicators.rolling_mdd` field sent to
-the LLM (`/training/epoch_advice`, above) is affected the same way — its plumbing is
-unchanged, but as of this task it now carries an equity-fraction magnitude via the
-alias rather than the old cumsum value.
+is a non-negative magnitude. These three call sites use it purely as a current-MDD
+reading for logging / trigger-effectiveness comparisons (`sharpe_at_trigger`/
+`mdd_at_trigger`, the `training_epochs.rolling_mdd` DB column, `leading_indicators.rolling_mdd`
+sent to the LLM) — self-consistent regardless of scale, so Task 6 left them as-is.
+
+**Task 6 update (§4.10, D-T3.19):** `_should_store` — the ONE call site whose old
+`rolling_mdd < NOTABLE_MDD_THRESHOLD` comparison was actually broken (the -25.0
+threshold was calibrated for the retired cumsum scale and became permanently false
+against the new `[-1.0, 0.0]`-range metric, i.e. the trigger was silently inert) — no
+longer calls `rolling_mdd()` at all. It reads `window_metrics("short")["mdd_frac_worst"]`
+directly; see "Notable-event trigger set" below. `NOTABLE_KL_THRESHOLD` /
+`NOTABLE_MDD_THRESHOLD` are removed from `epoch_callback.py` (replaced by
+`training.notable_events.*` config, `_FALLBACK_*` constants are the fail-open fallback
+only). Rewiring the remaining three call sites off the alias, if ever wanted, is
+unscoped follow-up — not required by this task since they were never broken.
+
+## Notable-event trigger set (spec §4.10, D-T3.19)
+
+**Task 6 (Plan B Phase 1, F2 class-fix).** `_should_store` replaces its old pure
+NOTABLE_KL_THRESHOLD / NOTABLE_MDD_THRESHOLD thresholding with a config-declared,
+three-layer-bounded design. The cadence path (`epoch % cadence == 0`) is unchanged and
+still uncapped — the fold's heartbeat telemetry always flows. Everything below applies
+only to the event path (non-cadence epochs).
+
+### The five triggers
+
+Evaluated against Task 5's short (acute-detector) window (`window_metrics("short")`)
+plus the current epoch's `approx_kl` / wrapper `rolling_mean_reward()`, in
+numeric_anomaly-first precedence — a NaN/inf reading makes every other metric that
+epoch suspect, so it is checked before trusting a comparison against a possibly
+corrupted `approx_kl`:
+
+| Trigger | Condition | Config field (default) |
+|---|---|---|
+| `numeric_anomaly` | NaN/inf in `approx_kl` or `mean_reward` | n/a (always checked) |
+| `kl_spike` | `approx_kl > kl_spike_threshold` | `training.notable_events.kl_spike_threshold` (0.10) |
+| `mdd_breach` | `window_short["mdd_frac_worst"] > mdd_breach_frac[env]` — **worst basis only, never `mdd_frac_mean`** | `training.notable_events.mdd_breach_frac` (equity 0.10 / crypto 0.12) |
+| `trade_shy` | `trade_rate < trade_shy_ratio × baseline_trade_rate`, gated on `baseline_trade_rate() > 0.0` (the existing lock -- see `baseline_trade_rate()` above; disabled until the window locks) | `training.notable_events.trade_shy_ratio` (0.5) |
+| `churning` | `trade_rate > churning_ratio × baseline_trade_rate`, same lock gate | `training.notable_events.churning_ratio` (3.0) |
+
+Config loaded once per fold in `__init__` (`_load_notable_events`, same fail-open
+pattern as `_load_cadence` / `_on_training_start`'s window-pct load): falls back to
+hardcoded `_FALLBACK_*` module constants (matching the pydantic defaults) if config
+load fails.
+
+### Rate cap and hard cap
+
+Two independent bounds on the event path (D-T3.19 three-layer bounding — cadence path
+above is a third, always-uncapped layer):
+
+- **Rate cap:** at most one event row per trigger TYPE per trend window
+  (`self._events_this_window: dict[str, int]`). A trend-window boundary is
+  `num_timesteps // trend_steps` (Task 5's `configure_windows` sizing) — a tumbling,
+  non-overlapping count distinct from the wrapper's own sliding metric-computation
+  deque. Crossing into a new index resets the dict.
+- **Hard cap:** at most `training.notable_events.hard_cap_per_run` (default 50) total
+  event rows per run (`self._event_rows_this_run`). Past it, rows drop and
+  `_fire_hard_cap_alarm_once` fires exactly once: a `capture_alarm:{env}:{algo}` row via
+  the memory client's existing `ingest_training` path plus a `notable_event_hard_cap_breached`
+  structlog error. Training containers have no Discord alerter today — this is noted,
+  not silent; Discord wiring lands in a later task alongside the grader alarms.
+
+Fail-safe direction throughout: lose telemetry, never the run, never the cadence
+heartbeat.
+
+### `_on_training_end` — honest SAC cadence instrumentation
+
+`_on_rollout_end`'s docstring previously claimed SAC fires it *less* often than
+PPO/A2C — the opposite of the review-pinned fact (SAC's `train_freq=1` means it fires
+roughly every environment step, ~167K times/fold vs PPO's ~82). The docstring is
+corrected in place, and a new `_on_training_end` SB3 hook (fired once when
+`model.learn()` completes for the fold) logs `rollout_cadence_observed` with the
+actual `self._epoch` count, `event_rows_this_run`, and `hard_cap_per_run` — the F2
+instrumentation that would have surfaced the original 688K-row blowup immediately.
 
 ## Composite scoring
 
@@ -596,6 +662,7 @@ Knobs live under `memory_agent.*` in `config/swingrl.yaml`. Roughly:
 - Per-provider `model_name`, `timeout_sec`, `max_tokens` (sub-blocks under each provider key)
 - Per-algo epoch-advice cadence — see [`reward-shaping.md`](reward-shaping.md) and [`agent-architecture.md`](agent-architecture.md)
 - `training.windows.short_pct_of_fold` / `training.windows.trend_pct_of_fold` — percent-of-fold window sizes (defaults 0.01 / 0.15); see "Training window observability (spec §2.6)" above
+- `training.notable_events.*` — kl_spike_threshold (0.10), mdd_breach_frac (equity 0.10 / crypto 0.12), trade_shy_ratio (0.5), churning_ratio (3.0), hard_cap_per_run (50); see "Notable-event trigger set (spec §4.10)" above
 
 **Honest gap:** the exact `memory_agent.*` block was not exhaustively re-audited against `src/swingrl/config/schema.py` for this doc — re-verify field names and validators before changing any production value.
 
@@ -668,3 +735,4 @@ Knobs live under `memory_agent.*` in `config/swingrl.yaml`. Roughly:
 
 - **2026-05-05** — Initial version.
 - **2026-07-16** — Task 5 (spec §2.6): added "Training window observability" section — percent-of-fold windows (`training.windows.*`), `configure_windows()`/`window_metrics()` contract, the `_on_training_start` startup guard, and the `rolling_mdd()` deprecated alias.
+- **2026-07-16** — Task 6 (spec §4.10, D-T3.19, F2 class-fix): added "Notable-event trigger set" section — the five-trigger `_should_store` redesign (`training.notable_events.*`), rate cap (one row per trigger type per trend window) + hard cap (50/run, alarm-once via `capture_alarm`), and the `_on_training_end` `rollout_cadence_observed` instrumentation. `NOTABLE_KL_THRESHOLD`/`NOTABLE_MDD_THRESHOLD` module constants removed; `_should_store` no longer calls `rolling_mdd()` (reads `window_metrics("short")` directly) — the alias's other three call sites are unchanged (never broken, out of scope).

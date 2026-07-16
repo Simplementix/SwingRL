@@ -130,10 +130,35 @@ Edge cases: < 2 obs → `0.0` for Sharpe (181), empty history → `0.0` for MDD/
 
 ### Trigger cadence & notable events
 
-`_on_rollout_end` fires every SB3 rollout. Snapshot & advice gates:
+`_on_rollout_end` fires every SB3 rollout -- honestly, that means every environment
+step for SAC (`train_freq=1`, ~167K fires/fold), not "less often than PPO/A2C" as an
+earlier revision of this docstring claimed. Snapshot & advice gates:
 
-- **Store snapshot** if `epoch % cadence == 0` **or** a notable event triggered (`epoch_callback.py:360-365`).
-- **Notable events:** `approx_kl > 0.10` → `"kl_spike"`; `rolling_mdd < -25.0` → `"mdd_breach"` (`epoch_callback.py:76-77`).
+- **Store snapshot** if `epoch % cadence == 0` (uncapped, always flows) **or** a
+  notable-event trigger fires and survives the rate/hard caps below (`_should_store`,
+  `epoch_callback.py`).
+- **Notable events (§4.10, D-T3.19 — Task 6 five-trigger set, `config.training.notable_events`,
+  evaluated against Task 5's `window_metrics("short")`):**
+
+  | Trigger | Condition (config default) |
+  |---|---|
+  | `kl_spike` | `approx_kl > kl_spike_threshold` (0.10) |
+  | `mdd_breach` | `window_short["mdd_frac_worst"] > mdd_breach_frac[env]` (equity 0.10 / crypto 0.12) |
+  | `trade_shy` | `trade_rate < trade_shy_ratio × baseline_trade_rate` (0.5), only once `baseline_trade_rate` is locked (> 0.0) |
+  | `churning` | `trade_rate > churning_ratio × baseline_trade_rate` (3.0), same lock gate |
+  | `numeric_anomaly` | NaN/inf in `approx_kl` or `mean_reward` — checked FIRST (a corrupted reading makes every other metric that epoch suspect) |
+
+  Retires the old `NOTABLE_KL_THRESHOLD=0.10` / `NOTABLE_MDD_THRESHOLD=-25.0` pair —
+  the MDD threshold was calibrated against a cumsum-of-shaped-rewards quantity and
+  became quasi-permanently true for crypto SAC (F2 root cause; see
+  [`memory-system.md`](memory-system.md#training-window-observability-spec-26)).
+- **Rate cap:** at most one event row per trigger TYPE per trend window
+  (`_events_this_window`, reset at each trend-window boundary).
+- **Hard cap:** at most `hard_cap_per_run` (default 50) event rows per run
+  (`_event_rows_this_run`); past it, rows drop and a `capture_alarm` ingest + structlog
+  error fires exactly once (`_hard_cap_alarm_fired`) — training containers have no
+  Discord alerter today, Discord wiring lands in a later task. The cadence path above
+  is never subject to either cap.
 - **Cadence:** loaded from yaml `memory_agent.epoch_cadence_{algo}` with hardcoded fallback in `ALGO_EPOCH_CADENCE` (PPO 60, A2C 8000, SAC 40000; unknown-algo fallback `EPOCH_STORE_CADENCE=500`) (`epoch_callback.py:40-45, 180-210`). Current yaml: **PPO 20, A2C 8000, SAC 40000, default 500** (`config/swingrl.yaml:108-111`).
 
 ### LLM advice path & guardrail chain
@@ -256,10 +281,15 @@ Fallback (hardcoded when yaml absent): PPO 60 / A2C 8000 / SAC 40000 / unknown 5
 
 ### Callback thresholds
 
+`NOTABLE_KL_THRESHOLD` / `NOTABLE_MDD_THRESHOLD` are **retired** (Task 6, §4.10,
+D-T3.19) — the five notable-event triggers are now config-owned under
+`training.notable_events.*` (see "Trigger cadence & notable events" above and
+`config/swingrl.yaml`), not hardcoded module constants. `_FALLBACK_KL_SPIKE_THRESHOLD`
+etc. in `epoch_callback.py` remain only as the fail-open fallback if config load fails
+entirely (same pattern as `_FALLBACK_SHORT_PCT_OF_FOLD`).
+
 | Value | Location | Current |
 |-------|----------|---------|
-| `NOTABLE_KL_THRESHOLD` | `epoch_callback.py:76` | 0.10 |
-| `NOTABLE_MDD_THRESHOLD` | `epoch_callback.py:77` | -25.0 |
 | `ADJUSTMENT_RESOLVE_EPOCHS` | `epoch_callback.py:79` | 10 |
 | Change-detection min delta | `epoch_callback.py:688` | 0.01 |
 

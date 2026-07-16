@@ -230,6 +230,16 @@ training:
     trend_pct_of_fold: 0.15         # N2 — decision-basis window (15% of fold total_timesteps);
                                     # must cover every algo's adjustment_cooldown_steps above —
                                     # enforced by a startup guard, not by this value alone.
+  notable_events:                   # §4.10 (D-T3.19): F2 trigger set + rate/hard caps (retires
+                                    # NOTABLE_KL_THRESHOLD / NOTABLE_MDD_THRESHOLD module constants)
+    kl_spike_threshold: 0.10         # N3 — approx_kl above this fires kl_spike (unchanged value)
+    mdd_breach_frac:                 # N3 — window_metrics("short")["mdd_frac_worst"] ceiling, per env
+      equity: 0.10
+      crypto: 0.12
+    trade_shy_ratio: 0.5             # N3 — trade_rate < 0.5x locked baseline_trade_rate -> trade_shy
+    churning_ratio: 3.0              # N3 — trade_rate > 3x locked baseline_trade_rate -> churning
+    hard_cap_per_run: 50             # N4 — total event rows/run; past this, rows drop + one alarm
+                                    # (cadence heartbeat rows are never capped)
   sac_buffer_size: 200000           # SAC replay buffer. Was 500K; reduced per research (smaller=better for non-stationary)
   n_envs: 6                         # Parallel envs per training (SubprocVecEnv). 6 × 3 algo workers = 18 processes.
   vecenv_backend: subproc            # "subproc" for parallel SubprocVecEnv, "dummy" for sequential DummyVecEnv

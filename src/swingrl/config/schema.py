@@ -578,11 +578,73 @@ class TrainingWindowsConfig(BaseModel):
     )
 
 
+class NotableEventsConfig(BaseModel):
+    """Notable-event trigger thresholds for mid-fold epoch capture (spec §4.10, D-T3.19).
+
+    Replaces the retired NOTABLE_KL_THRESHOLD / NOTABLE_MDD_THRESHOLD module constants
+    in epoch_callback.py -- the MDD threshold was calibrated against a cumsum-of-shaped-
+    rewards quantity and became quasi-permanently true for crypto SAC (F2 root cause).
+    All five triggers are evaluated against Task 5's short (acute-detector) window
+    (window_metrics("short")) plus the current epoch's approx_kl/mean_reward.
+    """
+
+    kl_spike_threshold: float = Field(
+        default=0.10,
+        gt=0.0,
+        description=(
+            "approx_kl above this fires kl_spike. Unchanged value from the retired "
+            "NOTABLE_KL_THRESHOLD constant (well-defined, rare). Override via "
+            "SWINGRL_TRAINING__NOTABLE_EVENTS__KL_SPIKE_THRESHOLD."
+        ),
+    )
+    mdd_breach_frac: dict[str, float] = Field(
+        default_factory=lambda: {"equity": 0.10, "crypto": 0.12},
+        description=(
+            "Per-env equity-fraction drawdown ceiling for window_metrics('short')"
+            "['mdd_frac_worst'] (the worst-sub-env basis -- never mdd_frac_mean) that "
+            "fires mdd_breach. Sane units vs. per-env risk caps -- replaces the dead "
+            "-25.0 cumsum threshold. Override via "
+            "SWINGRL_TRAINING__NOTABLE_EVENTS__MDD_BREACH_FRAC (JSON dict)."
+        ),
+    )
+    trade_shy_ratio: float = Field(
+        default=0.5,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "trade_rate below this fraction of the locked baseline_trade_rate fires "
+            "trade_shy (mid-fold activity collapse). Override via "
+            "SWINGRL_TRAINING__NOTABLE_EVENTS__TRADE_SHY_RATIO."
+        ),
+    )
+    churning_ratio: float = Field(
+        default=3.0,
+        gt=1.0,
+        description=(
+            "trade_rate above this multiple of the locked baseline_trade_rate fires "
+            "churning (the opposite disease). Override via "
+            "SWINGRL_TRAINING__NOTABLE_EVENTS__CHURNING_RATIO."
+        ),
+    )
+    hard_cap_per_run: int = Field(
+        default=50,
+        gt=0,
+        description=(
+            "Total event rows (cadence heartbeats excluded) allowed per training run "
+            "before further event rows drop and a capture_alarm fires once (D-T3.19 "
+            "three-layer bounding -- expected x10 headroom above the ~3-4x structural "
+            "maximum of a healthy run). Override via "
+            "SWINGRL_TRAINING__NOTABLE_EVENTS__HARD_CAP_PER_RUN."
+        ),
+    )
+
+
 class TrainingConfig(BaseModel):
     """Training pipeline configuration."""
 
     bounds: TrainingBoundsConfig = Field(default_factory=TrainingBoundsConfig)
     windows: TrainingWindowsConfig = Field(default_factory=TrainingWindowsConfig)
+    notable_events: NotableEventsConfig = Field(default_factory=NotableEventsConfig)
     sac_buffer_size: int = Field(
         default=500_000,
         gt=0,

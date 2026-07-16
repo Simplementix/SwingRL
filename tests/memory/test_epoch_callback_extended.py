@@ -266,7 +266,7 @@ class TestEpochCallbackShouldStore:
         assert cb._event_rows_this_run == 50  # dropped row does not increment
         cb._client.ingest_training.assert_called_once()
         call = cb._client.ingest_training.call_args
-        assert call.kwargs["source"] == "capture_alarm:equity:ppo"
+        assert call.kwargs["source"] == f"capture_alarm:{cb._env}:{cb._algo}"
 
         # A second breach past the cap must NOT fire a second alarm.
         cb.num_timesteps = 51 * trend_steps
