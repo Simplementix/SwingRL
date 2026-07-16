@@ -21,6 +21,7 @@ import structlog
 
 from swingrl.config.schema import load_config
 from swingrl.data.db import DatabaseManager
+from swingrl.data.migration_runner import assert_schema_current
 from swingrl.execution.pipeline import ExecutionPipeline
 from swingrl.features.pipeline import FeaturePipeline
 from swingrl.monitoring.alerter import Alerter
@@ -244,6 +245,7 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
     db = DatabaseManager(config)
     init_emergency_flags(db)
     db.init_schema()
+    assert_schema_current(db)
 
     alerter = Alerter(
         webhook_url=config.alerting.alerts_webhook_url,

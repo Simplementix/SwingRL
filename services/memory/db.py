@@ -190,6 +190,71 @@ CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON llm_audit_log(timestamp);
 """
 
 # ---------------------------------------------------------------------------
+# Schema-fingerprint guard (A25/A30 cutover, Task 3)
+# ---------------------------------------------------------------------------
+# Kept in sync BY HAND with src/swingrl/data/migration_runner.py::EXPECTED_SCHEMA_VERSION.
+# This service cannot import swingrl.* (separate container from the trader/trainer;
+# verified pattern at services/memory/memory_agents/query.py:97, which reimplements
+# config loading with yaml.safe_load rather than importing swingrl.config.schema).
+# Duplication is the established pattern in migration_runner.py's own comment;
+# converges in the Stage 3 refactor.
+_EXPECTED_SCHEMA_VERSION = 1  # mirrors migration_runner.EXPECTED_SCHEMA_VERSION
+
+
+def _memory_schema_migrations_table_exists(conn: psycopg.Connection[dict[str, Any]]) -> bool:
+    """Return True if the schema_migrations ledger table exists in this database."""
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'schema_migrations'"
+    ).fetchone()
+    return row is not None
+
+
+def _current_memory_schema_version(conn: psycopg.Connection[dict[str, Any]]) -> int:
+    """Return the highest applied migration version; 0 if the ledger is empty/absent.
+
+    Fresh-DB decision (Task 3): a database before any V-file migration has no
+    schema_migrations table at all. Treated as version 0 -- i.e. behind whenever
+    _EXPECTED_SCHEMA_VERSION > 0 -- the same result migration_runner.py's own
+    current_schema_version() gets by CREATE TABLE IF NOT EXISTS-ing the (then-empty)
+    ledger before querying it. Here we probe existence instead of creating the table:
+    this service should never be the one to first create the migration ledger.
+    """
+    if not _memory_schema_migrations_table_exists(conn):
+        return 0
+    row = conn.execute("SELECT max(version) AS v FROM schema_migrations").fetchone()
+    if row and row["v"] is not None:
+        return int(row["v"])
+    return 0
+
+
+def _assert_memory_schema_current(conn: psycopg.Connection[dict[str, Any]]) -> None:
+    """Refuse to run against a schema behind the expected floor version.
+
+    Floor semantics (A30): raises only when the database is BEHIND
+    _EXPECTED_SCHEMA_VERSION (missing migrations -- genuinely broken). When the
+    database is AHEAD (a newer additive migration applied by a trainer-side
+    deploy), this logs a warning and returns normally.
+
+    Args:
+        conn: An open psycopg connection (dict_row factory).
+
+    Raises:
+        RuntimeError: The database schema version is behind _EXPECTED_SCHEMA_VERSION.
+    """
+    actual = _current_memory_schema_version(conn)
+    if actual < _EXPECTED_SCHEMA_VERSION:
+        log.error("memory_schema_version_behind", expected=_EXPECTED_SCHEMA_VERSION, actual=actual)
+        raise RuntimeError(
+            f"Database schema version {actual} is behind expected {_EXPECTED_SCHEMA_VERSION}; "
+            "run scripts/apply_migrations.py before starting."
+        )
+    if actual > _EXPECTED_SCHEMA_VERSION:
+        log.warning("memory_schema_version_ahead", expected=_EXPECTED_SCHEMA_VERSION, actual=actual)
+        return
+    log.info("memory_schema_version_ok", version=actual)
+
+
+# ---------------------------------------------------------------------------
 # Migration helpers
 # ---------------------------------------------------------------------------
 
@@ -298,6 +363,7 @@ def init_db() -> None:
             "ON consolidations(category, status)"
         )
         conn.commit()
+        _assert_memory_schema_current(conn)
         log.info("memory_db_initialized", url=_get_db_url().split("@")[-1])
 
 
