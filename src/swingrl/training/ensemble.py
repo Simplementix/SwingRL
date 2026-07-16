@@ -24,6 +24,11 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+# Equal-share fallback weight for a single algo in a 3-algo ensemble (ppo/a2c/sac).
+# Used when a live model has no ``model_metadata`` row so blending never KeyErrors
+# and never silently drifts (review M5).
+DEFAULT_ENSEMBLE_WEIGHT: float = 1.0 / 3
+
 
 def sharpe_softmax_weights(sharpe_ratios: dict[str, float]) -> dict[str, float]:
     """Compute softmax-normalized ensemble weights from Sharpe ratios.
@@ -99,27 +104,54 @@ class EnsembleBlender:
         actions: dict[str, np.ndarray],
         weights: dict[str, float],
     ) -> np.ndarray:
-        """Compute weighted sum of per-agent actions.
+        """Compute the weighted sum of per-agent actions over the actually-loaded algos.
+
+        Weights are renormalized over ``actions`` (the algos that actually loaded),
+        so a partial ensemble does not silently drift (review M5). A loaded algo
+        with no weight entry (missing ``model_metadata`` row) falls back to an equal
+        share instead of raising ``KeyError``.
 
         Args:
-            actions: Dict mapping agent name to action array.
-            weights: Dict mapping agent name to ensemble weight.
+            actions: Dict mapping agent name to action array (loaded algos only).
+            weights: Dict mapping agent name to ensemble weight (may be partial/empty).
 
         Returns:
-            Blended action array (weighted sum).
-        """
-        result: np.ndarray | None = None
+            Blended action array (weighted sum, weights summing to 1.0).
 
+        Raises:
+            ModelError: If ``actions`` is empty (no models loaded to blend).
+        """
+        if not actions:
+            raise ModelError("No actions to blend")
+
+        # Resolve a weight per loaded algo, defaulting to equal share when missing.
+        used: dict[str, float] = {}
+        for name in actions:
+            weight = weights.get(name)
+            if weight is None:
+                log.warning(
+                    "ensemble_weight_missing",
+                    algo=name,
+                    default=DEFAULT_ENSEMBLE_WEIGHT,
+                )
+                weight = DEFAULT_ENSEMBLE_WEIGHT
+            used[name] = weight
+
+        total = sum(used.values())
+        if total <= 0:
+            # Degenerate weights — fall back to a uniform blend over the loaded algos.
+            log.warning("ensemble_weights_nonpositive", total=total, algos=sorted(used))
+            equal = 1.0 / len(actions)
+            used = dict.fromkeys(actions, equal)
+            total = 1.0
+
+        result: np.ndarray | None = None
         for name, action in actions.items():
-            w = weights[name]
-            weighted = w * action
+            weighted = (used[name] / total) * action
             if result is None:
                 result = weighted.copy()
             else:
                 result += weighted
 
-        if result is None:
-            msg = "No actions to blend"
-            raise ModelError(msg)
-
+        assert result is not None  # nosec B101 — actions is non-empty (guarded above)
         return result

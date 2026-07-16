@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import requests
 import structlog
 
+from swingrl.execution.fill_processor import FillProcessor
 from swingrl.execution.types import FillResult, ValidatedOrder
 from swingrl.utils.exceptions import BrokerError
 
@@ -65,6 +66,9 @@ class BinanceSimAdapter:
         self._db = db
         self._alerter = alerter
         self._slippage = slippage
+        # Emergency sells are recorded through the same fill processor as normal
+        # fills so a trades row is written and the position row is deleted (review M3).
+        self._fill_processor = FillProcessor(db=db)
 
         log.info("binance_sim_adapter_initialized", slippage=slippage)
 
@@ -165,25 +169,7 @@ class BinanceSimAdapter:
         trade_id = str(uuid.uuid4())
         now = datetime.now(UTC).isoformat()
 
-        # Update position in DB
-        try:
-            with self._db.connection() as conn:
-                conn.execute(
-                    "UPDATE positions SET quantity = 0 WHERE symbol = %s AND environment = %s",
-                    (symbol, "crypto"),
-                )
-        except Exception:
-            log.warning("emergency_sell_db_update_failed", symbol=symbol, exc_info=True)
-
-        log.info(
-            "emergency_sell_simulated",
-            symbol=symbol,
-            quantity=quantity,
-            fill_price=fill_price,
-            trade_id=trade_id,
-        )
-
-        return FillResult(
+        fill = FillResult(
             trade_id=trade_id,
             symbol=symbol,
             side="sell",
@@ -197,6 +183,24 @@ class BinanceSimAdapter:
             submitted_at=now,
             filled_at=now,
         )
+
+        # Record through the fill processor: writes a trades row and deletes the
+        # position row (sell-to-zero) instead of leaving a zero-qty ghost (review M3).
+        try:
+            self._fill_processor.process(fill)
+        except Exception:
+            log.error("emergency_sell_record_failed", symbol=symbol, exc_info=True)
+            raise
+
+        log.info(
+            "emergency_sell_simulated",
+            symbol=symbol,
+            quantity=quantity,
+            fill_price=fill_price,
+            trade_id=trade_id,
+        )
+
+        return fill
 
     def cancel_order(self, order_id: str) -> bool:
         """No-op for simulated fills.

@@ -22,6 +22,7 @@ import structlog
 
 from swingrl.envs.portfolio import process_actions
 from swingrl.execution.fill_processor import FillProcessor
+from swingrl.execution.model_paths import active_model_paths
 from swingrl.execution.order_validator import OrderValidator
 from swingrl.execution.risk.circuit_breaker import CBState, CircuitBreaker, GlobalCircuitBreaker
 from swingrl.execution.risk.position_tracker import PositionTracker
@@ -82,8 +83,11 @@ class ExecutionPipeline:
         # Feature health tracking for live inference
         self._health_tracker = FeatureHealthTracker()
 
-        # Lazy-initialized components
+        # Lazy-initialized components. Models are cached per env, keyed by the
+        # artifact mtimes so a hot-swapped model (changed mtime) or a previously
+        # empty load (no models on disk yet) reloads next cycle (review H3).
         self._models: dict[str, dict[str, tuple[Any, Any]]] = {}
+        self._model_cache_keys: dict[str, tuple[Any, ...]] = {}
         self._adapters: dict[str, Any] = {}
         self._initialized = False
 
@@ -282,8 +286,8 @@ class ExecutionPipeline:
             log.error("zero_portfolio_value", env=env_name, value=portfolio_value)
             return []
 
-        # Minimum order value: use crypto min_order_usd or $5 for equity
-        min_order_value = self._config.crypto.min_order_usd if env_name == "crypto" else 5.0
+        # Minimum order value comes from config per env (no hardcoded floor).
+        min_order_value = self._min_order_value(env_name)
 
         for i, symbol in enumerate(symbols):
             target_value = float(target_weights[i]) * portfolio_value
@@ -438,26 +442,38 @@ class ExecutionPipeline:
         return fills
 
     def _load_models(self, env_name: str) -> dict[str, tuple[Any, Any]]:
-        """Load trained models for the environment (lazy, cached).
+        """Load trained models for the environment (lazy, mtime-keyed cache).
+
+        The cache is keyed by the artifact mtimes (review H3): a changed model.zip
+        (hot swap) or a previously-empty load (no models on disk yet) reloads on the
+        next cycle rather than serving a stale or permanently-empty result.
+
+        Fail-closed (review M7 / A22): an algo whose ``vec_normalize.pkl`` is missing
+        or fails to load is SKIPPED and a Discord alert is sent — never fed raw,
+        un-normalized observations. The ensemble renormalizes over the algos that
+        did load.
 
         Args:
             env_name: Environment name.
 
         Returns:
-            Dict mapping algo name to (model, vec_normalize) tuple.
+            Dict mapping algo name to (model, vec_normalize) tuple. May be empty
+            (never cached as a permanent empty — retried next cycle).
         """
-        if env_name in self._models:
+        cache_key = self._model_cache_key(env_name)
+        # A non-empty key that matches the cached key is a hit. An empty key means
+        # no models on disk — never treated as a cache hit, so it retries next cycle.
+        if (
+            cache_key
+            and self._model_cache_keys.get(env_name) == cache_key
+            and env_name in self._models
+        ):
             return self._models[env_name]
 
-        from stable_baselines3 import A2C, PPO, SAC
-        from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-
-        algo_map = {"ppo": PPO, "a2c": A2C, "sac": SAC}
         models: dict[str, tuple[Any, Any]] = {}
 
         for algo_name in _ALGO_NAMES:
-            model_path = self._models_dir / "active" / env_name / algo_name / "model.zip"
-            vec_path = self._models_dir / "active" / env_name / algo_name / "vec_normalize.pkl"
+            model_path, vec_path = active_model_paths(self._models_dir, env_name, algo_name)
 
             if not model_path.exists():
                 log.warning(
@@ -468,39 +484,130 @@ class ExecutionPipeline:
                 )
                 continue
 
-            algo_cls = algo_map[algo_name]
-            model = algo_cls.load(str(model_path))  # type: ignore[attr-defined]
+            # Fail closed: no VecNormalize stats means we would feed raw observations
+            # (out-of-distribution) to a model trained on normalized ones (M7).
+            if not vec_path.exists():
+                log.error(
+                    "vec_normalize_missing",
+                    env=env_name,
+                    algo=algo_name,
+                    path=str(vec_path),
+                )
+                self._alert_model_skipped(env_name, algo_name, "VecNormalize stats file missing")
+                continue
 
-            vec_norm = None
-            if vec_path.exists():
-                # Build a minimal stub env with correct spaces from the loaded model
-                obs_space = model.observation_space
-                act_space = model.action_space
-
-                def _make_stub_env(_obs: Any = obs_space, _act: Any = act_space) -> Any:
-                    """Return a minimal gymnasium env stub for VecNormalize loading."""
-                    import gymnasium  # noqa: PLC0415
-
-                    env: Any = gymnasium.Env()  # type: ignore[abstract]
-                    env.observation_space = _obs
-                    env.action_space = _act
-                    return env
-
-                dummy_env = DummyVecEnv([_make_stub_env])
-                vec_norm = VecNormalize.load(str(vec_path), venv=dummy_env)
-                vec_norm.training = False
-                vec_norm.norm_reward = False
+            try:
+                model, vec_norm = self._load_one_algo(algo_name, model_path, vec_path)
+            except Exception:
+                log.error(
+                    "model_load_failed",
+                    env=env_name,
+                    algo=algo_name,
+                    path=str(model_path),
+                    exc_info=True,
+                )
+                self._alert_model_skipped(
+                    env_name, algo_name, "model or VecNormalize failed to load"
+                )
+                continue
 
             models[algo_name] = (model, vec_norm)
-            log.info(
-                "model_loaded",
-                env=env_name,
-                algo=algo_name,
-                has_vec_normalize=vec_norm is not None,
-            )
+            log.info("model_loaded", env=env_name, algo=algo_name, has_vec_normalize=True)
 
         self._models[env_name] = models
+        self._model_cache_keys[env_name] = cache_key
         return models
+
+    def _model_cache_key(self, env_name: str) -> tuple[Any, ...]:
+        """Return a cache key from the on-disk artifact mtimes for the environment.
+
+        The key changes whenever a model.zip or vec_normalize.pkl is added, removed,
+        or rewritten, so the loader reloads. An empty tuple means no models on disk.
+
+        Args:
+            env_name: Environment name.
+
+        Returns:
+            Tuple of ``(algo, model_mtime, vec_mtime_or_None)`` per present model.
+        """
+        key: list[tuple[str, float, float | None]] = []
+        for algo_name in _ALGO_NAMES:
+            model_path, vec_path = active_model_paths(self._models_dir, env_name, algo_name)
+            if not model_path.exists():
+                continue
+            vec_mtime = vec_path.stat().st_mtime if vec_path.exists() else None
+            key.append((algo_name, model_path.stat().st_mtime, vec_mtime))
+        return tuple(key)
+
+    def _load_one_algo(self, algo_name: str, model_path: Path, vec_path: Path) -> tuple[Any, Any]:
+        """Load a single algo's SB3 model and its VecNormalize stats.
+
+        Args:
+            algo_name: Algorithm name ("ppo", "a2c", or "sac").
+            model_path: Path to the model.zip file.
+            vec_path: Path to the vec_normalize.pkl file.
+
+        Returns:
+            Tuple of (loaded model, loaded VecNormalize with training disabled).
+        """
+        from stable_baselines3 import A2C, PPO, SAC  # noqa: PLC0415
+        from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize  # noqa: PLC0415
+
+        algo_map = {"ppo": PPO, "a2c": A2C, "sac": SAC}
+        model = algo_map[algo_name].load(str(model_path))  # type: ignore[attr-defined]
+
+        # Build a minimal stub env with correct spaces from the loaded model.
+        obs_space = model.observation_space
+        act_space = model.action_space
+
+        def _make_stub_env(_obs: Any = obs_space, _act: Any = act_space) -> Any:
+            """Return a minimal gymnasium env stub for VecNormalize loading."""
+            import gymnasium  # noqa: PLC0415
+
+            env: Any = gymnasium.Env()  # type: ignore[abstract]
+            env.observation_space = _obs
+            env.action_space = _act
+            return env
+
+        dummy_env = DummyVecEnv([_make_stub_env])
+        vec_norm = VecNormalize.load(str(vec_path), venv=dummy_env)
+        vec_norm.training = False
+        vec_norm.norm_reward = False
+        return model, vec_norm
+
+    def _alert_model_skipped(self, env_name: str, algo_name: str, reason: str) -> None:
+        """Send a fail-closed warning that an algo was excluded from the ensemble.
+
+        Args:
+            env_name: Environment name.
+            algo_name: Algorithm that was skipped.
+            reason: Human-readable reason for the skip.
+        """
+        if self._alerter is None:
+            return
+        env_literal: Literal["equity", "crypto"] = "equity" if env_name == "equity" else "crypto"
+        self._alerter.send_alert(
+            level="warning",
+            title="Model Skipped (Fail-Closed)",
+            message=(
+                f"{env_name}/{algo_name} excluded from the ensemble: {reason}. "
+                "Blending renormalizes over the remaining algos."
+            ),
+            environment=env_literal,
+        )
+
+    def _min_order_value(self, env_name: str) -> float:
+        """Return the minimum order dollar value for the environment (config-driven).
+
+        Args:
+            env_name: Environment name.
+
+        Returns:
+            ``config.crypto.min_order_usd`` for crypto, else ``config.equity.min_order_usd``.
+        """
+        if env_name == "crypto":
+            return self._config.crypto.min_order_usd
+        return self._config.equity.min_order_usd
 
     def _get_ensemble_weights(self, env_name: str) -> dict[str, float]:
         """Query model_metadata table for ensemble weights.
@@ -511,6 +618,8 @@ class ExecutionPipeline:
         Returns:
             Dict mapping algo name to weight. Defaults to equal weights.
         """
+        from swingrl.training.ensemble import DEFAULT_ENSEMBLE_WEIGHT  # noqa: PLC0415
+
         try:
             with self._db.connection() as conn:
                 rows = conn.execute(
@@ -528,7 +637,7 @@ class ExecutionPipeline:
                         weights[algo] = (
                             float(row["ensemble_weight"])
                             if row["ensemble_weight"] is not None
-                            else 1.0 / 3
+                            else DEFAULT_ENSEMBLE_WEIGHT
                         )
                         seen.add(algo)
                 if weights:
@@ -537,7 +646,7 @@ class ExecutionPipeline:
             log.warning("ensemble_weights_query_failed", env=env_name)
 
         # Default: equal weights
-        return dict.fromkeys(_ALGO_NAMES, 1.0 / 3)
+        return dict.fromkeys(_ALGO_NAMES, DEFAULT_ENSEMBLE_WEIGHT)
 
     def _get_adapter(self, env_name: str) -> Any:
         """Get the exchange adapter for the environment (cached).

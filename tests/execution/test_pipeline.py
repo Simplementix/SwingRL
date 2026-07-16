@@ -582,24 +582,31 @@ class TestPipelineInit:
             models_dir=bare_models_dir,
         )
 
-        # Create a model file at the correct (non-double-nested) path
+        # Create a model file at the correct (non-double-nested) path, plus its
+        # sibling VecNormalize stats (fail-closed loading skips an algo without them).
         expected_path = bare_models_dir / "active" / "equity" / "ppo" / "model.zip"
         expected_path.parent.mkdir(parents=True, exist_ok=True)
         expected_path.write_bytes(b"fake-model-zip")
+        (expected_path.parent / "vec_normalize.pkl").write_bytes(b"fake-vec")
 
         # Verify the double-nested path does NOT exist (proves no double nesting)
         double_nested = bare_models_dir / "active" / "active" / "equity" / "ppo" / "model.zip"
         assert not double_nested.exists()
         assert expected_path.exists()
 
-        # _load_models should find model at bare_models_dir/active/equity/ppo/model.zip
-        # PPO/A2C/SAC are imported locally inside _load_models from stable_baselines3
-        with patch("stable_baselines3.PPO") as mock_ppo_cls:
-            with patch("stable_baselines3.A2C"):
-                with patch("stable_baselines3.SAC"):
-                    mock_ppo_cls.load.return_value = MagicMock()
-                    # Only PPO path exists; A2C and SAC model.zip files don't exist
-                    models = pipe._load_models("equity")
+        # _load_models should find model at bare_models_dir/active/equity/ppo/model.zip.
+        # PPO/A2C/SAC and VecNormalize/DummyVecEnv are imported locally inside the loader.
+        with (
+            patch("stable_baselines3.PPO") as mock_ppo_cls,
+            patch("stable_baselines3.A2C"),
+            patch("stable_baselines3.SAC"),
+            patch("stable_baselines3.common.vec_env.VecNormalize") as mock_vec_cls,
+            patch("stable_baselines3.common.vec_env.DummyVecEnv"),
+        ):
+            mock_ppo_cls.load.return_value = MagicMock()
+            mock_vec_cls.load.return_value = MagicMock()
+            # Only PPO path exists; A2C and SAC model.zip files don't exist
+            models = pipe._load_models("equity")
 
         # PPO model was found and loaded from the non-double-nested path
         assert "ppo" in models
