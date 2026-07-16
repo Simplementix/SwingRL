@@ -54,6 +54,26 @@ def test_options_config_env_override() -> None:
         del os.environ["SWINGRL_OPTIONS_COLLECTOR__ENABLED"]
 
 
+def test_options_integrity_late_warn_s_default() -> None:
+    """OPT-CFG-8: late_warn_s defaults to a 30s cron-jitter tolerance (2026-07-16 fix) —
+    lateness below this threshold is routine cron jitter, not a lookahead-guard concern."""
+    cfg = OptionsCollectorConfig()
+    assert cfg.integrity.late_warn_s == 30.0
+
+
+def test_options_integrity_late_warn_s_env_override() -> None:
+    """OPT-CFG-9: nested env override for late_warn_s follows the double-underscore
+    convention (SWINGRL_OPTIONS_COLLECTOR__INTEGRITY__LATE_WARN_S)."""
+    import os
+
+    os.environ["SWINGRL_OPTIONS_COLLECTOR__INTEGRITY__LATE_WARN_S"] = "45"
+    try:
+        cfg = load_config("config/swingrl.yaml")
+        assert cfg.options_collector.integrity.late_warn_s == 45.0
+    finally:
+        del os.environ["SWINGRL_OPTIONS_COLLECTOR__INTEGRITY__LATE_WARN_S"]
+
+
 def test_snapshot_label_must_be_known() -> None:
     """OPT-CFG-6: snapshot label validated against the known set (spec §6.1, D4).
 

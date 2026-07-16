@@ -160,3 +160,99 @@ def test_unknown_snapshot_label_raises_data_error() -> None:
     c, _ = _collector(MagicMock(), _store_mock())
     with pytest.raises(DataError, match="bogus"):
         c.run_snapshot("bogus", now=datetime(2026, 7, 14, 20, 0, tzinfo=UTC))
+
+
+def test_late_fire_within_tolerance_no_warning() -> None:
+    """OPT-COLLECT-18: late_by_s within the default 30s cron-jitter tolerance -> no
+    lateness warning (user design 2026-07-16; the old code warned on any late_by_s > 0,
+    which fired on routine millisecond cron jitter)."""
+    client = MagicMock()
+    client.get_option_chain.side_effect = lambda s: _raw(s)
+    c, _ = _collector(client, _store_mock())
+    result = c.run_snapshot(
+        "decision",
+        now=datetime(2026, 7, 14, 20, 0, 5, tzinfo=UTC),  # 5s late
+        scheduled_pull_utc=datetime(2026, 7, 14, 20, 0, 0, tzinfo=UTC),
+    )
+    assert not any("late" in w for w in result.warnings)
+
+
+def test_late_fire_beyond_tolerance_warns() -> None:
+    """OPT-COLLECT-19: late_by_s beyond the default 30s tolerance still warns, and the
+    warning text includes the actual lateness in seconds (user design 2026-07-16)."""
+    client = MagicMock()
+    client.get_option_chain.side_effect = lambda s: _raw(s)
+    c, _ = _collector(client, _store_mock())
+    result = c.run_snapshot(
+        "decision",
+        now=datetime(2026, 7, 14, 20, 0, 45, tzinfo=UTC),  # 45s late
+        scheduled_pull_utc=datetime(2026, 7, 14, 20, 0, 0, tzinfo=UTC),
+    )
+    assert any("late" in w and "45" in w for w in result.warnings)
+
+
+def test_captured_summary_single_alert_with_inline_warning() -> None:
+    """OPT-COLLECT-15: all succeeded + one warning -> exactly ONE alerter call: an info
+    'captured' message carrying both the succeeded list and the warning text inline.
+    No separate 'completed with issues' call — warnings must never suppress or replace
+    the captured message (user design 2026-07-16)."""
+    client = MagicMock()
+    client.get_option_chain.side_effect = lambda s: _raw(s)
+    store = _store_mock()
+
+    def _sync(parsed: ParsedChain) -> None:
+        if parsed.header["underlying_symbol"] == "SPY":
+            raise RuntimeError("pg pool exhausted")
+
+    store.sync_to_postgres.side_effect = _sync
+    c, alerter = _collector(client, store)
+    result = c.run_snapshot("eod", now=datetime(2026, 7, 14, 20, 35, tzinfo=UTC))
+
+    assert set(result.succeeded) == {"_SPX", "SPY", "QQQ"}
+    assert not result.failed
+    assert len(result.warnings) == 1
+
+    assert alerter.send_alert.call_count == 1
+    level, title, message = alerter.send_alert.call_args.args[:3]
+    assert level == "info"
+    assert "captured" in title
+    assert "SPY" in message  # succeeded list present
+    assert "postgres sync failed" in message  # warning folded in inline
+
+
+def test_mixed_success_and_failure_sends_both_alerts() -> None:
+    """OPT-COLLECT-16: some failed + some succeeded -> BOTH an info 'captured' alert
+    (successes) and a warning 'completed with issues' alert (failures) fire
+    (user design 2026-07-16)."""
+    client = MagicMock()
+    client.get_option_chain.side_effect = lambda s: (
+        (_ for _ in ()).throw(DataError("boom")) if s == "SPY" else _raw(s)
+    )
+    c, alerter = _collector(client, _store_mock())
+    result = c.run_snapshot("decision", now=datetime(2026, 7, 14, 20, 0, tzinfo=UTC))
+
+    assert "SPY" in result.failed
+    assert set(result.succeeded) == {"_SPX", "QQQ"}
+
+    assert alerter.send_alert.call_count == 2
+    calls_by_level = {call.args[0]: call.args for call in alerter.send_alert.call_args_list}
+    assert set(calls_by_level) == {"info", "warning"}
+
+    info_title, info_message = calls_by_level["info"][1], calls_by_level["info"][2]
+    assert "captured" in info_title
+    assert "QQQ" in info_message and "_SPX" in info_message
+
+    warning_title, warning_message = calls_by_level["warning"][1], calls_by_level["warning"][2]
+    assert "completed with issues" in warning_title
+    assert "SPY" in warning_message
+
+
+def test_all_failed_sends_critical_only() -> None:
+    """OPT-COLLECT-17: all-attempted-failed -> exactly one CRITICAL alert, no info or
+    warning fallback (pinned regression guard, unchanged by the 2026-07-16 routing fix)."""
+    client = MagicMock()
+    client.get_option_chain.side_effect = DataError("boom")
+    c, alerter = _collector(client, _store_mock())
+    c.run_snapshot("decision", now=datetime(2026, 7, 14, 20, 0, tzinfo=UTC))
+    assert alerter.send_alert.call_count == 1
+    assert alerter.send_alert.call_args.args[0] == "critical"
