@@ -222,6 +222,80 @@ class TestTurbulenceHaltBaseline:
         fp.turbulence_halt_baseline.assert_called_once_with("equity", "2026-07-07")
 
 
+class TestF1bTurbulenceZeroing:
+    """Task 7 (F1b): the turbulence obs slot is frozen at 0.0 for inference, real value kept."""
+
+    @staticmethod
+    def _equity_obs_with_turb(
+        pipeline: ExecutionPipeline, real_turb: float
+    ) -> tuple[np.ndarray, int]:
+        """Build a full-size equity observation carrying a nonzero turbulence."""
+        from swingrl.features.assembler import equity_obs_dim, turbulence_obs_index
+
+        n = len(pipeline.config.equity.symbols)
+        sentiment = pipeline.config.sentiment.enabled
+        turb_idx = turbulence_obs_index("equity", n, sentiment)
+        obs = np.zeros(equity_obs_dim(sentiment, n), dtype=np.float64)
+        obs[turb_idx] = real_turb
+        return obs, turb_idx
+
+    def _run_cycle_capturing_predict(
+        self, pipeline: ExecutionPipeline, obs: np.ndarray
+    ) -> MagicMock:
+        """Run a dry-run equity cycle with mocked models/adapter; return the mock model."""
+        pipeline._feature_pipeline.get_observation.return_value = obs
+
+        mock_model = MagicMock()
+        # equity action space = 8 assets + 1 cash dim
+        mock_model.predict.return_value = (np.zeros(9), None)
+        with patch.object(pipeline, "_load_models") as mock_load:
+            mock_load.return_value = {
+                "ppo": (mock_model, None),
+                "a2c": (mock_model, None),
+                "sac": (mock_model, None),
+            }
+            mock_adapter = MagicMock()
+            mock_adapter.get_current_price.return_value = 450.0
+            with patch.object(pipeline, "_get_adapter") as mock_get_adapter:
+                mock_get_adapter.return_value = mock_adapter
+                pipeline.execute_cycle("equity", dry_run=True)
+        return mock_model
+
+    def test_flag_on_zeros_slot_fed_to_predict(self, pipeline: ExecutionPipeline) -> None:
+        """F1b (b): with the flag on, model.predict receives 0.0 at the turbulence slot."""
+        real_turb = 7.25
+        obs, turb_idx = self._equity_obs_with_turb(pipeline, real_turb)
+
+        mock_model = self._run_cycle_capturing_predict(pipeline, obs)
+
+        fed_obs = mock_model.predict.call_args.args[0]
+        assert fed_obs[turb_idx] == 0.0
+        # The observation object handed downstream was zeroed in place.
+        assert obs[turb_idx] == 0.0
+
+    def test_flag_on_captures_real_value_before_zeroing(self, pipeline: ExecutionPipeline) -> None:
+        """F1b (c): the real sensor value is read out before the slot is zeroed."""
+        real_turb = 3.5
+        obs, _turb_idx = self._equity_obs_with_turb(pipeline, real_turb)
+
+        self._run_cycle_capturing_predict(pipeline, obs)
+
+        assert pipeline._turbulence_at_decision == pytest.approx(real_turb)
+
+    def test_flag_off_keeps_real_value_in_obs(self, pipeline: ExecutionPipeline) -> None:
+        """F1b: with the flag off, the turbulence slot flows through unchanged (era-1 path)."""
+        pipeline.config.environment.zero_turbulence_obs = False
+        real_turb = 4.75
+        obs, turb_idx = self._equity_obs_with_turb(pipeline, real_turb)
+
+        mock_model = self._run_cycle_capturing_predict(pipeline, obs)
+
+        fed_obs = mock_model.predict.call_args.args[0]
+        assert fed_obs[turb_idx] == pytest.approx(real_turb)
+        # Real value is still captured regardless of the flag.
+        assert pipeline._turbulence_at_decision == pytest.approx(real_turb)
+
+
 class TestNormalizeObservation:
     """Test per-algo VecNormalize observation normalization."""
 
