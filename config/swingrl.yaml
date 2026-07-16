@@ -204,6 +204,27 @@ training:
       sharpe: [0.10, 0.60]
       drawdown: [0.05, 0.50]
       turnover: [0.00, 0.20]
+    # D-T2.1: L1 lever (mid-fold reward-weight nudges from epoch advice) is BENCHED.
+    # All six algo/env pairs ship at 0.0 (disabled) — do NOT raise any value above
+    # 0.0 without a passing lever-verification harness run first (spec Section 2.3,
+    # docs/superpowers/specs/2026-06-12-training-system-redesign-design.md).
+    # Prior research values (pre-bench) are documented in
+    # .planning/research/algo-reward-shaping.md and kept as bounds.py's fail-open
+    # fallback for config-load failure only.
+    max_reward_delta:
+      ppo:
+        equity: 0.0
+        crypto: 0.0
+      a2c:
+        equity: 0.0
+        crypto: 0.0
+      sac:
+        equity: 0.0
+        crypto: 0.0
+    adjustment_cooldown_steps:       # minimum timesteps between successive L1 adjustments (unchanged by the bench)
+      ppo: 24576                     # 2 × 2048 × 6 (value function recovery)
+      a2c: 500                       # ~100 short rollouts (stability window)
+      sac: 20000                     # replay buffer rotation
   sac_buffer_size: 200000           # SAC replay buffer. Was 500K; reduced per research (smaller=better for non-stationary)
   n_envs: 6                         # Parallel envs per training (SubprocVecEnv). 6 × 3 algo workers = 18 processes.
   vecenv_backend: subproc            # "subproc" for parallel SubprocVecEnv, "dummy" for sequential DummyVecEnv

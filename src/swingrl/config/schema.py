@@ -518,10 +518,33 @@ class RewardBoundsConfig(BaseModel):
 
 
 class TrainingBoundsConfig(BaseModel):
-    """Combined bounds config for hyperparameters and reward weights."""
+    """Combined bounds config for hyperparameters, reward weights, and the L1 lever."""
 
     hyperparam_bounds: HyperparamBoundsConfig = Field(default_factory=HyperparamBoundsConfig)
     reward_bounds: RewardBoundsConfig = Field(default_factory=RewardBoundsConfig)
+    max_reward_delta: dict[str, dict[str, float]] = Field(
+        default_factory=lambda: {
+            "ppo": {"equity": 0.0, "crypto": 0.0},
+            "a2c": {"equity": 0.0, "crypto": 0.0},
+            "sac": {"equity": 0.0, "crypto": 0.0},
+        },
+        description=(
+            "D-T2.1: L1 lever (mid-fold reward-weight nudges from epoch advice) is BENCHED. "
+            "Shipped default is 0.0 (disabled) for every algo/env pair. Do not raise any "
+            "value above 0.0 without a passing lever-verification harness run — see "
+            "spec Section 2.3 (.planning/research/algo-reward-shaping.md for prior research). "
+            "Override via SWINGRL_TRAINING__BOUNDS__MAX_REWARD_DELTA."
+        ),
+    )
+    adjustment_cooldown_steps: dict[str, int] = Field(
+        default_factory=lambda: {"ppo": 24_576, "a2c": 500, "sac": 20_000},
+        description=(
+            "Minimum timesteps between successive L1 reward-weight adjustments per algo. "
+            "PPO: 2 rollouts (n_steps=2048, n_envs=6) for value function recovery. "
+            "A2C: ~100 short rollouts for stability window. SAC: replay buffer rotation. "
+            "Override via SWINGRL_TRAINING__BOUNDS__ADJUSTMENT_COOLDOWN_STEPS."
+        ),
+    )
 
 
 class TrainingConfig(BaseModel):

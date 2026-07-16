@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from swingrl.memory.training.epoch_callback import (
     NOTABLE_KL_THRESHOLD,
     NOTABLE_MDD_THRESHOLD,
@@ -570,15 +572,28 @@ class TestEnrichedEpochPayload:
 
 
 class TestAttributionIdentity:
-    """C5-ATTR-01: trigger row carries fold/iteration/advice_id/cps_before."""
+    """C5-ATTR-01: trigger row carries fold/iteration/advice_id/cps_before.
+
+    D-T2.1: the L1 lever is benched by default (max_reward_delta=0.0 for every
+    algo/env pair), which would short-circuit acceptance before the attribution
+    logic under test ever runs. These tests simulate a re-earned/harness-passed
+    lever by monkeypatching get_max_reward_delta() back to a nonzero value for
+    the PPO/equity pair used here — the attribution mechanics are independent
+    of the bench posture and must keep working once a lever is re-earned.
+    """
 
     def _make_accepted_advice_callback(
         self,
+        monkeypatch: pytest.MonkeyPatch,
         fold_number: int = 3,
         iteration: int = 6,
         prev_iter_cps_v1: float | None = 0.034,
     ) -> MemoryEpochCallback:
         """Create a callback where advice is accepted (big enough delta) with DB url."""
+        monkeypatch.setattr(
+            "swingrl.memory.training.bounds.get_max_reward_delta",
+            lambda algo, env: 0.03,
+        )
         client = _make_mock_memory_client()
         # Return weights with a delta large enough to exceed the 0.01 min
         client.epoch_advice.return_value = {
@@ -621,9 +636,13 @@ class TestAttributionIdentity:
         }
         return cb
 
-    def test_adjustment_trigger_row_has_attribution_tail(self) -> None:
+    def test_adjustment_trigger_row_has_attribution_tail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """C5-ATTR-01: queue row tail = (fold_number, iteration, advice_id, cps_before)."""
-        cb = self._make_accepted_advice_callback(fold_number=3, iteration=6, prev_iter_cps_v1=0.034)
+        cb = self._make_accepted_advice_callback(
+            monkeypatch, fold_number=3, iteration=6, prev_iter_cps_v1=0.034
+        )
         cb._query_epoch_advice()  # noqa: SLF001
 
         assert len(cb._adjustment_trigger_queue) == 1, (
@@ -651,9 +670,9 @@ class TestAttributionIdentity:
             f"fold_cps_v1_before should be 0.034, got {cps_before_col}"
         )
 
-    def test_advice_id_is_unique_per_call(self) -> None:
+    def test_advice_id_is_unique_per_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """C5-ATTR-01: each accepted advice produces a distinct advice_id UUID."""
-        cb = self._make_accepted_advice_callback()
+        cb = self._make_accepted_advice_callback(monkeypatch)
         # First call
         cb._query_epoch_advice()  # noqa: SLF001
         row1 = cb._adjustment_trigger_queue[0]
@@ -668,9 +687,9 @@ class TestAttributionIdentity:
 
         assert advice_id_1 != advice_id_2, "Each advice call should produce a unique advice_id"
 
-    def test_attribution_none_cps_when_no_context(self) -> None:
+    def test_attribution_none_cps_when_no_context(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """C5-ATTR-01: fold_cps_v1_before is None when prev_iter_cps_v1 not set."""
-        cb = self._make_accepted_advice_callback(prev_iter_cps_v1=None)
+        cb = self._make_accepted_advice_callback(monkeypatch, prev_iter_cps_v1=None)
         cb._query_epoch_advice()  # noqa: SLF001
 
         row = cb._adjustment_trigger_queue[0]

@@ -98,27 +98,32 @@ MIN_TRAINING_PROGRESS: float = 0.20  # hard floor — never lower
 MAX_EPOCHS: int = 200
 
 # ---------------------------------------------------------------------------
-# Per-algo reward adjustment limits (epoch advice)
+# Per-algo reward adjustment limits (epoch advice) — D-T2.1 L1 lever
 # ---------------------------------------------------------------------------
-# Max absolute reward weight delta per adjustment. Prevents treatment harm
-# identified in iter 4 pattern analysis (patterns 157, 163, 169).
-# PPO crypto disabled (0.0): control folds outperform treatment by 29.5%.
-# A2C equity capped low: equity is lower-variance, more sensitive to reward changes.
-# See .planning/research/algo-reward-shaping.md for research backing.
+# D-T2.1: the L1 lever (mid-fold reward-weight nudges from epoch advice) is
+# BENCHED. Limits are read from SwingRLConfig.training.bounds (config/swingrl.yaml);
+# the shipped default is 0.0 (disabled) for every algo/env pair — see
+# get_max_reward_delta(). Re-earning any pair above 0.0 requires a passing
+# lever-verification harness run (spec Section 2.3); the hardcoded values below
+# are the fail-open fallback used only if config load fails, and reflect the
+# pre-bench research values from iter 4 pattern analysis (patterns 157, 163,
+# 169) — see .planning/research/algo-reward-shaping.md for that backing.
 
-_MAX_REWARD_DELTA: dict[str, dict[str, float]] = {
+_FALLBACK_MAX_REWARD_DELTA: dict[str, dict[str, float]] = {
     "ppo": {"equity": 0.03, "crypto": 0.0},
     "a2c": {"equity": 0.02, "crypto": 0.05},
     "sac": {"equity": 0.02, "crypto": 0.02},
 }
 _DEFAULT_MAX_DELTA: float = 0.03
 
-# Per-algo cooldown (minimum steps between reward adjustments).
+# Per-algo cooldown (minimum steps between reward adjustments) — config-owned,
+# fallback values below are unchanged from the original research and only
+# apply if config load fails:
 # PPO: 2 rollouts for value function recovery (n_steps=2048, n_envs=6).
 # A2C: 500 steps (~100 short rollouts) for stability window.
 # SAC: 20K steps for replay buffer rotation.
 
-_ADJUSTMENT_COOLDOWN_STEPS: dict[str, int] = {
+_FALLBACK_ADJUSTMENT_COOLDOWN_STEPS: dict[str, int] = {
     "ppo": 24_576,  # 2 × 2048 × 6
     "a2c": 500,
     "sac": 20_000,
@@ -126,8 +131,37 @@ _ADJUSTMENT_COOLDOWN_STEPS: dict[str, int] = {
 _DEFAULT_COOLDOWN: int = 5_000
 
 
+def _load_lever_limits() -> tuple[dict[str, dict[str, float]], dict[str, int]]:
+    """Load L1 lever limits from config YAML, falling back to hardcoded defaults.
+
+    Returns:
+        Tuple of (max_reward_delta, adjustment_cooldown_steps) dicts.
+    """
+    try:
+        cfg = load_config()
+        max_reward_delta = {
+            algo: dict(envs) for algo, envs in cfg.training.bounds.max_reward_delta.items()
+        }
+        adjustment_cooldown_steps = dict(cfg.training.bounds.adjustment_cooldown_steps)
+        return max_reward_delta, adjustment_cooldown_steps
+    except Exception as exc:
+        log.warning("lever_limits_config_load_failed", error=str(exc), fallback="hardcoded")
+        return (
+            {algo: dict(envs) for algo, envs in _FALLBACK_MAX_REWARD_DELTA.items()},
+            dict(_FALLBACK_ADJUSTMENT_COOLDOWN_STEPS),
+        )
+
+
+MAX_REWARD_DELTA: dict[str, dict[str, float]]
+ADJUSTMENT_COOLDOWN_STEPS: dict[str, int]
+MAX_REWARD_DELTA, ADJUSTMENT_COOLDOWN_STEPS = _load_lever_limits()
+
+
 def get_max_reward_delta(algo: str, env: str) -> float:
     """Return the maximum allowed reward weight delta for this algo/env pair.
+
+    D-T2.1: the shipped config default is 0.0 (L1 lever benched) for every
+    algo/env pair — see config/swingrl.yaml training.bounds.max_reward_delta.
 
     Args:
         algo: Algorithm name (ppo, a2c, sac).
@@ -136,7 +170,7 @@ def get_max_reward_delta(algo: str, env: str) -> float:
     Returns:
         Maximum absolute weight change per component. 0.0 means disabled.
     """
-    algo_map = _MAX_REWARD_DELTA.get(algo.lower(), {})
+    algo_map = MAX_REWARD_DELTA.get(algo.lower(), {})
     return algo_map.get(env.lower(), _DEFAULT_MAX_DELTA)
 
 
@@ -149,7 +183,7 @@ def get_adjustment_cooldown(algo: str) -> int:
     Returns:
         Minimum timesteps that must elapse between successive reward adjustments.
     """
-    return _ADJUSTMENT_COOLDOWN_STEPS.get(algo.lower(), _DEFAULT_COOLDOWN)
+    return ADJUSTMENT_COOLDOWN_STEPS.get(algo.lower(), _DEFAULT_COOLDOWN)
 
 
 MIN_WINDOW_YEARS: float = 1.0
