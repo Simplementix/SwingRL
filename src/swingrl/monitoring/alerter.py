@@ -54,7 +54,9 @@ class Alerter:
     """Discord webhook alerter with level-based routing and cooldown.
 
     Critical and warning alerts are sent immediately via Discord webhook.
-    Info alerts are buffered and flushed as a single daily digest embed.
+    Info alerts are buffered and flushed as a single daily digest embed,
+    unless info_immediate=True (low-INFO-volume services like the options
+    collector, which has no digest-flush job).
     Cooldown prevents duplicate critical/warning alerts within a configurable window.
     Thread-safe for concurrent APScheduler calls.
 
@@ -70,6 +72,7 @@ class Alerter:
         db: DatabaseManager | None = None,
         alerts_webhook_url: str | None = None,
         daily_webhook_url: str | None = None,
+        info_immediate: bool = False,
     ) -> None:
         """Initialize alerter.
 
@@ -84,6 +87,9 @@ class Alerter:
                 Falls back to webhook_url if not provided.
             daily_webhook_url: Optional webhook URL for info alerts and daily digest.
                 Falls back to webhook_url if not provided.
+            info_immediate: If True, info alerts post immediately (same path as
+                critical/warning, blue embed, daily-webhook routing, cooldown applies)
+                instead of buffering for a daily digest.
         """
         self._webhook_url: str = webhook_url or ""
         self._alerts_webhook_url: str = alerts_webhook_url or ""
@@ -91,6 +97,7 @@ class Alerter:
         self._cooldown_minutes: int = cooldown_minutes
         self._consecutive_failures_before_alert: int = consecutive_failures_before_alert
         self._db: DatabaseManager | None = db
+        self._info_immediate: bool = info_immediate
         self._info_buffer: deque[dict[str, str]] = deque()
         self._lock: threading.Lock = threading.Lock()
         self._last_alert_times: dict[str, datetime] = {}
@@ -129,7 +136,7 @@ class Alerter:
         """
         msg_hash = self._compute_hash(title, message)
 
-        if level == "info":
+        if level == "info" and not self._info_immediate:
             self._buffer_info(title, message, msg_hash)
             return
 

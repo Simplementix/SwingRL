@@ -91,6 +91,8 @@ def build_app(config_path: str) -> dict[str, Any]:
         cooldown_minutes=config.alerting.alert_cooldown_minutes,
         consecutive_failures_before_alert=config.alerting.consecutive_failures_before_alert,
         db=db,
+        # ~2 INFOs/day and no digest-flush job here — buffered INFO would never send.
+        info_immediate=True,
     )
     client = CboeChainClient(config.options_collector)
     store = OptionsStore(config.options_collector, db=db)
