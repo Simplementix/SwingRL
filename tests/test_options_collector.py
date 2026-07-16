@@ -271,10 +271,14 @@ def test_capture_failure_warning_bypasses_suppression_reaches_webhook(mocker: An
     mock_post.return_value = MagicMock(status_code=204)
     mock_post.return_value.raise_for_status = MagicMock()
 
+    # info_immediate=True matches the collector's real production wiring (PR #23) --
+    # otherwise the info "captured" message buffers for a daily digest instead of
+    # posting, which would be a different bug than the one under test here.
     real_alerter = Alerter(
         webhook_url="https://discord.com/api/webhooks/test/token",
         cooldown_minutes=30,
         consecutive_failures_before_alert=3,
+        info_immediate=True,
     )
     client = MagicMock()
     client.get_option_chain.side_effect = lambda s: (

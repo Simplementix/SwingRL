@@ -107,7 +107,10 @@ class OptionsCollector:
         late_by_s = 0.0
         if scheduled_pull_utc is not None:
             late_by_s = max(0.0, (now - scheduled_pull_utc).total_seconds())
-        if late_by_s > 0 and snapshot_label == "decision":
+        # late_by_s is still stamped into the stored snapshot provenance below regardless
+        # of this tolerance check (parse_chain(late_by_s=...) in _capture_one) -- only the
+        # Discord warning is gated on exceeding the cron-jitter tolerance.
+        if late_by_s > self._oc.integrity.late_warn_s and snapshot_label == "decision":
             result.warnings.append(
                 f"decision snapshot fired late by {late_by_s:.0f}s — market state is "
                 f"NOT the {snapshot_label} moment (lookahead guard, D8)"
@@ -182,24 +185,39 @@ class OptionsCollector:
             result.warnings.append(f"{symbol}: postgres sync failed ({exc}) — reconcile will heal")
 
     def _route_summary_alert(self, result: SnapshotResult) -> None:
+        """Route the summary alert (user design 2026-07-16).
+
+        Any symbol succeeding always sends the info "captured" message (with warnings
+        folded in inline) -- warnings must never suppress or replace it. Any symbol
+        failing additionally sends a warning listing the failures. All-attempted-failed
+        remains critical-only (unchanged).
+        """
         attempted = len(result.succeeded) + len(result.failed)
         if attempted > 0 and not result.succeeded:
             self._alert(
                 "critical", f"Options {result.label}: ALL symbols failed", f"failed={result.failed}"
             )
-        elif result.failed or result.warnings:
+            return
+
+        if result.succeeded:
+            message = f"succeeded={result.succeeded} skipped={result.skipped}"
+            if result.warnings:
+                message += f" | warnings: {'; '.join(result.warnings)}"
+            self._alert("info", f"Options {result.label} captured", message)
+
+        if result.failed:
+            # bypass_suppression=True: a capture failure is same-day, un-backfillable
+            # data loss (spec §13) -- it must reach Discord on the FIRST occurrence,
+            # not wait for consecutive_failures_before_alert identical days.
             self._alert(
                 "warning",
                 f"Options {result.label} completed with issues",
                 f"failed={result.failed} warnings={result.warnings}",
-            )
-        else:
-            self._alert(
-                "info",
-                f"Options {result.label} captured",
-                f"succeeded={result.succeeded} skipped={result.skipped}",
+                bypass_suppression=True,
             )
 
-    def _alert(self, level: AlertLevel, title: str, message: str) -> None:
+    def _alert(
+        self, level: AlertLevel, title: str, message: str, *, bypass_suppression: bool = False
+    ) -> None:
         if self._alerter is not None:
-            self._alerter.send_alert(level, title, message)
+            self._alerter.send_alert(level, title, message, bypass_suppression=bypass_suppression)
