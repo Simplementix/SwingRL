@@ -590,9 +590,13 @@ class TestAttributionIdentity:
         prev_iter_cps_v1: float | None = 0.034,
     ) -> MemoryEpochCallback:
         """Create a callback where advice is accepted (big enough delta) with DB url."""
+        # Minor (Task 4 review): use a MagicMock (not a bare lambda) so callers can
+        # assert it was invoked with the expected (algo, env) pair — the callback's
+        # run_id ("equity_ppo_fold{N}") parses to algo="ppo", env="equity".
+        mock_get_max_reward_delta = MagicMock(return_value=0.03)
         monkeypatch.setattr(
             "swingrl.memory.training.bounds.get_max_reward_delta",
-            lambda algo, env: 0.03,
+            mock_get_max_reward_delta,
         )
         client = _make_mock_memory_client()
         # Return weights with a delta large enough to exceed the 0.01 min
@@ -634,6 +638,7 @@ class TestAttributionIdentity:
             "protected_winner_folds": [],
             "prev_iter_cps_v1": prev_iter_cps_v1,
         }
+        cb._test_max_delta_mock = mock_get_max_reward_delta  # noqa: SLF001
         return cb
 
     def test_adjustment_trigger_row_has_attribution_tail(
@@ -644,6 +649,10 @@ class TestAttributionIdentity:
             monkeypatch, fold_number=3, iteration=6, prev_iter_cps_v1=0.034
         )
         cb._query_epoch_advice()  # noqa: SLF001
+
+        # Minor (Task 4 review): confirm the lever check was actually exercised for
+        # this callback's (algo, env) pair, not just returning a stubbed constant.
+        cb._test_max_delta_mock.assert_called_once_with("ppo", "equity")  # noqa: SLF001
 
         assert len(cb._adjustment_trigger_queue) == 1, (
             "Expected one trigger row in queue after accepted advice"
@@ -694,6 +703,77 @@ class TestAttributionIdentity:
 
         row = cb._adjustment_trigger_queue[0]
         assert row[-1] is None, f"cps_before should be None when no prior iter, got {row[-1]}"
+
+
+# ---------------------------------------------------------------------------
+# TestL1BenchDefaultVetoesEndToEnd
+# ---------------------------------------------------------------------------
+
+
+class TestL1BenchDefaultVetoesEndToEnd:
+    """Finding 2 (Task 4 review): prove the shipped all-zero default actually vetoes.
+
+    TestAttributionIdentity deliberately monkeypatches get_max_reward_delta back to
+    a nonzero value to exercise attribution mechanics for a re-earned lever. Nothing
+    previously proved the OPPOSITE: that the real shipped config (all algo/env pairs
+    at 0.0, config/swingrl.yaml training.bounds.max_reward_delta) actually vetoes a
+    reward-weight adjustment at the enforcement site in _query_epoch_advice(). This
+    test drives that path with nothing monkeypatched — get_max_reward_delta and
+    get_adjustment_cooldown resolve through the real load_config().
+    """
+
+    def test_default_config_vetoes_nonzero_delta_advice(self) -> None:
+        """D-T2.1: shipped max_reward_delta=0.0 vetoes the reward-weight adjustment."""
+        client = _make_mock_memory_client()
+        client.epoch_advice.return_value = {
+            "reward_weights": {
+                "profit": 0.62,  # was 0.50 -> delta 0.12, well above the 0.01 no-op floor
+                "sharpe": 0.20,
+                "drawdown": 0.12,
+                "turnover": 0.06,
+            },
+            "stop_training": False,
+            "rationale": "test",
+            "provider": "test",
+            "model": "test",
+        }
+        wrapper = _make_mock_wrapper()
+        original_weights = dict(wrapper.weights)
+        cb = MemoryEpochCallback(
+            memory_client=client,
+            wrapper=wrapper,
+            run_id="equity_ppo_fold3",
+            algo="PPO",
+            env="equity",
+            verbose=0,
+            advice_enabled=True,
+            iteration=6,
+            fold_number=3,
+            database_url="postgresql://fake:fake@localhost/fake",  # pragma: allowlist secret
+        )
+        mock_logger = MagicMock()
+        mock_logger.name_to_value = {}
+        cb.model = MagicMock()
+        cb.model.logger = mock_logger
+        cb.num_timesteps = 0
+        cb._epoch = cb._cadence  # noqa: SLF001  # storage epoch
+        # Pre-inject fold context to bypass the lazy DB load
+        cb._fold_context = {  # noqa: SLF001
+            "fold_role": "neutral",
+            "chronic_failure_folds": [],
+            "protected_winner_folds": [],
+            "prev_iter_cps_v1": 0.034,
+        }
+
+        cb._query_epoch_advice()  # noqa: SLF001
+
+        assert cb._adjustment_trigger_queue == [], (
+            "shipped default (0.0) must veto: no trigger row should be queued"
+        )
+        wrapper.update_weights.assert_not_called()
+        assert wrapper.weights == original_weights, (
+            "wrapper weights must be untouched when the L1 lever is benched"
+        )
 
 
 # ---------------------------------------------------------------------------

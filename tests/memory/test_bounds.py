@@ -5,7 +5,12 @@ TRAIN-01, TRAIN-02: Bounds enforcement for LLM hyperparameter suggestions.
 
 from __future__ import annotations
 
+import textwrap
+from pathlib import Path
+
 import pytest
+
+from swingrl.config.schema import load_config
 
 
 class TestClampRunConfig:
@@ -194,6 +199,47 @@ class TestLeverLimits:
         from swingrl.memory.training.bounds import get_max_reward_delta
 
         assert get_max_reward_delta("PPO", "EQUITY") == 0.0
+
+    def test_partial_override_absent_pairs_stay_benched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Finding 1 (Task 4 review, CRITICAL): partial override must not un-bench pairs.
+
+        max_reward_delta is a plain dict field — pydantic REPLACES the whole dict on
+        override, it does not deep-merge. A yaml override that only sets ppo/equity
+        must leave every OTHER (algo, env) pair BENCHED (0.0), never silently
+        re-enabled at the old fail-open fallback (0.03). D-T2.1: an absent pair
+        means the operator never re-earned it — absent must mean benched.
+        """
+        import swingrl.memory.training.bounds as bounds_mod
+
+        override_yaml = tmp_path / "partial_lever_override.yaml"
+        override_yaml.write_text(
+            textwrap.dedent("""\
+                trading_mode: paper
+                training:
+                  bounds:
+                    max_reward_delta:
+                      ppo:
+                        equity: 0.03
+            """)
+        )
+        cfg = load_config(override_yaml)
+        # Sanity: pydantic replaced the whole dict wholesale — a2c/sac are gone.
+        assert cfg.training.bounds.max_reward_delta == {"ppo": {"equity": 0.03}}
+
+        monkeypatch.setattr(bounds_mod, "load_config", lambda: cfg)
+        max_reward_delta, adjustment_cooldown_steps = bounds_mod._load_lever_limits()
+        monkeypatch.setattr(bounds_mod, "MAX_REWARD_DELTA", max_reward_delta)
+        monkeypatch.setattr(bounds_mod, "ADJUSTMENT_COOLDOWN_STEPS", adjustment_cooldown_steps)
+
+        assert bounds_mod.get_max_reward_delta("ppo", "equity") == 0.03
+        assert bounds_mod.get_max_reward_delta("a2c", "crypto") == 0.0, (
+            "absent (a2c, crypto) pair must be benched, not fall back to 0.03"
+        )
+        assert bounds_mod.get_max_reward_delta("sac", "equity") == 0.0, (
+            "absent (sac, equity) pair must be benched, not fall back to 0.03"
+        )
 
 
 class TestMemoryClientIngest:
