@@ -70,6 +70,30 @@ HYPERPARAMS: dict[str, dict[str, Any]] = {
 
 SEED_MAP: dict[str, int] = {"ppo": 42, "a2c": 43, "sac": 44}
 
+
+def fold_seed(algo_name: str, fold_number: int) -> int:
+    """Compute a deterministic per-fold, per-algo training seed (N9).
+
+    Combines ``SEED_MAP[algo_name]`` with the fold number so that replaying
+    the same fold in a later season reproduces the exact same seed -- the
+    fold's advice/no-advice lever becomes the only variable in same-fold
+    season-over-season comparisons (D-T2.5). Per-algo ranges are disjoint
+    (ppo: 42000+, a2c: 43000+, sac: 44000+), so seeds never collide across
+    algorithms even for the same ``fold_number``.
+
+    Args:
+        algo_name: Algorithm name ("ppo", "a2c", or "sac").
+        fold_number: Sequential fold index (0-based) within the walk-forward run.
+
+    Returns:
+        Deterministic seed: ``SEED_MAP[algo_name] * 1000 + fold_number``.
+
+    Raises:
+        KeyError: If algo_name is not in SEED_MAP.
+    """
+    return SEED_MAP[algo_name] * 1000 + fold_number
+
+
 ALGO_MAP: dict[str, type[PPO] | type[A2C] | type[SAC]] = {
     "ppo": PPO,
     "a2c": A2C,
@@ -93,6 +117,7 @@ class TrainingResult:
     converged_at_step: int | None
     total_timesteps: int
     advice_stats: dict[str, Any] | None = None
+    seed: int | None = None
 
 
 class TrainingOrchestrator:
@@ -173,10 +198,22 @@ class TrainingOrchestrator:
             iteration: Training iteration number for pattern presentation tracking.
             fold_number: Sequential fold index (0-based) within the walk-forward run.
                 Passed into MemoryEpochCallback for per-fold advice context assembly
-                and attribution column writes.
+                and attribution column writes. Also drives per-fold seed pinning
+                (D-T2.5, M9, N9): when provided, ``fold_seed(algo_name,
+                fold_number)`` seeds the model AND the training VecEnv, and
+                ``fold_seed(...) + 1`` (a distinct stream) seeds the eval VecEnv
+                used internally by EvalCallback's early-stop -- so the fold is
+                the only variable across season-over-season comparisons.
+                ``fold_number=None`` (ad-hoc runs) keeps today's per-algo
+                ``SEED_MAP`` constants; this is an opt-in behavior change per
+                call site. Advice-enabled folds are inherently irreproducible
+                (LLM calls are not seeded) -- pinning holds for coach-free
+                folds only; seed-pair replication is the fallback for
+                advice-enabled folds (A25 pre-statement).
 
         Returns:
-            TrainingResult with paths and metadata.
+            TrainingResult with paths and metadata (including the seed actually
+            used, in ``TrainingResult.seed``).
 
         Raises:
             ModelError: If smoke tests fail after training.
@@ -262,7 +299,30 @@ class TrainingOrchestrator:
             params["buffer_size"] = self._config.training.sac_buffer_size
         if hyperparams_override:
             params.update(hyperparams_override)
-        seed = SEED_MAP[algo_name]
+
+        # Per-fold seed pinning (D-T2.5, M9, N9). fold_number=None (ad-hoc runs)
+        # keeps today's per-algo SEED_MAP constants -- opt-in per call site.
+        eval_seed: int | None = None
+        if fold_number is not None:
+            seed = fold_seed(algo_name, fold_number)
+            eval_seed = seed + 1
+            # Explicit, not just relying on SB3's internal set_random_seed(seed)
+            # auto-seeding self.env: the eval env is never passed to the algo
+            # constructor (EvalCallback owns a separate eval_env attribute), so
+            # it would otherwise never be seeded at all (M9).
+            vec_env.seed(seed)
+            vec_env.action_space.seed(seed)
+            eval_vec_env.seed(eval_seed)
+            eval_vec_env.action_space.seed(eval_seed)
+            log.info(
+                "seed_pinned",
+                algo_name=algo_name,
+                fold_number=fold_number,
+                seed=seed,
+                eval_seed=eval_seed,
+            )
+        else:
+            seed = SEED_MAP[algo_name]
 
         tb_log = str(self._logs_dir / "tensorboard")
 
@@ -378,6 +438,7 @@ class TrainingOrchestrator:
                 converged_at_step=converged_at,
                 total_timesteps=total_timesteps,
                 advice_stats=_advice_stats,
+                seed=seed,
             )
         finally:
             vec_env.close()
