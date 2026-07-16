@@ -314,9 +314,19 @@ class GlobalCircuitBreaker:
 
         Sums each environment's peak ``total_value`` and floors at total initial
         capital. Independent per-environment peaks may not have coincided, so the
-        sum is a conservative (never-understated) HWM — the safe direction for a
-        capital-preservation breaker, since it can only make a drawdown look
-        larger, never smaller.
+        sum can overstate the true combined peak. That overstatement affects the
+        two ``check_combined`` branches differently — it is NOT uniformly
+        conservative:
+
+        - **Drawdown branch** (``1 − total/hwm``): a larger HWM makes drawdown
+          look larger, so this branch is conservative — it can only trip earlier
+          or equal, never later.
+        - **Daily-loss branch** (``|daily_pnl|/hwm``): the same HWM sits in the
+          *denominator*, so a larger HWM makes the loss fraction look *smaller* —
+          this branch can trip *later* than a true combined HWM would, not
+          earlier. The effect is bounded by how far independent per-env peaks
+          diverge, and is a secondary guard behind the drawdown branch and the
+          unaffected per-env checks.
 
         Returns:
             Combined high-water mark as float.

@@ -280,6 +280,50 @@ class TestPositionTrackerMarkToMarket:
         assert pnl == pytest.approx(470.0 - 500.0)  # -30.0 vs prior DAY
         assert pnl != pytest.approx(470.0 - 460.0)  # NOT +10.0 vs prior cycle
 
+    def test_daily_pnl_et_boundary_late_evening_now(
+        self, position_tracker: PositionTracker, mock_db: DatabaseManager
+    ) -> None:
+        """C1 (c) boundary: ``now`` at 22:30 ET must not roll "today" to tomorrow's UTC date.
+
+        Mirrors PR #23's reader-path boundary test
+        (``test_finds_todays_snapshot_written_late_evening_et``), applied to the new
+        writer-side ``compute_daily_pnl`` path.
+
+        22:30 ET on 2026-07-15 is 02:30 UTC on 2026-07-16. A naive ``now.date()``
+        (dropping the ``astimezone(ZoneInfo("America/New_York"))`` conversion) would
+        read "today" as 2026-07-16, which shifts the "< today" prior-day cutoff to
+        also admit *this morning's* 2026-07-15 snapshot as "prior" -- since it is
+        more recent than yesterday's close, ``ORDER BY timestamp DESC LIMIT 1`` would
+        pick it as the baseline instead of the true prior-day snapshot. This test
+        fails under that regression (found via CI red 2026-07-15, same root cause as
+        ``TestCBTimezoneDateBoundary``).
+        """
+        from zoneinfo import ZoneInfo
+
+        et = ZoneInfo("America/New_York")
+        prior_day = datetime(2026, 7, 14, 16, 0, tzinfo=et)  # yesterday's close -- true baseline
+        earlier_today = datetime(2026, 7, 15, 9, 30, tzinfo=et)  # this morning's cycle
+        now_et = datetime(2026, 7, 15, 22, 30, tzinfo=et)  # inside the 20:00-24:00 ET window
+        now = now_et.astimezone(UTC)  # 2026-07-16T02:30:00Z -- injectable `now` is UTC-aware
+
+        with mock_db.connection() as conn:
+            conn.execute(
+                "INSERT INTO portfolio_snapshots (timestamp, environment, total_value, "
+                "cash_balance, high_water_mark, daily_pnl, drawdown_pct) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (prior_day.isoformat(), "equity", 500.0, 0.0, 500.0, 0.0, 0.0),
+            )
+            conn.execute(
+                "INSERT INTO portfolio_snapshots (timestamp, environment, total_value, "
+                "cash_balance, high_water_mark, daily_pnl, drawdown_pct) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (earlier_today.isoformat(), "equity", 460.0, 0.0, 500.0, -40.0, 0.08),
+            )
+
+        pnl = position_tracker.compute_daily_pnl("equity", 470.0, now=now)
+        assert pnl == pytest.approx(470.0 - 500.0)  # -30.0 vs the true prior-DAY baseline
+        assert pnl != pytest.approx(470.0 - 460.0)  # NOT +10.0 vs this morning's cycle
+
     def test_drawdown_breaker_trips_on_genuine_fallen_value(
         self, position_tracker: PositionTracker, mock_db: DatabaseManager, exec_config: object
     ) -> None:
