@@ -1,8 +1,9 @@
 """Memory epoch callback for training-time event ingestion and LLM advice.
 
 MemoryEpochCallback fires on every rollout end and:
-1. Stores epoch snapshots to memory every 5th epoch or on notable events
-   (KL spike, MDD breach)
+1. Stores epoch snapshots to memory on a per-algo cadence or on a rate/hard-capped
+   notable-event trigger (kl_spike, mdd_breach, trade_shy, churning, numeric_anomaly
+   -- spec §4.10, D-T3.19)
 2. Queries LLM for epoch advice (reward weight adjustments) — fail-open
 3. Implements two-pass adjustment tracking: ingests trigger immediately,
    ingests outcome 10 epochs later
