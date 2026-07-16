@@ -13,8 +13,8 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-from swingrl.execution.model_paths import active_model_paths
 
+from swingrl.execution.model_paths import active_model_paths
 from swingrl.execution.pipeline import ExecutionPipeline
 from swingrl.shadow.lifecycle import ModelLifecycle
 from swingrl.training.ensemble import DEFAULT_ENSEMBLE_WEIGHT, EnsembleBlender
