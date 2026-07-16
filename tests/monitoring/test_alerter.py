@@ -135,6 +135,42 @@ class TestInfoAlert:
 
         mock_post.assert_not_called()
 
+    def test_info_immediate_sends_blue_embed(self, webhook_url: str, mocker: Any) -> None:
+        """OPT-ALERT-1: info_immediate=True posts info at once with color 0x3498DB."""
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+        alerter = Alerter(
+            webhook_url=webhook_url,
+            cooldown_minutes=30,
+            consecutive_failures_before_alert=1,
+            info_immediate=True,
+        )
+
+        alerter.send_alert("info", "Info Title", "Info message")
+
+        mock_post.assert_called_once()
+        payload = mock_post.call_args[1]["json"]
+        assert payload["embeds"][0]["color"] == 0x3498DB
+
+    def test_info_immediate_does_not_buffer(self, webhook_url: str, mocker: Any) -> None:
+        """OPT-ALERT-2: immediate info never lands in the digest buffer (no double-send)."""
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+        alerter = Alerter(
+            webhook_url=webhook_url,
+            cooldown_minutes=30,
+            consecutive_failures_before_alert=1,
+            info_immediate=True,
+        )
+        alerter.send_alert("info", "Info Title", "Info message")
+        mock_post.reset_mock()
+
+        alerter.send_daily_digest()
+
+        mock_post.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Test: Daily digest

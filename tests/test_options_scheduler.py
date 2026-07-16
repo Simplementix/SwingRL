@@ -250,3 +250,23 @@ def test_health_check_flags_today_after_due(monkeypatch) -> None:
     # 21:45 ET on 2026-07-14 = 01:45 UTC 2026-07-15 — past eod pull 16:35 + 18000s grace.
     run_health_check(cfg, collector, store, alerter, now=datetime(2026, 7, 15, 1, 45, tzinfo=UTC))
     assert any(c.args[0] == "critical" for c in alerter.send_alert.call_args_list)
+
+
+def test_build_app_wires_info_immediate_alerter(tmp_config, monkeypatch) -> None:
+    """OPT-SCHED-13: build_app passes info_immediate=True — collector INFOs post at once.
+
+    The collector has no digest-flush job, so buffered INFO alerts would never reach
+    Discord (found live at T16 first capture, 2026-07-15).
+    """
+    import scripts.collector_main as cm
+
+    alerter_cls = MagicMock()
+    monkeypatch.setattr(cm, "Alerter", alerter_cls)
+    monkeypatch.setattr(cm, "DatabaseManager", MagicMock())
+    monkeypatch.setattr(cm, "CboeChainClient", MagicMock())
+    monkeypatch.setattr(cm, "OptionsStore", MagicMock())
+    monkeypatch.setattr(cm, "OptionsCollector", MagicMock())
+
+    cm.build_app(str(tmp_config))
+
+    assert alerter_cls.call_args.kwargs["info_immediate"] is True
