@@ -207,6 +207,117 @@ class TestPositionTrackerRecordSnapshot:
         assert row["drawdown_pct"] == pytest.approx(1 - 400.0 / 420.0)
 
 
+class TestPositionTrackerMarkToMarket:
+    """Review C1/M4: real mark-to-market valuation with derived cash.
+
+    ``total_value`` used to be the previous snapshot copied forward, so the
+    drawdown / daily-loss breakers compared against a value that never moved.
+    ``compute_portfolio_value`` marks live positions to the supplied price map
+    and derives cash from the trades ledger (never a stored running balance).
+    """
+
+    def test_value_moves_when_prices_move_no_fills(
+        self, position_tracker: PositionTracker, mock_db: DatabaseManager
+    ) -> None:
+        """C1 (a): value tracks position price with no new fills; cash = initial capital."""
+        with mock_db.connection() as conn:
+            conn.execute(
+                "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                ("SPY", "equity", 2.0, 100.0, 100.0, 0.0, "2026-03-09T10:00:00Z"),
+            )
+        # No trades → cash is the config initial capital (400.0), never a stored balance.
+        v_low = position_tracker.compute_portfolio_value("equity", {"SPY": 100.0})
+        v_high = position_tracker.compute_portfolio_value("equity", {"SPY": 120.0})
+        assert v_low == pytest.approx(2.0 * 100.0 + 400.0)  # 600.0
+        assert v_high == pytest.approx(2.0 * 120.0 + 400.0)  # 640.0
+        assert v_high > v_low  # value MOVES with price, no fills involved
+
+    def test_cash_reflects_buys_sells_and_commissions(
+        self, position_tracker: PositionTracker, mock_db: DatabaseManager
+    ) -> None:
+        """C1/M4 (b): derived cash = initial − buys + sells − commissions."""
+        with mock_db.connection() as conn:
+            conn.execute(
+                "INSERT INTO trades (trade_id, timestamp, symbol, side, quantity, "
+                "price, commission, environment) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                ("t1", "2026-03-09T10:00:00Z", "SPY", "buy", 1.0, 100.0, 0.6, "equity"),
+            )
+            conn.execute(
+                "INSERT INTO trades (trade_id, timestamp, symbol, side, quantity, "
+                "price, commission, environment) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                ("t2", "2026-03-09T11:00:00Z", "SPY", "sell", 0.5, 110.0, 0.3, "equity"),
+            )
+        # No positions → value is pure derived cash.
+        expected_cash = 400.0 - (1.0 * 100.0) + (0.5 * 110.0) - (0.6 + 0.3)  # 354.1
+        value = position_tracker.compute_portfolio_value("equity", {})
+        assert value == pytest.approx(expected_cash)
+
+    def test_daily_pnl_compares_prior_day_not_prior_cycle(
+        self, position_tracker: PositionTracker, mock_db: DatabaseManager
+    ) -> None:
+        """C1 (c): daily P&L baseline is the prior ET *day*, not the prior cycle."""
+        from zoneinfo import ZoneInfo
+
+        et = ZoneInfo("America/New_York")
+        now = datetime(2026, 7, 15, 14, 0, tzinfo=et)
+        prior_day = datetime(2026, 7, 14, 16, 0, tzinfo=et)  # yesterday's close
+        earlier_today = datetime(2026, 7, 15, 9, 30, tzinfo=et)  # this morning's cycle
+        with mock_db.connection() as conn:
+            conn.execute(
+                "INSERT INTO portfolio_snapshots (timestamp, environment, total_value, "
+                "cash_balance, high_water_mark, daily_pnl, drawdown_pct) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (prior_day.isoformat(), "equity", 500.0, 0.0, 500.0, 0.0, 0.0),
+            )
+            conn.execute(
+                "INSERT INTO portfolio_snapshots (timestamp, environment, total_value, "
+                "cash_balance, high_water_mark, daily_pnl, drawdown_pct) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (earlier_today.isoformat(), "equity", 460.0, 0.0, 500.0, -40.0, 0.08),
+            )
+        pnl = position_tracker.compute_daily_pnl("equity", 470.0, now=now)
+        assert pnl == pytest.approx(470.0 - 500.0)  # -30.0 vs prior DAY
+        assert pnl != pytest.approx(470.0 - 460.0)  # NOT +10.0 vs prior cycle
+
+    def test_drawdown_breaker_trips_on_genuine_fallen_value(
+        self, position_tracker: PositionTracker, mock_db: DatabaseManager, exec_config: object
+    ) -> None:
+        """C1 (d): a genuinely fallen mark-to-market value trips the drawdown breaker."""
+        from swingrl.execution.risk.circuit_breaker import CBState, CircuitBreaker
+
+        with mock_db.connection() as conn:
+            conn.execute(
+                "INSERT INTO portfolio_snapshots (timestamp, environment, total_value, "
+                "cash_balance, high_water_mark, daily_pnl, drawdown_pct) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                ("2026-03-09T10:00:00Z", "equity", 400.0, 0.0, 400.0, 0.0, 0.0),
+            )
+            conn.execute(
+                "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                ("SPY", "equity", 4.0, 100.0, 100.0, 0.0, "2026-03-09T10:00:00Z"),
+            )
+            conn.execute(
+                "INSERT INTO trades (trade_id, timestamp, symbol, side, quantity, "
+                "price, commission, environment) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                ("b1", "2026-03-09T10:00:00Z", "SPY", "buy", 4.0, 100.0, 0.0, "equity"),
+            )
+        cb = CircuitBreaker(environment="equity", db=mock_db, config=exec_config)
+        hwm = position_tracker.get_high_water_mark("equity")
+        assert hwm == pytest.approx(400.0)
+
+        # Flat price → value at HWM → no drawdown → breaker stays ACTIVE.
+        v_flat = position_tracker.compute_portfolio_value("equity", {"SPY": 100.0})
+        assert v_flat == pytest.approx(400.0)
+        assert cb.check_and_update(v_flat, hwm, 0.0) != CBState.HALTED
+
+        # Price falls 12% → value genuinely falls below the 10% drawdown threshold.
+        v_fallen = position_tracker.compute_portfolio_value("equity", {"SPY": 88.0})
+        assert v_fallen == pytest.approx(352.0)
+        assert cb.check_and_update(v_fallen, hwm, 0.0) == CBState.HALTED
+
+
 class TestPositionTrackerPortfolioStateArray:
     """PAPER-05: Portfolio state arrays match ObservationAssembler format."""
 

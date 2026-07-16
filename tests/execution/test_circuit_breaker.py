@@ -257,3 +257,83 @@ class TestGlobalCircuitBreaker:
             daily_pnls={"equity": -10.0, "crypto": -5.0},
         )
         assert result is True  # triggered
+
+
+class TestGlobalCBHwmRestartSurvival:
+    """Review C1: global high-water mark is read from persisted snapshots.
+
+    The old GlobalCircuitBreaker held the combined HWM only in process memory
+    (``self._total_hwm``), so a restart reset it to initial capital and a real
+    drawdown from a prior peak went undetected. The HWM must be reconstructed
+    from ``MAX(total_value)`` per environment across persisted snapshots.
+    """
+
+    def test_global_hwm_survives_restart_from_snapshots(
+        self,
+        mock_db: DatabaseManager,
+        exec_config: SwingRLConfig,
+    ) -> None:
+        """C1 (e): a fresh GlobalCircuitBreaker re-reads the combined peak and trips."""
+        from swingrl.execution.risk.circuit_breaker import (
+            CircuitBreaker,
+            GlobalCircuitBreaker,
+        )
+
+        # Persisted peaks: equity 500 + crypto 60 = combined HWM 560 (> initial 447).
+        with mock_db.connection() as conn:
+            conn.execute(
+                "INSERT INTO portfolio_snapshots (timestamp, environment, total_value, "
+                "cash_balance, high_water_mark, daily_pnl, drawdown_pct) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                ("2026-03-09T10:00:00Z", "equity", 500.0, 0.0, 500.0, 0.0, 0.0),
+            )
+            conn.execute(
+                "INSERT INTO portfolio_snapshots (timestamp, environment, total_value, "
+                "cash_balance, high_water_mark, daily_pnl, drawdown_pct) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                ("2026-03-09T10:00:00Z", "crypto", 60.0, 0.0, 60.0, 0.0, 0.0),
+            )
+
+        # Fresh instances → no in-memory peak; must reconstruct 560 from snapshots.
+        eq_cb = CircuitBreaker(environment="equity", db=mock_db, config=exec_config)
+        cr_cb = CircuitBreaker(environment="crypto", db=mock_db, config=exec_config)
+        global_cb = GlobalCircuitBreaker(
+            circuit_breakers={"equity": eq_cb, "crypto": cr_cb},
+            config=exec_config,
+            db=mock_db,
+        )
+
+        # Combined value 470 (equity 420 + crypto 50): 16.1% below the 560 peak,
+        # which exceeds the 15% global drawdown limit → trips.
+        # Against initial capital (447) 470 shows a gain and would NOT trip, so a
+        # pass proves the peak was re-read from persisted snapshots, not reset.
+        result = global_cb.check_combined(
+            portfolio_values={"equity": 420.0, "crypto": 50.0},
+            daily_pnls={"equity": 0.0, "crypto": 0.0},
+        )
+        assert result is True
+
+    def test_global_no_snapshots_uses_initial_capital(
+        self,
+        mock_db: DatabaseManager,
+        exec_config: SwingRLConfig,
+    ) -> None:
+        """C1 (e): with no snapshots the HWM floors at initial capital (no false trip)."""
+        from swingrl.execution.risk.circuit_breaker import (
+            CircuitBreaker,
+            GlobalCircuitBreaker,
+        )
+
+        eq_cb = CircuitBreaker(environment="equity", db=mock_db, config=exec_config)
+        cr_cb = CircuitBreaker(environment="crypto", db=mock_db, config=exec_config)
+        global_cb = GlobalCircuitBreaker(
+            circuit_breakers={"equity": eq_cb, "crypto": cr_cb},
+            config=exec_config,
+            db=mock_db,
+        )
+        # 470 > initial 447 → a gain, no drawdown → must not trigger.
+        result = global_cb.check_combined(
+            portfolio_values={"equity": 420.0, "crypto": 50.0},
+            daily_pnls={"equity": 0.0, "crypto": 0.0},
+        )
+        assert result is False
