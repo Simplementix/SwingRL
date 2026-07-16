@@ -29,6 +29,31 @@ def crypto_cb(mock_db: DatabaseManager, exec_config: SwingRLConfig) -> CircuitBr
     return CircuitBreaker(environment="crypto", db=mock_db, config=exec_config)
 
 
+class TestCBTimezoneDateBoundary:
+    """PAPER-04: business-day cooldown must not conflate ET and UTC calendar dates.
+
+    pg16's server timezone is America/New_York, so psycopg returns TIMESTAMPTZ values
+    tz-aware in ET. Between 20:00 and 24:00 ET the UTC calendar has already rolled to
+    the next day; comparing an ET-rendered .date() against now(UTC).date() counted a
+    phantom business day, instantly ramping a fresh halt (found via CI red 2026-07-15).
+    """
+
+    def test_fresh_halt_in_late_evening_counts_zero_business_days(self) -> None:
+        """PAPER-04: fraction is 0.0 one minute after a 22:00 ET trigger."""
+        from unittest.mock import MagicMock
+        from zoneinfo import ZoneInfo
+
+        from swingrl.config.schema import SwingRLConfig
+        from swingrl.execution.risk.circuit_breaker import CircuitBreaker
+
+        cb = CircuitBreaker(environment="equity", db=MagicMock(), config=SwingRLConfig())
+        # As returned by psycopg from a TIMESTAMPTZ under an ET server timezone:
+        triggered_at = datetime(2026, 7, 15, 22, 0, tzinfo=ZoneInfo("America/New_York"))
+        now = triggered_at.astimezone(UTC) + timedelta(minutes=1)  # 02:01 UTC 2026-07-16
+
+        assert cb._business_day_fraction(triggered_at, now) == pytest.approx(0.0)
+
+
 class TestCBStates:
     """PAPER-04: Circuit breaker has 3 states."""
 

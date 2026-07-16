@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -119,6 +119,30 @@ class TestPositionTrackerDailyPnl:
             )
         pnl = position_tracker.get_daily_pnl("equity")
         assert pnl == pytest.approx(-5.0)
+
+    def test_finds_todays_snapshot_written_late_evening_et(
+        self, position_tracker: PositionTracker, mock_db: DatabaseManager
+    ) -> None:
+        """PAPER-03: a 22:30 ET snapshot is found for that ET trading day.
+
+        22:30 ET = 02:30 UTC next day; the UTC-date vs session-timezone-date mismatch
+        made the lookup miss and silently return 0.0 (found via CI red 2026-07-15).
+        """
+        from zoneinfo import ZoneInfo
+
+        instant = datetime(2026, 7, 15, 22, 30, tzinfo=ZoneInfo("America/New_York"))
+        with mock_db.connection() as conn:
+            conn.execute(
+                "INSERT INTO portfolio_snapshots "
+                "(timestamp, environment, total_value, cash_balance, high_water_mark, "
+                "daily_pnl, drawdown_pct) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (instant.isoformat(), "equity", 410.0, 100.0, 420.0, -7.0, 0.024),
+            )
+        pnl = position_tracker.get_daily_pnl(
+            "equity", now=instant.astimezone(UTC) + timedelta(minutes=1)
+        )
+        assert pnl == pytest.approx(-7.0)
 
 
 class TestPositionTrackerExposure:
