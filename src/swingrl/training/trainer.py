@@ -355,19 +355,12 @@ class TrainingOrchestrator:
             # Run smoke tests
             self._run_smoke_tests(model, vec_env_norm, env_name, algo_name)
 
-            # Check if training stopped early (convergence callback OR LLM stop_training)
+            # Check if training stopped early (convergence callback only — U1 spec §2.2:
+            # LLM stop_training advice is never actuated, so converged_at means
+            # convergence only).
             converged_at = None
             if convergence_cb._stagnation_count >= convergence_cb._patience:
                 converged_at = model.num_timesteps
-            elif getattr(model, "stop_training", False):
-                converged_at = model.num_timesteps
-                log.info(
-                    "training_stopped_by_llm",
-                    env_name=env_name,
-                    algo_name=algo_name,
-                    stopped_at_step=converged_at,
-                    total_configured=total_timesteps,
-                )
 
             log.info(
                 "training_complete",

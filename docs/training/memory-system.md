@@ -325,7 +325,13 @@ The fold context is lazy-loaded once per fold from PostgreSQL with a 5-second ti
 }
 ```
 
-The `stop_training` flag, if `True`, lets the LLM signal the trainer to abort the current fold's training loop.
+The `stop_training` flag is **advice-only** (U1, spec §2.2, Task 3): the runtime never
+actuates it. Evidence: 0 stop requests in 850,430 live epochs — an unenumerated,
+never-used influence path with no case for keeping actuation. When the LLM sets
+`stop_training=True`, `_query_epoch_advice` logs `llm_stop_request_advice_only` and
+appends `{epoch, timestep, pct_complete, reason}` to `self._stop_requests` for Task 17's
+future intent writer; `model.stop_training` is never set and `_on_step()` always returns
+`True`, so the fold always runs to completion.
 
 **Side effects:** Same `pattern_presentations` write per pattern shown (`query.py:1237`); `llm_audit_log` with `call_type='epoch_advice'`. Audit row has `fold_number` and `is_control_fold` parsed from the run_id (`query.py:1186-1189, 1220-1231`). When advice is accepted and weights are updated, a row is appended to `reward_adjustments` including 6 attribution columns:
 

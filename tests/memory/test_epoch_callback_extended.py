@@ -770,6 +770,10 @@ class TestStopTrainingAdviceOnly:
         # progress-floor comparison in _query_epoch_advice. Pin it explicitly so
         # progress >= MIN_TRAINING_PROGRESS and the real branch under test executes.
         cb.model._total_timesteps = 1000  # noqa: SLF001
+        # Real SB3 models start with stop_training=False; a bare MagicMock would
+        # auto-vivify this attr to a truthy Mock on first access, which would make
+        # "never actuated" trivially unverifiable. Pin the real initial state.
+        cb.model.stop_training = False
         return cb
 
     def test_stop_training_advice_is_never_actuated(self) -> None:

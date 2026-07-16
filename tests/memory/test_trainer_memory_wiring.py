@@ -154,7 +154,7 @@ class TestEpochCallbackInit:
         assert cb._advice_failed_once is False  # noqa: SLF001
 
     def test_on_step_returns_true_when_not_stopped(self) -> None:
-        """TRAIN-07: _on_step() returns True when stop_training is not set."""
+        """TRAIN-07: _on_step() returns True when model.stop_training is not set."""
         from unittest.mock import MagicMock
 
         wrapper = MemoryVecRewardWrapper(_make_mock_venv())
@@ -170,8 +170,13 @@ class TestEpochCallbackInit:
         cb.model.stop_training = False
         assert cb._on_step() is True  # noqa: SLF001
 
-    def test_on_step_returns_false_when_stop_training(self) -> None:
-        """TRAIN-07: _on_step() returns False when stop_training is set."""
+    def test_on_step_returns_true_even_if_model_stop_training_set(self) -> None:
+        """U1 (spec §2.2): _on_step() ignores model.stop_training — advice-only, never actuated.
+
+        SwingRL never sets model.stop_training itself (Task 3), but _on_step() must
+        return True unconditionally regardless of the model's own flag state, so a
+        fold always runs to completion.
+        """
         from unittest.mock import MagicMock
 
         wrapper = MemoryVecRewardWrapper(_make_mock_venv())
@@ -184,7 +189,7 @@ class TestEpochCallbackInit:
         )
         cb.model = MagicMock()
         cb.model.stop_training = True
-        assert cb._on_step() is False  # noqa: SLF001
+        assert cb._on_step() is True  # noqa: SLF001
 
 
 class TestEpochAdviceFirstFailureLogging:

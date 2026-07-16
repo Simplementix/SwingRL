@@ -148,7 +148,11 @@ Edge cases: < 2 obs → `0.0` for Sharpe (181), empty history → `0.0` for MDD/
 6. **Bounds clamp** — `clamp_reward_weights(new_weights)` clips per-component to `REWARD_BOUNDS` and renormalizes to sum=1.0 (`bounds.py:259-297`).
 7. **Change-detection floor** — skip if max absolute delta `< 0.01` (`:684-694`).
 8. **Delta-cap scaling** — if any component's delta exceeds `get_max_reward_delta(algo, env)`, scale and renormalize (`:697-715`).
-9. **Training-progress floor** — LLM-suggested `stop_training=True` is rejected if `progress < MIN_TRAINING_PROGRESS = 0.20` (`:628-637`, `bounds.py:97`).
+9. **`stop_training` advice** — no gate: this path is **advice-only** (U1, spec §2.2, Task 3). A
+   `stop_training=True` response is always logged (`llm_stop_request_advice_only`) and appended
+   to `self._stop_requests` with `{epoch, timestep, pct_complete, reason}` (`pct_complete` measured
+   against `MIN_TRAINING_PROGRESS` from `bounds.py:97` for context only) — the runtime never
+   actuates it, `model.stop_training` is never set, and `_on_step()` always returns `True`.
 
 LLM exceptions are caught; `_advice_timed_out` increments and training continues (fail-open, `:737-745`).
 

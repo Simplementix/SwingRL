@@ -186,6 +186,11 @@ class MemoryEpochCallback(BaseCallback):
         self._sharpe_at_trigger: float = 0.0
         self._mdd_at_trigger: float = 0.0
 
+        # U1 (spec §2.2): stop_training is advice-only. Requests are recorded here
+        # (epoch, timestep, pct_complete, reason) for Task 17's intent writer; the
+        # runtime never actuates them — folds always run to completion.
+        self._stop_requests: list[dict[str, Any]] = []
+
     @staticmethod
     def _load_cadence(algo: str) -> int:
         """Read algo-specific cadence from validated config.
@@ -317,10 +322,13 @@ class MemoryEpochCallback(BaseCallback):
     def _on_step(self) -> bool:
         """Check if training should continue.
 
+        U1 (spec §2.2): stop_training is advice-only. This always returns True —
+        the LLM cannot halt a fold; it can only log a stop request for review.
+
         Returns:
-            False if stop_training was set (e.g. by LLM advice), True otherwise.
+            True unconditionally.
         """
-        return not getattr(self.model, "stop_training", False)
+        return True
 
     def _on_rollout_end(self) -> None:
         """Called at the end of each rollout (epoch). Main callback entry point.
@@ -693,23 +701,28 @@ class MemoryEpochCallback(BaseCallback):
 
             stop_training = body.get("stop_training", False)
             if stop_training:
+                # U1 (spec §2.2): advice-only — 0 stop requests in 850,430 live epochs,
+                # no case for keeping actuation. The request is logged and recorded for
+                # Task 17's intent writer; model.stop_training is never set.
                 from swingrl.memory.training.bounds import MIN_TRAINING_PROGRESS
 
                 progress = self.num_timesteps / max(getattr(self.model, "_total_timesteps", 1), 1)
-                if progress < MIN_TRAINING_PROGRESS:
-                    log.info(
-                        "stop_training_ignored_too_early",
-                        progress=f"{progress:.1%}",
-                        min_required="20%",
-                        epoch=self._epoch,
-                    )
-                else:
-                    log.warning(
-                        "llm_advises_stop_training",
-                        epoch=self._epoch,
-                        reason=reason,
-                    )
-                    self.model.stop_training = True  # type: ignore[attr-defined]
+                log.warning(
+                    "llm_stop_request_advice_only",
+                    epoch=self._epoch,
+                    timestep=self.num_timesteps,
+                    pct_complete=round(progress, 4),
+                    min_required=MIN_TRAINING_PROGRESS,
+                    reason=reason,
+                )
+                self._stop_requests.append(
+                    {
+                        "epoch": self._epoch,
+                        "timestep": self.num_timesteps,
+                        "pct_complete": round(progress, 4),
+                        "reason": reason,
+                    }
+                )
                 return
 
             new_weights = body.get("reward_weights")
