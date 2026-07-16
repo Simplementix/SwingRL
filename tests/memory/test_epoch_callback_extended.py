@@ -747,3 +747,43 @@ class TestNaNContextGuard:
         assert cb._advice_timed_out == 1, (
             f"expected 1 advice_timed_out (skipped via exception), got {cb._advice_timed_out}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestStopTrainingAdviceOnly
+# ---------------------------------------------------------------------------
+
+
+class TestStopTrainingAdviceOnly:
+    """U1 (spec §2.2): stop_training advice is logged/recorded, never actuated."""
+
+    def _callback_with_mock_client(self) -> MemoryEpochCallback:
+        """Create a callback whose model has enough progress to pass the floor check.
+
+        Mirrors the brief's `callback_with_mock_client` fixture (no such fixture exists
+        in this file's helper set — `_make_callback` is the equivalent local pattern).
+        """
+        cb = _make_callback()
+        # _make_callback() sets cb.num_timesteps = 1000 and cb.model = MagicMock().
+        # MagicMock auto-vivifies unset attrs, so getattr(model, "_total_timesteps", 1)
+        # would return a MagicMock (not the intended default) and blow up the
+        # progress-floor comparison in _query_epoch_advice. Pin it explicitly so
+        # progress >= MIN_TRAINING_PROGRESS and the real branch under test executes.
+        cb.model._total_timesteps = 1000  # noqa: SLF001
+        return cb
+
+    def test_stop_training_advice_is_never_actuated(self) -> None:
+        """U1 (spec §2.2): a stop_training=true response must not stop the run."""
+        cb = self._callback_with_mock_client()
+        cb._client.epoch_advice.return_value = {  # noqa: SLF001
+            "reward_weights": {},
+            "stop_training": True,
+            "rationale": "test stop",
+        }
+        cb._epoch = cb._cadence - 1  # noqa: SLF001  # next rollout end is an advice epoch
+        cb._on_rollout_end()  # noqa: SLF001
+
+        assert getattr(cb.model, "stop_training", False) is False
+        assert cb._on_step() is True  # noqa: SLF001
+        assert len(cb._stop_requests) == 1  # noqa: SLF001
+        assert cb._stop_requests[0]["reason"] == "test stop"  # noqa: SLF001
