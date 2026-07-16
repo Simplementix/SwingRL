@@ -16,6 +16,7 @@ from swingrl.memory.training.epoch_callback import (
     NOTABLE_MDD_THRESHOLD,
     MemoryEpochCallback,
 )
+from swingrl.utils.exceptions import ConfigError
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -890,3 +891,42 @@ class TestStopTrainingAdviceOnly:
         assert cb._on_step() is True  # noqa: SLF001
         assert len(cb._stop_requests) == 1  # noqa: SLF001
         assert cb._stop_requests[0]["reason"] == "test stop"  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# TestOnTrainingStartWindowConfig (Task 5, spec §2.6)
+# ---------------------------------------------------------------------------
+
+
+class TestOnTrainingStartWindowConfig:
+    """Task 5 (spec §2.6): _on_training_start sizes the wrapper's percent-of-fold
+    windows from the run's REAL total_timesteps and enforces the startup guard.
+
+    Both tests resolve get_adjustment_cooldown() and training.windows.*_pct_of_fold
+    through the REAL load_config() (nothing monkeypatched) -- same style as
+    TestL1BenchDefaultVetoesEndToEnd, proving the actual shipped defaults behave as
+    documented: trend_pct_of_fold=0.15 (N2), SAC adjustment_cooldown_steps=20_000.
+    """
+
+    def test_on_training_start_configures_wrapper_windows(self) -> None:
+        """Happy path: PPO/equity at 1,000,000 total_timesteps (DEFAULT_TIMESTEPS,
+        pipeline_helpers.py:45-48) -> both windows sized from the real 0.01/0.15
+        pct_of_fold defaults; no guard trip (trend 150,000 >> PPO cooldown 24,576)."""
+        cb = _make_callback(run_id="equity_ppo_fold0", algo="PPO", env="equity")
+        cb.model._total_timesteps = 1_000_000  # noqa: SLF001
+
+        cb._on_training_start()  # noqa: SLF001
+
+        cb._wrapper.configure_windows.assert_called_once_with(10_000, 150_000)
+
+    def test_on_training_start_guard_raises_when_trend_window_too_short(self) -> None:
+        """Guard (spec §2.6): trend_steps < get_adjustment_cooldown(algo) -> ConfigError.
+        At a 100,000-step fold, trend_pct_of_fold=0.15 -> trend_steps=15,000, which is
+        below the real SAC adjustment_cooldown_steps=20,000 -- refuses to start."""
+        cb = _make_callback(run_id="equity_sac_fold0", algo="SAC", env="equity")
+        cb.model._total_timesteps = 100_000  # noqa: SLF001
+
+        with pytest.raises(ConfigError):
+            cb._on_training_start()  # noqa: SLF001
+
+        cb._wrapper.configure_windows.assert_not_called()

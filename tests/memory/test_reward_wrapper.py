@@ -1,6 +1,15 @@
 """Tests for MemoryVecRewardWrapper.
 
 TRAIN-06: MemoryVecRewardWrapper shapes rewards using weighted profit/sharpe/drawdown/turnover.
+
+Task 5 (spec §2.6, P-B1 verification): the real per-fold timestep budget passed to
+model.learn() is DEFAULT_TIMESTEPS in src/swingrl/training/pipeline_helpers.py:45-48 --
+equity 1,000,000 / crypto 500,000 (escalated on non-convergence to 2,000,000 /
+1,000,000 respectively, ESCALATED_TIMESTEPS at pipeline_helpers.py:51-54). Percent-of-fold
+window sizes (training.windows.short_pct_of_fold / trend_pct_of_fold) are computed against
+whatever total_timesteps the run's model actually receives -- which is why
+MemoryVecRewardWrapper.configure_windows() takes literal step counts (not percentages) and
+is called once per fold, from model._total_timesteps, so an escalated run resizes correctly.
 """
 
 from __future__ import annotations
@@ -320,16 +329,26 @@ class TestRollingMetrics:
         assert sharpe == pytest.approx(expected, rel=1e-4)
 
     def test_rolling_mdd_with_drawdown(self) -> None:
-        """rolling_mdd returns negative value on drawdown sequences."""
+        """rolling_mdd (deprecated alias, Task 5/§2.6) returns negative equity-fraction
+        drawdown -- now sourced from window_metrics("trend")["mdd_frac_worst"], NOT the
+        old cumsum-of-shaped-rewards design (which this test used to drive directly via
+        `_reward_history`). See TestPercentOfFoldWindows for the new contract's own tests;
+        this test only proves the alias still returns a negative float on a real drawdown."""
         from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
 
         mock_venv = _make_mock_venv()
         wrapper = MemoryVecRewardWrapper(mock_venv)
+        wrapper.configure_windows(short_steps=10, trend_steps=10)
 
-        # Sequence: rise then fall
-        rewards = [0.1, 0.1, -0.3, -0.2]
-        for r in rewards:
-            wrapper._reward_history.append(r)
+        # Portfolio value sequence: rise then fall (peak 110 -> trough 99)
+        for pv in (100.0, 110.0, 99.0):
+            mock_venv.step_wait.return_value = (
+                np.zeros((1, 4), dtype=np.float32),
+                np.zeros(1, dtype=np.float32),
+                np.zeros(1, dtype=bool),
+                [{"portfolio_value": pv}],
+            )
+            wrapper.step_wait()
 
         mdd = wrapper.rolling_mdd()
         assert mdd < 0.0
@@ -524,3 +543,124 @@ class TestRollingTradeRate:
         assert wrapper.rolling_trade_rate() == pytest.approx(2.0)
         # baseline must still be 0.0 (locked from the zero-trade first window)
         assert wrapper.baseline_trade_rate() == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# TestPercentOfFoldWindows (Task 5, spec §2.6)
+# ---------------------------------------------------------------------------
+
+
+class TestPercentOfFoldWindows:
+    """Task 5 (spec §2.6): percent-of-fold windows, equity-fraction MDD, dual-unit output.
+
+    Replaces the fixed 500-step deque design for MDD specifically: window MDD is now
+    computed per sub-env from portfolio-value curves (peak-to-trough fraction), not
+    from cumsum-of-shaped-rewards. rolling_sharpe()/rolling_win_rate()/rolling_trade_rate()/
+    baseline_trade_rate() are untouched by this task (still _ROLLING_WINDOW-based) --
+    only rolling_mdd() becomes a deprecated alias onto the new contract.
+    """
+
+    def test_configure_windows_sizes_deques_and_reports_dual_units(self) -> None:
+        """configure_windows(short_steps, trend_steps) sizes both windows; window_metrics
+        reports BOTH units (pct_of_fold from config/swingrl.yaml training.windows N1/N2
+        defaults, and steps from the literal configure_windows() call) for each window."""
+        mock_venv = _make_mock_venv()
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+        wrapper.configure_windows(short_steps=10_000, trend_steps=150_000)
+
+        short = wrapper.window_metrics("short")
+        trend = wrapper.window_metrics("trend")
+
+        assert short["steps"] == 10_000
+        assert trend["steps"] == 150_000
+        assert short["pct_of_fold"] == pytest.approx(0.01)  # N1 default
+        assert trend["pct_of_fold"] == pytest.approx(0.15)  # N2 default
+
+        expected_keys = {
+            "pct_of_fold",
+            "steps",
+            "sharpe_annualized",
+            "mdd_frac_worst",
+            "mdd_frac_mean",
+            "win_rate",
+            "trade_rate",
+        }
+        assert set(short) == expected_keys
+        assert set(trend) == expected_keys
+
+    def test_window_metrics_invalid_window_raises(self) -> None:
+        """window_metrics() only accepts "short" or "trend"."""
+        mock_venv = _make_mock_venv()
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+        with pytest.raises(ValueError):
+            wrapper.window_metrics("bogus")  # type: ignore[arg-type]
+
+    def test_mdd_frac_worst_from_portfolio_value_sequence(self) -> None:
+        """Synthetic single-sub-env portfolio curve 100 -> 110 -> 99: peak-to-trough
+        fraction = (99 - 110) / 110 = -0.1 -> mdd_frac_worst == approx(0.1) (magnitude)."""
+        mock_venv = _make_mock_venv(n_envs=1)
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+        wrapper.configure_windows(short_steps=10, trend_steps=10)
+
+        for pv in (100.0, 110.0, 99.0):
+            mock_venv.step_wait.return_value = (
+                np.zeros((1, 4), dtype=np.float32),
+                np.zeros(1, dtype=np.float32),
+                np.zeros(1, dtype=bool),
+                [{"portfolio_value": pv}],
+            )
+            wrapper.step_wait()
+
+        metrics = wrapper.window_metrics("trend")
+        assert metrics["mdd_frac_worst"] == pytest.approx(0.1, abs=1e-6)
+        # single sub-env: worst == mean
+        assert metrics["mdd_frac_mean"] == pytest.approx(0.1, abs=1e-6)
+
+    def test_mdd_frac_worst_vs_mean_across_sub_envs(self) -> None:
+        """Locked design decision (2026-07-12): mdd_frac_worst = worst sub-env (safety-first,
+        drives triggers); mdd_frac_mean = mean across sub-envs (analysis-only). With one
+        sub-env drawing down 10% and another flat, worst=0.10 and mean=0.05."""
+        mock_venv = _make_mock_venv(n_envs=2)
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+        wrapper.configure_windows(short_steps=10, trend_steps=10)
+
+        # env0: 100 -> 110 -> 99 (10% drawdown); env1: flat at 100 (0% drawdown)
+        for pv0, pv1 in ((100.0, 100.0), (110.0, 100.0), (99.0, 100.0)):
+            mock_venv.step_wait.return_value = (
+                np.zeros((2, 4), dtype=np.float32),
+                np.zeros(2, dtype=np.float32),
+                np.zeros(2, dtype=bool),
+                [{"portfolio_value": pv0}, {"portfolio_value": pv1}],
+            )
+            wrapper.step_wait()
+
+        metrics = wrapper.window_metrics("trend")
+        assert metrics["mdd_frac_worst"] == pytest.approx(0.1, abs=1e-6)
+        assert metrics["mdd_frac_mean"] == pytest.approx(0.05, abs=1e-6)
+
+    def test_mdd_frac_zero_when_window_empty(self) -> None:
+        """No steps recorded yet (or configure_windows never called) -> 0.0, not a crash."""
+        mock_venv = _make_mock_venv()
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+
+        metrics = wrapper.window_metrics("trend")
+        assert metrics["mdd_frac_worst"] == pytest.approx(0.0)
+        assert metrics["mdd_frac_mean"] == pytest.approx(0.0)
+
+    def test_rolling_mdd_alias_negates_trend_worst(self) -> None:
+        """Deprecated alias: rolling_mdd() == -window_metrics("trend")["mdd_frac_worst"]
+        (Task 6 rewires the remaining callers off this alias onto window_metrics directly)."""
+        mock_venv = _make_mock_venv(n_envs=1)
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+        wrapper.configure_windows(short_steps=10, trend_steps=10)
+
+        for pv in (100.0, 110.0, 99.0):
+            mock_venv.step_wait.return_value = (
+                np.zeros((1, 4), dtype=np.float32),
+                np.zeros(1, dtype=np.float32),
+                np.zeros(1, dtype=bool),
+                [{"portfolio_value": pv}],
+            )
+            wrapper.step_wait()
+
+        assert wrapper.rolling_mdd() == pytest.approx(-0.1, abs=1e-6)
