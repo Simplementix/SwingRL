@@ -175,8 +175,33 @@ class FeaturesConfig(BaseModel):
     # Turbulence
     equity_turbulence_warmup: int = Field(default=252, ge=50)
     equity_turbulence_half_life: int = Field(default=126, ge=10)
+    # crypto_turbulence_window now governs the realized-vol percentile lookback
+    # (the OR-gate history), not a rolling Mahalanobis window.
     crypto_turbulence_window: int = Field(default=1080, ge=100)
-    crypto_turbulence_warmup: int = Field(default=360, ge=50)
+    crypto_turbulence_warmup: int = Field(default=1080, ge=50)
+    crypto_turbulence_half_life: int = Field(default=750, ge=10)
+
+    # Turbulence hard-halt baseline (F1 fix, method review 2026-07-07)
+    turbulence_halt_percentile: float = Field(default=0.97, gt=0.0, lt=1.0)
+    # Trailing window (in bars) the halt percentile is computed over. Equity =
+    # ~3y of trading days; crypto = 0 (sentinel) meaning full history.
+    turbulence_baseline_lookback_equity: int = Field(default=756, ge=50)
+    turbulence_baseline_lookback_crypto: int = Field(default=0, ge=0)
+
+    def turbulence_baseline_lookback_bars(self, env_name: str) -> int | None:
+        """Trailing baseline window in bars for ``env_name`` (None = full history).
+
+        Args:
+            env_name: "equity" or "crypto".
+
+        Returns:
+            Number of trailing bars, or None when the configured value is 0
+            (full-history baseline, used for crypto).
+        """
+        if env_name == "equity":
+            return self.turbulence_baseline_lookback_equity
+        value = self.turbulence_baseline_lookback_crypto
+        return value if value > 0 else None
 
 
 class EnvironmentConfig(BaseModel):

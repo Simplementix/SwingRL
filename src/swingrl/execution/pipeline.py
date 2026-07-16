@@ -27,7 +27,7 @@ from swingrl.execution.risk.position_tracker import PositionTracker
 from swingrl.execution.risk.risk_manager import RiskManager
 from swingrl.execution.types import FillResult, SizedOrder
 from swingrl.features.health import FeatureHealthTracker
-from swingrl.utils.exceptions import CircuitBreakerError, RiskVetoError
+from swingrl.utils.exceptions import CircuitBreakerError, DataError, RiskVetoError
 
 if TYPE_CHECKING:
     from swingrl.config.schema import SwingRLConfig
@@ -84,6 +84,9 @@ class ExecutionPipeline:
         self._models: dict[str, dict[str, tuple[Any, Any]]] = {}
         self._adapters: dict[str, Any] = {}
         self._initialized = False
+
+        # Per-(env, date) turbulence halt-baseline cache (one delegate call/cycle)
+        self._turb_baseline_cache: dict[tuple[str, str], float] = {}
 
         # Eagerly create components that don't need lazy loading
         self._position_tracker = PositionTracker(db=db, config=config)
@@ -152,13 +155,16 @@ class ExecutionPipeline:
                 log.warning("cycle_halted_by_cb", env=env_name)
                 return []
 
+        # Resolve the cycle date once so the turbulence halt check and the
+        # observation share a single per-(env, date) turbulence value (M6).
+        current_date_str = self._get_current_date_str(env_name)
+
         # Step 2: Check turbulence crash protection (PAPER-20)
-        if self._check_turbulence(env_name):
+        if self._check_turbulence(env_name, current_date_str):
             log.warning("cycle_halted_by_turbulence", env=env_name)
             return []
 
         # Step 3: Get observation from FeaturePipeline
-        current_date_str = self._get_current_date_str(env_name)
         env_literal: Literal["equity", "crypto"] = "equity" if env_name == "equity" else "crypto"
         observation = self._feature_pipeline.get_observation(env_literal, current_date_str)
 
@@ -497,51 +503,59 @@ class ExecutionPipeline:
 
         return result
 
-    def _check_turbulence(self, env_name: str) -> bool:
+    def _check_turbulence(self, env_name: str, date_str: str) -> bool:
         """Check turbulence for crash protection (PAPER-20).
 
         Args:
             env_name: Environment name.
+            date_str: Cycle date/datetime string — shared with the observation
+                path so both use the single per-cycle turbulence value (M6).
 
         Returns:
-            True if turbulence exceeds threshold (should halt trading).
+            True if turbulence exceeds the hard-halt baseline (should halt trading).
         """
         try:
-            # Get current turbulence from feature pipeline
-            current_date_str = self._get_current_date_str(env_name)
-            turbulence = self._feature_pipeline.compute_turbulence(env_name, current_date_str)
+            # Single per-cycle turbulence value (reused by the observation path)
+            turbulence = self._feature_pipeline.compute_turbulence(env_name, date_str)
 
-            # Get historical 90th percentile from database
-            historical_90th = self._get_turbulence_90th_pct(env_name)
+            # Historical hard-halt baseline percentile (F1 fix — OHLCV series)
+            historical_pct = self._get_turbulence_90th_pct(env_name, date_str)
 
-            if turbulence > 0 and historical_90th > 0:
-                return self._risk_manager.check_turbulence(env_name, turbulence, historical_90th)
+            if turbulence > 0 and historical_pct > 0:
+                return self._risk_manager.check_turbulence(env_name, turbulence, historical_pct)
         except Exception:
             log.warning("turbulence_check_failed", env=env_name)
 
         return False
 
-    def _get_turbulence_90th_pct(self, env_name: str) -> float:
-        """Get historical 90th percentile turbulence from database.
+    def _get_turbulence_90th_pct(self, env_name: str, date_str: str) -> float:
+        """Get the historical turbulence hard-halt baseline for the cycle date.
+
+        Delegates to ``FeaturePipeline.turbulence_halt_baseline`` (the F1 fix —
+        the ``features_*`` tables never had a turbulence column, so the old
+        percentile query always returned 0.0 and the halt never fired). Cached
+        per (env, date) so the delegate runs at most once per cycle.
 
         Args:
             env_name: Environment name.
+            date_str: Cycle date/datetime string.
 
         Returns:
-            90th percentile turbulence value, or 0.0 if unavailable.
+            The hard-halt baseline percentile, or 0.0 if unavailable (logged).
         """
-        table = "features_equity" if env_name == "equity" else "features_crypto"
+        key = (env_name, date_str)
+        if key in self._turb_baseline_cache:
+            return self._turb_baseline_cache[key]
         try:
-            with self._db.connection() as conn:
-                row = conn.execute(
-                    f"SELECT PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY turbulence) as p90 FROM {table}",  # nosec B608
-                ).fetchone()
-                if row and row["p90"] is not None:
-                    return float(row["p90"])
-        except Exception:
-            log.warning("turbulence_90th_query_failed", env=env_name)
-
-        return 0.0
+            value = self._feature_pipeline.turbulence_halt_baseline(env_name, date_str)
+        except DataError as exc:
+            log.error("turbulence_baseline_failed", env=env_name, error=str(exc))
+            value = 0.0
+        except Exception as exc:  # never let a baseline lookup crash the cycle — but log it
+            log.error("turbulence_baseline_unexpected_error", env=env_name, error=str(exc))
+            value = 0.0
+        self._turb_baseline_cache[key] = value
+        return value
 
     def _get_current_weights(self, env_name: str) -> np.ndarray:
         """Get current portfolio weights per symbol.

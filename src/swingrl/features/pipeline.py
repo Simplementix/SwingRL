@@ -129,9 +129,9 @@ class FeaturePipeline:
         self._equity_symbols = sorted(config.equity.symbols)
         self._crypto_symbols = sorted(config.crypto.symbols)
 
-        # Cached turbulence values from compute path (avoids duplicate OHLCV reads)
-        self._cached_equity_turbulence: float | None = None
-        self._cached_crypto_turbulence: float | None = None
+        # Per-(env, date) turbulence cache — computed once per cycle and reused
+        # by both the halt check and the observation path (M6, no divergence).
+        self._turb_cycle_cache: dict[tuple[str, str], float] = {}
 
     def _get_conn(self) -> Any:
         """Return a connection context manager from the pool."""
@@ -199,9 +199,6 @@ class FeaturePipeline:
             return pd.DataFrame()
 
         combined = pd.concat(all_features)
-
-        # Compute turbulence using already-loaded OHLCV (avoids duplicate DB read)
-        self._cache_equity_turbulence(combined)
 
         # Normalize numeric features per symbol
         normalized_parts: list[pd.DataFrame] = []
@@ -286,9 +283,6 @@ class FeaturePipeline:
 
         combined = pd.concat(all_features)
 
-        # Compute turbulence using already-loaded OHLCV (avoids duplicate DB read)
-        self._cache_crypto_turbulence(combined)
-
         # Normalize numeric features per symbol
         normalized_parts: list[pd.DataFrame] = []
         for symbol in symbols:
@@ -359,8 +353,8 @@ class FeaturePipeline:
         # HMM
         hmm = self._get_hmm_probs("equity", date_str)
 
-        # Turbulence — compute on-the-fly from recent returns
-        turb = self._compute_turbulence_equity(date_str)
+        # Turbulence — single per-cycle value (shared with the halt check)
+        turb = self.compute_turbulence("equity", date_str)
 
         # Sentiment features — fetched when enabled
         sentiment: dict[str, tuple[float, float]] | None = None
@@ -403,8 +397,8 @@ class FeaturePipeline:
         # HMM
         hmm = self._get_hmm_probs("crypto", datetime_str)
 
-        # Turbulence
-        turb = self._compute_turbulence_crypto(datetime_str)
+        # Turbulence — single per-cycle value (shared with the halt check)
+        turb = self.compute_turbulence("crypto", datetime_str)
 
         # Overnight context — hours since 16:00 ET (simplified)
         overnight = 0.0
@@ -486,151 +480,143 @@ class FeaturePipeline:
                 self._health.record_failure("hmm")
             return np.array([0.5, 0.5])
 
-    def _cache_equity_turbulence(self, combined: pd.DataFrame) -> None:
-        """Compute and cache equity turbulence from already-loaded OHLCV data.
+    def _load_log_returns(self, env_name: str, date_or_datetime: str) -> pd.DataFrame | None:
+        """Load close prices <= the cutoff, pivot by symbol, return log-returns.
+
+        Shared by the point turbulence and the halt-baseline paths. The fetch is
+        lower-bounded by the baseline lookback config (M6) so the query no longer
+        scans the entire OHLCV history every cycle — equity fetches
+        ``warmup + lookback`` trailing bars; crypto (full-history baseline)
+        fetches everything up to the cutoff.
 
         Args:
-            combined: Combined feature DataFrame with 'symbol' and 'close' columns.
-        """
-        try:
-            if "close" not in combined.columns:
-                return
-            pivot = combined.pivot_table(
-                index=combined.index,  # type: ignore[arg-type]
-                columns="symbol",
-                values="close",
-            )
-            log_returns = np.log(pivot / pivot.shift(1)).dropna()  # type: ignore[attr-defined]
-            if len(log_returns) < self._turb_equity.min_warmup + 1:
-                return
-            self._cached_equity_turbulence = self._turb_equity.compute(
-                log_returns.values, len(log_returns) - 1
-            )
-        except Exception:
-            log.warning("equity_turbulence_cache_failed")
+            env_name: "equity" or "crypto".
+            date_or_datetime: Cutoff date (equity) or datetime (crypto), inclusive.
 
-    def _cache_crypto_turbulence(self, combined: pd.DataFrame) -> None:
-        """Compute and cache crypto turbulence from already-loaded OHLCV data.
-
-        Args:
-            combined: Combined feature DataFrame with 'symbol' and 'close' columns.
+        Returns:
+            A (bars x symbols) log-return DataFrame, or None when there is no data.
         """
-        try:
-            if "close" not in combined.columns:
-                return
-            pivot = combined.pivot_table(
-                index=combined.index,  # type: ignore[arg-type]
-                columns="symbol",
-                values="close",
-            )
-            log_returns = np.log(pivot / pivot.shift(1)).dropna()  # type: ignore[attr-defined]
-            if len(log_returns) < self._turb_crypto.min_warmup + 1:
-                return
-            self._cached_crypto_turbulence = self._turb_crypto.compute(
-                log_returns.values, len(log_returns) - 1
-            )
-        except Exception:
-            log.warning("crypto_turbulence_cache_failed")
+        calc = self._turb_equity if env_name == "equity" else self._turb_crypto
+        lookback = self._config.features.turbulence_baseline_lookback_bars(env_name)
+        if env_name == "equity":
+            table, time_col, cast = "ohlcv_daily", "date", "::DATE"
+        else:
+            table, time_col, cast = "ohlcv_4h", "datetime", "::TIMESTAMPTZ"
+
+        with self._get_conn() as conn:
+            if lookback is None:
+                returns_df = fetchdf(
+                    conn.execute(
+                        f"SELECT symbol, {time_col}, close FROM {table} "  # nosec B608
+                        f"WHERE {time_col} <= %s{cast} ORDER BY {time_col}",
+                        [date_or_datetime],
+                    )
+                )
+            else:
+                limit = calc.min_warmup + lookback + 10
+                returns_df = fetchdf(
+                    conn.execute(
+                        f"WITH recent AS ("  # nosec B608
+                        f"  SELECT DISTINCT {time_col} FROM {table} "
+                        f"  WHERE {time_col} <= %s{cast} ORDER BY {time_col} DESC LIMIT %s"
+                        f") "
+                        f"SELECT o.symbol, o.{time_col}, o.close FROM {table} o "
+                        f"JOIN recent r ON o.{time_col} = r.{time_col} "
+                        f"ORDER BY o.{time_col}",
+                        [date_or_datetime, limit],
+                    )
+                )
+
+        if returns_df.empty:
+            return None
+        pivot = returns_df.pivot_table(index=time_col, columns="symbol", values="close")
+        log_returns: pd.DataFrame = np.log(pivot / pivot.shift(1)).dropna()  # type: ignore[union-attr,attr-defined]
+        if log_returns.empty:
+            return None
+        return log_returns
 
     def compute_turbulence(self, env_name: str, date_or_datetime: str) -> float:
-        """Compute turbulence for the given environment.
+        """Compute the single per-cycle turbulence value for the environment.
 
-        Public facade that delegates to the environment-specific private methods.
+        Cached per (env, date) so the halt check and the observation path reuse
+        one computation within a cycle (M6 — no divergence).
 
         Args:
             env_name: Environment name ("equity" or "crypto").
             date_or_datetime: Date string (equity) or datetime string (crypto).
 
         Returns:
-            Turbulence score as float, 0.0 on failure.
+            Turbulence score as float, 0.0 on failure or insufficient data.
         """
-        if env_name == "equity":
-            return self._compute_turbulence_equity(date_or_datetime)
-        return self._compute_turbulence_crypto(date_or_datetime)
+        key = (env_name, date_or_datetime)
+        if key in self._turb_cycle_cache:
+            return self._turb_cycle_cache[key]
+        try:
+            if env_name == "equity":
+                value = self._compute_turbulence_equity(date_or_datetime)
+            else:
+                value = self._compute_turbulence_crypto(date_or_datetime)
+            if self._health is not None:
+                self._health.record_success("turbulence")
+        except Exception:
+            log.warning("turbulence_compute_failed", env=env_name)
+            if self._health is not None:
+                self._health.record_failure("turbulence")
+            value = 0.0
+        self._turb_cycle_cache[key] = value
+        return value
 
     def _compute_turbulence_equity(self, date_str: str) -> float:
-        """Compute equity turbulence from recent returns.
-
-        Uses cached value from compute path when available to avoid
-        duplicate OHLCV reads. Falls back to DB query otherwise.
-        """
-        if self._cached_equity_turbulence is not None:
-            cached = self._cached_equity_turbulence
-            self._cached_equity_turbulence = None  # consume once
-            if self._health is not None:
-                self._health.record_success("turbulence")
-            return cached
-        try:
-            with self._get_conn() as conn:
-                returns_df = fetchdf(
-                    conn.execute(
-                        """SELECT symbol, date, close FROM ohlcv_daily
-                       WHERE date <= %s::DATE
-                       ORDER BY date""",
-                        [date_str],
-                    )
-                )
-
-            if returns_df.empty:
-                return 0.0
-
-            pivot = returns_df.pivot_table(index="date", columns="symbol", values="close")
-            log_returns = np.log(pivot / pivot.shift(1)).dropna()  # type: ignore[union-attr,attr-defined]
-
-            if len(log_returns) < self._turb_equity.min_warmup + 1:
-                return 0.0
-
-            result = self._turb_equity.compute(log_returns.values, len(log_returns) - 1)
-            if self._health is not None:
-                self._health.record_success("turbulence")
-            return result
-        except Exception:
-            log.warning("turbulence_equity_failed")
-            if self._health is not None:
-                self._health.record_failure("turbulence")
+        """Compute the current equity turbulence value from the OHLCV log-returns."""
+        log_returns = self._load_log_returns("equity", date_str)
+        if log_returns is None or len(log_returns) < self._turb_equity.min_warmup + 1:
             return 0.0
+        result = self._turb_equity.compute(log_returns.values, len(log_returns) - 1)
+        return float(result) if np.isfinite(result) else 0.0
 
     def _compute_turbulence_crypto(self, datetime_str: str) -> float:
-        """Compute crypto turbulence from recent returns.
-
-        Uses cached value from compute path when available to avoid
-        duplicate OHLCV reads. Falls back to DB query otherwise.
-        """
-        if self._cached_crypto_turbulence is not None:
-            cached = self._cached_crypto_turbulence
-            self._cached_crypto_turbulence = None  # consume once
-            if self._health is not None:
-                self._health.record_success("turbulence")
-            return cached
-        try:
-            with self._get_conn() as conn:
-                returns_df = fetchdf(
-                    conn.execute(
-                        """SELECT symbol, datetime, close FROM ohlcv_4h
-                       WHERE datetime <= %s::TIMESTAMPTZ
-                       ORDER BY datetime""",
-                        [datetime_str],
-                    )
-                )
-
-            if returns_df.empty:
-                return 0.0
-
-            pivot = returns_df.pivot_table(index="datetime", columns="symbol", values="close")
-            log_returns = np.log(pivot / pivot.shift(1)).dropna()  # type: ignore[union-attr,attr-defined]
-
-            if len(log_returns) < self._turb_crypto.min_warmup + 1:
-                return 0.0
-
-            result = self._turb_crypto.compute(log_returns.values, len(log_returns) - 1)
-            if self._health is not None:
-                self._health.record_success("turbulence")
-            return result
-        except Exception:
-            log.warning("turbulence_crypto_failed")
-            if self._health is not None:
-                self._health.record_failure("turbulence")
+        """Compute the current crypto turbulence value from the OHLCV log-returns."""
+        log_returns = self._load_log_returns("crypto", datetime_str)
+        if log_returns is None or len(log_returns) < self._turb_crypto.min_warmup + 1:
             return 0.0
+        result = self._turb_crypto.compute(log_returns.values, len(log_returns) - 1)
+        return float(result) if np.isfinite(result) else 0.0
+
+    def turbulence_halt_baseline(self, env_name: str, date_or_datetime: str) -> float:
+        """Historical halt-percentile of the turbulence series (F1 fix, spec §5).
+
+        Computed from the OHLCV-derived series via ``compute_series`` — the
+        ``features_*`` tables never had a turbulence column. Percentile and
+        trailing lookback come from config (method review 2026-07-07: hard halt
+        97th percentile, trailing window that is recomputed each cycle, not
+        frozen). Returns 0.0 only on genuine data absence (logged).
+
+        Args:
+            env_name: "equity" or "crypto".
+            date_or_datetime: Cutoff date (equity) or datetime (crypto), inclusive.
+
+        Returns:
+            The percentile of the trailing turbulence series, or 0.0 if there is
+            not enough data to compute one.
+        """
+        calc = self._turb_equity if env_name == "equity" else self._turb_crypto
+        pct = self._config.features.turbulence_halt_percentile
+        lookback = self._config.features.turbulence_baseline_lookback_bars(env_name)
+
+        log_returns = self._load_log_returns(env_name, date_or_datetime)
+        if log_returns is None or len(log_returns) < calc.min_warmup + 2:
+            log.warning("turbulence_baseline_insufficient_data", env=env_name)
+            return 0.0
+
+        series = calc.compute_series(log_returns.values)
+        valid = series[calc.min_warmup :]
+        valid = valid[np.isfinite(valid)]
+        if lookback is not None:
+            valid = valid[-lookback:]  # trailing window, not frozen
+        if valid.size == 0:
+            log.warning("turbulence_baseline_empty_series", env=env_name)
+            return 0.0
+        return float(np.percentile(valid, pct * 100.0))
 
     def _read_equity_ohlcv(self, symbol: str, start: str | None, end: str | None) -> pd.DataFrame:
         """Read equity OHLCV from PostgreSQL."""

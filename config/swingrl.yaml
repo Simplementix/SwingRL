@@ -262,5 +262,10 @@ features:
   correlation_threshold: 0.85      # Pearson r threshold for feature pruning
   zscore_epsilon: 0.00000001      # floor for rolling std to prevent division by zero
   equity_turbulence_warmup: 252    # expanding lookback warmup for equity turbulence
-  crypto_turbulence_window: 1080   # rolling window for crypto turbulence (4H bars)
-  crypto_turbulence_warmup: 360    # crypto turbulence minimum warmup bars
+  equity_turbulence_half_life: 126 # EWMA half-life for equity Mahalanobis (trading days)
+  crypto_turbulence_window: 1080   # realized-vol percentile lookback for crypto OR-gate (4H bars)
+  crypto_turbulence_warmup: 1080   # crypto turbulence minimum warmup bars (raised 360->1080)
+  crypto_turbulence_half_life: 750 # EWMA half-life for crypto Mahalanobis (4H bars)
+  turbulence_halt_percentile: 0.97       # hard-halt percentile (method review 2026-07-07)
+  turbulence_baseline_lookback_equity: 756  # trailing baseline window (~3y trading days)
+  turbulence_baseline_lookback_crypto: 0    # 0 = full-history baseline for crypto
