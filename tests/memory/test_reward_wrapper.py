@@ -10,6 +10,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from swingrl.memory.training.reward_wrapper import MemoryVecRewardWrapper
+
 
 def _make_mock_venv(n_envs: int = 1) -> MagicMock:
     """Create a mock VecEnv with standard step_wait() and reset() behavior.
@@ -33,6 +35,17 @@ def _make_mock_venv(n_envs: int = 1) -> MagicMock:
     mock.step_wait.return_value = (obs, rewards, dones, infos)
     mock.reset.return_value = obs
     return mock
+
+
+def _make_wrapper() -> MemoryVecRewardWrapper:
+    """Build a MemoryVecRewardWrapper (default weights) over a mock VecEnv.
+
+    Used by tests that call `_shape_rewards` directly rather than via `step_wait()`.
+
+    Returns:
+        A wrapper instance with DEFAULT_WEIGHTS applied.
+    """
+    return MemoryVecRewardWrapper(_make_mock_venv())
 
 
 class TestMemoryVecRewardWrapperInit:
@@ -141,6 +154,44 @@ class TestRewardShaping:
 
         # Only profit contributes
         assert shaped[0] == pytest.approx(0.5, abs=1e-5)
+
+
+class TestRiskPenaltySurvivesShaping:
+    """A3: the risk penalty is a safety term that must survive reward shaping."""
+
+    def test_shaping_subtracts_risk_penalty(self) -> None:
+        """A3: shaped reward = weighted component sum MINUS the unweighted risk penalty."""
+        wrapper = _make_wrapper()
+        infos = [
+            {
+                "reward_components": {
+                    "profit": 1.0,
+                    "sharpe": 1.0,
+                    "drawdown": 0.0,
+                    "turnover": 0.0,
+                },
+                "risk_penalty": 0.5,
+            }
+        ]
+        shaped = wrapper._shape_rewards(np.array([0.7]), infos)
+        weighted = 0.50 * 1.0 + 0.25 * 1.0  # DEFAULT_WEIGHTS: profit .50, sharpe .25
+        assert shaped[0] == pytest.approx(weighted - 0.5)
+
+    def test_shaping_without_penalty_key_is_unchanged_behavior(self) -> None:
+        """Missing risk_penalty key (old envs, unit fixtures) -> penalty treated as 0.0."""
+        wrapper = _make_wrapper()
+        infos = [
+            {
+                "reward_components": {
+                    "profit": 1.0,
+                    "sharpe": 0.0,
+                    "drawdown": 0.0,
+                    "turnover": 0.0,
+                }
+            }
+        ]
+        shaped = wrapper._shape_rewards(np.array([0.3]), infos)
+        assert shaped[0] == pytest.approx(0.50)
 
 
 class TestUpdateWeights:
