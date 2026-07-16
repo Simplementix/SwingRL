@@ -11,11 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from swingrl.memory.training.epoch_callback import (
-    NOTABLE_KL_THRESHOLD,
-    NOTABLE_MDD_THRESHOLD,
-    MemoryEpochCallback,
-)
+from swingrl.memory.training.epoch_callback import MemoryEpochCallback
 from swingrl.utils.exceptions import ConfigError
 
 # ---------------------------------------------------------------------------
@@ -32,7 +28,13 @@ def _make_mock_memory_client() -> MagicMock:
 
 
 def _make_mock_wrapper(n_envs: int = 1) -> MagicMock:
-    """Create a mock MemoryVecRewardWrapper."""
+    """Create a mock MemoryVecRewardWrapper.
+
+    ``window_metrics("short" | "trend")`` returns a copy of ``mock._window_data[window]``
+    -- tests that need to drive §4.10 triggers mutate that dict directly (e.g.
+    ``wrapper._window_data["short"]["mdd_frac_worst"] = 0.11``) rather than
+    reconfiguring the MagicMock's side_effect each time.
+    """
     mock = MagicMock()
     mock.num_envs = n_envs
     mock.observation_space = MagicMock()
@@ -44,6 +46,29 @@ def _make_mock_wrapper(n_envs: int = 1) -> MagicMock:
     mock.rolling_trade_rate.return_value = 0.12
     mock.baseline_trade_rate.return_value = 0.10
     mock.weights = {"profit": 0.50, "sharpe": 0.25, "drawdown": 0.15, "turnover": 0.10}
+
+    window_data = {
+        "short": {
+            "pct_of_fold": 0.01,
+            "steps": 1_000,
+            "sharpe_annualized": 1.2,
+            "mdd_frac_worst": 0.02,
+            "mdd_frac_mean": 0.01,
+            "win_rate": 0.55,
+            "trade_rate": 0.10,
+        },
+        "trend": {
+            "pct_of_fold": 0.15,
+            "steps": 15_000,
+            "sharpe_annualized": 1.2,
+            "mdd_frac_worst": 0.02,
+            "mdd_frac_mean": 0.01,
+            "win_rate": 0.55,
+            "trade_rate": 0.10,
+        },
+    }
+    mock._window_data = window_data
+    mock.window_metrics.side_effect = lambda window: dict(window_data[window])
     return mock
 
 
@@ -88,50 +113,170 @@ def _make_callback(
 
 
 class TestEpochCallbackShouldStore:
-    """TRAIN-10: _should_store() returns correct (should_store, event_label) tuples."""
+    """§4.10 (D-T3.19): _should_store() five-trigger set + rate cap + hard cap.
 
-    def test_should_store_every_5th_epoch(self) -> None:
-        """TRAIN-10: Cadence epoch (multiple of callback cadence) returns (True, None)."""
+    Replaces the retired NOTABLE_KL_THRESHOLD/NOTABLE_MDD_THRESHOLD pure-thresholding
+    design. The default mock wrapper (``_make_mock_wrapper``) starts "healthy": short
+    window mdd_frac_worst=0.02 (< equity ceiling 0.10), trade_rate=0.10 == baseline
+    (neither trade_shy nor churning), and callbacks default to approx_kl=0.0 /
+    mean_reward=1.5 (finite) unless a test overrides them.
+    """
+
+    def test_should_store_cadence_epoch_returns_true(self) -> None:
+        """Cadence epoch (multiple of callback cadence) returns (True, None) unconditionally."""
         cb = _make_callback()
-        # Use the callback's actual cadence (loaded from config, e.g. 60 for PPO)
-        should, event = cb._should_store(cb._cadence, 0.0, -0.01)
+        should, event = cb._should_store(cb._cadence, 0.0, 1.5)
         assert should is True
         assert event is None
 
-    def test_should_store_not_on_non_cadence_epoch(self) -> None:
-        """TRAIN-10: Non-cadence epoch without notable event returns (False, None)."""
+    def test_should_store_healthy_epoch_returns_false(self) -> None:
+        """Non-cadence epoch with all triggers healthy returns (False, None)."""
         cb = _make_callback()
-        should, event = cb._should_store(3, 0.0, -0.01)
+        should, event = cb._should_store(3, 0.0, 1.5)
         assert should is False
         assert event is None
 
     def test_should_store_kl_spike(self) -> None:
-        """TRAIN-10: approx_kl > NOTABLE_KL_THRESHOLD returns (True, 'kl_spike')."""
+        """approx_kl > kl_spike_threshold (config default 0.10) returns (True, 'kl_spike')."""
         cb = _make_callback()
-        kl_above = NOTABLE_KL_THRESHOLD + 0.001
-        should, event = cb._should_store(3, kl_above, -0.01)
+        should, event = cb._should_store(3, 0.101, 1.5)
         assert should is True
         assert event == "kl_spike"
 
-    def test_should_store_mdd_breach(self) -> None:
-        """TRAIN-10: rolling_mdd < NOTABLE_MDD_THRESHOLD returns (True, 'mdd_breach')."""
+    def test_should_store_kl_boundary(self) -> None:
+        """approx_kl == kl_spike_threshold (not >) returns (False, None)."""
         cb = _make_callback()
-        mdd_below = NOTABLE_MDD_THRESHOLD - 0.001
-        should, event = cb._should_store(3, 0.0, mdd_below)
+        should, event = cb._should_store(3, 0.10, 1.5)
+        assert should is False
+        assert event is None
+
+    def test_should_store_mdd_breach_uses_worst_not_mean(self) -> None:
+        """mdd_breach fires on mdd_frac_worst 0.11 (equity ceiling 0.10) even when
+        mdd_frac_mean is 0.03 -- the worst basis is load-bearing (spec 2026-07-12
+        locked decision), not the old cumsum scale, and never the mean."""
+        cb = _make_callback(env="equity")
+        cb._wrapper._window_data["short"]["mdd_frac_worst"] = 0.11
+        cb._wrapper._window_data["short"]["mdd_frac_mean"] = 0.03
+        should, event = cb._should_store(3, 0.0, 1.5)
         assert should is True
         assert event == "mdd_breach"
 
-    def test_should_store_kl_boundary(self) -> None:
-        """TRAIN-10: approx_kl == NOTABLE_KL_THRESHOLD (not >) returns False."""
-        cb = _make_callback()
-        should, event = cb._should_store(3, NOTABLE_KL_THRESHOLD, -0.01)
-        assert should is False
-
     def test_should_store_mdd_boundary(self) -> None:
-        """TRAIN-10: rolling_mdd == NOTABLE_MDD_THRESHOLD (not <) returns False."""
-        cb = _make_callback()
-        should, event = cb._should_store(3, 0.0, NOTABLE_MDD_THRESHOLD)
+        """mdd_frac_worst == mdd_breach_frac ceiling (not >) returns (False, None)."""
+        cb = _make_callback(env="equity")
+        cb._wrapper._window_data["short"]["mdd_frac_worst"] = 0.10
+        should, event = cb._should_store(3, 0.0, 1.5)
         assert should is False
+        assert event is None
+
+    def test_should_store_trade_shy(self) -> None:
+        """trade_rate < 0.5x locked baseline_trade_rate fires trade_shy."""
+        cb = _make_callback()
+        cb._wrapper.baseline_trade_rate.return_value = 0.10
+        cb._wrapper._window_data["short"]["trade_rate"] = 0.04
+        should, event = cb._should_store(3, 0.0, 1.5)
+        assert should is True
+        assert event == "trade_shy"
+
+    def test_should_store_churning(self) -> None:
+        """trade_rate > 3x locked baseline_trade_rate fires churning."""
+        cb = _make_callback()
+        cb._wrapper.baseline_trade_rate.return_value = 0.10
+        cb._wrapper._window_data["short"]["trade_rate"] = 0.35
+        should, event = cb._should_store(3, 0.0, 1.5)
+        assert should is True
+        assert event == "churning"
+
+    def test_should_store_trade_shy_and_churning_disabled_before_baseline_locks(self) -> None:
+        """baseline_trade_rate() == 0.0 (window not yet locked) disables both triggers,
+        matching cps_diagnosis.diagnose_rolling's own guard -- not a false alarm."""
+        cb = _make_callback()
+        cb._wrapper.baseline_trade_rate.return_value = 0.0
+        cb._wrapper._window_data["short"]["trade_rate"] = 0.0
+        should, event = cb._should_store(3, 0.0, 1.5)
+        assert should is False
+        assert event is None
+
+    def test_should_store_numeric_anomaly_on_nan_reward(self) -> None:
+        """numeric_anomaly fires on NaN mean_reward."""
+        cb = _make_callback()
+        should, event = cb._should_store(3, 0.0, float("nan"))
+        assert should is True
+        assert event == "numeric_anomaly"
+
+    def test_should_store_numeric_anomaly_on_inf_approx_kl(self) -> None:
+        """numeric_anomaly fires on +inf approx_kl."""
+        cb = _make_callback()
+        should, event = cb._should_store(3, float("inf"), 1.5)
+        assert should is True
+        assert event == "numeric_anomaly"
+
+    def test_should_store_numeric_anomaly_precedes_kl_spike(self) -> None:
+        """When both numeric_anomaly and kl_spike would fire, numeric_anomaly wins
+        (checked first -- a NaN/inf reading makes every other metric this epoch
+        suspect, so it is reported ahead of a comparison against a possibly
+        corrupted approx_kl)."""
+        cb = _make_callback()
+        should, event = cb._should_store(3, 0.5, float("nan"))
+        assert should is True
+        assert event == "numeric_anomaly"
+
+    def test_should_store_rate_cap_suppresses_second_same_trigger_in_window(self) -> None:
+        """Rate cap: the same trigger type firing twice inside one trend window ->
+        the second occurrence is suppressed (should_store=False)."""
+        cb = _make_callback()
+        should1, event1 = cb._should_store(3, 0.20, 1.5)
+        should2, event2 = cb._should_store(5, 0.20, 1.5)
+        assert (should1, event1) == (True, "kl_spike")
+        assert (should2, event2) == (False, None)
+
+    def test_should_store_rate_cap_resets_on_new_trend_window(self) -> None:
+        """Rate cap resets once num_timesteps crosses into a new trend window."""
+        cb = _make_callback()
+        trend_steps = cb._wrapper._window_data["trend"]["steps"]
+        cb.num_timesteps = 0
+        should1, event1 = cb._should_store(3, 0.20, 1.5)
+        cb.num_timesteps = trend_steps  # crosses into trend-window index 1
+        should2, event2 = cb._should_store(5, 0.20, 1.5)
+        assert (should1, event1) == (True, "kl_spike")
+        assert (should2, event2) == (True, "kl_spike")
+
+    def test_should_store_hard_cap_drops_row_51_and_fires_alarm_once(self) -> None:
+        """Hard cap (default 50/run): 51 distinct events (each in its own trend
+        window, so the rate cap never suppresses them) -> row 51 is dropped, a
+        capture_alarm ingests + logs exactly once, and the run's next cadence
+        epoch is STILL stored (fail-safe direction: lose telemetry, never the
+        heartbeat)."""
+        cb = _make_callback()
+        trend_steps = cb._wrapper._window_data["trend"]["steps"]
+
+        for i in range(50):
+            cb.num_timesteps = i * trend_steps
+            should, event = cb._should_store(3, 0.20, 1.5)
+            assert (should, event) == (True, "kl_spike"), f"event {i} should be accepted"
+        assert cb._event_rows_this_run == 50
+        assert cb._hard_cap_alarm_fired is False
+        cb._client.ingest_training.assert_not_called()
+
+        # 51st distinct-window event: hard cap reached -> dropped + alarm fires once.
+        cb.num_timesteps = 50 * trend_steps
+        should_51, event_51 = cb._should_store(3, 0.20, 1.5)
+        assert (should_51, event_51) == (False, None)
+        assert cb._hard_cap_alarm_fired is True
+        assert cb._event_rows_this_run == 50  # dropped row does not increment
+        cb._client.ingest_training.assert_called_once()
+        call = cb._client.ingest_training.call_args
+        assert call.kwargs["source"] == "capture_alarm:equity:ppo"
+
+        # A second breach past the cap must NOT fire a second alarm.
+        cb.num_timesteps = 51 * trend_steps
+        should_52, event_52 = cb._should_store(3, 0.20, 1.5)
+        assert (should_52, event_52) == (False, None)
+        cb._client.ingest_training.assert_called_once()  # still just the one call
+
+        # Cadence path is uncapped: the next cadence epoch still stores.
+        should_cadence, event_cadence = cb._should_store(cb._cadence, 0.20, 1.5)
+        assert (should_cadence, event_cadence) == (True, None)
 
 
 # ---------------------------------------------------------------------------
