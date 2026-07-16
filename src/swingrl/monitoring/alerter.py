@@ -124,6 +124,7 @@ class Alerter:
         title: str,
         message: str,
         environment: str | None = None,
+        bypass_suppression: bool = False,
     ) -> None:
         """Send an alert via Discord webhook or buffer for digest.
 
@@ -133,6 +134,12 @@ class Alerter:
             message: Alert message body.
             environment: Optional environment name (e.g., "Equity", "Crypto")
                 to include in the embed footer.
+            bypass_suppression: If True, skips ONLY the consecutive-warnings
+                suppression gate (cooldown dedup still applies). Default False so
+                existing callers (e.g. the backup job) are unaffected. Intended for
+                warnings that represent one-off, same-day data loss -- e.g. an
+                options-capture failure -- that must not wait for N consecutive
+                occurrences before reaching Discord.
         """
         msg_hash = self._compute_hash(title, message)
 
@@ -143,7 +150,7 @@ class Alerter:
         cooldown_key = f"{level}:{title}"
 
         # Check consecutive failures threshold for warnings
-        if level == "warning":
+        if level == "warning" and not bypass_suppression:
             with self._lock:
                 self._failure_counts[cooldown_key] = self._failure_counts.get(cooldown_key, 0) + 1
                 count = self._failure_counts[cooldown_key]
