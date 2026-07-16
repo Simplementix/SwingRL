@@ -203,10 +203,8 @@ _EXPECTED_SCHEMA_VERSION = 1  # mirrors migration_runner.EXPECTED_SCHEMA_VERSION
 
 def _memory_schema_migrations_table_exists(conn: psycopg.Connection[dict[str, Any]]) -> bool:
     """Return True if the schema_migrations ledger table exists in this database."""
-    row = conn.execute(
-        "SELECT 1 FROM information_schema.tables WHERE table_name = 'schema_migrations'"
-    ).fetchone()
-    return row is not None
+    row = conn.execute("SELECT to_regclass('public.schema_migrations') AS reg").fetchone()
+    return row is not None and row["reg"] is not None
 
 
 def _current_memory_schema_version(conn: psycopg.Connection[dict[str, Any]]) -> int:

@@ -12,13 +12,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import textwrap
-from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 
-from swingrl.config.schema import load_config
 from swingrl.data.db import DatabaseManager
 
 pytestmark = pytest.mark.skipif(
@@ -26,80 +23,8 @@ pytestmark = pytest.mark.skipif(
     reason="DATABASE_URL not set — no PostgreSQL available for testing",
 )
 
-
-@pytest.fixture
-def db_with_legacy_schema(tmp_path: Path) -> Generator[DatabaseManager, None, None]:
-    """DatabaseManager on DATABASE_URL with init_schema() already run.
-
-    Mirrors ``tests/data/test_migrations_content.py``'s fixture of the same name:
-    V001/V002's plain ``CREATE TABLE`` / ``ALTER TABLE ADD COLUMN`` statements are
-    not idempotent by themselves, so teardown drops the V002 artifacts (FK-safe
-    order), the V001 artifacts, and clears the version-1/2 ledger rows — keeping
-    the persistent scratch database re-runnable across test sessions.
-    """
-    db_url = os.environ.get(
-        "DATABASE_URL",
-        "postgresql://test:test@localhost:5432/swingrl_test",  # pragma: allowlist secret
-    )
-    config_yaml = textwrap.dedent(f"""\
-        trading_mode: paper
-        equity:
-          symbols: [SPY, QQQ]
-          max_position_size: 0.25
-          max_drawdown_pct: 0.10
-          daily_loss_limit_pct: 0.02
-        crypto:
-          symbols: [BTCUSDT, ETHUSDT]
-          max_position_size: 0.50
-          max_drawdown_pct: 0.12
-          daily_loss_limit_pct: 0.03
-          min_order_usd: 10.0
-        capital:
-          equity_usd: 400.0
-          crypto_usd: 47.0
-        paths:
-          data_dir: data/
-          db_dir: db/
-          models_dir: models/
-          logs_dir: logs/
-        logging:
-          level: INFO
-          json_logs: false
-        system:
-          database_url: "{db_url}"
-        alerting:
-          alert_cooldown_minutes: 30
-          consecutive_failures_before_alert: 3
-    """)
-    config_file = tmp_path / "swingrl.yaml"
-    config_file.write_text(config_yaml)
-    config = load_config(config_file)
-    DatabaseManager.reset()
-    mgr = DatabaseManager(config)
-    mgr.init_schema()
-    yield mgr
-    with mgr.connection() as conn:
-        conn.execute("DROP TABLE IF EXISTS ensemble_weight_history")
-        conn.execute("DROP TABLE IF EXISTS models")
-        conn.execute("DROP TABLE IF EXISTS training_runs")
-        conn.execute(
-            "ALTER TABLE backtest_results "
-            "DROP COLUMN IF EXISTS era_id, DROP COLUMN IF EXISTS gate_version_id"
-        )
-        conn.execute(
-            "ALTER TABLE iteration_results "
-            "DROP COLUMN IF EXISTS era_id, DROP COLUMN IF EXISTS gate_version_ensemble_id"
-        )
-        conn.execute("DROP TABLE IF EXISTS eras")
-        conn.execute("DROP TABLE IF EXISTS gate_versions")
-        conn.execute(
-            "DO $$ BEGIN "
-            "IF to_regclass('public.schema_migrations') IS NOT NULL THEN "
-            "DELETE FROM schema_migrations WHERE version IN (1, 2); "
-            "END IF; "
-            "END $$;"
-        )
-    DatabaseManager.reset()
+# db_with_legacy_schema fixture lives in tests/data/conftest.py (shared with
+# test_migrations_content.py) — pytest auto-discovers it for this module.
 
 
 def _write_vintage(models_root: Path, iteration: int, environment: str, algorithm: str) -> None:
@@ -277,3 +202,19 @@ def test_bootstrap_era0_models_no_vintage_no_fallback(
     with db_with_legacy_schema.connection() as conn:
         n = conn.execute("SELECT count(*) AS n FROM training_runs").fetchone()["n"]
     assert n == 0
+
+
+def test_bootstrap_era0_models_requires_schema_v2(
+    db_with_legacy_schema: DatabaseManager, tmp_path: Path
+) -> None:
+    """Fix 4: schema behind V002 raises ConfigError, not a raw UndefinedTable.
+
+    ``db_with_legacy_schema`` only runs ``init_schema()`` (legacy tables); V001/V002
+    are deliberately NOT applied here, so ``training_runs``/``models`` do not exist
+    yet and the precondition must trip before any query touches them.
+    """
+    from scripts.migrations.bootstrap_era0_models import bootstrap_era0_models
+    from swingrl.utils.exceptions import ConfigError
+
+    with pytest.raises(ConfigError):
+        bootstrap_era0_models(db_with_legacy_schema, tmp_path / "models")

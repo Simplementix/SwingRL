@@ -57,8 +57,8 @@ def _mock_conn(fetchone_returns: list[object]) -> MagicMock:
 def test_assert_memory_schema_current_raises_when_behind(monkeypatch: pytest.MonkeyPatch) -> None:
     """A30 floor semantics: ledger version behind the floor -> RuntimeError."""
     monkeypatch.setattr(memory_db_module, "_EXPECTED_SCHEMA_VERSION", 3)
-    # 1st fetchone(): ledger table exists check -> truthy row. 2nd: max(version) -> 1.
-    conn = _mock_conn([{"?column?": 1}, {"v": 1}])
+    # 1st fetchone(): to_regclass(...) ledger exists check -> truthy reg. 2nd: max(version) -> 1.
+    conn = _mock_conn([{"reg": "schema_migrations"}, {"v": 1}])
 
     with pytest.raises(RuntimeError, match="behind expected"):
         memory_db_module._assert_memory_schema_current(conn)
@@ -71,7 +71,7 @@ def test_assert_memory_schema_current_warns_when_ahead(
     import logging
 
     monkeypatch.setattr(memory_db_module, "_EXPECTED_SCHEMA_VERSION", 1)
-    conn = _mock_conn([{"?column?": 1}, {"v": 5}])
+    conn = _mock_conn([{"reg": "schema_migrations"}, {"v": 5}])
 
     with caplog.at_level(logging.WARNING):
         memory_db_module._assert_memory_schema_current(conn)  # must not raise
@@ -80,7 +80,7 @@ def test_assert_memory_schema_current_warns_when_ahead(
 def test_assert_memory_schema_current_ok_when_exact(monkeypatch: pytest.MonkeyPatch) -> None:
     """A30 floor semantics: ledger version exactly at the floor -> no raise."""
     monkeypatch.setattr(memory_db_module, "_EXPECTED_SCHEMA_VERSION", 2)
-    conn = _mock_conn([{"?column?": 1}, {"v": 2}])
+    conn = _mock_conn([{"reg": "schema_migrations"}, {"v": 2}])
 
     memory_db_module._assert_memory_schema_current(conn)  # must not raise
 
@@ -97,9 +97,10 @@ def test_assert_memory_schema_current_treats_missing_ledger_as_version_zero(
     ledger before querying it.
     """
     monkeypatch.setattr(memory_db_module, "_EXPECTED_SCHEMA_VERSION", 1)
-    # 1st fetchone(): ledger table existence check -> None (table absent).
+    # 1st fetchone(): to_regclass(...) always returns one row -- reg is NULL when the
+    # table is absent (Fix 3: schema-qualified probe, 'public.schema_migrations').
     # No 2nd fetchone(): the version query must be skipped when the table is absent.
-    conn = _mock_conn([None])
+    conn = _mock_conn([{"reg": None}])
 
     with pytest.raises(RuntimeError, match="behind expected"):
         memory_db_module._assert_memory_schema_current(conn)
@@ -111,8 +112,8 @@ def test_init_db_calls_schema_guard_after_local_ddl(monkeypatch: pytest.MonkeyPa
 
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = []  # information_schema.columns probe
-    # Ledger existence check -> table absent -> version 0 -> behind floor 1.
-    conn.execute.return_value.fetchone.side_effect = [None]
+    # Ledger existence check -> to_regclass reg is NULL -> version 0 -> behind floor 1.
+    conn.execute.return_value.fetchone.side_effect = [{"reg": None}]
 
     class _FakePool:
         def connection(self) -> MagicMock:

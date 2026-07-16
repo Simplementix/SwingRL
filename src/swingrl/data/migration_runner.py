@@ -45,7 +45,12 @@ _LEDGER_DDL = (
 
 
 def _discover(migrations_dir: Path) -> list[tuple[int, str, Path]]:
-    """Return sorted (version, description, path); raise DataError on bad names/gaps."""
+    """Return sorted (version, description, path); raise DataError on bad names/gaps.
+
+    "Gaps" are relative to the discovered set, not to 1 — a directory that starts
+    at V901 is fine (see tests/data/test_migration_runner.py's ``migrations_dir``
+    fixture); a missing middle number (e.g. V901 then V903, no V902) is not.
+    """
     found: list[tuple[int, str, Path]] = []
     for path in sorted(migrations_dir.glob("V*.sql")):
         m = _FILE_RE.match(path.name)
@@ -55,6 +60,11 @@ def _discover(migrations_dir: Path) -> list[tuple[int, str, Path]]:
     versions = [v for v, _, _ in found]
     if versions != sorted(set(versions)):
         raise DataError(f"Duplicate migration versions: {versions}")
+    for previous, current in zip(versions, versions[1:], strict=False):
+        if current != previous + 1:
+            raise DataError(
+                f"Non-contiguous migration versions: gap between {previous} and {current}"
+            )
     return found
 
 

@@ -49,7 +49,8 @@ import structlog
 
 from swingrl.config.schema import load_config
 from swingrl.data.db import DatabaseManager
-from swingrl.utils.exceptions import DataError
+from swingrl.data.migration_runner import current_schema_version
+from swingrl.utils.exceptions import ConfigError, DataError
 from swingrl.utils.logging import configure_logging
 
 if TYPE_CHECKING:
@@ -64,6 +65,13 @@ BEST_ERA0_VINTAGE: dict[str, int] = {"crypto": 0, "equity": 4}
 ERA0_SEED_MAP: dict[str, int] = {"ppo": 42, "a2c": 43, "sac": 44}  # trainer.py:71
 SENTINEL = -1  # fallback only: vintage genuinely unresolvable (P-A1)
 
+# This script writes training_runs/models/ensemble_weight_history rows, which only
+# exist from V002 onward. Deliberately NOT migration_runner.assert_schema_current()
+# / EXPECTED_SCHEMA_VERSION: that floor is the TRADER's requirement and will climb
+# past 2 as later tasks ship (V003 in Task 8, V004 in Task 12) while this script's
+# own requirement stays pinned at the V002 spine tables it actually writes to.
+_REQUIRED_SCHEMA_VERSION = 2
+
 ENVIRONMENTS: tuple[str, ...] = ("equity", "crypto")
 ALGORITHMS: tuple[str, ...] = ("ppo", "a2c", "sac")
 
@@ -75,7 +83,7 @@ _DEFAULT_ENSEMBLE_WEIGHT = 1.0 / 3
 
 _FALLBACK_QUERY = (
     "SELECT DISTINCT ON (environment, algorithm) * FROM model_metadata "
-    "ORDER BY environment, algorithm, training_end_date DESC"
+    "ORDER BY environment, algorithm, training_end_date DESC NULLS LAST"
 )
 
 _INSERT_TRAINING_RUN = (
@@ -262,7 +270,25 @@ def bootstrap_era0_models(db: DatabaseManager, models_root: Path) -> dict[str, i
         ``fallback`` (sentinel rows resolved from model_metadata),
         ``unresolved`` (neither source available, skipped),
         ``skipped_existing`` (already bootstrapped by a prior run).
+
+    Raises:
+        ConfigError: The database schema is behind V002 (training_runs/models/
+            ensemble_weight_history do not exist yet) — run apply_migrations first.
     """
+    schema_version = current_schema_version(db)
+    if schema_version < _REQUIRED_SCHEMA_VERSION:
+        log.error(
+            "era0_bootstrap_schema_behind",
+            schema_version=schema_version,
+            required=_REQUIRED_SCHEMA_VERSION,
+        )
+        raise ConfigError(
+            f"Database schema version {schema_version} is behind the version "
+            f"{_REQUIRED_SCHEMA_VERSION} required by era-0 bootstrap "
+            "(training_runs/models/ensemble_weight_history); run "
+            "scripts/apply_migrations.py before this script."
+        )
+
     counts = {"vintage": 0, "fallback": 0, "unresolved": 0, "skipped_existing": 0}
 
     with db.connection() as conn:
