@@ -158,6 +158,44 @@ class TestClampRewardWeights:
         assert set(result.keys()) == {"profit", "sharpe", "drawdown", "turnover"}
 
 
+class TestLeverLimits:
+    """D-T2.1: L1 lever limits (max_reward_delta + cooldown) are config-owned.
+
+    Shipped default config (config/swingrl.yaml) benches the L1 lever for every
+    algo/env pair — get_max_reward_delta() must return 0.0 across the board.
+    """
+
+    def test_max_reward_delta_zero_for_all_pairs_under_default_config(self) -> None:
+        """D-T2.1: max delta is 0.0 for every algo/env pair under the shipped config."""
+        from swingrl.memory.training.bounds import get_max_reward_delta
+
+        for algo in ("ppo", "a2c", "sac"):
+            for env in ("equity", "crypto"):
+                assert get_max_reward_delta(algo, env) == 0.0, (
+                    f"expected benched (0.0) for {algo}/{env}, got a nonzero delta"
+                )
+
+    def test_get_max_reward_delta_a2c_crypto_is_zero(self) -> None:
+        """D-T2.1: a2c/crypto used to return 0.05 (pre-bench); now 0.0 under default config."""
+        from swingrl.memory.training.bounds import get_max_reward_delta
+
+        assert get_max_reward_delta("a2c", "crypto") == 0.0
+
+    def test_get_adjustment_cooldown_values_unchanged(self) -> None:
+        """D-T2.1: cooldown values are unchanged in value, just config-sourced."""
+        from swingrl.memory.training.bounds import get_adjustment_cooldown
+
+        assert get_adjustment_cooldown("ppo") == 24_576
+        assert get_adjustment_cooldown("a2c") == 500
+        assert get_adjustment_cooldown("sac") == 20_000
+
+    def test_get_max_reward_delta_case_insensitive(self) -> None:
+        """D-T2.1: algo/env lookups are case-insensitive (existing behavior preserved)."""
+        from swingrl.memory.training.bounds import get_max_reward_delta
+
+        assert get_max_reward_delta("PPO", "EQUITY") == 0.0
+
+
 class TestMemoryClientIngest:
     """Tests for MemoryClient fail-open behavior."""
 
