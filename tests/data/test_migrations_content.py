@@ -1,4 +1,8 @@
-"""V001: registries exist; era 0 seeded; 574 legacy rows back-stamped era 0."""
+"""V001: registries exist; era 0 seeded; 574 legacy rows back-stamped era 0.
+
+V002: identity-spine subset (training_runs, models, ensemble_weight_history) —
+spine UNIQUE constraint makes duplicate runs impossible; retries are new attempt rows.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ import textwrap
 from collections.abc import Generator
 from pathlib import Path
 
+import psycopg
 import pytest
 
 from swingrl.config.schema import load_config
@@ -24,10 +29,11 @@ def db_with_legacy_schema(tmp_path: Path) -> Generator[DatabaseManager, None, No
 
     Legacy tables (backtest_results, iteration_results, ...) exist, possibly
     empty — the V001 back-stamp must hold for 0 rows in CI and 574 in
-    production. V001's plain ``CREATE TABLE`` / ``ALTER TABLE ADD COLUMN``
-    statements are not idempotent by themselves, so teardown drops the V001
-    artifacts (the two new registry tables and the four added columns) and
-    clears the version-1 ledger row, mirroring
+    production. V001/V002's plain ``CREATE TABLE`` / ``ALTER TABLE ADD COLUMN``
+    statements are not idempotent by themselves, so teardown drops the V002
+    artifacts (training_runs/models/ensemble_weight_history, FK-safe order)
+    and the V001 artifacts (the two new registry tables and the four added
+    columns), then clears the version-1 and version-2 ledger rows, mirroring
     ``tests/data/test_migration_runner.py``'s ``db`` fixture cleanup — this
     keeps the persistent scratch database re-runnable across test sessions.
     """
@@ -73,6 +79,11 @@ def db_with_legacy_schema(tmp_path: Path) -> Generator[DatabaseManager, None, No
     mgr.init_schema()
     yield mgr
     with mgr.connection() as conn:
+        # V002 teardown first (FK-safe order): ensemble_weight_history -> models ->
+        # training_runs, since training_runs.era_id references eras (dropped below).
+        conn.execute("DROP TABLE IF EXISTS ensemble_weight_history")
+        conn.execute("DROP TABLE IF EXISTS models")
+        conn.execute("DROP TABLE IF EXISTS training_runs")
         conn.execute(
             "ALTER TABLE backtest_results "
             "DROP COLUMN IF EXISTS era_id, DROP COLUMN IF EXISTS gate_version_id"
@@ -86,7 +97,7 @@ def db_with_legacy_schema(tmp_path: Path) -> Generator[DatabaseManager, None, No
         conn.execute(
             "DO $$ BEGIN "
             "IF to_regclass('public.schema_migrations') IS NOT NULL THEN "
-            "DELETE FROM schema_migrations WHERE version = 1; "
+            "DELETE FROM schema_migrations WHERE version IN (1, 2); "
             "END IF; "
             "END $$;"
         )
@@ -110,3 +121,32 @@ def test_v001_era0_bootstrap(db_with_legacy_schema: DatabaseManager) -> None:
         ).fetchone()
         total = conn.execute("SELECT count(*) AS n FROM backtest_results").fetchone()
         assert stamped["n"] == total["n"]
+
+
+def test_v002_spine_unique(db_with_legacy_schema) -> None:
+    """D-T3.1: duplicates impossible; retries are new attempt rows.
+
+    Each insert attempt uses its own ``connection()`` block rather than sharing
+    one transaction: ``DatabaseManager.connection()`` only rolls back when the
+    exception propagates out of the ``with`` block (see db.py — commit on clean
+    exit, rollback on exception exit). Catching the UniqueViolation with
+    ``pytest.raises`` *inside* a single shared block would leave that block's
+    transaction aborted at the Postgres level, so the following insert would
+    fail with ``InFailedSqlTransaction`` rather than succeeding — verified
+    empirically against the live scratch DB before writing this test this way.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    ins = (
+        "INSERT INTO training_runs (iteration_number, environment, algorithm, fold_number,"
+        " run_type, seed, attempt, status, era_id, code_version, data_fingerprint)"
+        " VALUES (5, 'equity', 'ppo', 0, 'reference', 42, %s, 'completed', 0, 'abc123', 'fp1')"
+    )
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(ins, (1,))
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(ins, (1,))
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(ins, (2,))  # new attempt OK
