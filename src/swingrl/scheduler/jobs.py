@@ -193,6 +193,17 @@ def daily_summary_job() -> None:
     """
     ctx = _get_ctx()
 
+    # A30 Discord wiring (Plan A Task E): flush any buffered INFO alerts as the daily
+    # digest. Alerter.send_daily_digest() had ZERO production callers, so INFO-level
+    # alerts accumulated in memory and were lost on the next restart. This end-of-day
+    # job (18:00 ET) is the flush point. It runs BEFORE the halt gate so INFO buffered
+    # on a halted day still reaches Discord. The trader keeps digest semantics rather
+    # than info_immediate (unlike the low-volume collector) — see docs/training/deploy-process.md.
+    try:
+        ctx.alerter.send_daily_digest()
+    except Exception:
+        log.exception("daily_digest_flush_failed")
+
     if is_halted(ctx.db):
         log.warning("daily_summary_skipped", reason="halt_flag_active")
         return
