@@ -254,19 +254,40 @@ class MemoryVecRewardWrapper(VecEnvWrapper):
     def rolling_mdd(self) -> float:
         """DEPRECATED (spec §2.6, Task 5): use window_metrics("trend")["mdd_frac_worst"].
 
-        Retained as a compatibility alias for existing diagnosis call sites
-        (MemoryEpochCallback._should_store, _collect_metrics, _ingest_adjustment_trigger,
-        _resolve_pending_adjustment) -- Task 6 rewires those callers directly onto
-        window_metrics() and removes this alias. No longer the cumsum-of-shaped-rewards
+        Honest correction (this alias's docstring previously overclaimed removal):
+        retained as a compatibility alias for the three value-read call sites that
+        legitimately keep using it -- MemoryEpochCallback._collect_metrics,
+        _ingest_adjustment_trigger, _resolve_pending_adjustment -- which read it purely
+        as a current-MDD scalar for logging / trigger-effectiveness comparisons and are
+        self-consistent regardless of scale. Task 6 rewired only _should_store's trigger
+        comparison directly onto window_metrics("short") (the one call site whose
+        threshold comparison was actually broken); the other three were never broken and
+        this alias is not scheduled for removal. No longer the cumsum-of-shaped-rewards
         design (unbounded scale); now the trend window's worst-sub-env equity-fraction
-        drawdown, negated to preserve the historical negative-means-drawdown sign
-        convention even though the underlying metric is a non-negative magnitude.
+        drawdown in [-1, 0] (Task 5), negated to preserve the historical
+        negative-means-drawdown sign convention even though the underlying metric is a
+        non-negative magnitude.
 
         Returns:
             Negative equity-fraction drawdown (e.g. -0.10 for a 10% worst-sub-env
             drawdown in the trend window). 0.0 if the window has no data yet.
         """
         return -float(self.window_metrics("trend")["mdd_frac_worst"])
+
+    @property
+    def trend_steps(self) -> int:
+        """Configured trend-window size, in total-timesteps units (D-T2.7 dual-unit basis).
+
+        O(1) accessor for the per-fold constant set by configure_windows() -- added so
+        callers that only need the window's size (e.g. MemoryEpochCallback's
+        trend-window-boundary bookkeeping) don't have to pay window_metrics("trend")'s
+        full deque-iteration + numpy recompute just to read one field.
+
+        Returns:
+            The trend window size in total-timesteps units. 0 if configure_windows()
+            has not yet been called this fold.
+        """
+        return self._trend_steps
 
     def configure_windows(self, short_steps: int, trend_steps: int) -> None:
         """Size the short/trend percent-of-fold windows (spec §2.6).

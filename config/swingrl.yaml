@@ -191,6 +191,13 @@ memory_agent:
         default_model: "moonshotai/kimi-k2.5"
 
 training:
+  # Config lifecycle note: `bounds` below is loaded once into module-level constants
+  # at import time (src/swingrl/memory/training/bounds.py:HYPERPARAM_BOUNDS/REWARD_BOUNDS/
+  # ADJUSTMENT_COOLDOWN_STEPS/MAX_REWARD_DELTA) -- a container restart is required for
+  # edits here to take effect. `windows` and `notable_events` below are re-read from
+  # disk at the start of every fold (epoch_callback.py's _on_training_start /
+  # _load_notable_events), so edits to those two blocks take effect on the next fold
+  # with no restart needed.
   bounds:
     hyperparam_bounds:
       learning_rate: [0.00001, 0.001]

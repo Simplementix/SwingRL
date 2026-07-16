@@ -253,9 +253,11 @@ def diagnose_rolling(
     Self-baseline design: baseline_trade_rate is the fold's own first-full-window
     rate (wrapper-provided), so no cross-fold steps conversion is needed. Only
     trade_shy and poor_selection are detectable mid-fold; disaster/churning need
-    the completed backtest row (rolling MDD is in reward units, not portfolio
-    fraction). trade_shy is checked first: an activity collapse is the root cause,
-    so win-rate degradation is treated as a symptom.
+    the completed backtest row's total_trades/profit_factor fields, which aren't
+    computed mid-fold -- not a units mismatch: the wrapper's rolling MDD has been a
+    portfolio-value equity fraction in [-1, 0] since Task 5, the same basis as the
+    backtest row. trade_shy is checked first: an activity collapse is the root
+    cause, so win-rate degradation is treated as a symptom.
 
     Args:
         trade_rate: Current rolling trades-per-step rate.

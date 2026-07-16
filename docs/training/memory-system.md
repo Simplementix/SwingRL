@@ -431,9 +431,15 @@ returns:
 | `win_rate` | Fraction of pooled per-sub-env shaped rewards `> 0.0` in the window. |
 | `trade_rate` | Mean of summed-per-call `trades_this_step` across the window. |
 
-All metrics default to `0.0` when the window has fewer than 2 recorded steps (including
-before `configure_windows()` has ever been called — the underlying deques start at
-`maxlen=0`, so every `step_wait()` append up to that point is silently discarded).
+All metrics default to `0.0` before `configure_windows()` has ever been called (the
+underlying deques start at `maxlen=0`, so every `step_wait()` append up to that point
+is silently discarded). Beyond that, each metric has its own minimum, not a uniform
+"2 recorded steps" floor: `sharpe_annualized` needs at least 2 pooled reward
+*observations* — with `n_envs > 1` a single `step_wait()` entry already yields
+`n_envs` per-sub-env rewards, so sharpe can compute from just one recorded window
+entry; `mdd_frac_worst`/`mdd_frac_mean` need at least 2 window entries per sub-env
+curve (a drawdown needs two points in time, regardless of `n_envs`); `win_rate` and
+`trade_rate` need only a non-empty window (one entry is enough).
 
 ### `rolling_mdd()` — deprecated alias
 
@@ -451,6 +457,15 @@ is a non-negative magnitude. These three call sites use it purely as a current-M
 reading for logging / trigger-effectiveness comparisons (`sharpe_at_trigger`/
 `mdd_at_trigger`, the `training_epochs.rolling_mdd` DB column, `leading_indicators.rolling_mdd`
 sent to the LLM) — self-consistent regardless of scale, so Task 6 left them as-is.
+
+**Telemetry unit break (this branch).** `training_epochs.rolling_mdd` and
+`reward_adjustments.mdd_at_trigger` rows written before this branch are on the old
+cumsum-of-shaped-rewards scale (unbounded magnitude, historically as low as -25 or
+beyond); rows written from this branch onward are on the new `[-1, 0]`
+portfolio-value equity-fraction scale (Task 5). A query or dashboard that reads
+across that boundary must not mix the two scales. Phase 3 (writer rewiring) points
+the writers themselves at the new schema; historical rows already on disk keep
+their old scale regardless.
 
 **Task 6 update (§4.10, D-T3.19):** `_should_store` — the ONE call site whose old
 `rolling_mdd < NOTABLE_MDD_THRESHOLD` comparison was actually broken (the -25.0
@@ -736,3 +751,4 @@ Knobs live under `memory_agent.*` in `config/swingrl.yaml`. Roughly:
 - **2026-05-05** — Initial version.
 - **2026-07-16** — Task 5 (spec §2.6): added "Training window observability" section — percent-of-fold windows (`training.windows.*`), `configure_windows()`/`window_metrics()` contract, the `_on_training_start` startup guard, and the `rolling_mdd()` deprecated alias.
 - **2026-07-16** — Task 6 (spec §4.10, D-T3.19, F2 class-fix): added "Notable-event trigger set" section — the five-trigger `_should_store` redesign (`training.notable_events.*`), rate cap (one row per trigger type per trend window) + hard cap (50/run, alarm-once via `capture_alarm`), and the `_on_training_end` `rollout_cadence_observed` instrumentation. `NOTABLE_KL_THRESHOLD`/`NOTABLE_MDD_THRESHOLD` module constants removed; `_should_store` no longer calls `rolling_mdd()` (reads `window_metrics("short")` directly) — the alias's other three call sites are unchanged (never broken, out of scope).
+- **2026-07-16** — Final-review fixes (Plan B Phase 1 closeout): noted the `training_epochs.rolling_mdd` / `reward_adjustments.mdd_at_trigger` telemetry unit break (pre-/post-Task-5 scale) for cross-boundary readers; corrected the "fewer than 2 recorded steps" claim (`n_envs > 1` lets `sharpe_annualized`/`win_rate` compute from a single window entry).

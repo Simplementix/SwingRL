@@ -69,6 +69,12 @@ def _make_mock_wrapper(n_envs: int = 1) -> MagicMock:
     }
     mock._window_data = window_data
     mock.window_metrics.side_effect = lambda window: dict(window_data[window])
+    # trend_steps is now an O(1) property on the real wrapper (perf fix: avoids paying
+    # window_metrics("trend")'s full deque-iteration cost just to read the size) --
+    # mirror window_data["trend"]["steps"] so _roll_trend_window_if_needed's trend-window
+    # index math (num_timesteps // trend_steps) still works against a real int, not an
+    # auto-generated MagicMock attribute.
+    mock.trend_steps = window_data["trend"]["steps"]
     return mock
 
 

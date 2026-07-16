@@ -540,6 +540,13 @@ class MemoryEpochCallback(BaseCallback):
           ``capture_alarm`` fires exactly once (``self._hard_cap_alarm_fired``) --
           fail-safe direction: lose telemetry, never the run.
 
+        Perf note: once the hard cap has been breached (``self._hard_cap_alarm_fired``
+        is True), every remaining epoch this run would be dropped regardless of which
+        trigger -- if any -- fires (``self._event_rows_this_run`` never decreases), so
+        trigger evaluation is skipped entirely for the rest of the run rather than
+        paying ``_fired_trigger``'s ``window_metrics("short")`` cost (measured 0.55
+        ms/call) for a result that would be discarded anyway.
+
         Args:
             epoch: Current epoch number.
             approx_kl: Approximate KL divergence from training logs.
@@ -552,6 +559,9 @@ class MemoryEpochCallback(BaseCallback):
 
         if epoch % self._cadence == 0:
             return True, None
+
+        if self._hard_cap_alarm_fired:
+            return False, None
 
         trigger = self._fired_trigger(approx_kl, mean_reward)
         if trigger is None:
@@ -619,8 +629,14 @@ class MemoryEpochCallback(BaseCallback):
         ``_on_training_start`` has run) means no boundary tracking is possible;
         treated as a single window 0 (rate cap effectively suspended until windows
         are configured, matching this callback's established fail-open posture).
+
+        Reads ``self._wrapper.trend_steps`` (an O(1) property) rather than
+        ``window_metrics("trend")["steps"]`` -- this method runs on every
+        ``_on_rollout_end``, and the full deque-iteration + numpy recompute behind
+        ``window_metrics()`` was measured at 7.7 ms/call at crypto-SAC scale (~167K
+        rollout-ends/fold, ~21+ min/fold wasted just to read a per-fold constant).
         """
-        trend_steps = int(self._wrapper.window_metrics("trend").get("steps", 0))
+        trend_steps = int(self._wrapper.trend_steps)
         window_idx = self.num_timesteps // trend_steps if trend_steps > 0 else 0
         if window_idx != self._trend_window_idx:
             self._trend_window_idx = window_idx

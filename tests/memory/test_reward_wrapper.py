@@ -588,6 +588,18 @@ class TestPercentOfFoldWindows:
         assert set(short) == expected_keys
         assert set(trend) == expected_keys
 
+    def test_trend_steps_property_is_o1_accessor_matching_window_metrics(self) -> None:
+        """trend_steps property (perf fix) mirrors window_metrics("trend")["steps"]
+        without paying the deque-iteration + numpy recompute cost -- 0 before
+        configure_windows() has run, and the configured value after."""
+        mock_venv = _make_mock_venv()
+        wrapper = MemoryVecRewardWrapper(mock_venv)
+        assert wrapper.trend_steps == 0
+
+        wrapper.configure_windows(short_steps=10_000, trend_steps=150_000)
+        assert wrapper.trend_steps == 150_000
+        assert wrapper.trend_steps == wrapper.window_metrics("trend")["steps"]
+
     def test_window_metrics_invalid_window_raises(self) -> None:
         """window_metrics() only accepts "short" or "trend"."""
         mock_venv = _make_mock_venv()
