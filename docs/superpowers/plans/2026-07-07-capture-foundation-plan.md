@@ -1131,6 +1131,26 @@ an image rebuild + recreate kills the scheduler, and (post-Task D) a training wr
     restarts are safe by design (persistent jobstore + boot self-check: reconcile +
     lookback health check). The collector keeps running through trader deploys AND
     through Plan B's cutover (its tables are untouched by V010).
+  - **Discord delivery wiring (amendment 2026-07-15, from T16 collector deploy — two
+    latent gaps proven live; both bite when paper trading's notifications come into
+    play, so they are fixed at container setup, verified at Task 16 Step 1):**
+    1. **Webhook env:** the Alerter reads `config.alerting.alerts_webhook_url` /
+       `daily_webhook_url` — populated only by the env overrides
+       `SWINGRL_ALERTING__ALERTS_WEBHOOK_URL` / `SWINGRL_ALERTING__DAILY_WEBHOOK_URL`.
+       The legacy `DISCORD_WEBHOOK_URL` in `.env` is read by NOTHING (it appears only in
+       compose comments); with it alone, every alert boots disabled
+       (`alert_disabled reason=no_webhook_url`) — this is why Discord was never proven
+       end-to-end before 2026-07-15. Homelab `.env` now sets both overrides (fixed
+       2026-07-15); this task's compose split must carry them into `swingrl-trader` and
+       `swingrl-trainer` (shared `env_file: .env` already does — verify, don't assume).
+    2. **INFO alerts never send:** `Alerter.send_daily_digest()` has ZERO production
+       callers — INFO-level alerts buffer in memory forever and die on restart. The
+       collector was fixed via `Alerter(info_immediate=True)` (2026-07-15, ~2 INFOs/day).
+       The trader keeps digest semantics, so this task must wire a daily digest flush
+       (e.g. end-of-day scheduler job calling `send_daily_digest()`) or consciously
+       choose `info_immediate` for the trader too — decide here, prove at Task 16 Step 1
+       (an INFO-path delivery is part of the Discord live proof, not just
+       critical/warning embeds).
   - **`models/active/` write ban, tested**: a grep-based test (same pattern as the
     layout-constant audits) asserting no module under `src/swingrl/training/`,
     `src/swingrl/memory/training/`, or `scripts/train*` writes to `models/active` —
@@ -1582,7 +1602,9 @@ Run on homelab against the paper deployment, after Tasks 1–15:
 
 - [ ] **Step 1 — Discord live proof:** startup test alert (`Alerter.send_alert` smoke
   call on deploy); confirm arrival in the Discord channel. Then a real cycle's trade
-  embed (paper fill) arrives.
+  embed (paper fill) arrives. **Must also prove the INFO path** (digest flush or
+  immediate INFO, per Task E's 2026-07-15 Discord-wiring amendment) — critical/warning
+  arriving does NOT prove INFO can send; they take different code paths.
 - [ ] **Step 2 — Drawdown CB trip:** in paper mode, force a drawdown breach (test hook or
   temporarily lowered `max_drawdown_pct` in a scratch config) → verify: cycle halts,
   `circuit_breaker_events` row written, Discord alert received, `risk_decisions` row
