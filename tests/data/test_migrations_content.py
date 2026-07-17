@@ -862,10 +862,303 @@ def test_v006_patterns_stage_check(db_with_legacy_schema) -> None:
 
 
 def test_v006_schema_version_is_6(db_with_legacy_schema) -> None:
-    """Task 9: SELECT max(version) FROM schema_migrations == 6 after apply_migrations."""
+    """V006 lands in the ledger (was newest; V007 now raises the ceiling to 7).
+
+    The newest-version invariant moved to ``test_v007_schema_version_is_7`` when
+    Track B Task 10 shipped V007 — this asserts V006 was applied, not that it is the
+    maximum, so it stays green as later migrations extend the ledger.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM schema_migrations WHERE version = 6"
+        ).fetchone()
+    assert row["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# V007 (Task 10): §4.6 harness records — harness_experiments (pre-registration:
+# lever/stage/environment/algorithm/fold + scripted pull_spec), harness_experiment_runs
+# (Stage 1 mechanics: one row per arm/seed-pair run — "majority of seed-pairs agree"
+# computable straight from keys), harness_replays (Stage 2 film-room: a scripted quiz
+# graded against the coach's actual llm_calls response; mandatory llm_call_id FK mirrors
+# V006's pattern_presentations never-orphaned-record discipline).
+# ---------------------------------------------------------------------------
+
+
+def _insert_harness_experiment(
+    db: DatabaseManager,
+    *,
+    lever: str = "L1_reward_weights",
+    stage: int = 1,
+    environment: str = "equity",
+    algorithm: str = "ppo",
+    fold_number: int = 0,
+    fold_role: str = "neutral",
+) -> int:
+    """Insert a minimal valid harness_experiments row (pre-registration) and return its id.
+
+    ``pull_spec`` (JSONB NOT NULL) and ``min_run_length_steps`` are the only columns the
+    DDL forces beyond the identity/classification fields — both are pre-registration data,
+    written before any run starts.
+    """
+    with db.connection() as conn:
+        return int(
+            conn.execute(
+                "INSERT INTO harness_experiments (lever, stage, environment, algorithm,"
+                " fold_number, fold_role, pull_spec, min_run_length_steps)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, 100000) RETURNING experiment_id",
+                (
+                    lever,
+                    stage,
+                    environment,
+                    algorithm,
+                    fold_number,
+                    fold_role,
+                    '{"direction": "up", "magnitude_frac": 0.1,'
+                    ' "expected": {"metric": "oos_sharpe_annualized", "direction": "up"}}',
+                ),
+            ).fetchone()["experiment_id"]
+        )
+
+
+def _insert_harness_replay_call(db: DatabaseManager) -> int:
+    """Insert a valid harness_replay llm_call and return its llm_call_id.
+
+    A15's identity CHECK matrix marks ``harness_replay`` ``true`` unconditionally — no
+    run_pk/cycle_id/iteration_number/environment/algorithm required (linkage is via
+    ``harness_replays`` instead, per §4.6).
+    """
+    with db.connection() as conn:
+        return int(
+            conn.execute(
+                "INSERT INTO llm_calls (coach, call_type, provider, model, prompt_version)"
+                " VALUES ('meta_trainer', 'harness_replay', 'cerebras', 'qwen-3',"
+                " 'harness-replay-v0') RETURNING llm_call_id"
+            ).fetchone()["llm_call_id"]
+        )
+
+
+def test_v007_harness_experiments_requires_pull_spec(db_with_legacy_schema) -> None:
+    """§4.6: harness_experiments.pull_spec is NOT NULL JSONB — pre-registration is mandatory.
+
+    Scripted pull direction/magnitude + expected:{metric,direction} must exist before any
+    run starts; a row with no pull_spec cannot be a pre-registered experiment.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO harness_experiments (lever, stage, environment, algorithm,"
+                " fold_number, fold_role, min_run_length_steps)"
+                " VALUES ('L1_reward_weights', 1, 'equity', 'ppo', 0, 'neutral', 100000)"
+            )
+
+
+def test_v007_harness_experiments_lever_check(db_with_legacy_schema) -> None:
+    """§4.6: harness_experiments.lever CHECK — same enum as intent_records.lever (§4.4)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO harness_experiments (lever, stage, environment, algorithm,"
+                " fold_number, fold_role, pull_spec, min_run_length_steps)"
+                " VALUES ('bogus_lever', 1, 'equity', 'ppo', 0, 'neutral',"
+                " '{\"schema_version\": 1}', 100000)"
+            )
+
+
+def test_v007_harness_experiments_stage_check(db_with_legacy_schema) -> None:
+    """§4.6: harness_experiments.stage CHECK (1, 2) — Stage 1 mechanics vs Stage 2 judgment."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO harness_experiments (lever, stage, environment, algorithm,"
+                " fold_number, fold_role, pull_spec, min_run_length_steps)"
+                " VALUES ('L1_reward_weights', 3, 'equity', 'ppo', 0, 'neutral',"
+                " '{\"schema_version\": 1}', 100000)"
+            )
+
+
+def test_v007_harness_experiment_runs_arm_check(db_with_legacy_schema) -> None:
+    """§4.6: harness_experiment_runs.arm CHECK (pull, control)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    experiment_id = _insert_harness_experiment(db_with_legacy_schema)
+    run_pk = _insert_training_run(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO harness_experiment_runs (experiment_id, run_pk, arm, seed_pair)"
+                " VALUES (%s, %s, 'bogus_arm', 1)",
+                (experiment_id, run_pk),
+            )
+
+
+def test_v007_harness_experiment_runs_run_pk_fk_rejects_nonexistent(
+    db_with_legacy_schema,
+) -> None:
+    """§4.6: harness_experiment_runs.run_pk FK -> training_runs (consumes V002 spine)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    experiment_id = _insert_harness_experiment(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO harness_experiment_runs (experiment_id, run_pk, arm, seed_pair)"
+                " VALUES (%s, 999999, 'pull', 1)",
+                (experiment_id,),
+            )
+
+
+def test_v007_harness_experiment_runs_experiment_id_fk_rejects_nonexistent(
+    db_with_legacy_schema,
+) -> None:
+    """§4.6: harness_experiment_runs.experiment_id FK -> harness_experiments."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    run_pk = _insert_training_run(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO harness_experiment_runs (experiment_id, run_pk, arm, seed_pair)"
+                " VALUES (999999, %s, 'pull', 1)",
+                (run_pk,),
+            )
+
+
+def test_v007_harness_experiment_runs_pk_rejects_duplicate_run(db_with_legacy_schema) -> None:
+    """§4.6: harness_experiment_runs PK on run_pk alone — a run belongs to one experiment.
+
+    run_pk (not a composite with experiment_id) is the PK: a training run is created for
+    exactly one experiment arm, so this also enforces "a run cannot belong to two
+    experiments." A valid row is accepted first (happy path), then the duplicate bounces.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    experiment_id = _insert_harness_experiment(db_with_legacy_schema)
+    run_pk = _insert_training_run(db_with_legacy_schema)
+    ins = (
+        "INSERT INTO harness_experiment_runs (experiment_id, run_pk, arm, seed_pair)"
+        " VALUES (%s, %s, 'pull', 1)"
+    )
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(ins, (experiment_id, run_pk))
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(ins, (experiment_id, run_pk))
+
+
+def test_v007_harness_experiment_runs_valid_accepted(db_with_legacy_schema) -> None:
+    """§4.6: pull and control arms for the same experiment are both accepted (happy path)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    experiment_id = _insert_harness_experiment(db_with_legacy_schema)
+    pull_run_pk = _insert_training_run(db_with_legacy_schema, attempt=1)
+    control_run_pk = _insert_training_run(db_with_legacy_schema, attempt=2)
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(
+            "INSERT INTO harness_experiment_runs (experiment_id, run_pk, arm, seed_pair)"
+            " VALUES (%s, %s, 'pull', 1)",
+            (experiment_id, pull_run_pk),
+        )
+        conn.execute(
+            "INSERT INTO harness_experiment_runs (experiment_id, run_pk, arm, seed_pair)"
+            " VALUES (%s, %s, 'control', 1)",
+            (experiment_id, control_run_pk),
+        )
+        rows = conn.execute(
+            "SELECT arm FROM harness_experiment_runs WHERE experiment_id = %s ORDER BY arm",
+            (experiment_id,),
+        ).fetchall()
+    assert [r["arm"] for r in rows] == ["control", "pull"]
+
+
+def test_v007_harness_replays_llm_call_null_rejected(db_with_legacy_schema) -> None:
+    """§4.6: harness_replays.llm_call_id NOT NULL — mirrors V006's never-orphaned discipline."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    experiment_id = _insert_harness_experiment(db_with_legacy_schema, stage=2)
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO harness_replays (experiment_id, llm_call_id, situation,"
+                " expected_response)"
+                " VALUES (%s, NULL, '{\"schema_version\": 1}', '{\"schema_version\": 1}')",
+                (experiment_id,),
+            )
+
+
+def test_v007_harness_replays_llm_call_fk_rejects_nonexistent(db_with_legacy_schema) -> None:
+    """§4.6: harness_replays.llm_call_id FK -> llm_calls (consumes V004 llm_calls)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    experiment_id = _insert_harness_experiment(db_with_legacy_schema, stage=2)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO harness_replays (experiment_id, llm_call_id, situation,"
+                " expected_response)"
+                " VALUES (%s, 999999, '{\"schema_version\": 1}', '{\"schema_version\": 1}')",
+                (experiment_id,),
+            )
+
+
+def test_v007_harness_replays_experiment_id_fk_rejects_nonexistent(db_with_legacy_schema) -> None:
+    """§4.6: harness_replays.experiment_id FK -> harness_experiments."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    llm_call_id = _insert_harness_replay_call(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO harness_replays (experiment_id, llm_call_id, situation,"
+                " expected_response)"
+                " VALUES (999999, %s, '{\"schema_version\": 1}', '{\"schema_version\": 1}')",
+                (llm_call_id,),
+            )
+
+
+def test_v007_harness_replays_valid_accepted(db_with_legacy_schema) -> None:
+    """§4.6: a replay quiz with both mandatory FKs set is accepted (happy path)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    experiment_id = _insert_harness_experiment(db_with_legacy_schema, stage=2)
+    llm_call_id = _insert_harness_replay_call(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        row_id = conn.execute(
+            "INSERT INTO harness_replays (experiment_id, llm_call_id, situation,"
+            " expected_response)"
+            " VALUES (%s, %s, '{\"schema_version\": 1}', '{\"schema_version\": 1}')"
+            " RETURNING id",
+            (experiment_id, llm_call_id),
+        ).fetchone()["id"]
+    assert row_id is not None
+
+
+def test_v007_schema_version_is_7(db_with_legacy_schema) -> None:
+    """Task 10: SELECT max(version) FROM schema_migrations == 7 after apply_migrations."""
     from swingrl.data.migration_runner import apply_migrations
 
     apply_migrations(db_with_legacy_schema)
     with db_with_legacy_schema.connection() as conn:
         row = conn.execute("SELECT max(version) AS v FROM schema_migrations").fetchone()
-    assert row["v"] == 6
+    assert row["v"] == 7
