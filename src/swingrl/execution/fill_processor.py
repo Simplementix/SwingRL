@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from swingrl.execution.types import FillResult, SizedOrder
+from swingrl.utils.exceptions import DataError
 
 if TYPE_CHECKING:
     from swingrl.data.db import DatabaseManager
@@ -44,10 +45,28 @@ class FillProcessor:
     def process(self, fill: FillResult, sized_order: SizedOrder | None = None) -> None:
         """Record a fill to trades table and update positions.
 
+        Only ``status="filled"`` results are recorded (review C2/M11): a ``pending`` or
+        ``rejected`` result carries zero quantity/price and is dropped here so it never
+        becomes a $0 trades row that zeroes the position price and triggers a re-buy.
+
         Args:
             fill: FillResult from an exchange adapter.
             sized_order: Optional SizedOrder with stop/TP prices to persist (crypto buys).
+
+        Raises:
+            DataError: If a fill marked ``filled`` carries a non-positive quantity or price
+                (backstop against silently recording a $0 trade).
         """
+        if fill.status != "filled":
+            log.info(
+                "fill_dropped_not_filled",
+                trade_id=fill.trade_id,
+                symbol=fill.symbol,
+                status=fill.status,
+                environment=fill.environment,
+            )
+            return
+
         self._record_trade(fill)
         self._update_position(fill, sized_order)
 
@@ -117,7 +136,25 @@ class FillProcessor:
 
         Args:
             fill: FillResult with trade details.
+
+        Raises:
+            DataError: If quantity or price is non-positive — a $0/zero-quantity trade
+                would zero the position's price and trigger spurious re-buys (review M11).
         """
+        if fill.quantity <= 0 or fill.fill_price <= 0:
+            log.error(
+                "zero_value_trade_rejected",
+                trade_id=fill.trade_id,
+                symbol=fill.symbol,
+                quantity=fill.quantity,
+                price=fill.fill_price,
+                environment=fill.environment,
+            )
+            raise DataError(
+                f"refusing to record trade with non-positive quantity/price for "
+                f"{fill.symbol}: quantity={fill.quantity}, price={fill.fill_price}"
+            )
+
         now = datetime.now(UTC).isoformat()
 
         with self._db.connection() as conn:

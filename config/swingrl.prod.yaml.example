@@ -10,6 +10,11 @@ equity:
   max_position_size: 0.25       # conservative for Phase 1 live trading
   max_drawdown_pct: 0.10        # 10% DD halts equity — do not raise until Sharpe > 0.7 sustained
   daily_loss_limit_pct: 0.02    # 2% daily loss limit
+  min_order_usd: 5.0            # equity min order floor ($5) — skip dust trades not worth commission
+  cycle_time_et: "15:45"        # daily rebalance time (ET); 15m before close so fills land intraday
+  market_calendar_gate: true    # gate the cycle on the Alpaca market clock (skip closed/holiday)
+  order_fill_timeout_s: 60      # cancel an unfilled order after N seconds (never a $0 trade)
+  order_poll_interval_s: 2      # poll order status every N seconds during the fill wait
 
 crypto:
   symbols: [BTCUSDT, ETHUSDT]
@@ -39,6 +44,21 @@ system:
 alerting:
   alert_cooldown_minutes: 30               # minimum minutes between repeat alerts
   consecutive_failures_before_alert: 3     # failures before triggering alert
+
+scheduler:
+  enabled: true                            # true for live/paper trading; false for training-only hosts
+  misfire_grace_time: 300                  # default grace (seconds) for non-cycle jobs
+  misfire_grace_s:                         # per-env grace for the trading cycle jobs (A30 restart addendum)
+    equity: 720                            # a restart shortly after 15:45 still runs late; past ~15:57 it skips
+    crypto: 3600                           # 4H cadence — an hour late is immaterial
+
+environment:
+  zero_turbulence_obs: true                # F1b: freeze the turbulence obs slot at 0.0 before
+                                           # inference — era-0 models trained with it frozen, so a
+                                           # live value would hit untrained weights (noise). The real
+                                           # sensor value is still captured. Flip to false ONLY at the
+                                           # era-1 cutover (Plan B automates this off the models table).
+                                           # Override: SWINGRL_ENVIRONMENT__ZERO_TURBULENCE_OBS=false
 
 backup:
   backup_retention_days: 14         # keep 2 weeks of database backups

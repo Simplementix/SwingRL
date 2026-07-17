@@ -18,7 +18,10 @@ def mock_config() -> MagicMock:
     config = MagicMock()
     config.scheduler.apscheduler_db_path = "db/test_jobs.sqlite"
     config.scheduler.misfire_grace_time = 300
+    config.scheduler.misfire_grace_s = {"equity": 720, "crypto": 3600}
     config.scheduler.max_workers = 4
+    config.equity.cycle_time_et = "15:45"
+    config.equity.market_calendar_gate = True
     config.alerting.alerts_webhook_url = ""
     config.alerting.daily_webhook_url = ""
     config.alerting.alert_cooldown_minutes = 30
@@ -71,7 +74,11 @@ class TestMainRegistersJobs:
         assert job_ids == expected_ids
 
     def test_equity_cycle_schedule(self, mock_config: MagicMock) -> None:
-        """PAPER-12: equity_cycle fires at 4:15 PM ET."""
+        """(e) equity_cycle fires from config.equity.cycle_time_et on weekdays (review C2).
+
+        The cron time is read from config (15:45 default, before close) — no hardcoded
+        16:15 post-close hour — and restricted to Mon-Fri so it never runs on weekends.
+        """
         from scripts.main import create_scheduler_and_register_jobs
 
         mock_scheduler = MagicMock()
@@ -81,8 +88,29 @@ class TestMainRegistersJobs:
             c for c in mock_scheduler.add_job.call_args_list if c.kwargs["id"] == "equity_cycle"
         )
         assert equity_call.kwargs["trigger"] == "cron"
-        assert equity_call.kwargs["hour"] == 16
-        assert equity_call.kwargs["minute"] == 15
+        assert equity_call.kwargs["hour"] == 15
+        assert equity_call.kwargs["minute"] == 45
+        assert equity_call.kwargs["day_of_week"] == "mon-fri"
+        assert equity_call.kwargs["timezone"] == "America/New_York"
+
+    def test_cycle_jobs_use_misfire_grace_from_config(self, mock_config: MagicMock) -> None:
+        """(f) equity/crypto cycle jobs read misfire_grace_time from scheduler.misfire_grace_s.
+
+        Restart addendum (A30): equity 720s (late-but-pre-close), crypto 3600s (4H cadence).
+        """
+        from scripts.main import create_scheduler_and_register_jobs
+
+        mock_scheduler = MagicMock()
+        create_scheduler_and_register_jobs(mock_scheduler, mock_config)
+
+        equity_call = next(
+            c for c in mock_scheduler.add_job.call_args_list if c.kwargs["id"] == "equity_cycle"
+        )
+        crypto_call = next(
+            c for c in mock_scheduler.add_job.call_args_list if c.kwargs["id"] == "crypto_cycle"
+        )
+        assert equity_call.kwargs["misfire_grace_time"] == 720
+        assert crypto_call.kwargs["misfire_grace_time"] == 3600
 
     def test_crypto_cycle_schedule(self, mock_config: MagicMock) -> None:
         """PAPER-12: crypto_cycle fires 6x/day at 5 min past each 4H bar close."""
@@ -262,6 +290,49 @@ class TestMainInitSequence:
             f"Expected Path('models'), got {models_dir!r}. "
             "Double 'active' nesting bug may be present."
         )
+
+    @patch("scripts.main.reconciliation_job")
+    @patch("scripts.main.init_emergency_flags")
+    @patch("scripts.main.init_job_context")
+    @patch("scripts.main.load_config")
+    @patch("scripts.main.configure_logging")
+    def test_startup_reconciliation_runs_once_at_boot(
+        self,
+        mock_logging: MagicMock,
+        mock_load_config: MagicMock,
+        mock_init_job_ctx: MagicMock,
+        mock_init_flags: MagicMock,
+        mock_reconciliation: MagicMock,
+        mock_config: MagicMock,
+    ) -> None:
+        """(g) build_app runs the equity reconciliation once at boot (restart drift audit).
+
+        Restart addendum (A30): downtime fill/position drift is audited immediately, not
+        hours later at the 17:00 ET cron.
+        """
+        mock_load_config.return_value = mock_config
+
+        from scripts.main import build_app
+        from tests.conftest import make_mock_db
+
+        mock_scheduler = MagicMock()
+        # Schema version far ahead: assert_schema_current only warns when ahead (A30 floor).
+        mock_db, _ = make_mock_db(fetchone_returns=[{"v": 999}])
+
+        with patch("scripts.main.BackgroundScheduler", return_value=mock_scheduler):
+            with patch("scripts.main.SQLAlchemyJobStore"):
+                with patch("scripts.main.ThreadPoolExecutor"):
+                    with patch("scripts.main.DatabaseManager", return_value=mock_db):
+                        with patch("scripts.main.ExecutionPipeline"):
+                            with patch("scripts.main.Alerter"):
+                                with patch("scripts.main.start_stop_polling_thread"):
+                                    with patch("scripts.main.FeaturePipeline"):
+                                        build_app(config_path="config/test.yaml")
+
+        # Reconciliation invoked exactly once, before the scheduler is started (build_app
+        # never calls scheduler.start()).
+        mock_reconciliation.assert_called_once()
+        mock_scheduler.start.assert_not_called()
 
 
 class TestMainSignalHandler:

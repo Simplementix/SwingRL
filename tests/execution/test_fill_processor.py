@@ -12,6 +12,7 @@ import pytest
 
 from swingrl.execution.fill_processor import FillProcessor
 from swingrl.execution.types import FillResult
+from swingrl.utils.exceptions import DataError
 
 if TYPE_CHECKING:
     from swingrl.data.db import DatabaseManager
@@ -118,6 +119,85 @@ class TestTradeRecording:
         assert row is not None
         assert row["symbol"] == "SPY"
         assert row["quantity"] == 2.0
+
+
+class TestHonestFillGuards:
+    """Review C2/M11: non-filled results dropped; zero-value fills refused as a backstop."""
+
+    def test_process_drops_non_filled_result(
+        self,
+        processor: FillProcessor,
+        mock_db: DatabaseManager,
+    ) -> None:
+        """A pending fill is dropped — no trades row, no position row (primary guard)."""
+        pending = FillResult(
+            trade_id="pending-001",
+            symbol="SPY",
+            side="buy",
+            quantity=0.0,
+            fill_price=0.0,
+            commission=0.0,
+            slippage=0.0,
+            environment="equity",
+            broker="alpaca",
+            status="pending",
+        )
+
+        processor.process(pending)
+
+        with mock_db.connection() as conn:
+            trade = conn.execute(
+                "SELECT * FROM trades WHERE trade_id = %s", ("pending-001",)
+            ).fetchone()
+            pos = conn.execute(
+                "SELECT * FROM positions WHERE symbol = %s AND environment = %s",
+                ("SPY", "equity"),
+            ).fetchone()
+
+        assert trade is None
+        assert pos is None
+
+    def test_process_rejects_zero_quantity_filled_fill(
+        self,
+        processor: FillProcessor,
+    ) -> None:
+        """(d) A filled fill with quantity=0 raises DataError (never a $0 trades row)."""
+        bad = FillResult(
+            trade_id="zero-qty-001",
+            symbol="SPY",
+            side="buy",
+            quantity=0.0,
+            fill_price=150.0,
+            commission=0.0,
+            slippage=0.0,
+            environment="equity",
+            broker="alpaca",
+            status="filled",
+        )
+
+        with pytest.raises(DataError):
+            processor.process(bad)
+
+    def test_process_rejects_zero_price_filled_fill(
+        self,
+        processor: FillProcessor,
+    ) -> None:
+        """(d) A filled fill with price=0 raises DataError (zeroed position price bug)."""
+        bad = FillResult(
+            trade_id="zero-price-001",
+            symbol="SPY",
+            side="buy",
+            quantity=10.0,
+            fill_price=0.0,
+            commission=0.0,
+            slippage=0.0,
+            environment="equity",
+            broker="alpaca",
+            status="filled",
+        )
+
+        with pytest.raises(DataError):
+            processor.process(bad)
 
 
 class TestPositionManagement:

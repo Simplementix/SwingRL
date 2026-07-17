@@ -71,13 +71,18 @@ def create_scheduler_and_register_jobs(
         scheduler: APScheduler BackgroundScheduler instance.
         config: Validated SwingRLConfig.
     """
+    # Equity cycle: time from config (default 15:45 ET, before close — review C2),
+    # weekdays only, with the per-env misfire grace (A30 restart addendum).
+    cycle_hour, cycle_minute = (int(part) for part in config.equity.cycle_time_et.split(":"))
     scheduler.add_job(
         equity_cycle,
         trigger="cron",
-        hour=16,
-        minute=15,
+        hour=cycle_hour,
+        minute=cycle_minute,
+        day_of_week="mon-fri",
         timezone="America/New_York",
         id="equity_cycle",
+        misfire_grace_time=config.scheduler.misfire_grace_s["equity"],
         replace_existing=True,
     )
 
@@ -88,6 +93,7 @@ def create_scheduler_and_register_jobs(
         minute=5,
         timezone="UTC",
         id="crypto_cycle",
+        misfire_grace_time=config.scheduler.misfire_grace_s["crypto"],
         replace_existing=True,
     )
 
@@ -298,7 +304,16 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
 
     create_scheduler_and_register_jobs(scheduler, config)
 
-    start_stop_polling_thread(config, db)
+    start_stop_polling_thread(config, db, alerter)
+
+    # Startup reconciliation (A30 restart addendum): audit any fill/position drift from
+    # downtime once at boot — the same job the 17:00 ET cron runs — so drift is caught
+    # immediately, not hours later. Never blocks startup; skips with an info log when the
+    # data it needs isn't available (e.g. an overnight restart).
+    try:
+        reconciliation_job()
+    except Exception:
+        log.info("startup_reconciliation_skipped", exc_info=True)
 
     log.info(
         "swingrl_app_built",

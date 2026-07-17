@@ -24,6 +24,7 @@ import structlog
 if TYPE_CHECKING:
     from swingrl.config.schema import SwingRLConfig
     from swingrl.data.db import DatabaseManager
+    from swingrl.monitoring.alerter import Alerter
 
 log = structlog.get_logger(__name__)
 
@@ -34,6 +35,21 @@ RAMP_STAGES: list[float] = [0.25, 0.50, 0.75, 1.00]
 # (pg16 returns TIMESTAMPTZ tz-aware in the server timezone — .date() without an
 # explicit astimezone conflates ET and UTC calendars between 20:00 and 24:00 ET.)
 _ET = ZoneInfo("America/New_York")
+
+# Reason marker for the crypto stop-poller's AUDIT-ONLY rows (user ruling). A stop
+# breach records a ``circuit_breaker_events`` row for audit + Discord alerting, but
+# it is NOT a halt: a HALTED crypto breaker vetoes ALL crypto orders — including the
+# very sell that would close the breached position — so halting on breach would
+# freeze the exact position that needs to exit. The breaker's state readers
+# (:meth:`CircuitBreaker._latest_event`, :meth:`CircuitBreaker.resume`) EXCLUDE any
+# row whose ``reason`` starts with this marker, so a stop-breach row is provably
+# inert to ``get_state`` / ``get_capacity_fraction`` — it can never flip the breaker,
+# even when it is the most recent row while a genuine halt is unresolved. The marker
+# contains no SQL ``LIKE`` wildcard characters (no ``_`` or ``%``), so the exclusion
+# pattern below matches exactly these rows and nothing else. The stop-poller builds
+# each reason as ``STOP_BREACH_REASON_MARKER + symbol``.
+STOP_BREACH_REASON_MARKER = "stop-breach-audit:"
+_STOP_BREACH_LIKE = f"{STOP_BREACH_REASON_MARKER}%"
 
 
 class CBState(enum.Enum):
@@ -51,13 +67,23 @@ class CircuitBreaker:
         environment: "equity" or "crypto".
         db: DatabaseManager for database access.
         config: SwingRLConfig for thresholds and initial capital.
+        alerter: Optional Discord alerter. When provided, every trip and every
+            auto-resume sends a critical alert (review M1). None disables alerting
+            (unit tests, contexts without a webhook).
     """
 
-    def __init__(self, environment: str, db: DatabaseManager, config: SwingRLConfig) -> None:
+    def __init__(
+        self,
+        environment: str,
+        db: DatabaseManager,
+        config: SwingRLConfig,
+        alerter: Alerter | None = None,
+    ) -> None:
         """Initialize circuit breaker for an environment."""
         self._environment = environment
         self._db = db
         self._config = config
+        self._alerter = alerter
 
         if environment == "equity":
             self._max_dd = config.equity.max_drawdown_pct
@@ -182,18 +208,55 @@ class CircuitBreaker:
         return RAMP_STAGES[stage_idx]
 
     def resume(self) -> None:
-        """Mark latest halt event as resumed."""
+        """Mark latest halt event as resumed and alert on the auto-resume (review M1)."""
         now = datetime.now(tz=UTC).isoformat()
         with self._db.connection() as conn:
+            # Exclude audit-only stop-breach rows: they are never "resumed" (they
+            # are not halts), and stamping resumed_at on them would both violate
+            # their append-only audit semantics and break the stop-poller's
+            # ``resumed_at IS NULL`` dedup guard.
             conn.execute(
                 "UPDATE circuit_breaker_events SET resumed_at = %s "
-                "WHERE environment = %s AND resumed_at IS NULL",
-                (now, self._environment),
+                "WHERE environment = %s AND resumed_at IS NULL "
+                "AND COALESCE(reason, '') NOT LIKE %s",
+                (now, self._environment, _STOP_BREACH_LIKE),
             )
         log.info("circuit_breaker_resumed", environment=self._environment)
 
-    def _trigger(self, trigger_value: float, threshold: float, reason: str) -> None:
-        """Insert a halt event into circuit_breaker_events."""
+        # Auto-resume is a state change operators must see. Critical is the only
+        # level with guaranteed immediate delivery (warning is gated by the
+        # consecutive-failure counter; info buffers into a digest that the trader
+        # has no flush job for) — so a one-shot resume would otherwise be lost.
+        if self._alerter is not None:
+            self._alerter.send_alert(
+                level="critical",
+                title=f"Circuit Breaker Auto-Resumed — {self._environment}",
+                message=(
+                    f"State: ACTIVE\nCooldown complete — {self._environment} trading "
+                    "capacity restored."
+                ),
+                environment=self._environment,
+            )
+
+    def _trigger(
+        self,
+        trigger_value: float,
+        threshold: float,
+        reason: str,
+        *,
+        alert: bool = True,
+    ) -> None:
+        """Insert a halt event into circuit_breaker_events and alert on the trip.
+
+        Args:
+            trigger_value: The breaching metric value (drawdown/loss fraction, or the
+                turbulence value).
+            threshold: The limit that was breached.
+            reason: Machine-readable reason string persisted with the event.
+            alert: Send a Discord alert for this trip. Set False for the per-env
+                cascade of a global trip — the single global alert speaks for both
+                environments (see ``GlobalCircuitBreaker._trigger_all``).
+        """
         event_id = str(uuid4())
         triggered_at = datetime.now(tz=UTC).isoformat()
 
@@ -213,13 +276,33 @@ class CircuitBreaker:
             reason=reason,
         )
 
+        if alert and self._alerter is not None:
+            self._alerter.send_alert(
+                level="critical",
+                title=f"Circuit Breaker Halted — {self._environment}",
+                message=(
+                    f"State: HALTED\nReason: {reason}\n"
+                    f"Trigger value: {trigger_value:.4f} (threshold {threshold:.4f})"
+                ),
+                environment=self._environment,
+            )
+
     def _latest_event(self) -> dict[str, str | float | None] | None:
-        """Load the latest circuit breaker event for this environment."""
+        """Load the latest halt event for this environment for state derivation.
+
+        Audit-only stop-breach rows (``reason`` prefixed with
+        ``STOP_BREACH_REASON_MARKER``) are excluded so a stop breach is inert to
+        ``get_state`` / ``get_capacity_fraction`` — the row is skipped even when it
+        is the most recent event, so a genuine unresolved halt underneath it still
+        drives the state. ``COALESCE`` keeps NULL-reason rows (legacy/genuine)
+        visible.
+        """
         with self._db.connection() as conn:
             row = conn.execute(
                 "SELECT * FROM circuit_breaker_events "
-                "WHERE environment = %s ORDER BY triggered_at DESC LIMIT 1",
-                (self._environment,),
+                "WHERE environment = %s AND COALESCE(reason, '') NOT LIKE %s "
+                "ORDER BY triggered_at DESC LIMIT 1",
+                (self._environment, _STOP_BREACH_LIKE),
             ).fetchone()
         if row is None:
             return None
@@ -282,9 +365,17 @@ class GlobalCircuitBreaker:
     Triggers when combined portfolio drawdown exceeds -15% or
     combined daily loss exceeds -3% of total initial capital.
 
+    The combined high-water mark is reconstructed from persisted snapshots on
+    every check (``MAX(total_value)`` per environment, summed) so it survives a
+    process restart — the old process-memory HWM reset to initial capital on
+    restart and a real drawdown from a prior peak went undetected (review C1).
+
     Args:
         circuit_breakers: Dict mapping environment name to CircuitBreaker.
         config: SwingRLConfig for initial capital values.
+        db: DatabaseManager for reading persisted portfolio snapshots.
+        alerter: Optional Discord alerter. When provided, a global trip sends one
+            critical alert (review M1). None disables alerting.
     """
 
     GLOBAL_MAX_DD: float = 0.15
@@ -294,12 +385,51 @@ class GlobalCircuitBreaker:
         self,
         circuit_breakers: dict[str, CircuitBreaker],
         config: SwingRLConfig,
+        db: DatabaseManager,
+        alerter: Alerter | None = None,
     ) -> None:
         """Initialize global circuit breaker."""
         self._circuit_breakers = circuit_breakers
         self._config = config
+        self._db = db
+        self._alerter = alerter
         self._total_initial = config.capital.equity_usd + config.capital.crypto_usd
         self._total_hwm: float = self._total_initial
+
+    def _persisted_combined_hwm(self) -> float:
+        """Reconstruct the combined high-water mark from persisted snapshots.
+
+        Sums each environment's peak ``total_value`` and floors at total initial
+        capital. Independent per-environment peaks may not have coincided, so the
+        sum can overstate the true combined peak. That overstatement affects the
+        two ``check_combined`` branches differently — it is NOT uniformly
+        conservative:
+
+        - **Drawdown branch** (``1 − total/hwm``): a larger HWM makes drawdown
+          look larger, so this branch is conservative — it can only trip earlier
+          or equal, never later.
+        - **Daily-loss branch** (``|daily_pnl|/hwm``): the same HWM sits in the
+          *denominator*, so a larger HWM makes the loss fraction look *smaller* —
+          this branch can trip *later* than a true combined HWM would, not
+          earlier. The effect is bounded by how far independent per-env peaks
+          diverge, and is a secondary guard behind the drawdown branch and the
+          unaffected per-env checks.
+
+        Returns:
+            Combined high-water mark as float.
+        """
+        envs = list(self._circuit_breakers.keys())
+        if not envs:
+            return self._total_initial
+        placeholders = ", ".join(["%s"] * len(envs))
+        with self._db.connection() as conn:
+            rows = conn.execute(
+                f"SELECT environment, MAX(total_value) AS peak FROM portfolio_snapshots "  # noqa: S608
+                f"WHERE environment IN ({placeholders}) GROUP BY environment",  # nosec B608
+                tuple(envs),
+            ).fetchall()
+        peak_sum = sum(float(r["peak"]) for r in rows if r["peak"] is not None)
+        return max(self._total_initial, peak_sum)
 
     def check_combined(
         self,
@@ -318,8 +448,9 @@ class GlobalCircuitBreaker:
         total_value = sum(portfolio_values.values())
         total_daily_pnl = sum(daily_pnls.values())
 
-        # Update high-water mark
-        self._total_hwm = max(self._total_hwm, total_value)
+        # High-water mark from persisted snapshots (survives restart), folding in
+        # the current combined value in case it is a fresh peak not yet persisted.
+        self._total_hwm = max(self._persisted_combined_hwm(), total_value)
 
         # Check combined drawdown against high-water mark
         combined_dd = 1.0 - total_value / self._total_hwm if self._total_hwm > 0 else 0.0
@@ -330,6 +461,7 @@ class GlobalCircuitBreaker:
                 combined_dd=combined_dd,
                 threshold=self.GLOBAL_MAX_DD,
             )
+            self._alert_global("combined_drawdown", combined_dd, self.GLOBAL_MAX_DD)
             self._trigger_all("combined_drawdown")
             return True
 
@@ -345,16 +477,39 @@ class GlobalCircuitBreaker:
                     combined_loss_pct=combined_loss_pct,
                     threshold=self.GLOBAL_DAILY_LIMIT,
                 )
+                self._alert_global(
+                    "combined_daily_loss", combined_loss_pct, self.GLOBAL_DAILY_LIMIT
+                )
                 self._trigger_all("combined_daily_loss")
                 return True
 
         return False
 
+    def _alert_global(self, reason: str, trigger_value: float, threshold: float) -> None:
+        """Send the single global-trip alert (review M1)."""
+        if self._alerter is None:
+            return
+        self._alerter.send_alert(
+            level="critical",
+            title="Global Circuit Breaker Triggered",
+            message=(
+                f"State: HALTED (all environments)\nReason: {reason}\n"
+                f"Trigger value: {trigger_value:.4f} (threshold {threshold:.4f})"
+            ),
+            environment="Global",
+        )
+
     def _trigger_all(self, reason: str) -> None:
-        """Trigger all per-environment circuit breakers."""
+        """Trigger all per-environment circuit breakers.
+
+        The per-env alerts are suppressed (``alert=False``): the single global
+        alert emitted by ``check_combined`` already speaks for both environments,
+        so cascading three redundant embeds would only add alarm fatigue.
+        """
         for _env, cb in self._circuit_breakers.items():
             cb._trigger(
                 trigger_value=0.0,
                 threshold=0.0,
                 reason=f"global_{reason}",
+                alert=False,
             )

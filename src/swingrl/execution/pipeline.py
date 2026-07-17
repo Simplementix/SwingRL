@@ -12,22 +12,25 @@ Usage:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import structlog
 
 from swingrl.envs.portfolio import process_actions
 from swingrl.execution.fill_processor import FillProcessor
+from swingrl.execution.model_paths import active_model_paths
 from swingrl.execution.order_validator import OrderValidator
 from swingrl.execution.risk.circuit_breaker import CBState, CircuitBreaker, GlobalCircuitBreaker
 from swingrl.execution.risk.position_tracker import PositionTracker
 from swingrl.execution.risk.risk_manager import RiskManager
 from swingrl.execution.types import FillResult, SizedOrder
+from swingrl.features.assembler import turbulence_obs_index
 from swingrl.features.health import FeatureHealthTracker
-from swingrl.utils.exceptions import CircuitBreakerError, RiskVetoError
+from swingrl.utils.exceptions import CircuitBreakerError, DataError, RiskVetoError
 
 if TYPE_CHECKING:
     from swingrl.config.schema import SwingRLConfig
@@ -80,21 +83,31 @@ class ExecutionPipeline:
         # Feature health tracking for live inference
         self._health_tracker = FeatureHealthTracker()
 
-        # Lazy-initialized components
+        # Lazy-initialized components. Models are cached per env, keyed by the
+        # artifact mtimes so a hot-swapped model (changed mtime) or a previously
+        # empty load (no models on disk yet) reloads next cycle (review H3).
         self._models: dict[str, dict[str, tuple[Any, Any]]] = {}
+        self._model_cache_keys: dict[str, tuple[Any, ...]] = {}
         self._adapters: dict[str, Any] = {}
         self._initialized = False
+
+        # Per-(env, date) turbulence halt-baseline cache (one delegate call/cycle)
+        self._turb_baseline_cache: dict[tuple[str, str], float] = {}
+
+        # Real turbulence sensor value read from the observation before the F1b
+        # slot-zeroing (kept for capture — §4.7 / A27). None until the first cycle.
+        self._turbulence_at_decision: float | None = None
 
         # Eagerly create components that don't need lazy loading
         self._position_tracker = PositionTracker(db=db, config=config)
         self._fill_processor = FillProcessor(db=db)
 
-        # Circuit breakers
+        # Circuit breakers — alerter injected so every trip/auto-resume alerts (review M1)
         self._circuit_breakers: dict[str, CircuitBreaker] = {
-            "equity": CircuitBreaker("equity", db, config),
-            "crypto": CircuitBreaker("crypto", db, config),
+            "equity": CircuitBreaker("equity", db, config, alerter=alerter),
+            "crypto": CircuitBreaker("crypto", db, config, alerter=alerter),
         }
-        self._global_cb = GlobalCircuitBreaker(self._circuit_breakers, config)
+        self._global_cb = GlobalCircuitBreaker(self._circuit_breakers, config, db, alerter=alerter)
 
         # Risk manager
         self._risk_manager = RiskManager(
@@ -152,13 +165,25 @@ class ExecutionPipeline:
                 log.warning("cycle_halted_by_cb", env=env_name)
                 return []
 
+        # Resolve the cycle date once so the turbulence halt check and the
+        # observation share a single per-(env, date) turbulence value (M6).
+        current_date_str = self._get_current_date_str(env_name)
+
         # Step 2: Check turbulence crash protection (PAPER-20)
-        if self._check_turbulence(env_name):
+        if self._check_turbulence(env_name, current_date_str):
             log.warning("cycle_halted_by_turbulence", env=env_name)
             return []
 
+        # Step 2.5: Equity market-calendar gate (fail-safe). Crypto trades 24/7.
+        # Market closed/holiday -> skip + info log; clock unreachable -> skip + alert
+        # (when in doubt, don't trade — review C2).
+        if env_name == "equity" and self._config.equity.market_calendar_gate:
+            if not self._equity_market_open():
+                return []
+            # Data-freshness guard (log-only): warn on a stale latest daily bar.
+            self._warn_if_stale_ohlcv(env_name)
+
         # Step 3: Get observation from FeaturePipeline
-        current_date_str = self._get_current_date_str(env_name)
         env_literal: Literal["equity", "crypto"] = "equity" if env_name == "equity" else "crypto"
         observation = self._feature_pipeline.get_observation(env_literal, current_date_str)
 
@@ -193,6 +218,23 @@ class ExecutionPipeline:
         if had_nan:
             log.warning("nan_observation_detected", env=env_name)
             return []
+
+        # Step 3d: F1b — era-0 models were trained with the turbulence slot frozen
+        # at 0.0, so feeding a real value would multiply it by untrained weights
+        # (noise). Read the real sensor value out FIRST for capture (§4.7 / A27),
+        # then zero the slot in the observation handed to the models. The flag is
+        # flipped off once era-1 models (trained with a live turbulence input) deploy.
+        env_symbols = (
+            self._config.equity.symbols if env_name == "equity" else self._config.crypto.symbols
+        )
+        turb_idx = turbulence_obs_index(
+            env_name,
+            len(env_symbols),
+            self._config.sentiment.enabled if env_name == "equity" else False,
+        )
+        self._turbulence_at_decision = float(observation[turb_idx])
+        if self._config.environment.zero_turbulence_obs:
+            observation[turb_idx] = 0.0
 
         # Step 4: Get portfolio state (used by ObservationAssembler in future)
         _portfolio_state = self._position_tracker.get_portfolio_state_array(env_name)
@@ -234,6 +276,9 @@ class ExecutionPipeline:
             self._config.equity.symbols if env_name == "equity" else self._config.crypto.symbols
         )
         fills: list[FillResult] = []
+        # Prices fetched this cycle, reused to mark the portfolio to market for the
+        # end-of-cycle snapshot (review C1 — no extra broker calls).
+        cycle_prices: dict[str, float] = {}
         adapter = self._get_adapter(env_name)
         portfolio_value = self._position_tracker.get_portfolio_value(env_name)
 
@@ -241,8 +286,8 @@ class ExecutionPipeline:
             log.error("zero_portfolio_value", env=env_name, value=portfolio_value)
             return []
 
-        # Minimum order value: use crypto min_order_usd or $5 for equity
-        min_order_value = self._config.crypto.min_order_usd if env_name == "crypto" else 5.0
+        # Minimum order value comes from config per env (no hardcoded floor).
+        min_order_value = self._min_order_value(env_name)
 
         for i, symbol in enumerate(symbols):
             target_value = float(target_weights[i]) * portfolio_value
@@ -260,6 +305,9 @@ class ExecutionPipeline:
                     log.warning("zero_price_skip", symbol=symbol)
                     continue
 
+                # Record the fresh price to mark the portfolio to market later.
+                cycle_prices[symbol] = current_price
+
                 quantity = abs(delta_value) / current_price
 
                 sized_order = SizedOrder(
@@ -272,8 +320,22 @@ class ExecutionPipeline:
                     environment=env_literal,
                 )
 
+                # Fresh mark-to-market value for the pre-trade risk evaluation
+                # (amendment 2026-07-16): the drawdown/daily-loss breakers see this
+                # cycle's fetched prices, not the last stored snapshot, so a held-position
+                # drawdown is visible even when no order fills.
+                fresh_value = self._position_tracker.compute_portfolio_value(env_name, cycle_prices)
+
+                # Post-halt ramp enforcement (review H4): scale the order to the
+                # breaker's current capacity fraction BEFORE validation and submission,
+                # so the validator, the broker, and the fill record all see the scaled
+                # amount (an ACTIVE breaker returns it unchanged).
+                sized_order = self._risk_manager.apply_ramp_capacity(sized_order)
+
                 # Risk validation (guardrail)
-                validated_order = self._order_validator.validate(sized_order)
+                validated_order = self._order_validator.validate(
+                    sized_order, portfolio_value=fresh_value
+                )
 
                 # Dry-run: log but skip broker submission
                 if dry_run:
@@ -291,8 +353,39 @@ class ExecutionPipeline:
                 # caused by network timeouts (Alpaca bracket orders are atomic).
                 fill = adapter.submit_order(validated_order)
 
-                # Fill processing
-                self._fill_processor.process(fill, sized_order=sized_order)
+                # Only real fills are recorded (review C2). A pending/rejected result
+                # (unfilled + cancelled) is dropped — never a $0 trades row.
+                if fill.status != "filled":
+                    log.warning(
+                        "order_unfilled_skipped",
+                        symbol=fill.symbol,
+                        side=fill.side,
+                        status=fill.status,
+                    )
+                    continue
+
+                # M10-equity backstop: a real fill that fails to record is money that
+                # moved without a ledger entry — alert critical for manual reconciliation.
+                try:
+                    self._fill_processor.process(fill, sized_order=sized_order)
+                except Exception:
+                    log.critical(
+                        "fill_recorded_failed_after_execution",
+                        symbol=fill.symbol,
+                        trade_id=fill.trade_id,
+                        exc_info=True,
+                    )
+                    if self._alerter is not None:
+                        self._alerter.send_alert(
+                            level="critical",
+                            title="Fill Executed But Not Recorded",
+                            message=(
+                                f"{env_name} {fill.symbol} {fill.side} executed but recording "
+                                "failed — manual reconciliation required."
+                            ),
+                            environment=env_literal,
+                        )
+                    continue
 
                 fills.append(fill)
 
@@ -327,11 +420,17 @@ class ExecutionPipeline:
                 )
                 continue
 
-        # Step 10: Record portfolio snapshot
-        if fills:
-            new_portfolio_value = self._position_tracker.get_portfolio_value(env_name)
-            daily_pnl = self._position_tracker.get_daily_pnl(env_name)
-            cash = new_portfolio_value - sum(abs(f.quantity * f.fill_price) for f in fills)
+        # Step 10: Record portfolio snapshot EVERY cycle (review C1/M4 + amendment
+        # 2026-07-16). Mark positions to this cycle's fetched prices and derive cash from
+        # the trades ledger so total_value reflects reality — including moved prices on a
+        # zero-fill cycle — not the previous snapshot copied forward. Snapshots stay
+        # append-only. Dry-run is a simulation and never writes a snapshot.
+        if not dry_run:
+            cash = self._position_tracker.compute_cash(env_name)
+            new_portfolio_value = self._position_tracker.compute_portfolio_value(
+                env_name, cycle_prices
+            )
+            daily_pnl = self._position_tracker.compute_daily_pnl(env_name, new_portfolio_value)
             self._position_tracker.record_snapshot(env_name, new_portfolio_value, cash, daily_pnl)
 
         log.info(
@@ -343,26 +442,38 @@ class ExecutionPipeline:
         return fills
 
     def _load_models(self, env_name: str) -> dict[str, tuple[Any, Any]]:
-        """Load trained models for the environment (lazy, cached).
+        """Load trained models for the environment (lazy, mtime-keyed cache).
+
+        The cache is keyed by the artifact mtimes (review H3): a changed model.zip
+        (hot swap) or a previously-empty load (no models on disk yet) reloads on the
+        next cycle rather than serving a stale or permanently-empty result.
+
+        Fail-closed (review M7 / A22): an algo whose ``vec_normalize.pkl`` is missing
+        or fails to load is SKIPPED and a Discord alert is sent — never fed raw,
+        un-normalized observations. The ensemble renormalizes over the algos that
+        did load.
 
         Args:
             env_name: Environment name.
 
         Returns:
-            Dict mapping algo name to (model, vec_normalize) tuple.
+            Dict mapping algo name to (model, vec_normalize) tuple. May be empty
+            (never cached as a permanent empty — retried next cycle).
         """
-        if env_name in self._models:
+        cache_key = self._model_cache_key(env_name)
+        # A non-empty key that matches the cached key is a hit. An empty key means
+        # no models on disk — never treated as a cache hit, so it retries next cycle.
+        if (
+            cache_key
+            and self._model_cache_keys.get(env_name) == cache_key
+            and env_name in self._models
+        ):
             return self._models[env_name]
 
-        from stable_baselines3 import A2C, PPO, SAC
-        from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-
-        algo_map = {"ppo": PPO, "a2c": A2C, "sac": SAC}
         models: dict[str, tuple[Any, Any]] = {}
 
         for algo_name in _ALGO_NAMES:
-            model_path = self._models_dir / "active" / env_name / algo_name / "model.zip"
-            vec_path = self._models_dir / "active" / env_name / algo_name / "vec_normalize.pkl"
+            model_path, vec_path = active_model_paths(self._models_dir, env_name, algo_name)
 
             if not model_path.exists():
                 log.warning(
@@ -373,39 +484,130 @@ class ExecutionPipeline:
                 )
                 continue
 
-            algo_cls = algo_map[algo_name]
-            model = algo_cls.load(str(model_path))  # type: ignore[attr-defined]
+            # Fail closed: no VecNormalize stats means we would feed raw observations
+            # (out-of-distribution) to a model trained on normalized ones (M7).
+            if not vec_path.exists():
+                log.error(
+                    "vec_normalize_missing",
+                    env=env_name,
+                    algo=algo_name,
+                    path=str(vec_path),
+                )
+                self._alert_model_skipped(env_name, algo_name, "VecNormalize stats file missing")
+                continue
 
-            vec_norm = None
-            if vec_path.exists():
-                # Build a minimal stub env with correct spaces from the loaded model
-                obs_space = model.observation_space
-                act_space = model.action_space
-
-                def _make_stub_env(_obs: Any = obs_space, _act: Any = act_space) -> Any:
-                    """Return a minimal gymnasium env stub for VecNormalize loading."""
-                    import gymnasium  # noqa: PLC0415
-
-                    env: Any = gymnasium.Env()  # type: ignore[abstract]
-                    env.observation_space = _obs
-                    env.action_space = _act
-                    return env
-
-                dummy_env = DummyVecEnv([_make_stub_env])
-                vec_norm = VecNormalize.load(str(vec_path), venv=dummy_env)
-                vec_norm.training = False
-                vec_norm.norm_reward = False
+            try:
+                model, vec_norm = self._load_one_algo(algo_name, model_path, vec_path)
+            except Exception:
+                log.error(
+                    "model_load_failed",
+                    env=env_name,
+                    algo=algo_name,
+                    path=str(model_path),
+                    exc_info=True,
+                )
+                self._alert_model_skipped(
+                    env_name, algo_name, "model or VecNormalize failed to load"
+                )
+                continue
 
             models[algo_name] = (model, vec_norm)
-            log.info(
-                "model_loaded",
-                env=env_name,
-                algo=algo_name,
-                has_vec_normalize=vec_norm is not None,
-            )
+            log.info("model_loaded", env=env_name, algo=algo_name, has_vec_normalize=True)
 
         self._models[env_name] = models
+        self._model_cache_keys[env_name] = cache_key
         return models
+
+    def _model_cache_key(self, env_name: str) -> tuple[Any, ...]:
+        """Return a cache key from the on-disk artifact mtimes for the environment.
+
+        The key changes whenever a model.zip or vec_normalize.pkl is added, removed,
+        or rewritten, so the loader reloads. An empty tuple means no models on disk.
+
+        Args:
+            env_name: Environment name.
+
+        Returns:
+            Tuple of ``(algo, model_mtime, vec_mtime_or_None)`` per present model.
+        """
+        key: list[tuple[str, float, float | None]] = []
+        for algo_name in _ALGO_NAMES:
+            model_path, vec_path = active_model_paths(self._models_dir, env_name, algo_name)
+            if not model_path.exists():
+                continue
+            vec_mtime = vec_path.stat().st_mtime if vec_path.exists() else None
+            key.append((algo_name, model_path.stat().st_mtime, vec_mtime))
+        return tuple(key)
+
+    def _load_one_algo(self, algo_name: str, model_path: Path, vec_path: Path) -> tuple[Any, Any]:
+        """Load a single algo's SB3 model and its VecNormalize stats.
+
+        Args:
+            algo_name: Algorithm name ("ppo", "a2c", or "sac").
+            model_path: Path to the model.zip file.
+            vec_path: Path to the vec_normalize.pkl file.
+
+        Returns:
+            Tuple of (loaded model, loaded VecNormalize with training disabled).
+        """
+        from stable_baselines3 import A2C, PPO, SAC  # noqa: PLC0415
+        from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize  # noqa: PLC0415
+
+        algo_map = {"ppo": PPO, "a2c": A2C, "sac": SAC}
+        model = algo_map[algo_name].load(str(model_path))  # type: ignore[attr-defined]
+
+        # Build a minimal stub env with correct spaces from the loaded model.
+        obs_space = model.observation_space
+        act_space = model.action_space
+
+        def _make_stub_env(_obs: Any = obs_space, _act: Any = act_space) -> Any:
+            """Return a minimal gymnasium env stub for VecNormalize loading."""
+            import gymnasium  # noqa: PLC0415
+
+            env: Any = gymnasium.Env()  # type: ignore[abstract]
+            env.observation_space = _obs
+            env.action_space = _act
+            return env
+
+        dummy_env = DummyVecEnv([_make_stub_env])
+        vec_norm = VecNormalize.load(str(vec_path), venv=dummy_env)
+        vec_norm.training = False
+        vec_norm.norm_reward = False
+        return model, vec_norm
+
+    def _alert_model_skipped(self, env_name: str, algo_name: str, reason: str) -> None:
+        """Send a fail-closed warning that an algo was excluded from the ensemble.
+
+        Args:
+            env_name: Environment name.
+            algo_name: Algorithm that was skipped.
+            reason: Human-readable reason for the skip.
+        """
+        if self._alerter is None:
+            return
+        env_literal: Literal["equity", "crypto"] = "equity" if env_name == "equity" else "crypto"
+        self._alerter.send_alert(
+            level="warning",
+            title="Model Skipped (Fail-Closed)",
+            message=(
+                f"{env_name}/{algo_name} excluded from the ensemble: {reason}. "
+                "Blending renormalizes over the remaining algos."
+            ),
+            environment=env_literal,
+        )
+
+    def _min_order_value(self, env_name: str) -> float:
+        """Return the minimum order dollar value for the environment (config-driven).
+
+        Args:
+            env_name: Environment name.
+
+        Returns:
+            ``config.crypto.min_order_usd`` for crypto, else ``config.equity.min_order_usd``.
+        """
+        if env_name == "crypto":
+            return self._config.crypto.min_order_usd
+        return self._config.equity.min_order_usd
 
     def _get_ensemble_weights(self, env_name: str) -> dict[str, float]:
         """Query model_metadata table for ensemble weights.
@@ -416,6 +618,8 @@ class ExecutionPipeline:
         Returns:
             Dict mapping algo name to weight. Defaults to equal weights.
         """
+        from swingrl.training.ensemble import DEFAULT_ENSEMBLE_WEIGHT  # noqa: PLC0415
+
         try:
             with self._db.connection() as conn:
                 rows = conn.execute(
@@ -433,7 +637,7 @@ class ExecutionPipeline:
                         weights[algo] = (
                             float(row["ensemble_weight"])
                             if row["ensemble_weight"] is not None
-                            else 1.0 / 3
+                            else DEFAULT_ENSEMBLE_WEIGHT
                         )
                         seen.add(algo)
                 if weights:
@@ -442,7 +646,7 @@ class ExecutionPipeline:
             log.warning("ensemble_weights_query_failed", env=env_name)
 
         # Default: equal weights
-        return dict.fromkeys(_ALGO_NAMES, 1.0 / 3)
+        return dict.fromkeys(_ALGO_NAMES, DEFAULT_ENSEMBLE_WEIGHT)
 
     def _get_adapter(self, env_name: str) -> Any:
         """Get the exchange adapter for the environment (cached).
@@ -497,51 +701,59 @@ class ExecutionPipeline:
 
         return result
 
-    def _check_turbulence(self, env_name: str) -> bool:
+    def _check_turbulence(self, env_name: str, date_str: str) -> bool:
         """Check turbulence for crash protection (PAPER-20).
 
         Args:
             env_name: Environment name.
+            date_str: Cycle date/datetime string — shared with the observation
+                path so both use the single per-cycle turbulence value (M6).
 
         Returns:
-            True if turbulence exceeds threshold (should halt trading).
+            True if turbulence exceeds the hard-halt baseline (should halt trading).
         """
         try:
-            # Get current turbulence from feature pipeline
-            current_date_str = self._get_current_date_str(env_name)
-            turbulence = self._feature_pipeline.compute_turbulence(env_name, current_date_str)
+            # Single per-cycle turbulence value (reused by the observation path)
+            turbulence = self._feature_pipeline.compute_turbulence(env_name, date_str)
 
-            # Get historical 90th percentile from database
-            historical_90th = self._get_turbulence_90th_pct(env_name)
+            # Historical hard-halt baseline percentile (F1 fix — OHLCV series)
+            historical_pct = self._get_turbulence_90th_pct(env_name, date_str)
 
-            if turbulence > 0 and historical_90th > 0:
-                return self._risk_manager.check_turbulence(env_name, turbulence, historical_90th)
+            if turbulence > 0 and historical_pct > 0:
+                return self._risk_manager.check_turbulence(env_name, turbulence, historical_pct)
         except Exception:
             log.warning("turbulence_check_failed", env=env_name)
 
         return False
 
-    def _get_turbulence_90th_pct(self, env_name: str) -> float:
-        """Get historical 90th percentile turbulence from database.
+    def _get_turbulence_90th_pct(self, env_name: str, date_str: str) -> float:
+        """Get the historical turbulence hard-halt baseline for the cycle date.
+
+        Delegates to ``FeaturePipeline.turbulence_halt_baseline`` (the F1 fix —
+        the ``features_*`` tables never had a turbulence column, so the old
+        percentile query always returned 0.0 and the halt never fired). Cached
+        per (env, date) so the delegate runs at most once per cycle.
 
         Args:
             env_name: Environment name.
+            date_str: Cycle date/datetime string.
 
         Returns:
-            90th percentile turbulence value, or 0.0 if unavailable.
+            The hard-halt baseline percentile, or 0.0 if unavailable (logged).
         """
-        table = "features_equity" if env_name == "equity" else "features_crypto"
+        key = (env_name, date_str)
+        if key in self._turb_baseline_cache:
+            return self._turb_baseline_cache[key]
         try:
-            with self._db.connection() as conn:
-                row = conn.execute(
-                    f"SELECT PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY turbulence) as p90 FROM {table}",  # nosec B608
-                ).fetchone()
-                if row and row["p90"] is not None:
-                    return float(row["p90"])
-        except Exception:
-            log.warning("turbulence_90th_query_failed", env=env_name)
-
-        return 0.0
+            value = self._feature_pipeline.turbulence_halt_baseline(env_name, date_str)
+        except DataError as exc:
+            log.error("turbulence_baseline_failed", env=env_name, error=str(exc))
+            value = 0.0
+        except Exception as exc:  # never let a baseline lookup crash the cycle — but log it
+            log.error("turbulence_baseline_unexpected_error", env=env_name, error=str(exc))
+            value = 0.0
+        self._turb_baseline_cache[key] = value
+        return value
 
     def _get_current_weights(self, env_name: str) -> np.ndarray:
         """Get current portfolio weights per symbol.
@@ -566,6 +778,79 @@ class ExecutionPipeline:
                 weights[i] = abs(pos["quantity"] * (pos["last_price"] or 0.0)) / portfolio_value
 
         return weights
+
+    def _equity_market_open(self) -> bool:
+        """Return True if the equity market is open per the Alpaca clock (fail-safe).
+
+        Market closed/holiday -> False + info log. Clock unreachable (any error, incl.
+        adapter construction) -> False + critical alert: when in doubt, don't trade.
+
+        Returns:
+            True only when the clock explicitly reports the market open.
+        """
+        try:
+            adapter = self._get_adapter("equity")
+            clock = adapter.get_clock()
+        except Exception:
+            log.error("market_clock_check_failed", env="equity", exc_info=True)
+            if self._alerter is not None:
+                self._alerter.send_alert(
+                    level="critical",
+                    title="Market Clock Unreachable",
+                    message="Alpaca clock check failed — skipping equity cycle (fail-safe).",
+                    environment="equity",
+                )
+            return False
+
+        is_open = bool(getattr(clock, "is_open", False))
+        if not is_open:
+            log.info("equity_cycle_skipped_market_closed")
+        return is_open
+
+    def _warn_if_stale_ohlcv(self, env_name: str) -> None:
+        """Log a warning when the latest ``ohlcv_daily`` bar is older than the prior session.
+
+        Log-only data-freshness guard (never raises, never halts the cycle): a stale
+        latest bar at decision time means the cycle would trade on old prices.
+
+        Args:
+            env_name: Environment name (only "equity" has a daily-bar table here).
+        """
+        try:
+            symbols = self._config.equity.symbols
+            with self._db.connection() as conn:
+                row = conn.execute(
+                    "SELECT MAX(date) AS latest FROM ohlcv_daily WHERE symbol = ANY(%s)",
+                    (symbols,),
+                ).fetchone()
+            latest = row["latest"] if row is not None else None
+            if latest is None:
+                log.warning("ohlcv_freshness_no_data", env=env_name)
+                return
+
+            import exchange_calendars  # noqa: PLC0415
+
+            nyse = exchange_calendars.get_calendar("XNYS")
+            today_et = datetime.now(tz=UTC).astimezone(ZoneInfo("America/New_York")).date()
+            sessions = nyse.sessions_in_range(
+                today_et - timedelta(days=10), today_et - timedelta(days=1)
+            )
+            if len(sessions) == 0:
+                return
+            prev_session_date = sessions[-1].date()
+
+            latest_date = (
+                latest if isinstance(latest, date) else datetime.fromisoformat(str(latest)).date()
+            )
+            if latest_date < prev_session_date:
+                log.warning(
+                    "ohlcv_stale_bar",
+                    env=env_name,
+                    latest_bar=latest_date.isoformat(),
+                    expected_min=prev_session_date.isoformat(),
+                )
+        except Exception:
+            log.warning("ohlcv_freshness_check_failed", exc_info=True)
 
     def _get_current_date_str(self, env_name: str) -> str:
         """Get current date string for the environment.

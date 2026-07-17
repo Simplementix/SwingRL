@@ -200,6 +200,23 @@ class TestDailySummaryJob:
         mock_alerter.send_embed.assert_called()
 
 
+class TestDailySummaryDigestFlush:
+    """A30 Discord wiring (Task E): daily_summary_job flushes the buffered INFO digest."""
+
+    def test_flushes_info_digest_even_when_halted(self) -> None:
+        """A30: send_daily_digest had zero callers; the EOD job must flush it.
+
+        The flush runs before the halt gate so INFO buffered on a halted day still
+        reaches Discord instead of dying in memory on the next restart. Built on plain
+        mocks so it runs without a database (DATABASE_URL-independent).
+        """
+        alerter = MagicMock()
+        init_job_context(config=MagicMock(), db=MagicMock(), pipeline=MagicMock(), alerter=alerter)
+        with patch("swingrl.scheduler.jobs.is_halted", return_value=True):
+            daily_summary_job()
+        alerter.send_daily_digest.assert_called_once()
+
+
 class TestStuckAgentCheckJob:
     """stuck_agent_check_job detects consecutive all-cash cycles."""
 

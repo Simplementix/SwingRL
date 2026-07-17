@@ -246,6 +246,30 @@ def _tier3_liquidate_equity(
     return {"tier": 3, "success": True, "strategy": strategy}
 
 
+def _count_open_positions(positions: list[dict[str, Any]]) -> int:
+    """Count positions with a strictly positive quantity.
+
+    Zero-quantity ghost rows must not count as remaining positions (review M3):
+    emergency sells now delete the position row, but this filter is a defensive
+    backstop so tier-4 verification cannot be fooled by a leftover zero-qty row.
+
+    Args:
+        positions: Position dicts from an exchange adapter.
+
+    Returns:
+        Number of positions with quantity > 0. An unparseable quantity is counted
+        conservatively as open (fail-safe: prefer reporting positions remain).
+    """
+    count = 0
+    for pos in positions:
+        try:
+            if float(pos.get("quantity", 0)) > 0:
+                count += 1
+        except (TypeError, ValueError):
+            count += 1
+    return count
+
+
 def _tier4_verify_and_alert(
     alerter: Alerter,
     alpaca: Any,
@@ -270,21 +294,21 @@ def _tier4_verify_and_alert(
     remaining_equity = -1  # Sentinel: unknown until verified
     remaining_crypto = -1
 
-    # Check Alpaca positions
+    # Check Alpaca positions (count only quantity > 0 — review M3)
     if alpaca is not None:
         try:
             equity_positions = alpaca.get_positions()
-            remaining_equity = len(equity_positions)
+            remaining_equity = _count_open_positions(equity_positions)
         except Exception:
             log.error("tier4_alpaca_position_check_failed", exc_info=True)
     else:
         remaining_equity = 0  # No adapter → no positions to check
 
-    # Check Binance.US positions
+    # Check Binance.US positions (count only quantity > 0 — review M3)
     if binance is not None:
         try:
             crypto_positions = binance.get_positions()
-            remaining_crypto = len(crypto_positions)
+            remaining_crypto = _count_open_positions(crypto_positions)
         except Exception:
             log.error("tier4_binance_position_check_failed", exc_info=True)
     else:

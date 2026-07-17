@@ -177,10 +177,14 @@ class TestRiskManagerDelegation:
     def test_risk_manager_called(
         self, config, mock_risk_manager: MagicMock, equity_order: SizedOrder
     ) -> None:
-        """PAPER-09: RiskManager.evaluate() called with correct order."""
+        """PAPER-09: RiskManager.evaluate() called with correct order.
+
+        The fresh mark-to-market value is forwarded as ``portfolio_value`` (None when the
+        caller does not supply one — backward-compatible amendment 2026-07-16).
+        """
         validator = OrderValidator(config, mock_risk_manager)
         validator.validate(equity_order)
-        mock_risk_manager.evaluate.assert_called_once_with(equity_order)
+        mock_risk_manager.evaluate.assert_called_once_with(equity_order, portfolio_value=None)
 
     def test_risk_veto_propagation(
         self, config, mock_risk_manager: MagicMock, equity_order: SizedOrder

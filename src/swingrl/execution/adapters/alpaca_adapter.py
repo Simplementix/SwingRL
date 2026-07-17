@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -66,6 +67,7 @@ class AlpacaAdapter:
             log.error("alpaca_credentials_missing")
             raise BrokerError("ALPACA_API_KEY and ALPACA_SECRET_KEY env vars required")
 
+        self._config = config
         paper = config.trading_mode == "paper"
         self._client = TradingClient(
             api_key=api_key,
@@ -117,30 +119,78 @@ class AlpacaAdapter:
                 order_class=OrderClass.SIMPLE,
             )
 
+        submitted_at = datetime.now(UTC).isoformat()
         response = self._retry(
             lambda: self._client.submit_order(order_data=order_req),
         )
 
-        if response.filled_avg_price is None:
-            log.warning(
-                "order_not_immediately_filled",
-                order_id=str(response.id),
-                status=str(response.status),
-            )
-            return FillResult(
-                trade_id=str(response.id),
-                symbol=sized.symbol,
-                side=sized.side,
-                quantity=0.0,
-                fill_price=0.0,
-                commission=0.0,
-                slippage=0.0,
-                environment=sized.environment,
-                broker="alpaca",
-            )
+        # Immediate fill — no polling needed.
+        if response.filled_avg_price is not None:
+            return self._filled_result(response, sized, submitted_at)
 
+        # Not filled at submit time: poll the order status up to the bounded timeout
+        # instead of recording a $0 trade (review C2). Filled-during-poll returns the
+        # real price; still-unfilled at timeout is cancelled and returned as "pending".
+        order_id = str(response.id)
+        timeout_s = self._config.equity.order_fill_timeout_s
+        interval_s = self._config.equity.order_poll_interval_s
+        n_polls = max(1, timeout_s // interval_s)
+
+        for attempt in range(1, n_polls + 1):
+            time.sleep(interval_s)
+            latest = self._retry(lambda: self._client.get_order_by_id(order_id))
+            if latest.filled_avg_price is not None:
+                log.info("order_filled_during_poll", order_id=order_id, poll=attempt)
+                return self._filled_result(latest, sized, submitted_at)
+
+        # Timeout: cancel the resting order and return an honest pending result.
+        self.cancel_order(order_id)
+        log.warning(
+            "order_unfilled_cancelled",
+            order_id=order_id,
+            symbol=sized.symbol,
+            side=sized.side,
+            timeout_s=timeout_s,
+        )
+        if self._alerter is not None:
+            self._alerter.send_alert(
+                level="warning",
+                title="Order Not Filled",
+                message=(
+                    f"{sized.symbol} {sized.side} not filled within {timeout_s}s — "
+                    "cancelled (no trade recorded)."
+                ),
+                environment="equity",
+            )
+        return FillResult(
+            trade_id=order_id,
+            symbol=sized.symbol,
+            side=sized.side,
+            quantity=0.0,
+            fill_price=0.0,
+            commission=0.0,
+            slippage=0.0,
+            environment=sized.environment,
+            broker="alpaca",
+            status="pending",
+            submitted_at=submitted_at,
+            filled_at=None,
+        )
+
+    def _filled_result(self, response: Any, sized: Any, submitted_at: str) -> FillResult:  # noqa: ANN401
+        """Build a filled FillResult from an Alpaca order response.
+
+        Args:
+            response: Alpaca order object with filled_avg_price/filled_qty/id.
+            sized: The SizedOrder that produced the submission.
+            submitted_at: UTC ISO timestamp captured just before submission.
+
+        Returns:
+            FillResult with status="filled" and both lifecycle timestamps set.
+        """
         fill_price = float(response.filled_avg_price)
         quantity = float(response.filled_qty)
+        filled_at = datetime.now(UTC).isoformat()
 
         log.info(
             "order_submitted",
@@ -162,7 +212,18 @@ class AlpacaAdapter:
             slippage=0.0,
             environment=sized.environment,
             broker="alpaca",
+            status="filled",
+            submitted_at=submitted_at,
+            filled_at=filled_at,
         )
+
+    def get_clock(self) -> Any:  # noqa: ANN401
+        """Return the Alpaca market clock (is_open, next_open, next_close).
+
+        Returns:
+            Alpaca Clock object. Timestamps are in Eastern time.
+        """
+        return self._client.get_clock()
 
     def get_positions(self) -> list[dict[str, object]]:
         """Get all current positions from Alpaca.

@@ -48,7 +48,14 @@ class ValidatedOrder:
 
 @dataclass(frozen=True)
 class FillResult:
-    """Stage 5 output: broker fill confirmation."""
+    """Stage 5 output: broker fill confirmation.
+
+    ``status`` distinguishes a real fill from an order that never filled (review C2):
+    only ``"filled"`` results are recorded as trades. ``submitted_at``/``filled_at`` are
+    UTC ISO timestamps consumed downstream (Task 10 time-to-fill). A ``"pending"`` or
+    ``"rejected"`` result carries zero quantity/price and is dropped by the processor —
+    it must never become a $0 trades row.
+    """
 
     trade_id: str
     symbol: str
@@ -59,6 +66,9 @@ class FillResult:
     slippage: float
     environment: Literal["equity", "crypto"]
     broker: Literal["alpaca", "binance_us"]
+    status: Literal["filled", "pending", "rejected"] = "filled"
+    submitted_at: str | None = None
+    filled_at: str | None = None
 
 
 @dataclass
