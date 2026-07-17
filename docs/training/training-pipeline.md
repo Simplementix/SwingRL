@@ -260,7 +260,7 @@ There is no distributed transaction across the four memory tables (`consolidatio
 
 ### Test/prod DB separation
 
-`tests/conftest.py:36-60` enforces a `pytest_configure` guard: pytest exits with returncode 2 if `DATABASE_URL` doesn't end in `_test` and the DB name isn't in `_SAFE_DB_NAMES = {"swingrl_test"}`. The CI script `scripts/ci-homelab.sh:51-57` does override the URL — it parses the prod password out of `.env`, builds `TEST_DB_URL=postgresql://swingrl:${PG_PASS}@pg16:5432/swingrl_test`, drops + recreates the DB, then invokes pytest via `docker compose run --rm --entrypoint "" -e DATABASE_URL="$TEST_DB_URL" swingrl uv run pytest tests/ -v`.
+`tests/conftest.py:36-60` enforces a `pytest_configure` guard: pytest exits with returncode 2 if `DATABASE_URL` doesn't end in `_test` and the DB name isn't in `_SAFE_DB_NAMES = {"swingrl_test"}`. The CI script `scripts/ci-homelab.sh:53-59` does override the URL — it parses the prod password out of `.env`, builds `TEST_DB_URL=postgresql://swingrl:${PG_PASS}@pg16:5432/swingrl_test`, drops + recreates the DB, then invokes pytest via `docker compose run --rm --entrypoint "" -e DATABASE_URL="$TEST_DB_URL" swingrl uv run pytest tests/ -v`.
 
 The structural fix described in `MEMORY.md` Active Session State as "Plan B" has landed: the conftest guard exists, and the 18 `raise RuntimeError` test fixture disables noted in the same memory entry are no longer present. Per the 2026-04-07 incident summary in `MEMORY.md`, iter 0-4 production data was restored from duckdb backup; iter 5 was declared lost.
 
@@ -316,7 +316,7 @@ CLI flags override yaml defaults for: `--config` path itself, `--iterations`, `-
 - **`pattern_outcomes` has no UNIQUE constraint.** The DDL at `src/swingrl/data/postgres_schema.py:615` defines only `id` as PK. Sibling table `iteration_results` has `UNIQUE (iteration_number, environment, run_type)` at `:216`; `pattern_outcomes` does not. Already noted in [`training-data-capture.md`](training-data-capture.md). On `record_outcome` retry the duplicate INSERT silently lands; downstream `/training/pattern_effectiveness` LEFT JOINs on `(iteration, env_name)` and would double-count.
 - **`/consolidate` Phase B duplicate-pattern risk on retry.** Phase A is effectively idempotent across retries (archive flips on success → re-run finds zero sources). Phase B archives independently; if Phase B failed mid-run, retry re-ingests the same `training_epoch:` rows into a new LLM call. Dedup at `consolidate.py:2090-2108` is exact match on `(category, affected_algos)`; near-duplicate phrasings can land as fresh active patterns. Cross-link [`memory-system.md`](memory-system.md) Known issues.
 - **Empirical: memory hurts training (iter 0-4).** Per `MEMORY.md` Active Session State, control folds outperformed treatment folds by 2.7-5.1× across iter 3-4 (treatment Sharpe 0.012-0.083 vs. control 0.034-0.42). Cross-link [`reward-shaping.md`](reward-shaping.md) and [`memory-system.md`](memory-system.md) Known issues.
-- **2026-04-07 production-data wipe (resolved structurally).** Tests against pg16 wiped iter 0-5 production data. Plan A recovery restored iter 0-4 from duckdb backup; iter 5 was declared lost. Plan B's structural fix — `tests/conftest.py:36-60` `pytest_configure` guard — has landed. CI script `scripts/ci-homelab.sh:51-57` overrides `DATABASE_URL` to `swingrl_test` before invoking pytest.
+- **2026-04-07 production-data wipe (resolved structurally).** Tests against pg16 wiped iter 0-5 production data. Plan A recovery restored iter 0-4 from duckdb backup; iter 5 was declared lost. Plan B's structural fix — `tests/conftest.py:36-60` `pytest_configure` guard — has landed. CI script `scripts/ci-homelab.sh:53-59` overrides `DATABASE_URL` to `swingrl_test` before invoking pytest.
 - **Memory-service health gate falls back silently.** When memory service is unreachable at iteration start, the iteration silently flips back to baseline mode (`scripts/train_pipeline.py:404-410` log line `memory_service_unavailable_falling_back_to_baseline`). The training_state.json does not record that the iteration "intended to be" memory-enhanced — the iteration's results look indistinguishable from a baseline iteration.
 - **Per-env results may be partially persisted on retry.** If env A succeeds and env B fails after retry-once, the iteration's full result includes A's data and a `{"error": ...}` slot for B. The iteration is marked "complete" in `completed_iterations` regardless (`:511`). On the next run, B's slot stays as the error dict — there's no automatic re-attempt of the failed env on a subsequent invocation.
 - **`scripts/train.py` is dormant but undeleted.** Not imported anywhere in `src/`, `scripts/`, or `tests/`. Recommend either removing or marking as deprecated in a future cleanup pass.
@@ -338,7 +338,7 @@ CLI flags override yaml defaults for: `--config` path itself, `--iterations`, `-
 | Wrapper script | `scripts/run_iterations.sh` |
 | Production CMD + healthcheck | `Dockerfile:59-97` |
 | Compose service | `docker-compose.yml:63-96` |
-| CI test-DB override | `scripts/ci-homelab.sh:51-57` |
+| CI test-DB override | `scripts/ci-homelab.sh:53-59` |
 | Test-DB guard | `tests/conftest.py:36-60` |
 | Operational runbook | `docs/TRAINING_RUNBOOK.md` |
 

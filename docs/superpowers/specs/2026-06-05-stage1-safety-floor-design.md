@@ -103,7 +103,7 @@ session-scoped schema init is a Stage 3.0 nicety.)
 
 ### 5. CI
 
-- No change to the fresh-DB-per-run flow (`scripts/ci-homelab.sh:50-57` keeps creating/dropping a
+- No change to the fresh-DB-per-run flow (`scripts/ci-homelab.sh:52-59` keeps creating/dropping a
   fresh `swingrl_test` on `pg16`). The wipe fixture handles **intra-run** isolation, which is the
   actual cause of the 50 failures. Separate server deferred.
 
