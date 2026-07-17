@@ -10,6 +10,17 @@ https://api.stlouisfed.org/fred/release?release_id={id}:
 All three match, so calendar.fred_release_ids = {"cpi": 10, "nfp": 50, "gdp": 53}
 is confirmed — no correction needed.
 
+Forward-dates verification (user ruling 2026-07-16 — include_release_dates_with_no_data=true),
+run live 2026-07-16 with the flipped param; future release dates DO appear per series (the
+'false' default returned only past dates). Next upcoming release observed per series:
+    cpi (10) -> 2026-08-12
+    nfp (50) -> 2026-08-07
+    gdp (53) -> 2026-07-30
+Evidence "no filtering needed": backfill (asc, realtime_start=2015) count went 146 -> 151 with
+the flip — the +5 rows are exactly the forward-scheduled dates; the 2015+ history is
+byte-identical, no duplicates, no historical no-data noise. Every returned date is a real
+release event and ingests on the normal path (08:30 ET->UTC window, importance high, source 'fred').
+
 FOMC seed source — federalreserve.gov (recorded in config/fomc_dates_historical.csv):
     forward/recent : https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (2021-2027)
     historical     : https://www.federalreserve.gov/monetarypolicy/fomchistorical{2016..2020}.htm
@@ -238,11 +249,18 @@ class TestCalendarIngestDB:
     def test_fred_ingest_inserts_rows_with_windows_and_source_fred(
         self, db: DatabaseManager, monkeypatch
     ) -> None:  # noqa: ANN001
-        """Step 1(a): mocked FRED response inserts rows with materialized windows + source='fred'."""
+        """Step 1(a): mocked FRED response inserts rows with materialized windows + source='fred'.
+
+        include_release_dates_with_no_data=true (user ruling 2026-07-16) surfaces FORWARD
+        scheduled dates: the CPI mock carries a past AND a future release date, and both must
+        ingest on the same path with a correctly materialized window.
+        """
         monkeypatch.setenv("FRED_API_KEY", "test-key")
         monkeypatch.setattr(
             "swingrl.data.calendar.httpx.get",
-            _fred_http_mock({10: ["2026-06-10"], 50: ["2026-06-05"], 53: ["2026-06-26"]}),
+            _fred_http_mock(
+                {10: ["2026-06-10", "2026-08-12"], 50: ["2026-06-05"], 53: ["2026-06-26"]}
+            ),
         )
         from swingrl.data.calendar import CalendarIngestor
 
@@ -250,18 +268,27 @@ class TestCalendarIngestDB:
         cfg.calendar.fred_release_ids = {"cpi": 10, "nfp": 50, "gdp": 53}
         cfg.calendar.fomc_dates = []
         inserted = CalendarIngestor(cfg, db).run()
-        assert inserted == 3
+        assert inserted == 4  # 2 cpi (past + future) + 1 nfp + 1 gdp
 
         rows = self._rows(db)
         assert {r["event_type"] for r in rows} == {"cpi", "nfp", "gdp"}
         assert all(r["source"] == "fred" for r in rows)
         assert all(r["symbol"] is None for r in rows)
         assert all(r["importance"] == "high" for r in rows)
-        # CPI 2026-06-10 08:30 EDT (UTC-4) -> 12:30 UTC; window +/- 12h (materialized).
-        cpi = next(r for r in rows if r["event_type"] == "cpi")
-        assert cpi["scheduled_at"] == datetime(2026, 6, 10, 12, 30, tzinfo=UTC)
-        assert cpi["window_start"] == datetime(2026, 6, 10, 0, 30, tzinfo=UTC)
-        assert cpi["window_end"] == datetime(2026, 6, 11, 0, 30, tzinfo=UTC)
+        cpis = [r for r in rows if r["event_type"] == "cpi"]
+        assert len(cpis) == 2
+        # Past CPI 2026-06-10 08:30 EDT (UTC-4) -> 12:30 UTC; window +/- 12h (materialized).
+        past = next(
+            r for r in cpis if r["scheduled_at"] == datetime(2026, 6, 10, 12, 30, tzinfo=UTC)
+        )
+        assert past["window_start"] == datetime(2026, 6, 10, 0, 30, tzinfo=UTC)
+        assert past["window_end"] == datetime(2026, 6, 11, 0, 30, tzinfo=UTC)
+        # FORWARD CPI 2026-08-12 08:30 EDT -> 12:30 UTC lands with the same materialized window.
+        future = next(
+            r for r in cpis if r["scheduled_at"] == datetime(2026, 8, 12, 12, 30, tzinfo=UTC)
+        )
+        assert future["window_start"] == datetime(2026, 8, 12, 0, 30, tzinfo=UTC)
+        assert future["window_end"] == datetime(2026, 8, 13, 0, 30, tzinfo=UTC)
 
     def test_reingest_is_idempotent_zero_new_rows(self, db: DatabaseManager, monkeypatch) -> None:  # noqa: ANN001
         """Step 1(b): re-ingest of the same payload inserts 0 new rows (UNIQUE NULLS NOT DISTINCT)."""
@@ -330,6 +357,8 @@ class TestCalendarIngestDB:
             assert params["sort_order"] == "asc"
             assert "limit" not in params
             assert params["realtime_start"] == "2015-01-01"
+            # Flip holds in backfill too (user ruling 2026-07-16); harmless — same upsert path.
+            assert params["include_release_dates_with_no_data"] == "true"
         fomc = [r for r in self._rows(db) if r["event_type"] == "fomc"]
         assert len(fomc) == 2
         assert all(r["source"] == "config" for r in fomc)
@@ -352,3 +381,36 @@ class TestCalendarIngestDB:
         assert len(rows) == 1
         assert rows[0]["status"] == "success"
         assert rows[0]["rows_inserted"] == 1
+
+    def test_staleness_fresh_after_fred_future_ingest(
+        self, db: DatabaseManager, monkeypatch
+    ) -> None:  # noqa: ANN001
+        """End-to-end: a FRED-driven FORWARD date (flip) makes the calendar fresh — no alert.
+
+        Proves the ruling's payoff against the real max(scheduled_at) query on scratch: with a
+        future CPI release ingested (source='fred'), the staleness alarm keys off it — not just
+        FOMC — and stays silent when that date is farther out than min_future_days.
+        """
+        from swingrl.data.calendar import CalendarIngestor, run_calendar_staleness_check
+
+        monkeypatch.setenv("FRED_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "swingrl.data.calendar.httpx.get",
+            _fred_http_mock({10: ["2026-09-11"], 50: [], 53: []}),
+        )
+        cfg = SwingRLConfig()
+        cfg.calendar.fred_release_ids = {"cpi": 10, "nfp": 50, "gdp": 53}
+        cfg.calendar.fomc_dates = []  # no FOMC — the future FRED date is the only future event
+        cfg.calendar.min_future_days = 10
+        assert CalendarIngestor(cfg, db).run() == 1
+
+        now = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)  # 2026-09-11 is > 10 days out
+        alerter = MagicMock()
+        run_calendar_staleness_check(cfg, db, alerter, now=now)
+        alerter.send_alert.assert_not_called()
+
+        # ... but if 'now' is inside the min_future_days window, the same FRED date is stale.
+        alerter2 = MagicMock()
+        run_calendar_staleness_check(cfg, db, alerter2, now=datetime(2026, 9, 6, 12, 0, tzinfo=UTC))
+        alerter2.send_alert.assert_called_once()
+        assert alerter2.send_alert.call_args.args[0] == "warning"

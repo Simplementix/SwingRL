@@ -219,11 +219,17 @@ class CalendarIngestor:
     def _fetch_release_dates(self, release_id: int, *, backfill: bool) -> list[str]:
         """GET FRED ``release/dates`` and return the release-date strings (YYYY-MM-DD)."""
         url = f"{self._cal.fred_api_base_url}/release/dates"
+        # include_release_dates_with_no_data=true (user ruling 2026-07-16): 'false' returned
+        # only PAST release dates, defeating trade-time pre-stamping (D-T3.14) and leaving the
+        # staleness alarm FOMC-only. 'true' adds the FORWARD scheduled release dates (verified
+        # live: the only delta vs 'false' is the +5 future rows — no historical no-data noise,
+        # no duplicates — so every returned date is a real release event and no filtering is
+        # needed). Each future date ingests on the same path (08:30 ET->UTC window, source='fred').
         params: dict[str, str | int] = {
             "release_id": release_id,
             "api_key": self._api_key,
             "file_type": "json",
-            "include_release_dates_with_no_data": "false",
+            "include_release_dates_with_no_data": "true",
         }
         if backfill:
             params["sort_order"] = "asc"

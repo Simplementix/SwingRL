@@ -1425,9 +1425,12 @@ CREATE TABLE event_outcomes (
   future event is nearer than `min_future_days`.
 - [ ] **Step 2:** Run — Expected: FAIL
 - [ ] **Step 3: Implement** (FRED endpoint:
-  `https://api.stlouisfed.org/fred/release/dates?release_id={id}&api_key={key}&file_type=json&include_release_dates_with_no_data=false&sort_order=desc&limit=30`;
+  `https://api.stlouisfed.org/fred/release/dates?release_id={id}&api_key={key}&file_type=json&include_release_dates_with_no_data=true&sort_order=desc&limit=30`;
   release date → `scheduled_at` at the standard 08:30 ET print time for cpi/nfp/gdp
   converted to UTC, `importance='high'`; ON CONFLICT DO NOTHING).
+  > **Amendment (user-approved 2026-07-16):** `include_release_dates_with_no_data=true` —
+  > `false` returned past dates only, defeating trade-time pre-stamping (D-T3.14) and leaving
+  > the staleness alarm FOMC-only. Task 11 review finding.
 - [ ] **Step 4:** Run tests — Expected: PASS
 - [ ] **Step 5: Commit** — `git commit -m "feat(2.R-A): calendar_events ingest (FRED + FOMC yaml) + staleness alarm"`
 
