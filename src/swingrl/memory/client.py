@@ -196,6 +196,42 @@ class MemoryClient:
             log.warning("memory_epoch_advice_failed", url=url, error=str(exc))
             return {}
 
+    def trade_commentary(
+        self, payload: dict[str, Any], timeout: float | None = None
+    ) -> dict[str, Any]:
+        """POST cycle context to /trade/commentary and return the JSON response.
+
+        Fail-open: returns empty dict on any network or HTTP error. Never raises —
+        trade-time commentary is shadow-only and must never block a trading cycle.
+
+        Args:
+            payload: Dict to POST as JSON (cycle_id, environment, algorithm,
+                deployed_iteration, regime, proposals_summary).
+            timeout: Request timeout in seconds. Defaults to default_timeout.
+
+        Returns:
+            Parsed JSON response dict on success, empty dict on any error.
+        """
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        url = f"{self._base_url}/trade/commentary"
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+
+        try:
+            data = _json.dumps(payload).encode("utf-8")
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if self._api_key:
+                headers["X-API-Key"] = self._api_key
+            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:  # noqa: S310  # nosec B310
+                body: dict[str, Any] = _json.loads(resp.read().decode("utf-8"))
+                return body
+        except Exception as exc:
+            log.warning("memory_trade_commentary_failed", url=url, error=str(exc))
+            return {}
+
     def record_outcome(
         self,
         iteration: int,

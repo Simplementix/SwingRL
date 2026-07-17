@@ -627,6 +627,20 @@ class MemoryAgentConfig(BaseModel):
     control_folds_crypto: list[int] = Field(default_factory=list)
 
 
+class MetaTraderConfig(BaseModel):
+    """Meta-Trader (trade-time coach) configuration — Task 12 rotation-gated skeleton.
+
+    ``enabled`` is the runtime gate for the post-cycle MT commentary skeleton: when
+    False (the default), the scheduler job is a provable no-op — it makes no memory
+    call at all. Key rotation is complete (2026-07-07); Task 16's go/no-go is the
+    remaining gate before this is switched on. Graders/verdicts land in Plan B, so
+    day-one intents accumulate ungraded until then (documented, accepted).
+    """
+
+    enabled: bool = False
+    commentary_provider: str = "cerebras"
+
+
 class HyperparamBoundsConfig(BaseModel):
     """Hyperparameter bounds for LLM-suggested training config clamping."""
 
@@ -835,6 +849,7 @@ class SwingRLConfig(BaseSettings):
     sentiment: SentimentConfig = Field(default_factory=SentimentConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     memory_agent: MemoryAgentConfig = Field(default_factory=MemoryAgentConfig)
+    meta_trader: MetaTraderConfig = Field(default_factory=MetaTraderConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
 
 

@@ -243,6 +243,10 @@ memory_agent:
         api_key: ""                         # OVERRIDE via NVIDIA_API_KEY in .env
         default_model: "moonshotai/kimi-k2.5"
 
+meta_trader:                          # Task 12: rotation-gated trade-time coach (skeleton)
+  enabled: false                      # runtime gate — Task 16 go/no-go before switching on
+  commentary_provider: cerebras       # provider for the mt-commentary-v0 shadow prompt
+
 training:
   # Config lifecycle note: `bounds` below is loaded once into module-level constants
   # at import time (src/swingrl/memory/training/bounds.py:HYPERPARAM_BOUNDS/REWARD_BOUNDS/

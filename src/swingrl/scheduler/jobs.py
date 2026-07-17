@@ -50,6 +50,11 @@ class JobContext:
 _ctx: JobContext | None = None
 _reconciliation_failures: int = 0
 
+# Placeholder flagged algo for the MT commentary skeleton when a cycle has no
+# recorded per-algo proposals yet. The future Meta-Trader spec computes the real
+# flagged algo from proposals-vs-blend geometry (§4.7).
+_DEFAULT_FLAGGED_ALGO = "ppo"
+
 
 def init_job_context(
     config: Any,
@@ -81,6 +86,71 @@ def _get_ctx() -> JobContext:
     if _ctx is None:
         raise RuntimeError("Job context not initialized. Call init_job_context() first.")
     return _ctx
+
+
+def maybe_post_trade_commentary(ctx: JobContext, environment: str) -> None:
+    """Post-cycle Meta-Trader commentary (Task 12 skeleton) — inert unless enabled.
+
+    Runtime gate: ``meta_trader.enabled`` (config default False). When disabled this
+    returns immediately without importing the client or touching the network — the
+    skeleton is provably inert by default (Task 16's go/no-go is the remaining gate).
+    When enabled, it looks up the just-executed cycle, builds a shadow-commentary
+    payload, and POSTs it fail-open to the memory service's /trade/commentary. Never
+    raises — shadow commentary must never disturb a trading cycle.
+
+    Args:
+        ctx: The job context (config, db, pipeline, alerter).
+        environment: "equity" or "crypto".
+    """
+    meta_trader = getattr(ctx.config, "meta_trader", None)
+    if meta_trader is None or not meta_trader.enabled:
+        return
+
+    try:
+        with ctx.db.connection() as conn:
+            row = conn.execute(
+                "SELECT ic.cycle_id, ic.hmm_p_bull, ic.hmm_p_bear, ic.vix, ic.turbulence,"
+                " ic.deployed_iteration,"
+                " (SELECT cap.algorithm FROM cycle_algo_proposals cap"
+                "  WHERE cap.cycle_id = ic.cycle_id"
+                "  ORDER BY cap.weight_in_blend_frac DESC LIMIT 1) AS algorithm,"
+                " (SELECT string_agg(cap.algorithm || ':'"
+                "         || round(cap.weight_in_blend_frac::numeric, 3)::text, '; ')"
+                "  FROM cycle_algo_proposals cap WHERE cap.cycle_id = ic.cycle_id)"
+                "  AS proposals_summary"
+                " FROM inference_cycles ic WHERE ic.environment = %s"
+                " ORDER BY ic.cycle_ts DESC LIMIT 1",
+                [environment],
+            ).fetchone()
+
+        if row is None:
+            log.info("trade_commentary_skipped_no_cycle", environment=environment)
+            return
+
+        from swingrl.memory.client import MemoryClient  # noqa: PLC0415
+
+        client = MemoryClient(
+            base_url=ctx.config.memory_agent.base_url,
+            default_timeout=ctx.config.memory_agent.timeout_sec,
+            api_key=ctx.config.memory_agent.api_key,
+        )
+        payload = {
+            "cycle_id": row["cycle_id"],
+            "environment": environment,
+            "algorithm": row.get("algorithm") or _DEFAULT_FLAGGED_ALGO,
+            "deployed_iteration": row.get("deployed_iteration") or 0,
+            "regime": {
+                "hmm_p_bull": row.get("hmm_p_bull"),
+                "hmm_p_bear": row.get("hmm_p_bear"),
+                "vix": row.get("vix"),
+                "turbulence": row.get("turbulence"),
+            },
+            "proposals_summary": row.get("proposals_summary") or "",
+        }
+        client.trade_commentary(payload)
+        log.info("trade_commentary_posted", environment=environment, cycle_id=row["cycle_id"])
+    except Exception:
+        log.exception("trade_commentary_failed", environment=environment)
 
 
 def equity_cycle() -> list[FillResult]:
@@ -130,6 +200,9 @@ def equity_cycle() -> list[FillResult]:
         run_shadow_inference(ctx, "equity")
     except Exception:
         log.exception("shadow_inference_failed", environment="equity")
+
+    # Post-cycle Meta-Trader commentary (Task 12 skeleton; inert unless enabled)
+    maybe_post_trade_commentary(ctx, "equity")
 
     return fills
 
@@ -181,6 +254,9 @@ def crypto_cycle() -> list[FillResult]:
         run_shadow_inference(ctx, "crypto")
     except Exception:
         log.exception("shadow_inference_failed", environment="crypto")
+
+    # Post-cycle Meta-Trader commentary (Task 12 skeleton; inert unless enabled)
+    maybe_post_trade_commentary(ctx, "crypto")
 
     return fills
 

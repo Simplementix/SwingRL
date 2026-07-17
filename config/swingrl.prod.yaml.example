@@ -120,6 +120,10 @@ security:
   key_rotation_days: 90             # 90-day rotation reminder for API keys
   env_file_permissions: "600"       # .env must be owner-only readable
 
+meta_trader:                        # Task 12: rotation-gated trade-time coach (skeleton)
+  enabled: false                    # runtime gate — keep false until Task 16 go/no-go
+  commentary_provider: cerebras     # provider for the mt-commentary-v0 shadow prompt
+
 training:
   bounds:
     # D-T2.1: L1 lever (mid-fold reward-weight nudges from epoch advice) is BENCHED.
