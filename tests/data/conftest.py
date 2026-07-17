@@ -62,11 +62,14 @@ def db_config_yaml(tmp_path: Path) -> str:
 
 
 def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
-    """Drop all V001-V005 artifacts and clear their schema_migrations ledger rows.
+    """Drop all V001-V006 artifacts and clear their schema_migrations ledger rows.
 
-    FK-safe order throughout: V005 training-record leaf tables (backtest_trades/
+    FK-safe order throughout: V006 patterns-family tables (pattern_presentations/
+    pattern_links/pattern_sources/patterns — nothing references them, and they point
+    at llm_calls/eras dropped further down, so they drop first of all); then V005
+    training-record leaf tables (backtest_trades/
     season_results/fold_results/epoch_snapshots — nothing references them, so they
-    drop first) before their referenced training_runs/eras/gate_versions parents;
+    drop next) before their referenced training_runs/eras/gate_versions parents;
     then V004 coach-record artifacts (intent_verdicts/
     intent_applications -> intent_records, referenced by the ensemble_weight_history
     FK -> llm_calls; the ewh FK + two A14 partial UNIQUE indexes are dropped first so
@@ -83,6 +86,14 @@ def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
     ``UndefinedTable`` without the guard.
     """
     with mgr.connection() as conn:
+        # V006 patterns family (leaf tables first): pattern_presentations references
+        # llm_calls (dropped below) and the three pattern_* children reference patterns
+        # and eras (also dropped below), so all four must go before any of those FK
+        # targets — dropped first since nothing references them.
+        conn.execute("DROP TABLE IF EXISTS pattern_presentations")
+        conn.execute("DROP TABLE IF EXISTS pattern_links")
+        conn.execute("DROP TABLE IF EXISTS pattern_sources")
+        conn.execute("DROP TABLE IF EXISTS patterns")
         conn.execute("DROP TABLE IF EXISTS backtest_trades")
         conn.execute("DROP TABLE IF EXISTS season_results")
         conn.execute("DROP TABLE IF EXISTS fold_results")
@@ -122,7 +133,7 @@ def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
         conn.execute(
             "DO $$ BEGIN "
             "IF to_regclass('public.schema_migrations') IS NOT NULL THEN "
-            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4, 5); "
+            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4, 5, 6); "
             "END IF; "
             "END $$;"
         )
