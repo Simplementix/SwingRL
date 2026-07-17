@@ -1038,3 +1038,75 @@ class TestFillQualityFailOpen:
 
         assert any("INSERT INTO trades" in c.args[0] for c in conn.execute.call_args_list)
         assert any("INSERT INTO positions" in c.args[0] for c in conn.execute.call_args_list)
+
+
+class TestFillQualityLiveDB:
+    """Real-Postgres round-trip: fill_quality lands with correct NUMERIC adaptation.
+
+    The mock-based tests above only prove the string value handed to conn.execute —
+    nothing else proves psycopg actually adapts that string into the NUMERIC(18, 8)
+    columns and it round-trips back as the expected value (mirrors Task 9's
+    TestRecordCycleLiveDB precedent). Uses the mock_db fixture (auto-skips without
+    DATABASE_URL).
+    """
+
+    def test_fill_quality_row_round_trips(self, mock_db: DatabaseManager) -> None:
+        """A buy fill's fill_quality row lands with slippage/cost/time_to_fill intact."""
+        processor = FillProcessor(db=mock_db)
+        fill = FillResult(
+            trade_id="fill-t10-live-001",
+            symbol="SPY",
+            side="buy",
+            quantity=10.0,
+            fill_price=105.0,
+            commission=1.5,
+            slippage=0.0,
+            environment="equity",
+            broker="alpaca",
+            status="filled",
+            submitted_at="2026-07-16T20:00:00.000000+00:00",
+            filled_at="2026-07-16T20:00:00.250000+00:00",
+        )
+
+        processor.process(fill, decision_price=100.0)
+
+        with mock_db.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM fill_quality WHERE trade_id = %s", (fill.trade_id,)
+            ).fetchone()
+
+        assert row is not None
+        assert float(row["decision_price_usd"]) == pytest.approx(100.0)
+        assert float(row["fill_price_usd"]) == pytest.approx(105.0)
+        assert float(row["expected_fill_price_usd"]) == pytest.approx(100.0)  # no config -> 0 cost
+        assert row["slippage_frac"] == pytest.approx(0.05)
+        assert row["expected_cost_frac"] == pytest.approx(0.0)
+        commission_frac = 1.5 / (105.0 * 10.0)
+        assert row["realized_cost_frac"] == pytest.approx(commission_frac + 0.05)
+        assert row["time_to_fill_ms"] == 250
+
+    def test_trades_cycle_id_round_trips_null(self, mock_db: DatabaseManager) -> None:
+        """process() without cycle_id writes NULL to trades.cycle_id (nullable FK)."""
+        processor = FillProcessor(db=mock_db)
+        fill = FillResult(
+            trade_id="fill-t10-live-002",
+            symbol="SPY",
+            side="buy",
+            quantity=5.0,
+            fill_price=150.0,
+            commission=0.0,
+            slippage=0.0,
+            environment="equity",
+            broker="alpaca",
+            status="filled",
+        )
+
+        processor.process(fill)
+
+        with mock_db.connection() as conn:
+            row = conn.execute(
+                "SELECT cycle_id FROM trades WHERE trade_id = %s", (fill.trade_id,)
+            ).fetchone()
+
+        assert row is not None
+        assert row["cycle_id"] is None

@@ -101,7 +101,7 @@ class ExecutionPipeline:
 
         # Eagerly create components that don't need lazy loading
         self._position_tracker = PositionTracker(db=db, config=config)
-        self._fill_processor = FillProcessor(db=db)
+        self._fill_processor = FillProcessor(db=db, config=config)
 
         # Fail-open per-cycle capture writer (regime + per-algo proposals, §4.7).
         self._cycle_recorder = CycleRecorder(db=db, config=config, alerter=alerter)
@@ -417,8 +417,16 @@ class ExecutionPipeline:
 
                 # M10-equity backstop: a real fill that fails to record is money that
                 # moved without a ledger entry — alert critical for manual reconciliation.
+                # cycle_id/decision_price thread this fill back to its inference cycle and
+                # sizing-time price (Task 10, §3.7.5) — decision_price is current_price,
+                # the get_current_price() value Step 9 used to size this order.
                 try:
-                    self._fill_processor.process(fill, sized_order=sized_order)
+                    self._fill_processor.process(
+                        fill,
+                        sized_order=sized_order,
+                        cycle_id=cycle_id,
+                        decision_price=current_price,
+                    )
                 except Exception:
                     log.critical(
                         "fill_recorded_failed_after_execution",
