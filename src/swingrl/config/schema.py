@@ -394,6 +394,53 @@ class OptionsCollectorConfig(BaseModel):
     backup: OptionsBackupConfig = Field(default_factory=OptionsBackupConfig)
 
 
+class CalendarConfig(BaseModel):
+    """Event-calendar ingest config (Plan A Task 11; spec §4 D-T3.14).
+
+    Seeds ``calendar_events`` with macro release dates (FRED release/dates API) and FOMC
+    meeting dates (forward schedule in ``fomc_dates`` yaml; historical dates in the
+    ``fomc_backfill_csv`` seed). Windows are materialized at ingest from ``window_hours``.
+    The weekly ingest + daily staleness jobs run in the swingrl-collector (amended
+    2026-07-14), not the trader.
+    """
+
+    enabled: bool = Field(default=True)
+    fred_api_base_url: str = Field(default="https://api.stlouisfed.org/fred")
+    fred_release_ids: dict[str, int] = Field(
+        default_factory=lambda: {"cpi": 10, "nfp": 50, "gdp": 53}
+    )
+    request_timeout_s: float = Field(default=30.0, gt=0.0)
+    release_fetch_limit: int = Field(default=30, ge=1)  # recent-mode desc limit
+    fomc_dates: list[str] = Field(default_factory=list)  # forward ISO datetimes (ET)
+    fomc_backfill_csv: str = Field(default="config/fomc_dates_historical.csv")
+    window_hours: dict[str, list[int]] = Field(
+        default_factory=lambda: {
+            "fomc": [24, 24],
+            "cpi": [12, 12],
+            "nfp": [12, 12],
+            "gdp": [12, 12],
+        }
+    )
+    min_future_days: int = Field(default=10, ge=1)
+    backfill_start: str = Field(default="2015-01-01")  # covers min(ohlcv_daily)=2016-01-04
+    # Collector scheduling (America/New_York); jobs register in scripts/collector_main.py.
+    ingest_day_of_week: str = Field(default="sun")
+    ingest_time_et: str = Field(default="06:30")
+    staleness_check_time_et: str = Field(default="07:00")
+
+    @field_validator("window_hours")
+    @classmethod
+    def windows_are_before_after_pairs(cls, v: dict[str, list[int]]) -> dict[str, list[int]]:
+        """Each event type maps to a [before_hours, after_hours] pair of non-negative ints."""
+        for event_type, hours in v.items():
+            if len(hours) != 2 or any(h < 0 for h in hours):
+                raise ConfigError(
+                    f"calendar.window_hours[{event_type!r}] must be [before, after] "
+                    f"non-negative hours, got {hours!r}"
+                )
+        return v
+
+
 class ShadowConfig(BaseModel):
     """Shadow model evaluation configuration."""
 
@@ -578,6 +625,20 @@ class MemoryAgentConfig(BaseModel):
     # Empty list = all folds are treatment (backward compatible).
     control_folds_equity: list[int] = Field(default_factory=list)
     control_folds_crypto: list[int] = Field(default_factory=list)
+
+
+class MetaTraderConfig(BaseModel):
+    """Meta-Trader (trade-time coach) configuration — Task 12 rotation-gated skeleton.
+
+    ``enabled`` is the runtime gate for the post-cycle MT commentary skeleton: when
+    False (the default), the scheduler job is a provable no-op — it makes no memory
+    call at all. Key rotation is complete (2026-07-07); Task 16's go/no-go is the
+    remaining gate before this is switched on. Graders/verdicts land in Plan B, so
+    day-one intents accumulate ungraded until then (documented, accepted).
+    """
+
+    enabled: bool = False
+    commentary_provider: str = "cerebras"
 
 
 class HyperparamBoundsConfig(BaseModel):
@@ -783,10 +844,12 @@ class SwingRLConfig(BaseSettings):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
     options_collector: OptionsCollectorConfig = Field(default_factory=OptionsCollectorConfig)
+    calendar: CalendarConfig = Field(default_factory=CalendarConfig)
     shadow: ShadowConfig = Field(default_factory=ShadowConfig)
     sentiment: SentimentConfig = Field(default_factory=SentimentConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     memory_agent: MemoryAgentConfig = Field(default_factory=MemoryAgentConfig)
+    meta_trader: MetaTraderConfig = Field(default_factory=MetaTraderConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
 
 

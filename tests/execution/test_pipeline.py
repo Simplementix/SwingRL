@@ -24,6 +24,10 @@ def mock_feature_pipeline() -> MagicMock:
     """Mock FeaturePipeline returning a dummy observation."""
     fp = MagicMock()
     fp.get_observation.return_value = np.zeros(156, dtype=np.float32)
+    # Plain dict so Step 9b capture builds a real RegimeStamp instead of failing
+    # open on a MagicMock — keeps execute_cycle test output free of benign
+    # cycle_capture_failed warnings.
+    fp.regime_snapshot.return_value = {"hmm_p_bull": 0.5, "hmm_p_bear": 0.5, "vix": 15.0}
     return fp
 
 
@@ -611,3 +615,22 @@ class TestPipelineInit:
         # PPO model was found and loaded from the non-double-nested path
         assert "ppo" in models
         mock_ppo_cls.load.assert_called_once_with(str(expected_path))
+
+
+class TestSkipClassification:
+    """_classify_skips distinguishes 'signaled but too small' from 'model held' (fold c)."""
+
+    def test_only_signaled_but_too_small_symbols_are_flagged(self) -> None:
+        """A signaled change below the min order value is 'below_min_delta'; held/traded are not."""
+        symbols = ["SPY", "QQQ", "VTI", "XLV"]
+        # portfolio_value=1000, min_order_value=10 -> min delta weight to trade = 0.01.
+        # SPY: change 0.005*1000=$5 (< $10, signaled) -> below_min_delta
+        # QQQ: held (target == current) -> omitted
+        # VTI: change 0.05*1000=$50 (>= $10, real order) -> omitted
+        # XLV: held (target == current) -> omitted
+        target = np.array([0.205, 0.10, 0.15, 0.05])
+        current = np.array([0.200, 0.10, 0.10, 0.05])
+
+        reasons = ExecutionPipeline._classify_skips(symbols, target, current, 1000.0, 10.0)
+
+        assert reasons == {"SPY": "below_min_delta"}

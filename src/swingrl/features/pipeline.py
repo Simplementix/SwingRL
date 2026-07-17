@@ -480,6 +480,31 @@ class FeaturePipeline:
                 self._health.record_failure("hmm")
             return np.array([0.5, 0.5])
 
+    def regime_snapshot(self, env_name: str, date_or_datetime: str) -> dict[str, float | None]:
+        """Return the decision-time regime (HMM bull/bear probs + VIX) for capture.
+
+        Public wrapper composing the private ``_get_hmm_probs`` and
+        ``_get_macro_array`` readers so the CycleRecorder can stamp each inference
+        cycle without re-implementing their queries. Both readers are internally
+        fail-safe (defaults on miss), so this never raises.
+
+        Args:
+            env_name: "equity" or "crypto".
+            date_or_datetime: Date (equity) or ISO datetime (crypto) cutoff, inclusive.
+
+        Returns:
+            Dict with ``hmm_p_bull``, ``hmm_p_bear`` (HMM regime probabilities) and
+            ``vix`` (macro element 0 = ``VIXCLS``). The ``| None`` return type
+            accommodates a future reader that surfaces a genuine no-data miss.
+        """
+        hmm = self._get_hmm_probs(env_name, date_or_datetime)
+        macro = self._get_macro_array(env_name, date_or_datetime)
+        return {
+            "hmm_p_bull": float(hmm[0]),
+            "hmm_p_bear": float(hmm[1]),
+            "vix": float(macro[0]),
+        }
+
     def _load_log_returns(self, env_name: str, date_or_datetime: str) -> pd.DataFrame | None:
         """Load close prices <= the cutoff, pivot by symbol, return log-returns.
 

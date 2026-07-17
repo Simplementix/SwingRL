@@ -23,6 +23,7 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from swingrl.config.schema import OptionsSnapshotConfig, SwingRLConfig, load_config
+from swingrl.data.calendar import CalendarIngestor, run_calendar_staleness_check
 from swingrl.data.db import DatabaseManager
 from swingrl.data.options import market_calendar
 from swingrl.data.options.audit import run_data_quality_audit
@@ -41,6 +42,10 @@ FIXED_JOB_IDS = [
     "options_offsite_backup",
 ]
 
+# Calendar-ingest jobs (Plan A Task 11, amended 2026-07-14): homed here so calendar-code
+# updates never require a trader rebuild (A30/D10). Registered only when calendar.enabled.
+CALENDAR_JOB_IDS = ["calendar_ingest", "calendar_staleness"]
+
 
 def _snapshot_job_id(label: str) -> str:
     """Stable APScheduler job id for a snapshot label."""
@@ -48,8 +53,15 @@ def _snapshot_job_id(label: str) -> str:
 
 
 def all_job_ids(config: SwingRLConfig) -> list[str]:
-    """One snapshot job per configured snapshot + the fixed jobs (D4)."""
-    return [_snapshot_job_id(s.label) for s in config.options_collector.snapshots] + FIXED_JOB_IDS
+    """One snapshot job per configured snapshot + the fixed jobs (D4).
+
+    The two calendar jobs join the keep-set only when ``calendar.enabled`` — so a disabled
+    calendar drops any previously persisted calendar job via ``remove_stale_jobs``.
+    """
+    ids = [_snapshot_job_id(s.label) for s in config.options_collector.snapshots] + FIXED_JOB_IDS
+    if config.calendar.enabled:
+        ids += CALENDAR_JOB_IDS
+    return ids
 
 
 def _hhmm(time_et: str) -> tuple[int, int]:
@@ -260,6 +272,21 @@ def offsite_backup_job() -> None:
     run_offsite_backup(components["config"], components["alerter"])
 
 
+def calendar_ingest_job() -> None:
+    """Picklable weekly calendar-ingest job (C1): FRED release dates + FOMC yaml (Task 11)."""
+    components = get_components()
+    config = components["config"]
+    if not config.calendar.enabled:
+        return
+    CalendarIngestor(config, components["db"]).run()
+
+
+def calendar_staleness_job() -> None:
+    """Picklable daily calendar-staleness job (C1): warn when the forward calendar runs dry."""
+    components = get_components()
+    run_calendar_staleness_check(components["config"], components["db"], components["alerter"])
+
+
 def remove_stale_jobs(scheduler: Any, config: SwingRLConfig) -> list[str]:
     """Drop any persisted job whose id is no longer in the desired set (D4).
 
@@ -342,6 +369,31 @@ def register_jobs(scheduler: Any, components: dict[str, Any]) -> None:
         id="options_offsite_backup",
         replace_existing=True,
     )
+
+    # Plan A Task 11 (amended 2026-07-14): weekly calendar ingest + daily staleness check.
+    cal = config.calendar
+    if cal.enabled:
+        ih, im = _hhmm(cal.ingest_time_et)
+        scheduler.add_job(
+            calendar_ingest_job,
+            trigger="cron",
+            day_of_week=cal.ingest_day_of_week,
+            hour=ih,
+            minute=im,
+            timezone="America/New_York",
+            id="calendar_ingest",
+            replace_existing=True,
+        )
+        ch, cm = _hhmm(cal.staleness_check_time_et)
+        scheduler.add_job(
+            calendar_staleness_job,
+            trigger="cron",
+            hour=ch,
+            minute=cm,
+            timezone="America/New_York",
+            id="calendar_staleness",
+            replace_existing=True,
+        )
 
 
 def _make_signal_handler(

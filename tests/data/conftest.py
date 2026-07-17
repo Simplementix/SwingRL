@@ -19,6 +19,7 @@ import pytest
 
 from swingrl.config.schema import load_config
 from swingrl.data.db import DatabaseManager
+from swingrl.data.migration_runner import apply_migrations
 
 
 @pytest.fixture
@@ -60,48 +61,44 @@ def db_config_yaml(tmp_path: Path) -> str:
     """)
 
 
-@pytest.fixture
-def db_with_legacy_schema(
-    tmp_path: Path, db_config_yaml: str
-) -> Generator[DatabaseManager, None, None]:
-    """DatabaseManager on DATABASE_URL with init_schema() already run.
+def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
+    """Drop all V001-V004 artifacts and clear their schema_migrations ledger rows.
 
-    Shared by tests/data/test_migrations_content.py and
-    tests/data/test_bootstrap_era0_models.py. Legacy tables (backtest_results,
-    iteration_results, ...) exist, possibly empty — the V001 back-stamp must
-    hold for 0 rows in CI and 574 in production. V001/V002/V003's plain
-    ``CREATE TABLE`` / ``ALTER TABLE ADD COLUMN`` statements are not idempotent
-    by themselves, so teardown drops the V003 artifacts (event_outcomes/
-    calendar_events/fill_quality/trades.cycle_id/cycle_algo_proposals/
-    inference_cycles, FK-safe order), the V002 artifacts (training_runs/models/
-    ensemble_weight_history, FK-safe order), and the V001 artifacts (the two new
-    registry tables and the four added columns), then clears the version-1,
-    version-2, and version-3 ledger rows — keeping the persistent scratch
-    database re-runnable across test sessions.
+    FK-safe order throughout: V004 coach-record artifacts (intent_verdicts/
+    intent_applications -> intent_records, referenced by the ensemble_weight_history
+    FK -> llm_calls; the ewh FK + two A14 partial UNIQUE indexes are dropped first so
+    the DROP TABLE of intent_records succeeds), then V003 (event_outcomes/fill_quality
+    -> calendar_events/trades.cycle_id -> cycle_algo_proposals -> inference_cycles),
+    then V002 (ensemble_weight_history -> models -> training_runs, since
+    training_runs.era_id references eras, dropped below), then V001 (the two new
+    registry tables and the four added columns).
 
-    LOUD NOTE for Task 12 (V004): when V004 ships, this teardown's
-    dropped-artifacts list AND its ``WHERE version IN (1, 2, 3)`` ledger cleanup
-    must BOTH be extended to cover V004's artifacts/version — otherwise the
-    scratch database stops being re-runnable the moment V004 lands.
+    The very first statement guards on ``to_regclass`` (table existence) before the
+    ``ALTER TABLE ... DROP CONSTRAINT IF EXISTS`` — ``IF EXISTS`` there only makes the
+    *constraint* drop conditional, not the table; calling this when
+    ``ensemble_weight_history`` was never created (V002 not applied) raises
+    ``UndefinedTable`` without the guard.
     """
-    config_file = tmp_path / "swingrl.yaml"
-    config_file.write_text(db_config_yaml)
-    config = load_config(config_file)
-    DatabaseManager.reset()
-    mgr = DatabaseManager(config)
-    mgr.init_schema()
-    yield mgr
     with mgr.connection() as conn:
-        # V003 teardown first (FK-safe order): event_outcomes/fill_quality ->
-        # calendar_events/trades.cycle_id -> cycle_algo_proposals -> inference_cycles.
+        conn.execute(
+            "DO $$ BEGIN "
+            "IF to_regclass('public.ensemble_weight_history') IS NOT NULL THEN "
+            "ALTER TABLE ensemble_weight_history DROP CONSTRAINT IF EXISTS fk_ewh_intent; "
+            "END IF; "
+            "END $$;"
+        )
+        conn.execute("DROP INDEX IF EXISTS uq_mt_commentary_per_cycle")
+        conn.execute("DROP INDEX IF EXISTS uq_llm_commentary_cycle")
+        conn.execute("DROP TABLE IF EXISTS intent_verdicts")
+        conn.execute("DROP TABLE IF EXISTS intent_applications")
+        conn.execute("DROP TABLE IF EXISTS intent_records")
+        conn.execute("DROP TABLE IF EXISTS llm_calls")
         conn.execute("DROP TABLE IF EXISTS event_outcomes")
         conn.execute("DROP TABLE IF EXISTS calendar_events")
         conn.execute("DROP TABLE IF EXISTS fill_quality")
         conn.execute("ALTER TABLE trades DROP COLUMN IF EXISTS cycle_id")
         conn.execute("DROP TABLE IF EXISTS cycle_algo_proposals")
         conn.execute("DROP TABLE IF EXISTS inference_cycles")
-        # V002 teardown: ensemble_weight_history -> models ->
-        # training_runs, since training_runs.era_id references eras (dropped below).
         conn.execute("DROP TABLE IF EXISTS ensemble_weight_history")
         conn.execute("DROP TABLE IF EXISTS models")
         conn.execute("DROP TABLE IF EXISTS training_runs")
@@ -118,8 +115,57 @@ def db_with_legacy_schema(
         conn.execute(
             "DO $$ BEGIN "
             "IF to_regclass('public.schema_migrations') IS NOT NULL THEN "
-            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3); "
+            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4); "
             "END IF; "
             "END $$;"
         )
+
+
+@pytest.fixture
+def db_with_legacy_schema(
+    tmp_path: Path, db_config_yaml: str
+) -> Generator[DatabaseManager, None, None]:
+    """DatabaseManager on DATABASE_URL, forced to a deterministic pre-V001 (legacy) schema.
+
+    Shared by tests/data/test_migrations_content.py and
+    tests/data/test_bootstrap_era0_models.py. Legacy tables (backtest_results,
+    iteration_results, ...) exist, possibly empty — the V001 back-stamp must hold for
+    0 rows in CI and 574 in production. V001/V002/V003/V004's plain ``CREATE TABLE`` /
+    ``ALTER TABLE ADD COLUMN`` statements are not idempotent by themselves, so both
+    SETUP and TEARDOWN call ``_drop_migration_artifacts()`` (see above) before doing
+    anything else, to guarantee a clean legacy starting point regardless of what any
+    other test using this fixture left behind.
+
+    Calling the drop at SETUP (not only teardown) is what makes the entry state
+    deterministic: most tests using this fixture call ``apply_migrations()``
+    themselves mid-test to reach migrated content, but
+    ``test_bootstrap_era0_models_requires_schema_v2`` deliberately never does — it
+    asserts that ``bootstrap_era0_models()`` raises ``ConfigError`` while the schema is
+    genuinely behind V002. Without a setup-time drop, that assertion's validity
+    depended entirely on the teardown behavior of whichever test happened to run
+    immediately before it in the same session — order-dependent by construction, and
+    already fragile before this fix (on an unmigrated fixture, that test's own teardown
+    raised ``UndefinedTable`` trying to ``ALTER TABLE ensemble_weight_history`` when
+    the table didn't exist — the guard above fixes that too).
+
+    Calling the same drop again at TEARDOWN, followed by ``apply_migrations()``,
+    restores the suite-wide invariant CI stage 2.7 establishes once per run (schema
+    migrated before any test executes) and that every other DB-gated fixture (e.g.
+    tests/execution/conftest.py's ``mock_db``) assumes holds for the rest of the
+    suite — without the re-apply, the drops left the shared DB in legacy state for the
+    remainder of the run, causing order-dependent ``UndefinedColumn`` failures (e.g.
+    ``trades.cycle_id``) in any later DB-gated test that needs V001-V004 artifacts.
+    This also keeps the persistent scratch database re-runnable across test sessions:
+    every session both starts and ends fully migrated, never legacy.
+    """
+    config_file = tmp_path / "swingrl.yaml"
+    config_file.write_text(db_config_yaml)
+    config = load_config(config_file)
+    DatabaseManager.reset()
+    mgr = DatabaseManager(config)
+    mgr.init_schema()
+    _drop_migration_artifacts(mgr)
+    yield mgr
+    _drop_migration_artifacts(mgr)
+    apply_migrations(mgr)
     DatabaseManager.reset()

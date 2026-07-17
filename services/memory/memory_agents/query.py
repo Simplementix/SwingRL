@@ -1002,6 +1002,29 @@ _EPOCH_ADVICE_SCHEMA = {
 }
 
 
+# JSON schema for the v0 Meta-Trader trade-time commentary response (Task 12).
+# The four structured fields are the §2.4 bet-slip skeleton in prose form:
+# diagnosis -> matched-weakness -> proposal -> falsifiable bet.
+_TRADE_COMMENTARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "diagnosis": {"type": "string"},
+        "matched_weakness": {"type": "string"},
+        "proposal": {"type": "string"},
+        "falsifiable_bet": {
+            "type": "object",
+            "properties": {
+                "metric": {"type": "string"},
+                "direction": {"type": "string", "enum": ["up", "down"]},
+                "baseline_value": {"type": "number"},
+            },
+            "required": ["metric", "direction", "baseline_value"],
+        },
+    },
+    "required": ["diagnosis", "matched_weakness", "proposal", "falsifiable_bet"],
+}
+
+
 # ---------------------------------------------------------------------------
 # Clamping helpers
 # ---------------------------------------------------------------------------
@@ -1333,6 +1356,59 @@ class QueryAgent:
             response_preview=json.dumps(result_out)[:500],
         )
         return result_out
+
+    async def advise_trade_commentary(self, query: str) -> dict[str, Any] | None:
+        """Return the v0 Meta-Trader trade-time commentary for one inference cycle.
+
+        Renders the ``mt-commentary-v0`` prompt (structured: diagnosis /
+        matched-weakness / proposal / falsifiable bet) and routes through the same
+        cloud provider chain as epoch advice (``_call_lm``). Returns the parsed
+        structured dict plus ``provider``/``model`` on success, or ``None`` when the
+        provider chain fails (fail-open — the caller records the call as unsuccessful
+        and writes no intent). Never makes any state change itself.
+
+        Args:
+            query: Cycle-context string (cycle_id, regime stamp, per-algo proposals).
+
+        Returns:
+            Dict with keys diagnosis, matched_weakness, proposal, falsifiable_bet,
+            provider, model — or None if the provider chain returned nothing.
+        """
+        system_prompt = (
+            "You are the SwingRL Meta-Trader, a trade-time reviewer running in SHADOW "
+            "mode: your commentary is recorded and later graded, but it never changes any "
+            "live order. For the inference cycle described, return STRICT JSON with exactly "
+            "these fields: 'diagnosis' (what the blended decision is doing and why), "
+            "'matched_weakness' (the scouting-report failure mode this resembles, or "
+            "'none'), 'proposal' (the change you would make, or an explicit no-change, with "
+            "a one-line rationale), and 'falsifiable_bet' (an object with 'metric', "
+            "'direction' one of up/down, and a numeric 'baseline_value' at decision time). "
+            "Base every claim on the cycle context provided."
+        )
+        user_content = (
+            f"Inference cycle context:\n{query}\n\n"
+            "Produce your shadow commentary as the structured JSON described."
+        )
+
+        _t0 = time.monotonic()
+        result = await self._call_lm(
+            user_content, _TRADE_COMMENTARY_SCHEMA, system_prompt=system_prompt
+        )
+        _latency = int((time.monotonic() - _t0) * 1000)
+        if result is None:
+            log.warning("trade_commentary_provider_exhausted", query=query[:120])
+            return None
+
+        result["provider"] = self._last_provider
+        result["model"] = self._last_model
+        result["latency_ms"] = _latency
+        log.info(
+            "trade_commentary_response",
+            provider=self._last_provider,
+            model=self._last_model,
+            response_preview=json.dumps(result)[:400],
+        )
+        return result
 
     @staticmethod
     def _filter_and_format_context(

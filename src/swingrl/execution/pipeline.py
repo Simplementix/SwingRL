@@ -21,6 +21,7 @@ import numpy as np
 import structlog
 
 from swingrl.envs.portfolio import process_actions
+from swingrl.execution.cycle_recorder import AlgoProposal, CycleRecorder, RegimeStamp
 from swingrl.execution.fill_processor import FillProcessor
 from swingrl.execution.model_paths import active_model_paths
 from swingrl.execution.order_validator import OrderValidator
@@ -100,7 +101,10 @@ class ExecutionPipeline:
 
         # Eagerly create components that don't need lazy loading
         self._position_tracker = PositionTracker(db=db, config=config)
-        self._fill_processor = FillProcessor(db=db)
+        self._fill_processor = FillProcessor(db=db, config=config)
+
+        # Fail-open per-cycle capture writer (regime + per-algo proposals, §4.7).
+        self._cycle_recorder = CycleRecorder(db=db, config=config, alerter=alerter)
 
         # Circuit breakers — alerter injected so every trip/auto-resume alerts (review M1)
         self._circuit_breakers: dict[str, CircuitBreaker] = {
@@ -157,21 +161,38 @@ class ExecutionPipeline:
         """
         log.info("cycle_started", env=env_name, dry_run=dry_run)
 
+        # One canonical timestamp for the whole cycle (review fold a): the date
+        # string, the inference-outcome row, and the capture row all derive from
+        # this single value rather than re-reading the clock several times.
+        cycle_ts = datetime.now(UTC)
+
         # Step 1: Check circuit breaker state
         cb = self._circuit_breakers.get(env_name)
         if cb is not None:
             state = cb.get_state()
             if state == CBState.HALTED:
                 log.warning("cycle_halted_by_cb", env=env_name)
+                self._record_halt(env_name, cycle_ts, "circuit_breaker", dry_run)
                 return []
 
         # Resolve the cycle date once so the turbulence halt check and the
-        # observation share a single per-(env, date) turbulence value (M6).
-        current_date_str = self._get_current_date_str(env_name)
+        # observation share a single per-(env, date) turbulence value (M6). Derived
+        # from the canonical cycle_ts so date and timestamp never disagree.
+        current_date_str = self._get_current_date_str(env_name, cycle_ts)
 
         # Step 2: Check turbulence crash protection (PAPER-20)
         if self._check_turbulence(env_name, current_date_str):
             log.warning("cycle_halted_by_turbulence", env=env_name)
+            # Record the halt with the turbulence that triggered it. compute_turbulence
+            # is cached per (env, date), so this reuses the value _check_turbulence just
+            # computed — a cache hit, not a re-computation (fold f consistency holds).
+            self._record_halt(
+                env_name,
+                cycle_ts,
+                "turbulence_halt",
+                dry_run,
+                self._feature_pipeline.compute_turbulence(env_name, current_date_str),
+            )
             return []
 
         # Step 2.5: Equity market-calendar gate (fail-safe). Crypto trades 24/7.
@@ -201,6 +222,7 @@ class ExecutionPipeline:
                     title="Trading Blocked",
                     message=f"Trading blocked for {env_name}: {obs_health.reason}",
                 )
+            self._record_halt(env_name, cycle_ts, "degraded_features", dry_run)
             return []
 
         # Step 3c: Track NaN observations in inference_outcomes table
@@ -210,13 +232,14 @@ class ExecutionPipeline:
                 conn.execute(
                     "INSERT INTO inference_outcomes (timestamp, environment, had_nan) "
                     "VALUES (%s, %s, %s)",
-                    (datetime.now(UTC).isoformat(), env_name, int(had_nan)),
+                    (cycle_ts.isoformat(), env_name, int(had_nan)),
                 )
         except Exception:
             log.warning("inference_outcome_tracking_failed", exc_info=True)
 
         if had_nan:
             log.warning("nan_observation_detected", env=env_name)
+            self._record_halt(env_name, cycle_ts, "nan_obs", dry_run)
             return []
 
         # Step 3d: F1b — era-0 models were trained with the turbulence slot frozen
@@ -232,7 +255,12 @@ class ExecutionPipeline:
             len(env_symbols),
             self._config.sentiment.enabled if env_name == "equity" else False,
         )
-        self._turbulence_at_decision = float(observation[turb_idx])
+        # Consume the real sensor value into a cycle-local BEFORE zeroing. The
+        # local (not self._turbulence_at_decision) feeds capture, so an overlapping
+        # equity/crypto cycle overwriting the shared attribute cannot corrupt this
+        # cycle's stamp (review folds e/f — single per-cycle value, no re-compute).
+        turbulence_at_decision = float(observation[turb_idx])
+        self._turbulence_at_decision = turbulence_at_decision
         if self._config.environment.zero_turbulence_obs:
             observation[turb_idx] = 0.0
 
@@ -284,10 +312,33 @@ class ExecutionPipeline:
 
         if portfolio_value <= 0:
             log.error("zero_portfolio_value", env=env_name, value=portfolio_value)
+            # Early-exit cycle still recorded so a zero-portfolio halt is visible (fold b).
+            self._record_halt(env_name, cycle_ts, "zero_portfolio", dry_run, turbulence_at_decision)
             return []
 
         # Minimum order value comes from config per env (no hardcoded floor).
         min_order_value = self._min_order_value(env_name)
+
+        # Step 9b: Capture this cycle (regime + per-algo proposals + blended weights +
+        # per-symbol M2 skip reasons + dry_run tag). Placed after the min-order
+        # threshold is known so skip reasons are classified from the same inputs Step 9
+        # uses, but BEFORE any order-submission side effect. Fail-open — never blocks
+        # the money path (§4.7). Dry-runs are recorded and tagged (fold d), not skipped.
+        skip_reasons = self._classify_skips(
+            env_symbols, target_weights, current_weights, portfolio_value, min_order_value
+        )
+        cycle_id = self._capture_cycle(
+            env_name=env_name,
+            cycle_ts=cycle_ts,
+            current_date_str=current_date_str,
+            turbulence_at_decision=turbulence_at_decision,
+            symbols=env_symbols,
+            actions=actions,
+            ensemble_weights=weights,
+            target_weights=target_weights,
+            dry_run=dry_run,
+            skip_reasons=skip_reasons,
+        )
 
         for i, symbol in enumerate(symbols):
             target_value = float(target_weights[i]) * portfolio_value
@@ -366,8 +417,16 @@ class ExecutionPipeline:
 
                 # M10-equity backstop: a real fill that fails to record is money that
                 # moved without a ledger entry — alert critical for manual reconciliation.
+                # cycle_id/decision_price thread this fill back to its inference cycle and
+                # sizing-time price (Task 10, §3.7.5) — decision_price is current_price,
+                # the get_current_price() value Step 9 used to size this order.
                 try:
-                    self._fill_processor.process(fill, sized_order=sized_order)
+                    self._fill_processor.process(
+                        fill,
+                        sized_order=sized_order,
+                        cycle_id=cycle_id,
+                        decision_price=current_price,
+                    )
                 except Exception:
                     log.critical(
                         "fill_recorded_failed_after_execution",
@@ -438,6 +497,7 @@ class ExecutionPipeline:
             env=env_name,
             fills=len(fills),
             dry_run=dry_run,
+            cycle_id=cycle_id,
         )
         return fills
 
@@ -852,16 +912,197 @@ class ExecutionPipeline:
         except Exception:
             log.warning("ohlcv_freshness_check_failed", exc_info=True)
 
-    def _get_current_date_str(self, env_name: str) -> str:
+    def _get_current_date_str(self, env_name: str, now: datetime | None = None) -> str:
         """Get current date string for the environment.
 
         Args:
             env_name: Environment name.
+            now: Timestamp to derive the string from. Defaults to ``datetime.now(UTC)``
+                so direct callers stay unchanged; ``execute_cycle`` passes the single
+                canonical ``cycle_ts`` (review fold a).
 
         Returns:
             Date string (YYYY-MM-DD for equity, ISO datetime for crypto).
         """
-        now = datetime.now(tz=UTC)
+        now = now or datetime.now(tz=UTC)
         if env_name == "equity":
             return now.strftime("%Y-%m-%d")
         return now.isoformat()
+
+    def _capture_cycle(
+        self,
+        *,
+        env_name: str,
+        cycle_ts: datetime,
+        current_date_str: str,
+        turbulence_at_decision: float,
+        symbols: list[str],
+        actions: dict[str, np.ndarray],
+        ensemble_weights: dict[str, float],
+        target_weights: np.ndarray,
+        dry_run: bool,
+        skip_reasons: dict[str, str],
+    ) -> int | None:
+        """Assemble the RegimeStamp + proposals and hand them to the CycleRecorder.
+
+        Fail-open backstop around the assembly (the recorder's own writes are
+        already fail-open): any error here is logged and swallowed so capture never
+        blocks the money path.
+
+        Args:
+            env_name: Environment name.
+            cycle_ts: The canonical cycle timestamp.
+            current_date_str: Cycle date/datetime string (regime lookup cutoff).
+            turbulence_at_decision: Real sensor value read before F1b zeroing.
+            symbols: Ordered env symbols (per-symbol action/weight keys).
+            actions: Per-algo raw action vectors.
+            ensemble_weights: Ensemble weights keyed by algo (may be partial).
+            target_weights: Blended per-symbol target weights (array over symbols).
+            dry_run: Whether this cycle was a dry-run (tagged in the payload, fold d).
+            skip_reasons: Per-symbol M2 skip reasons for the payload (fold c).
+
+        Returns:
+            The new ``cycle_id``, or ``None`` on any capture failure.
+        """
+        try:
+            regime_dict = self._feature_pipeline.regime_snapshot(env_name, current_date_str)
+            regime = RegimeStamp(
+                hmm_p_bull=regime_dict.get("hmm_p_bull"),
+                hmm_p_bear=regime_dict.get("hmm_p_bear"),
+                vix=regime_dict.get("vix"),
+                turbulence=turbulence_at_decision,
+                active_event_ids=self._cycle_recorder.active_event_ids(cycle_ts),
+            )
+            active_ids = self._cycle_recorder.active_model_ids(env_name)
+            proposals = self._build_proposals(symbols, actions, ensemble_weights, active_ids)
+            raw_actions = {algo: [float(x) for x in vec] for algo, vec in actions.items()}
+            target_weights_map = {symbols[i]: float(target_weights[i]) for i in range(len(symbols))}
+            return self._cycle_recorder.record_cycle(
+                env_name=env_name,
+                mode=self._config.trading_mode,
+                cycle_ts=cycle_ts,
+                regime=regime,
+                raw_actions=raw_actions,
+                target_weights=target_weights_map,
+                proposals=proposals,
+                deployed_iteration=self._cycle_recorder.deployed_iteration(env_name),
+                dry_run=dry_run,
+                skip_reasons=skip_reasons,
+            )
+        except Exception:
+            log.warning("cycle_capture_failed", env=env_name, exc_info=True)
+            return None
+
+    def _record_halt(
+        self,
+        env_name: str,
+        cycle_ts: datetime,
+        reason: str,
+        dry_run: bool,
+        turbulence: float | None = None,
+    ) -> None:
+        """Fail-open early-exit capture (fold b): record a halt row, never affect the exit.
+
+        Wrapped so a capture failure can never change the halted cycle's behavior or
+        return value. The CycleRecorder's write is itself fail-open; this is a backstop.
+
+        Args:
+            env_name: Environment name.
+            cycle_ts: The canonical cycle timestamp.
+            reason: Short halt-reason code.
+            dry_run: Whether the halted cycle was a dry-run.
+            turbulence: Decision-time turbulence when known at the exit, else None.
+        """
+        try:
+            self._cycle_recorder.record_halt(
+                env_name=env_name,
+                mode=self._config.trading_mode,
+                cycle_ts=cycle_ts,
+                reason=reason,
+                turbulence=turbulence,
+                dry_run=dry_run,
+            )
+        except Exception:
+            log.warning("cycle_capture_failed", env=env_name, reason=reason, exc_info=True)
+
+    @staticmethod
+    def _classify_skips(
+        symbols: list[str],
+        target_weights: np.ndarray,
+        current_weights: np.ndarray,
+        portfolio_value: float,
+        min_order_value: float,
+    ) -> dict[str, str]:
+        """Classify per-symbol M2 (sub-minimum-delta) skips for the capture payload (fold c).
+
+        Mirrors the Step 9 order-gen filter (``abs(delta_value) < min_order_value``). A
+        symbol the model signaled to change (``target != current``) but whose dollar
+        delta is below the minimum order value is tagged ``below_min_delta`` — the
+        "model signaled, order too small" case, distinguishable from "model held"
+        (``target == current``), which is intentionally absent from the map.
+
+        Args:
+            symbols: Ordered env symbols.
+            target_weights: Post-process target weights (array over symbols).
+            current_weights: Current portfolio weights (array over symbols).
+            portfolio_value: Portfolio value used to size the dollar delta.
+            min_order_value: Minimum order dollar value (the M2 threshold).
+
+        Returns:
+            ``{symbol: "below_min_delta"}`` for signaled-but-too-small symbols only.
+        """
+        reasons: dict[str, str] = {}
+        for i, symbol in enumerate(symbols):
+            target = float(target_weights[i])
+            current = float(current_weights[i])
+            delta_value = (target - current) * portfolio_value
+            if target != current and abs(delta_value) < min_order_value:
+                reasons[symbol] = "below_min_delta"
+        return reasons
+
+    def _build_proposals(
+        self,
+        symbols: list[str],
+        actions: dict[str, np.ndarray],
+        ensemble_weights: dict[str, float],
+        active_ids: dict[str, str],
+    ) -> list[AlgoProposal]:
+        """Build one AlgoProposal per algo, snapshotting its blend weight (D-T3.13).
+
+        The blend fraction renormalizes the ensemble weights over the algos that
+        actually produced actions this cycle — mirroring ``EnsembleBlender`` so the
+        snapshot matches the weight each algo really carried. An algo with no active
+        DB model row is skipped (a proposal row would violate the ``model_id`` FK;
+        the cycle row still records).
+
+        Args:
+            symbols: Ordered env symbols.
+            actions: Per-algo raw action vectors (length n_assets + 1, cash last).
+            ensemble_weights: Ensemble weights keyed by algo (may be partial).
+            active_ids: Active ``{algo: model_id}`` map.
+
+        Returns:
+            AlgoProposal list (may be empty when no active models are registered).
+        """
+        from swingrl.training.ensemble import DEFAULT_ENSEMBLE_WEIGHT  # noqa: PLC0415
+
+        loaded = list(actions.keys())
+        raw_w = {a: float(ensemble_weights.get(a, DEFAULT_ENSEMBLE_WEIGHT)) for a in loaded}
+        total = sum(raw_w.values()) or 1.0
+
+        proposals: list[AlgoProposal] = []
+        for algo in loaded:
+            model_id = active_ids.get(algo)
+            if model_id is None:
+                continue
+            vec = actions[algo]
+            per_symbol = {symbols[i]: float(vec[i]) for i in range(len(symbols))}
+            proposals.append(
+                AlgoProposal(
+                    algorithm=algo,
+                    model_id=model_id,
+                    raw_actions=per_symbol,
+                    weight_in_blend_frac=raw_w[algo] / total,
+                )
+            )
+        return proposals

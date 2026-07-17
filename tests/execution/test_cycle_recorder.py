@@ -1,0 +1,428 @@
+"""Tests for CycleRecorder — per-cycle regime + per-algo proposal capture.
+
+Uses the ``make_mock_db`` MagicMock fixture (no live PostgreSQL): the tests
+verify the SQL issued, fail-open behaviour, and active-event window stamping.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from typing import Any
+
+from swingrl.execution.cycle_recorder import AlgoProposal, CycleRecorder, RegimeStamp
+from tests.conftest import make_mock_db
+
+
+def _recorder(db: Any, alerter: Any, config: Any) -> CycleRecorder:
+    """Build a CycleRecorder from mocked collaborators."""
+    return CycleRecorder(db=db, config=config, alerter=alerter)
+
+
+def _regime() -> RegimeStamp:
+    """A fully-populated RegimeStamp for insert tests."""
+    return RegimeStamp(
+        hmm_p_bull=0.7,
+        hmm_p_bear=0.3,
+        vix=18.5,
+        turbulence=4.2,
+        active_event_ids=[11, 22],
+    )
+
+
+class TestRecordCycle:
+    """record_cycle issues the inference_cycles + cycle_algo_proposals writes."""
+
+    def test_inserts_inference_cycle_then_one_proposal_per_algo(
+        self, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """Task 9 (a): inference_cycles INSERT (RETURNING) then one proposal INSERT each."""
+        db, conn = make_mock_db(fetchone_returns=[{"cycle_id": 42}])
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        proposals = [
+            AlgoProposal(
+                algorithm="ppo",
+                model_id="equity-ppo-iter4",
+                raw_actions={"SPY": 0.1, "QQQ": -0.2},
+                weight_in_blend_frac=0.5,
+            ),
+            AlgoProposal(
+                algorithm="a2c",
+                model_id="equity-a2c-iter4",
+                raw_actions={"SPY": 0.3, "QQQ": 0.0},
+                weight_in_blend_frac=0.5,
+            ),
+        ]
+
+        cycle_id = recorder.record_cycle(
+            env_name="equity",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            regime=_regime(),
+            raw_actions={"ppo": [0.1, -0.2], "a2c": [0.3, 0.0]},
+            target_weights={"SPY": 0.2, "QQQ": 0.1},
+            proposals=proposals,
+            deployed_iteration=4,
+        )
+
+        assert cycle_id == 42
+
+        sqls = [call.args[0] for call in conn.execute.call_args_list]
+        # First write: the inference_cycles row with a RETURNING clause.
+        assert "inference_cycles" in sqls[0]
+        assert "RETURNING" in sqls[0].upper()
+        # Then exactly one cycle_algo_proposals INSERT per proposal.
+        proposal_sqls = [s for s in sqls if "cycle_algo_proposals" in s]
+        assert len(proposal_sqls) == len(proposals)
+
+        # The blended_actions payload carries schema_version=1 and both sub-maps.
+        cycle_params = conn.execute.call_args_list[0].args[1]
+        payload = next(
+            json.loads(p) for p in cycle_params if isinstance(p, str) and "schema_version" in p
+        )
+        assert payload["schema_version"] == 1
+        assert payload["raw"] == {"ppo": [0.1, -0.2], "a2c": [0.3, 0.0]}
+        assert payload["target_weights_frac"] == {"SPY": 0.2, "QQQ": 0.1}
+
+    def test_proposal_payload_carries_schema_version(
+        self, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """Task 9: each proposed_actions JSONB payload is versioned."""
+        db, conn = make_mock_db(fetchone_returns=[{"cycle_id": 7}])
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        recorder.record_cycle(
+            env_name="equity",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            regime=_regime(),
+            raw_actions={"ppo": [0.1]},
+            target_weights={"SPY": 0.2},
+            proposals=[
+                AlgoProposal(
+                    algorithm="ppo",
+                    model_id="m1",
+                    raw_actions={"SPY": 0.1},
+                    weight_in_blend_frac=1.0,
+                )
+            ],
+            deployed_iteration=None,
+        )
+
+        proposal_call = next(
+            c for c in conn.execute.call_args_list if "cycle_algo_proposals" in c.args[0]
+        )
+        payload = next(
+            json.loads(p)
+            for p in proposal_call.args[1]
+            if isinstance(p, str) and "schema_version" in p
+        )
+        assert payload == {"schema_version": 1, "raw": {"SPY": 0.1}}
+
+    def test_payload_tags_dry_run_and_skip_reasons(
+        self, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """Folds c/d: the blended payload carries dry_run and per-symbol skip reasons."""
+        db, conn = make_mock_db(fetchone_returns=[{"cycle_id": 5}])
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        recorder.record_cycle(
+            env_name="equity",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            regime=_regime(),
+            raw_actions={"ppo": [0.1, -0.2]},
+            target_weights={"SPY": 0.2, "QQQ": 0.1},
+            proposals=[],
+            deployed_iteration=4,
+            dry_run=True,
+            skip_reasons={"QQQ": "below_min_delta"},
+        )
+
+        cycle_params = conn.execute.call_args_list[0].args[1]
+        payload = next(
+            json.loads(p) for p in cycle_params if isinstance(p, str) and "schema_version" in p
+        )
+        assert payload["dry_run"] is True
+        assert payload["skip_reasons"] == {"QQQ": "below_min_delta"}
+
+    def test_returns_none_and_does_not_raise_on_db_error(
+        self, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """Task 9 (b): a DB failure is swallowed (fail-open) and alerted, never raised."""
+        db, conn = make_mock_db()
+        conn.execute.side_effect = RuntimeError("connection reset")
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        result = recorder.record_cycle(
+            env_name="equity",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            regime=_regime(),
+            raw_actions={"ppo": [0.1]},
+            target_weights={"SPY": 0.2},
+            proposals=[],
+            deployed_iteration=1,
+        )
+
+        assert result is None
+        mock_alerter.send_alert.assert_called_once()
+        kwargs = mock_alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert kwargs["title"] == "Cycle capture failed"
+
+
+class TestRecordHalt:
+    """record_halt writes a minimal inference_cycles row for early-exit cycles (fold b)."""
+
+    def test_writes_minimal_row_with_halt_reason(self, exec_config: Any, mock_alerter: Any) -> None:
+        """Halt row: regime NULL, no proposals, payload carries halt_reason + dry_run."""
+        db, conn = make_mock_db(fetchone_returns=[{"cycle_id": 99}])
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        cycle_id = recorder.record_halt(
+            env_name="equity",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            reason="circuit_breaker",
+        )
+
+        assert cycle_id == 99
+        # Exactly one write — the inference_cycles row; no proposal rows for a halt.
+        assert len(conn.execute.call_args_list) == 1
+        sql, params = conn.execute.call_args.args[0], conn.execute.call_args.args[1]
+        assert "inference_cycles" in sql
+        # Regime columns (hmm_p_bull, hmm_p_bear, vix, active_event_ids) are NULL.
+        assert params[4] is None and params[5] is None and params[6] is None
+        payload = next(
+            json.loads(p) for p in params if isinstance(p, str) and "schema_version" in p
+        )
+        assert payload["halt_reason"] == "circuit_breaker"
+        assert payload["dry_run"] is False
+
+    def test_includes_turbulence_when_provided(self, exec_config: Any, mock_alerter: Any) -> None:
+        """The turbulence value (present at the turbulence-halt exit) is stored."""
+        db, conn = make_mock_db(fetchone_returns=[{"cycle_id": 100}])
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        recorder.record_halt(
+            env_name="crypto",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            reason="turbulence_halt",
+            turbulence=8.5,
+        )
+
+        # turbulence is the 8th positional insert param (index 7).
+        assert conn.execute.call_args.args[1][7] == 8.5
+
+    def test_fail_open_returns_none_and_alerts(self, exec_config: Any, mock_alerter: Any) -> None:
+        """A DB failure during halt capture is swallowed and alerted, never raised."""
+        db, conn = make_mock_db()
+        conn.execute.side_effect = RuntimeError("connection reset")
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        result = recorder.record_halt(
+            env_name="equity",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            reason="nan_obs",
+        )
+
+        assert result is None
+        kwargs = mock_alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert kwargs["title"] == "Cycle capture failed"
+
+
+class TestActiveEventStamping:
+    """active_event_ids delegates the window filter to SQL and returns the ids."""
+
+    def test_events_in_window_are_returned(self, exec_config: Any, mock_alerter: Any) -> None:
+        """Task 9 (c): events with window_start <= cycle_ts <= window_end are stamped."""
+        db, conn = make_mock_db(fetchall_returns=[[{"event_id": 11}, {"event_id": 22}]])
+        recorder = _recorder(db, mock_alerter, exec_config)
+        cycle_ts = datetime(2026, 7, 16, 20, 0, tzinfo=UTC)
+
+        ids = recorder.active_event_ids(cycle_ts)
+
+        assert ids == [11, 22]
+        sql = conn.execute.call_args.args[0]
+        assert "calendar_events" in sql
+        assert "window_start <= %s" in sql
+        assert "window_end >= %s" in sql
+        # cycle_ts is bound as the window comparison value.
+        assert cycle_ts in conn.execute.call_args.args[1]
+
+    def test_returns_empty_on_db_error(self, exec_config: Any, mock_alerter: Any) -> None:
+        """Fail-open: an events-query failure yields no ids, never raises."""
+        db, conn = make_mock_db()
+        conn.execute.side_effect = RuntimeError("no such table")
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        assert recorder.active_event_ids(datetime(2026, 7, 16, 20, 0, tzinfo=UTC)) == []
+
+
+class TestActiveModelSpine:
+    """active_model_ids / deployed_iteration read the active models ⋈ training_runs spine."""
+
+    def test_active_model_ids_maps_algo_to_model_id(
+        self, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """Task 9: algo -> model_id for the active spine rows."""
+        db, conn = make_mock_db(
+            fetchall_returns=[
+                [
+                    {"algorithm": "ppo", "model_id": "m-ppo", "iteration_number": 5},
+                    {"algorithm": "a2c", "model_id": "m-a2c", "iteration_number": 4},
+                ]
+            ]
+        )
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        assert recorder.active_model_ids("equity") == {"ppo": "m-ppo", "a2c": "m-a2c"}
+        sql = conn.execute.call_args.args[0]
+        assert "models" in sql
+        assert "training_runs" in sql
+        assert "active" in conn.execute.call_args.args[1]
+        assert "equity" in conn.execute.call_args.args[1]
+
+    def test_deployed_iteration_is_max_and_shares_one_query(
+        self, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """Task 9: deployed_iteration = max iteration; spine is cached per call."""
+        db, conn = make_mock_db(
+            fetchall_returns=[
+                [
+                    {"algorithm": "ppo", "model_id": "m-ppo", "iteration_number": 5},
+                    {"algorithm": "a2c", "model_id": "m-a2c", "iteration_number": 4},
+                ]
+            ]
+        )
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        # First call primes the cache; the second reuses it (one query total).
+        recorder.active_model_ids("equity")
+        assert recorder.deployed_iteration("equity") == 5
+        assert conn.execute.call_count == 1
+
+    def test_deployed_iteration_none_when_no_active_models(
+        self, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """Task 9: no active spine rows -> deployed_iteration None, empty id map."""
+        db, _conn = make_mock_db(fetchall_returns=[[]])
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        assert recorder.deployed_iteration("equity") is None
+        assert recorder.active_model_ids("equity") == {}
+
+
+def _insert_active_model(db: Any, model_id: str, *, algorithm: str = "ppo") -> None:
+    """Insert a minimal training_runs + models row so a proposal's model_id FK is valid.
+
+    Mirrors tests/data/test_migrations_content.py's FK-satisfying setup. Relies on
+    the era-0 registry row seeded by V001 (preserved by the autouse wipe fixture).
+    """
+    with db.connection() as conn:
+        run_pk = conn.execute(
+            "INSERT INTO training_runs (iteration_number, environment, algorithm,"
+            " fold_number, run_type, seed, attempt, status, era_id, code_version,"
+            " data_fingerprint)"
+            " VALUES (3, 'equity', %s, -1, 'final_train', 42, 1, 'completed', 0,"
+            " 'abc123', 'fp1') RETURNING run_pk",
+            (algorithm,),
+        ).fetchone()["run_pk"]
+        conn.execute(
+            "INSERT INTO models (model_id, run_pk, artifact_path, vecnormalize_path, status)"
+            " VALUES (%s, %s, 'models/p.zip', 'models/v.pkl', 'active')",
+            (model_id, run_pk),
+        )
+
+
+class TestRecordCycleLiveDB:
+    """Real-Postgres round-trip: the happy-path INSERT actually lands (DB-gated).
+
+    Guards the empty-``active_event_ids`` case: the unit tests mock the connection,
+    the halt-row tests pass NULL, and the execute_cycle DB tests fail open before
+    reaching ``record_cycle`` — so nothing else proves psycopg3 adapts an empty
+    Python list to the ``BIGINT[]`` column as an empty array rather than mis-writing.
+    Uses the ``mock_db`` fixture (auto-skips without DATABASE_URL).
+    """
+
+    def test_persists_row_with_empty_active_events_array(
+        self, mock_db: Any, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """active_event_ids=[] lands as an empty array (not NULL); the proposal lands."""
+        _insert_active_model(mock_db, "equity-ppo-live")
+        recorder = CycleRecorder(db=mock_db, config=exec_config, alerter=mock_alerter)
+
+        cycle_id = recorder.record_cycle(
+            env_name="equity",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            regime=RegimeStamp(
+                hmm_p_bull=0.7, hmm_p_bear=0.3, vix=18.5, turbulence=4.2, active_event_ids=[]
+            ),
+            raw_actions={"ppo": [0.1, -0.2]},
+            target_weights={"SPY": 0.2},
+            proposals=[
+                AlgoProposal(
+                    algorithm="ppo",
+                    model_id="equity-ppo-live",
+                    raw_actions={"SPY": 0.1},
+                    weight_in_blend_frac=1.0,
+                )
+            ],
+            deployed_iteration=3,
+        )
+
+        assert cycle_id is not None
+        # Happy path — no fail-open alert (a mis-adaptation would trip this).
+        mock_alerter.send_alert.assert_not_called()
+
+        with mock_db.connection() as conn:
+            row = conn.execute(
+                "SELECT active_event_ids FROM inference_cycles WHERE cycle_id = %s",
+                (cycle_id,),
+            ).fetchone()
+            proposals = conn.execute(
+                "SELECT model_id FROM cycle_algo_proposals WHERE cycle_id = %s",
+                (cycle_id,),
+            ).fetchall()
+
+        # The row landed with an EMPTY ARRAY, not NULL.
+        assert row is not None
+        assert row["active_event_ids"] == []
+        assert row["active_event_ids"] is not None
+        # The proposal row landed against the FK'd model.
+        assert len(proposals) == 1
+        assert proposals[0]["model_id"] == "equity-ppo-live"
+
+    def test_persists_row_with_populated_active_events_array(
+        self, mock_db: Any, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """active_event_ids=[11, 22] round-trips through the BIGINT[] column."""
+        recorder = CycleRecorder(db=mock_db, config=exec_config, alerter=mock_alerter)
+
+        cycle_id = recorder.record_cycle(
+            env_name="crypto",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            regime=RegimeStamp(
+                hmm_p_bull=0.6, hmm_p_bear=0.4, vix=None, turbulence=None, active_event_ids=[11, 22]
+            ),
+            raw_actions={},
+            target_weights={},
+            proposals=[],
+            deployed_iteration=None,
+        )
+
+        assert cycle_id is not None
+        with mock_db.connection() as conn:
+            row = conn.execute(
+                "SELECT active_event_ids FROM inference_cycles WHERE cycle_id = %s",
+                (cycle_id,),
+            ).fetchone()
+        assert row is not None
+        assert row["active_event_ids"] == [11, 22]

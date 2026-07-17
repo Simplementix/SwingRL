@@ -9,6 +9,12 @@ rejected INSERT.
 
 V003: trade-time tables (§4.7 + A27) — inference_cycles/cycle_algo_proposals/
 trades.cycle_id/fill_quality/calendar_events/event_outcomes.
+
+V004: coach records (§4.4) — llm_calls (A15 identity CHECK matrix),
+intent_records (per-lever CHECK + horizon_spec JSONB NOT NULL), intent_applications,
+intent_verdicts (A16 UNIQUE(intent_id, grader_version)); ensemble_weight_history.intent_id
+FK backfilled; A14 volume cap via two partial UNIQUE indexes (≤1 MT_commentary intent
+per inference cycle).
 """
 
 from __future__ import annotations
@@ -187,12 +193,12 @@ def test_v002_ensemble_weight_history_set_by_check_rejects_invalid(
             )
 
 
-def test_v003_schema_version_is_3(db_with_legacy_schema) -> None:
-    """V003 is the newest applied migration after this task."""
+def test_v004_schema_version_is_4(db_with_legacy_schema) -> None:
+    """V004 is the newest applied migration after this task."""
     from swingrl.data.migration_runner import apply_migrations, current_schema_version
 
     apply_migrations(db_with_legacy_schema)
-    assert current_schema_version(db_with_legacy_schema) == 3
+    assert current_schema_version(db_with_legacy_schema) == 4
 
 
 def test_v003_inference_cycles_has_turbulence_column(db_with_legacy_schema) -> None:
@@ -280,3 +286,188 @@ def test_v003_calendar_events_nulls_not_distinct_rejects_duplicate_macro_row(
     with pytest.raises(psycopg.errors.UniqueViolation):
         with db_with_legacy_schema.connection() as conn:
             conn.execute(ins)
+
+
+# ---------------------------------------------------------------------------
+# V004: coach records (§4.4) — llm_calls / intent_records / intent_applications /
+# intent_verdicts + ewh.intent_id FK + A14 volume-cap partial UNIQUE indexes.
+# ---------------------------------------------------------------------------
+
+
+def _insert_inference_cycle(db: DatabaseManager, *, environment: str = "equity") -> int:
+    """Insert a minimal inference_cycles row and return its cycle_id (A15 FK target)."""
+    with db.connection() as conn:
+        return int(
+            conn.execute(
+                "INSERT INTO inference_cycles (environment, mode, cycle_ts)"
+                " VALUES (%s, 'paper', now()) RETURNING cycle_id",
+                (environment,),
+            ).fetchone()["cycle_id"]
+        )
+
+
+def _insert_commentary_chain(
+    db: DatabaseManager, *, environment: str = "equity", algorithm: str = "ppo"
+) -> tuple[int, int, int]:
+    """Insert cycle -> trade_commentary llm_call -> MT_commentary intent.
+
+    Returns (cycle_id, llm_call_id, intent_id). Mirrors the memory service's
+    atomic write: one shadow MT_commentary intent per inference cycle.
+    """
+    cycle_id = _insert_inference_cycle(db, environment=environment)
+    with db.connection() as conn:
+        llm_call_id = int(
+            conn.execute(
+                "INSERT INTO llm_calls (coach, call_type, cycle_id, provider, model,"
+                " prompt_version) VALUES ('meta_trader', 'trade_commentary', %s, 'cerebras',"
+                " 'qwen-3', 'mt-commentary-v0') RETURNING llm_call_id",
+                (cycle_id,),
+            ).fetchone()["llm_call_id"]
+        )
+        intent_id = int(
+            conn.execute(
+                "INSERT INTO intent_records"
+                " (llm_call_id, coach, lever, mode, environment, algorithm, iteration_number,"
+                "  evidence, proposal, bet_metric, bet_direction, bet_baseline_value, horizon_spec)"
+                " VALUES (%s, 'meta_trader', 'MT_commentary', 'shadow', %s, %s, 0,"
+                "  '{}'::jsonb, '{}'::jsonb, 'cycle_pnl_frac', 'up', 0.0,"
+                '  \'{"type": "wall_clock_hours", "hours": 24}\'::jsonb)'
+                " RETURNING intent_id",
+                (llm_call_id, environment, algorithm),
+            ).fetchone()["intent_id"]
+        )
+    return cycle_id, llm_call_id, intent_id
+
+
+def test_v004_llm_calls_epoch_advice_null_run_pk_rejected(db_with_legacy_schema) -> None:
+    """A15 identity CHECK: epoch_advice requires run_pk NOT NULL (F3 fix)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO llm_calls (coach, call_type, provider, model, prompt_version)"
+                " VALUES ('meta_trainer', 'epoch_advice', 'cerebras', 'qwen-3', 'epoch-v1')"
+            )
+
+
+def test_v004_llm_calls_trade_commentary_with_cycle_id_accepted(db_with_legacy_schema) -> None:
+    """A15 identity CHECK: trade_commentary with cycle_id set is accepted."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    cycle_id = _insert_inference_cycle(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        llm_call_id = conn.execute(
+            "INSERT INTO llm_calls (coach, call_type, cycle_id, provider, model, prompt_version)"
+            " VALUES ('meta_trader', 'trade_commentary', %s, 'cerebras', 'qwen-3',"
+            " 'mt-commentary-v0') RETURNING llm_call_id",
+            (cycle_id,),
+        ).fetchone()["llm_call_id"]
+    assert llm_call_id is not None
+
+
+def test_v004_llm_calls_trade_commentary_null_cycle_id_rejected(db_with_legacy_schema) -> None:
+    """A15 identity CHECK: trade_commentary requires cycle_id NOT NULL (no timestamp inference)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO llm_calls (coach, call_type, provider, model, prompt_version)"
+                " VALUES ('meta_trader', 'trade_commentary', 'cerebras', 'qwen-3', 'mt-commentary-v0')"
+            )
+
+
+def test_v004_intent_verdicts_unique_intent_grader_version(db_with_legacy_schema) -> None:
+    """A16: UNIQUE(intent_id, grader_version) — regrades are new rows, not UPDATEs."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    _cycle_id, _llm_call_id, intent_id = _insert_commentary_chain(db_with_legacy_schema)
+    ins = (
+        "INSERT INTO intent_verdicts (intent_id, grader_version, actual_value, direction_match)"
+        " VALUES (%s, 1, 0.01, true)"
+    )
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(ins, (intent_id,))
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(ins, (intent_id,))
+    # A different grader_version IS allowed (a genuine regrade)
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(
+            "INSERT INTO intent_verdicts (intent_id, grader_version, actual_value, direction_match)"
+            " VALUES (%s, 2, 0.02, false)",
+            (intent_id,),
+        )
+
+
+def test_v004_second_mt_commentary_intent_same_llm_call_rejected(db_with_legacy_schema) -> None:
+    """A14 volume cap: partial UNIQUE(llm_call_id) WHERE lever='MT_commentary' — one intent/call."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    _cycle_id, llm_call_id, _intent_id = _insert_commentary_chain(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO intent_records"
+                " (llm_call_id, coach, lever, mode, environment, algorithm, iteration_number,"
+                "  evidence, proposal, bet_metric, bet_direction, bet_baseline_value, horizon_spec)"
+                " VALUES (%s, 'meta_trader', 'MT_commentary', 'shadow', 'equity', 'ppo', 0,"
+                "  '{}'::jsonb, '{}'::jsonb, 'cycle_pnl_frac', 'up', 0.0,"
+                '  \'{"type": "wall_clock_hours", "hours": 24}\'::jsonb)',
+                (llm_call_id,),
+            )
+
+
+def test_v004_second_trade_commentary_call_same_cycle_rejected(db_with_legacy_schema) -> None:
+    """A14 volume cap: partial UNIQUE(cycle_id) WHERE call_type='trade_commentary' — one call/cycle.
+
+    Combined with the intent-level partial index, this bounds MT commentary at
+    <=1 intent record per inference cycle (D-T3.19).
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    cycle_id = _insert_inference_cycle(db_with_legacy_schema)
+    ins = (
+        "INSERT INTO llm_calls (coach, call_type, cycle_id, provider, model, prompt_version)"
+        " VALUES ('meta_trader', 'trade_commentary', %s, 'cerebras', 'qwen-3', 'mt-commentary-v0')"
+    )
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(ins, (cycle_id,))
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(ins, (cycle_id,))
+
+
+def test_v004_ensemble_weight_history_intent_fk_rejects_nonexistent(db_with_legacy_schema) -> None:
+    """V004 backfills ensemble_weight_history.intent_id FK -> intent_records."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    _insert_training_run_and_model(db_with_legacy_schema, "ewh-intent-fk-model", algorithm="ppo")
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO ensemble_weight_history (model_id, weight_frac, set_by, intent_id)"
+                " VALUES ('ewh-intent-fk-model', 0.5, 'meta_trader', 999999)"
+            )
+
+
+def test_v004_intent_applications_unique_intent_id(db_with_legacy_schema) -> None:
+    """A13: intent_applications sidecar — one application row per intent (UNIQUE intent_id)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    _cycle_id, _llm_call_id, intent_id = _insert_commentary_chain(db_with_legacy_schema)
+    ins = "INSERT INTO intent_applications (intent_id, applied) VALUES (%s, '{}'::jsonb)"
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(ins, (intent_id,))
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(ins, (intent_id,))

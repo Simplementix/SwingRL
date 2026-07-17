@@ -1,0 +1,105 @@
+date,note
+# FOMC decision dates (second/final meeting day, 14:00 ET statement release) — backfill seed
+# for CalendarIngestor.run(backfill=True) (Plan A Task 11, Step 0a). ET-naive datetimes; the
+# ingestor localizes them to America/New_York before converting to UTC (DST-correct).
+# Source (federalreserve.gov, fetched 2026-07-16):
+#   2016-2020 : https://www.federalreserve.gov/monetarypolicy/fomchistorical{YEAR}.htm
+#   2021-2027 : https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+# March 2020: the scheduled 17-18 meeting was cancelled; the row below is the Mar 15 emergency
+# intermeeting rate cut (announced ~17:00 ET Sunday) — the market-moving FOMC action.
+2016-01-27T14:00:00,scheduled
+2016-03-16T14:00:00,scheduled
+2016-04-27T14:00:00,scheduled
+2016-06-15T14:00:00,scheduled
+2016-07-27T14:00:00,scheduled
+2016-09-21T14:00:00,scheduled
+2016-11-02T14:00:00,scheduled
+2016-12-14T14:00:00,scheduled
+2017-02-01T14:00:00,scheduled
+2017-03-15T14:00:00,scheduled
+2017-05-03T14:00:00,scheduled
+2017-06-14T14:00:00,scheduled
+2017-07-26T14:00:00,scheduled
+2017-09-20T14:00:00,scheduled
+2017-11-01T14:00:00,scheduled
+2017-12-13T14:00:00,scheduled
+2018-01-31T14:00:00,scheduled
+2018-03-21T14:00:00,scheduled
+2018-05-02T14:00:00,scheduled
+2018-06-13T14:00:00,scheduled
+2018-08-01T14:00:00,scheduled
+2018-09-26T14:00:00,scheduled
+2018-11-08T14:00:00,scheduled
+2018-12-19T14:00:00,scheduled
+2019-01-30T14:00:00,scheduled
+2019-03-20T14:00:00,scheduled
+2019-05-01T14:00:00,scheduled
+2019-06-19T14:00:00,scheduled
+2019-07-31T14:00:00,scheduled
+2019-09-18T14:00:00,scheduled
+2019-10-30T14:00:00,scheduled
+2019-12-11T14:00:00,scheduled
+2020-01-29T14:00:00,scheduled
+2020-03-15T17:00:00,emergency intermeeting cut (scheduled Mar 17-18 cancelled)
+2020-04-29T14:00:00,scheduled
+2020-06-10T14:00:00,scheduled
+2020-07-29T14:00:00,scheduled
+2020-09-16T14:00:00,scheduled
+2020-11-05T14:00:00,scheduled
+2020-12-16T14:00:00,scheduled
+2021-01-27T14:00:00,scheduled
+2021-03-17T14:00:00,scheduled
+2021-04-28T14:00:00,scheduled
+2021-06-16T14:00:00,scheduled
+2021-07-28T14:00:00,scheduled
+2021-09-22T14:00:00,scheduled
+2021-11-03T14:00:00,scheduled
+2021-12-15T14:00:00,scheduled
+2022-01-26T14:00:00,scheduled
+2022-03-16T14:00:00,scheduled
+2022-05-04T14:00:00,scheduled
+2022-06-15T14:00:00,scheduled
+2022-07-27T14:00:00,scheduled
+2022-09-21T14:00:00,scheduled
+2022-11-02T14:00:00,scheduled
+2022-12-14T14:00:00,scheduled
+2023-02-01T14:00:00,scheduled
+2023-03-22T14:00:00,scheduled
+2023-05-03T14:00:00,scheduled
+2023-06-14T14:00:00,scheduled
+2023-07-26T14:00:00,scheduled
+2023-09-20T14:00:00,scheduled
+2023-11-01T14:00:00,scheduled
+2023-12-13T14:00:00,scheduled
+2024-01-31T14:00:00,scheduled
+2024-03-20T14:00:00,scheduled
+2024-05-01T14:00:00,scheduled
+2024-06-12T14:00:00,scheduled
+2024-07-31T14:00:00,scheduled
+2024-09-18T14:00:00,scheduled
+2024-11-07T14:00:00,scheduled
+2024-12-18T14:00:00,scheduled
+2025-01-29T14:00:00,scheduled
+2025-03-19T14:00:00,scheduled
+2025-05-07T14:00:00,scheduled
+2025-06-18T14:00:00,scheduled
+2025-07-30T14:00:00,scheduled
+2025-09-17T14:00:00,scheduled
+2025-10-29T14:00:00,scheduled
+2025-12-10T14:00:00,scheduled
+2026-01-28T14:00:00,scheduled
+2026-03-18T14:00:00,scheduled
+2026-04-29T14:00:00,scheduled
+2026-06-17T14:00:00,scheduled
+2026-07-29T14:00:00,scheduled
+2026-09-16T14:00:00,scheduled
+2026-10-28T14:00:00,scheduled
+2026-12-09T14:00:00,scheduled
+2027-01-27T14:00:00,scheduled
+2027-03-17T14:00:00,scheduled
+2027-04-28T14:00:00,scheduled
+2027-06-09T14:00:00,scheduled
+2027-07-28T14:00:00,scheduled
+2027-09-15T14:00:00,scheduled
+2027-10-27T14:00:00,scheduled
+2027-12-08T14:00:00,scheduled

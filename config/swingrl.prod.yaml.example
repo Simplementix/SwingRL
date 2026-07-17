@@ -75,6 +75,35 @@ options_collector:
   integrity:
     late_warn_s: 30.0                # cron-jitter tolerance before a lateness warning fires
 
+# Plan A Task 11: FRED + FOMC -> calendar_events; ingest + staleness jobs run in the
+# swingrl-collector. Non-safety fields (release ids, windows, schedule times) fall back to
+# CalendarConfig defaults (see config/swingrl.yaml). Safety-relevant values mirrored here:
+# min_future_days (staleness alarm threshold), backfill_start (must cover earliest OHLCV bar),
+# and the forward FOMC decision schedule the staleness alarm keys off of. KEEP fomc_dates
+# CURRENT — a stale forward schedule trips the daily "Calendar events stale" warning.
+calendar:
+  enabled: true
+  min_future_days: 10
+  backfill_start: "2015-01-01"       # covers min(ohlcv_daily)=2016-01-04
+  fomc_backfill_csv: config/fomc_dates_historical.csv
+  fomc_dates:                        # forward FOMC decision days, 14:00 ET (federalreserve.gov)
+    - "2026-01-28T14:00:00"
+    - "2026-03-18T14:00:00"
+    - "2026-04-29T14:00:00"
+    - "2026-06-17T14:00:00"
+    - "2026-07-29T14:00:00"
+    - "2026-09-16T14:00:00"
+    - "2026-10-28T14:00:00"
+    - "2026-12-09T14:00:00"
+    - "2027-01-27T14:00:00"
+    - "2027-03-17T14:00:00"
+    - "2027-04-28T14:00:00"
+    - "2027-06-09T14:00:00"
+    - "2027-07-28T14:00:00"
+    - "2027-09-15T14:00:00"
+    - "2027-10-27T14:00:00"
+    - "2027-12-08T14:00:00"
+
 shadow:
   equity_eval_days: 10              # 10 trading days shadow evaluation window
   crypto_eval_cycles: 30            # 30 crypto 4H cycles shadow evaluation
@@ -90,6 +119,10 @@ sentiment:
 security:
   key_rotation_days: 90             # 90-day rotation reminder for API keys
   env_file_permissions: "600"       # .env must be owner-only readable
+
+meta_trader:                        # Task 12: rotation-gated trade-time coach (skeleton)
+  enabled: false                    # runtime gate — keep false until Task 16 go/no-go
+  commentary_provider: cerebras     # provider for the mt-commentary-v0 shadow prompt
 
 training:
   bounds:
