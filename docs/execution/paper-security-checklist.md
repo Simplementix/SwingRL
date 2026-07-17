@@ -1,9 +1,13 @@
 # Paper-trading security hardening checklist (Task 15)
 
 **Date:** 2026-07-17 · **Branch:** `swingrl/2.R-A-capture-foundation` (HEAD at start `bba1adb`)
-**Author:** Task 15 audit · **Status:** executed — 7 steps, 1 in-repo fix committed
-(`4faf932`), 3 findings requiring operator action on homelab, 2 items that can only be
-operator-attested (server-side key scope, key-rotation date).
+**Author:** Task 15 audit, plus a fix-round after independent reviewer verification
+**Status:** executed — 7 steps, **2 independent webhook-URL-leak vectors found and fixed**
+in-repo (Vector 1: `httpx`/`httpcore` stdlib loggers, commit `4faf932`; Vector 2:
+`Alerter._post_webhook`'s own `exc_info=True`, reviewer-caught, RED `cf69a8e` + GREEN below),
+3 findings requiring operator action on homelab, 2 items that can only be operator-attested
+(server-side key scope, key-rotation date), 1 pre-existing diagnosability gap ticketed
+not fixed (JSON-mode `exc_info=True` renders as a bare boolean).
 
 This document is the **executed** run of the Task 15 checklist from
 `.superpowers/sdd/planA/task-15-brief.md`. Each step below records what was checked, the exact
@@ -37,7 +41,7 @@ command/evidence used, and the result. It is the pre-deploy gate referenced by t
 |---|------|--------|----------|
 | 1 | Key scoping (Alpaca paper vs. live; Binance.US read-only) | **PARTIAL — verifiable parts pass; server-side scope is operator-attest** | See §1 |
 | 2 | Key rotation (2026-03-24 leak → rotated) | **CANNOT VERIFY FROM REPO — operator-attest; tracker discrepancy found** | See §2 |
-| 3 | Secrets never in image/repo/logs | **FAIL → FIXED** (1 real, live, active leak found and fixed) | See §3 |
+| 3 | Secrets never in image/repo/logs | **FAIL → FIXED** (2 independent live leak vectors found and fixed) | See §3 |
 | 4 | Network surface | **PASS with 1 additional finding** (dashboard has no auth, LAN-exposed) | See §4 |
 | 5 | Container posture | **PASS — clean** | See §5 |
 | 6 | Backup hygiene | **FAIL — homelab file permissions** (operator action required) | See §6 |
@@ -149,10 +153,16 @@ default). Config is populated via `load_config()` + env var overrides
 (`SWINGRL_ALERTING__ALERTS_WEBHOOK_URL` / `__DAILY_WEBHOOK_URL`), never a CLI argument (which
 would be visible in `ps aux`), never hardcoded. **PASS.**
 
-### FINDING (critical, live, active) — `httpx`/`httpcore`'s own loggers leaked the webhook URL
+### FINDING (critical, live, active) — two independent webhook-URL leak vectors
 
 This was **not** in the brief's literal bullet list, but was found while checking the
-"structlog calls ... for any kwarg carrying a key/webhook" item, and is squarely in scope.
+"structlog calls ... for any kwarg carrying a key/webhook" item, and is squarely in scope. A
+reviewer pass against the first fix (below) reproduced a **second, independent** vector that
+the first fix has zero effect on — both are documented here together since they share the same
+root cause (Discord embeds its secret in the URL) but travel through entirely different code
+paths and needed separate fixes.
+
+#### Vector 1 — `httpx`/`httpcore`'s own stdlib loggers (fixed in commit `4faf932`)
 
 `httpx` prints `"HTTP Request: {method} {url} ...\"{status}\""` at **INFO** level on **every**
 call — success or failure — via its own internal `logging.getLogger("httpx")`, entirely
@@ -225,6 +235,61 @@ recreated or its logs are pruned — worth a rotation of the Discord webhook tok
 belt-and-suspenders measure, since a secret that has already been written to a log file isn't
 un-leaked by fixing the code that will stop leaking *future* ones. Recorded as a Task 16
 decision point, not fixed here (out of scope — rotating a live webhook is an operator action).
+
+#### Vector 2 — `Alerter._post_webhook`'s own `exc_info=True` (reviewer-caught; fixed separately)
+
+Suppressing `httpx`'s/`httpcore`'s stdlib loggers (Vector 1) does **not** touch this vector — it
+flows through `swingrl.monitoring.alerter`'s own `structlog` logger, not `httpx`'s/`httpcore`'s,
+so Vector 1's fix has **zero effect** on it. This is the **most-likely-to-fire path in
+production**: a wrong, revoked, or rate-limited Discord token causes Discord to return a
+non-2xx response; `response.raise_for_status()` then raises `httpx.HTTPStatusError`, whose
+`str()` embeds the **full request URL** (e.g. `"Client error '401 Unauthorized' for url
+'https://discord.com/api/webhooks/<id>/<token>'"`). `_post_webhook`'s `except Exception:` clause
+(`src/swingrl/monitoring/alerter.py`, was line 309) logged this with `log.error("alert_send_failed",
+..., exc_info=True)`. In console-render mode (`json_logs=False` — the config currently deployed
+on homelab, see Vector 1) `structlog`'s `ConsoleRenderer` expands `exc_info=True` into the full
+`rich` traceback, which includes both the exception's message **and local variables** (`url`,
+`webhook_url`, `request`) — i.e. the token appears **twice** in the rendered output.
+
+**Confirmed empirically, end-to-end** (not a synthetic exception injection): a real 401 response
+via `httpx.MockTransport`, driven through the real `Alerter._post_webhook` in console-render
+mode, produced rendered output containing the fixture token twice (once in the traceback locals,
+once in the final `HTTPStatusError: ...` summary line) — this is the RED state of the
+regression test described below, confirmed before the fix was applied.
+
+**FIXED in-repo, two commits (TDD, matching the project's RED/GREEN convention this time)**:
+
+- RED (`cf69a8e`) — `tests/monitoring/test_alerter.py::TestWebhookFailure::
+  test_http_status_error_does_not_leak_webhook_url_in_console_logs` drives a real 401 through
+  `Alerter._post_webhook` via `httpx.MockTransport`, configures logging in console-render mode,
+  captures the rendered stream, and asserts the fixture token is absent while the
+  `alert_send_failed` event is present. Confirmed failing against the pre-fix code (fixture
+  token found twice in rendered output).
+- GREEN (this commit — the fix and this doc update land together) — `_post_webhook`'s except
+  clause no longer passes `exc_info=True`.
+  Instead it logs `exc_type=type(exc).__name__`, `status_code` (extracted from
+  `exc.response.status_code` when the exception carries one, e.g. `httpx.HTTPStatusError`; `None`
+  otherwise), and `detail=_sanitize(str(exc))` — a new module-level `_sanitize()` helper in
+  `alerter.py` that regex-redacts the id/token segment of any `discord.com/api/webhooks/...` URL
+  found in a message (`(discord\.com/api/webhooks/)[^\s'"]+ → \1<redacted>`). This preserves full
+  diagnosability (exception class, HTTP status, a redacted-but-otherwise-intact message) while
+  never emitting the raw exception object or a traceback.
+
+**Swept the rest of `alerter.py`** for any other log call that could carry a URL: one other
+`exc_info=True` remains, in `_log_alert`'s except clause (DB-write failure when persisting to
+the `alert_log` table). Confirmed **safe, left as-is** — that code path only wraps a Postgres
+`INSERT`; no `httpx` call, no webhook URL, no network URL of any kind is reachable from that
+exception, so `exc_info=True` there is appropriate and carries no secret-exposure risk.
+
+**Minor finding (pre-existing, not fixed here, ticketed for later):** the *first* fix's
+own investigation surfaced that in **JSON-mode** (`json_logs=True`), `exc_info=True` renders as
+a bare `"exc_info": true` boolean with **no exception detail at all** — confirmed empirically
+(a `ValueError` logged with `exc_info=True` under `json_logs=True` produces
+`{"level": "error", ..., "exc_info": true, "event": "..."}`, no message, no type, no traceback).
+This means any *other* `exc_info=True` call in the codebase (including the `_log_alert` one just
+reviewed above) is currently **undiagnosable** in production JSON-log mode — not a secret leak,
+but a real observability gap. Out of scope to fix as part of this security checklist; noted here
+so it isn't lost.
 
 ## §4 — Network surface
 
@@ -358,8 +423,14 @@ read-only repo/homelab check.
 ## §7 — Commit
 
 - `4faf932` — `fix(2.R-A): suppress httpx/httpcore INFO-DEBUG loggers to stop webhook URL leak`
-  (the §3 fix + regression test).
-- This document itself, committed separately per the brief's Step 7 instruction.
+  (Vector 1 fix + regression test).
+- `c92055a` — `chore(2.R-A): paper-trading security hardening checklist executed` (this
+  document, first version, committed separately per the brief's Step 7 instruction).
+- `cf69a8e` — `test(2.R-A): RED — _post_webhook's exc_info=True leaks webhook URL on HTTP
+  failure` (Vector 2 regression test, reviewer round).
+- Fix-round GREEN commit — `_post_webhook` sanitization fix, the
+  `test_structlog_logger_works_after_configure` restoration, and this document's Vector 2 /
+  fix-round updates, landed together.
 
 ---
 
@@ -367,13 +438,15 @@ read-only repo/homelab check.
 
 | # | Finding | Severity | Disposition |
 |---|---|---|---|
-| 1 | `httpx`/`httpcore` internal loggers leak Discord webhook URL (incl. secret token) into application logs on every call, both console and JSON render modes; confirmed 3 real historical occurrences in the live `swingrl-collector` container | **Critical, live** | **Fixed in-repo**, commit `4faf932` |
+| 1a | Vector 1 — `httpx`/`httpcore` internal stdlib loggers leak Discord webhook URL (incl. secret token) into application logs on every call, both console and JSON render modes; confirmed 3 real historical occurrences in the live `swingrl-collector` container | **Critical, live** | **Fixed in-repo**, commit `4faf932` |
+| 1b | Vector 2 — `Alerter._post_webhook`'s own `exc_info=True` on a failed webhook POST leaks the URL (token included) via `httpx.HTTPStatusError`'s message, expanded to a full traceback (with locals) by `ConsoleRenderer` in the currently-deployed console-log mode; reviewer-caught, unaffected by Vector 1's fix (different logger entirely) | **Critical, most-likely-to-fire path** (a bad/revoked/rate-limited token is exactly what triggers this) | **Fixed in-repo**, RED `cf69a8e` + GREEN (this commit) |
 | 2 | `~/swingrl/.env` mode `664` — group+world readable; a second, unrelated local service account (`hermes-ops`) has read+write access | High | Operator action: `chmod 600 ~/swingrl/.env` |
 | 3 | `~/swingrl/backups/*.dump` mode `664`, dir mode `775` — full DB dumps world-readable | High | Operator action: `chmod 700`/`600` (commands above); consider cron umask fix |
 | 4 | Dashboard (`8501`) published on `0.0.0.0`, no authentication anywhere in the app | Medium | User decision — confirm intended (LAN access wanted) or restrict |
-| 5 | Historical leaked log lines (from Finding 1) may still exist in Docker's on-disk log storage for `swingrl-collector` even after the code fix | Medium | Operator decision at Task 16 — consider rotating the Discord webhook token as belt-and-suspenders |
+| 5 | Historical leaked log lines (from Vector 1) may still exist in Docker's on-disk log storage for `swingrl-collector` even after the code fix | Medium | Operator decision at Task 16 — consider rotating the Discord webhook token as belt-and-suspenders |
 | 6 | `docker-compose.prod.yml` has no `networks: br0` on any service, unlike the currently-deployed `docker-compose.yml` | Low (deploy-readiness, not security) | Verify at Task 16 whether the trader/memory `DATABASE_URL` needs `pg16` reachability; add `br0` if so |
 | 7 | Tracker (`.planning/V1.1_EXECUTION_PLAN.md`) still lists the 2026-03-24 key rotation as an open risk; `MEMORY.md` asserts it's done — no dated evidence for either | Low (documentation) | Reconcile once rotation dates are confirmed against provider dashboards |
+| 8 | (Minor, pre-existing) In JSON-log mode (`json_logs=True`), any `exc_info=True` call renders as a bare `"exc_info": true` boolean with no exception message/type/traceback — confirmed empirically. Affects `_log_alert`'s remaining `exc_info=True` call (safe from a secret-leak standpoint, reviewed above) and potentially other call sites codebase-wide. Not a leak; an observability gap | Low (diagnosability, not security) | **Not fixed** — ticketed for later; noted here so it isn't lost |
 
 ## Operator-attestation items for Task 16
 

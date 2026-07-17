@@ -104,6 +104,8 @@ def test_structlog_logger_works_after_configure() -> None:
     from swingrl.utils import configure_logging
 
     configure_logging(json_logs=False)
+    log = structlog.get_logger("test")
+    log.info("smoke_check", status="ok")  # must not raise
 
 
 def test_configure_logging_suppresses_httpx_url_leak(tmp_path: Path) -> None:
@@ -144,5 +146,3 @@ def test_configure_logging_suppresses_httpx_url_leak(tmp_path: Path) -> None:
         "httpx's per-request logger leaked a webhook-URL-embedded secret into "
         f"application logs: {contents!r}"
     )
-    log = structlog.get_logger("test")
-    log.info("smoke_check", status="ok")  # must not raise
