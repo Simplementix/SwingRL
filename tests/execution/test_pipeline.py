@@ -24,6 +24,10 @@ def mock_feature_pipeline() -> MagicMock:
     """Mock FeaturePipeline returning a dummy observation."""
     fp = MagicMock()
     fp.get_observation.return_value = np.zeros(156, dtype=np.float32)
+    # Plain dict so Step 9b capture builds a real RegimeStamp instead of failing
+    # open on a MagicMock — keeps execute_cycle test output free of benign
+    # cycle_capture_failed warnings.
+    fp.regime_snapshot.return_value = {"hmm_p_bull": 0.5, "hmm_p_bear": 0.5, "vix": 15.0}
     return fp
 
 

@@ -316,3 +316,113 @@ class TestActiveModelSpine:
 
         assert recorder.deployed_iteration("equity") is None
         assert recorder.active_model_ids("equity") == {}
+
+
+def _insert_active_model(db: Any, model_id: str, *, algorithm: str = "ppo") -> None:
+    """Insert a minimal training_runs + models row so a proposal's model_id FK is valid.
+
+    Mirrors tests/data/test_migrations_content.py's FK-satisfying setup. Relies on
+    the era-0 registry row seeded by V001 (preserved by the autouse wipe fixture).
+    """
+    with db.connection() as conn:
+        run_pk = conn.execute(
+            "INSERT INTO training_runs (iteration_number, environment, algorithm,"
+            " fold_number, run_type, seed, attempt, status, era_id, code_version,"
+            " data_fingerprint)"
+            " VALUES (3, 'equity', %s, -1, 'final_train', 42, 1, 'completed', 0,"
+            " 'abc123', 'fp1') RETURNING run_pk",
+            (algorithm,),
+        ).fetchone()["run_pk"]
+        conn.execute(
+            "INSERT INTO models (model_id, run_pk, artifact_path, vecnormalize_path, status)"
+            " VALUES (%s, %s, 'models/p.zip', 'models/v.pkl', 'active')",
+            (model_id, run_pk),
+        )
+
+
+class TestRecordCycleLiveDB:
+    """Real-Postgres round-trip: the happy-path INSERT actually lands (DB-gated).
+
+    Guards the empty-``active_event_ids`` case: the unit tests mock the connection,
+    the halt-row tests pass NULL, and the execute_cycle DB tests fail open before
+    reaching ``record_cycle`` — so nothing else proves psycopg3 adapts an empty
+    Python list to the ``BIGINT[]`` column as an empty array rather than mis-writing.
+    Uses the ``mock_db`` fixture (auto-skips without DATABASE_URL).
+    """
+
+    def test_persists_row_with_empty_active_events_array(
+        self, mock_db: Any, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """active_event_ids=[] lands as an empty array (not NULL); the proposal lands."""
+        _insert_active_model(mock_db, "equity-ppo-live")
+        recorder = CycleRecorder(db=mock_db, config=exec_config, alerter=mock_alerter)
+
+        cycle_id = recorder.record_cycle(
+            env_name="equity",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            regime=RegimeStamp(
+                hmm_p_bull=0.7, hmm_p_bear=0.3, vix=18.5, turbulence=4.2, active_event_ids=[]
+            ),
+            raw_actions={"ppo": [0.1, -0.2]},
+            target_weights={"SPY": 0.2},
+            proposals=[
+                AlgoProposal(
+                    algorithm="ppo",
+                    model_id="equity-ppo-live",
+                    raw_actions={"SPY": 0.1},
+                    weight_in_blend_frac=1.0,
+                )
+            ],
+            deployed_iteration=3,
+        )
+
+        assert cycle_id is not None
+        # Happy path — no fail-open alert (a mis-adaptation would trip this).
+        mock_alerter.send_alert.assert_not_called()
+
+        with mock_db.connection() as conn:
+            row = conn.execute(
+                "SELECT active_event_ids FROM inference_cycles WHERE cycle_id = %s",
+                (cycle_id,),
+            ).fetchone()
+            proposals = conn.execute(
+                "SELECT model_id FROM cycle_algo_proposals WHERE cycle_id = %s",
+                (cycle_id,),
+            ).fetchall()
+
+        # The row landed with an EMPTY ARRAY, not NULL.
+        assert row is not None
+        assert row["active_event_ids"] == []
+        assert row["active_event_ids"] is not None
+        # The proposal row landed against the FK'd model.
+        assert len(proposals) == 1
+        assert proposals[0]["model_id"] == "equity-ppo-live"
+
+    def test_persists_row_with_populated_active_events_array(
+        self, mock_db: Any, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """active_event_ids=[11, 22] round-trips through the BIGINT[] column."""
+        recorder = CycleRecorder(db=mock_db, config=exec_config, alerter=mock_alerter)
+
+        cycle_id = recorder.record_cycle(
+            env_name="crypto",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            regime=RegimeStamp(
+                hmm_p_bull=0.6, hmm_p_bear=0.4, vix=None, turbulence=None, active_event_ids=[11, 22]
+            ),
+            raw_actions={},
+            target_weights={},
+            proposals=[],
+            deployed_iteration=None,
+        )
+
+        assert cycle_id is not None
+        with mock_db.connection() as conn:
+            row = conn.execute(
+                "SELECT active_event_ids FROM inference_cycles WHERE cycle_id = %s",
+                (cycle_id,),
+            ).fetchone()
+        assert row is not None
+        assert row["active_event_ids"] == [11, 22]
