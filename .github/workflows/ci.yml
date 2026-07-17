@@ -2,7 +2,10 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    # swingrl/2.R-training-redesign added 2026-07-17 (Task 14 Step 5 enabler): the redesign's
+    # child PRs target the integration branch, and the Postgres-service fix (issue #18) must
+    # prove itself on those PRs — not first on the final integration→main PR.
+    branches: [main, swingrl/2.R-training-redesign]
   push:
     branches: [main]
 
