@@ -1,5 +1,7 @@
 """Tests for SwingRL utility modules: exception hierarchy and logging."""
 
+from pathlib import Path
+
 import structlog
 
 
@@ -102,5 +104,45 @@ def test_structlog_logger_works_after_configure() -> None:
     from swingrl.utils import configure_logging
 
     configure_logging(json_logs=False)
+
+
+def test_configure_logging_suppresses_httpx_url_leak(tmp_path: Path) -> None:
+    """SEC-15: httpx's own INFO-level per-request logger must not leak URL-embedded secrets.
+
+    httpx logs "HTTP Request: {method} {url} ..." at INFO on every call (success or
+    failure). Discord webhook URLs embed their secret token directly in the path, so
+    without suppressing this logger, configure_logging()'s root-logger wiring propagates
+    the full webhook URL (token included) into application logs on every alert send —
+    confirmed live in the swingrl-collector container's Discord alert traffic
+    (Task 15 paper-security-checklist finding).
+    """
+    import logging
+
+    import httpx
+
+    from swingrl.utils import configure_logging
+
+    log_file = tmp_path / "httpx_leak.log"
+    configure_logging(json_logs=True, log_level="INFO", log_file=log_file)
+
+    fake_token = "SECRET_WEBHOOK_TOKEN_abc123"  # noqa: S105 — fixture value, not a real secret
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(204)
+
+    with httpx.Client(transport=httpx.MockTransport(_handler)) as client:
+        client.post(
+            f"https://discord.com/api/webhooks/123456789/{fake_token}",
+            json={"content": "test"},
+        )
+
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+    contents = log_file.read_text()
+    assert fake_token not in contents, (
+        "httpx's per-request logger leaked a webhook-URL-embedded secret into "
+        f"application logs: {contents!r}"
+    )
     log = structlog.get_logger("test")
     log.info("smoke_check", status="ok")  # must not raise
