@@ -621,10 +621,251 @@ def test_v005_epoch_snapshots_requires_learner_metrics(db_with_legacy_schema) ->
 
 
 def test_v005_schema_version_is_5(db_with_legacy_schema) -> None:
-    """Task 8: SELECT max(version) FROM schema_migrations == 5 after apply_migrations."""
+    """V005 lands in the ledger (was newest; V006 now raises the ceiling to 6).
+
+    The newest-version invariant moved to ``test_v006_schema_version_is_6`` when
+    Track B Task 9 shipped V006 — this asserts V005 was applied, not that it is the
+    maximum, so it stays green as later migrations extend the ledger.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM schema_migrations WHERE version = 5"
+        ).fetchone()
+    assert row["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# V006 (Task 9): §4.5 patterns family — patterns / pattern_sources /
+# pattern_links / pattern_presentations (the lineage DAG). Mandatory pattern_id +
+# llm_call_id FKs on presentations kill the NULL-iteration failure class.
+# ---------------------------------------------------------------------------
+
+
+def _insert_pattern(
+    db: DatabaseManager,
+    *,
+    era_id: int = 0,
+    stage: int = 1,
+    environment: str = "equity",
+    category: str = "trade_shy",
+    status: str = "active",
+) -> int:
+    """Insert a minimal valid patterns row (era 0) and return its pattern_id.
+
+    ``claim`` (JSONB NOT NULL), ``era_id`` (FK NOT NULL) and ``status`` (NOT NULL)
+    are the only columns the DDL forces a writer to supply; ``qa_passed`` and the
+    two script-maintained counters carry safe defaults (false / 0).
+    """
+    with db.connection() as conn:
+        return int(
+            conn.execute(
+                "INSERT INTO patterns (created_iteration, environment, stage, era_id,"
+                " category, claim, status)"
+                " VALUES (5, %s, %s, %s, %s, '{\"schema_version\": 1}'::jsonb, %s)"
+                " RETURNING pattern_id",
+                (environment, stage, era_id, category, status),
+            ).fetchone()["pattern_id"]
+        )
+
+
+def _insert_consolidator_call(db: DatabaseManager) -> int:
+    """Insert a valid consolidate_stage1 llm_call and return its llm_call_id.
+
+    The consolidator is the natural producer of pattern presentations; A15's
+    identity matrix requires iteration_number + environment for that call_type.
+    """
+    with db.connection() as conn:
+        return int(
+            conn.execute(
+                "INSERT INTO llm_calls (coach, call_type, iteration_number, environment,"
+                " provider, model, prompt_version)"
+                " VALUES ('consolidator', 'consolidate_stage1', 5, 'equity', 'cerebras',"
+                " 'qwen-3', 'consolidate-v0') RETURNING llm_call_id"
+            ).fetchone()["llm_call_id"]
+        )
+
+
+def test_v006_pattern_presentations_null_llm_call_rejected(db_with_legacy_schema) -> None:
+    """§4.5: pattern_presentations.llm_call_id NOT NULL — the NULL-iteration class dies."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    pattern_id = _insert_pattern(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO pattern_presentations (pattern_id, llm_call_id) VALUES (%s, NULL)",
+                (pattern_id,),
+            )
+
+
+def test_v006_pattern_presentations_llm_call_fk_rejects_nonexistent(db_with_legacy_schema) -> None:
+    """§4.5: pattern_presentations.llm_call_id FK -> llm_calls (identity inherited)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    pattern_id = _insert_pattern(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO pattern_presentations (pattern_id, llm_call_id) VALUES (%s, 999999)",
+                (pattern_id,),
+            )
+
+
+def test_v006_pattern_presentations_valid_accepted(db_with_legacy_schema) -> None:
+    """§4.5: a presentation with both mandatory FKs set is accepted (happy path)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    pattern_id = _insert_pattern(db_with_legacy_schema)
+    llm_call_id = _insert_consolidator_call(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        row_id = conn.execute(
+            "INSERT INTO pattern_presentations (pattern_id, llm_call_id) VALUES (%s, %s)"
+            " RETURNING id",
+            (pattern_id, llm_call_id),
+        ).fetchone()["id"]
+    assert row_id is not None
+
+
+def test_v006_pattern_links_self_link_rejected(db_with_legacy_schema) -> None:
+    """§4.5: pattern_links CHECK(parent <> child) — a pattern can't be its own parent."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    pattern_id = _insert_pattern(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO pattern_links (parent_pattern_id, child_pattern_id, link_type)"
+                " VALUES (%s, %s, 'merged_into')",
+                (pattern_id, pattern_id),
+            )
+
+
+def test_v006_pattern_links_link_type_check(db_with_legacy_schema) -> None:
+    """§4.5: pattern_links.link_type CHECK (merged_into, split_into, refined_into)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    parent = _insert_pattern(db_with_legacy_schema, environment="equity")
+    child = _insert_pattern(db_with_legacy_schema, environment="crypto")
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO pattern_links (parent_pattern_id, child_pattern_id, link_type)"
+                " VALUES (%s, %s, 'bogus_link')",
+                (parent, child),
+            )
+
+
+def test_v006_pattern_links_pk_rejects_duplicate(db_with_legacy_schema) -> None:
+    """§4.5: pattern_links PK(parent, child) — one edge per pair; a valid link is accepted first."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    parent = _insert_pattern(db_with_legacy_schema, environment="equity")
+    child = _insert_pattern(db_with_legacy_schema, environment="crypto")
+    ins = (
+        "INSERT INTO pattern_links (parent_pattern_id, child_pattern_id, link_type)"
+        " VALUES (%s, %s, 'refined_into')"
+    )
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(ins, (parent, child))
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(ins, (parent, child))
+
+
+def test_v006_pattern_sources_source_table_check(db_with_legacy_schema) -> None:
+    """§4.5: pattern_sources.source_table CHECK — provenance points only at structured records.
+
+    A structured-record table (fold_results) is accepted; retired raw ``memories``
+    — outside the allowlist — bounces off the CHECK. ``source_id`` is polymorphic
+    (no FK), so the accepted row need not reference a real fold_results id.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    pattern_id = _insert_pattern(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(
+            "INSERT INTO pattern_sources (pattern_id, source_table, source_id)"
+            " VALUES (%s, 'fold_results', 1)",
+            (pattern_id,),
+        )
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO pattern_sources (pattern_id, source_table, source_id)"
+                " VALUES (%s, 'memories', 2)",
+                (pattern_id,),
+            )
+
+
+def test_v006_pattern_sources_pattern_fk_rejects_nonexistent(db_with_legacy_schema) -> None:
+    """§4.5: pattern_sources.pattern_id FK -> patterns."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO pattern_sources (pattern_id, source_table, source_id)"
+                " VALUES (999999, 'fold_results', 1)"
+            )
+
+
+def test_v006_patterns_requires_claim(db_with_legacy_schema) -> None:
+    """§4.5: patterns.claim is NOT NULL JSONB — no narrative-only records (§4.2 rule 3)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO patterns (created_iteration, environment, stage, era_id,"
+                " category, status) VALUES (5, 'equity', 1, 0, 'trade_shy', 'active')"
+            )
+
+
+def test_v006_patterns_status_check(db_with_legacy_schema) -> None:
+    """§4.5: patterns.status CHECK (active, conflicted, superseded, retired)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO patterns (created_iteration, environment, stage, era_id,"
+                " category, claim, status)"
+                " VALUES (5, 'equity', 1, 0, 'trade_shy', '{\"schema_version\": 1}', 'bogus')"
+            )
+
+
+def test_v006_patterns_stage_check(db_with_legacy_schema) -> None:
+    """§4.5: patterns.stage CHECK (1, 2) — stage-1 per-env vs stage-2 cross-env."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO patterns (created_iteration, environment, stage, era_id,"
+                " category, claim, status)"
+                " VALUES (5, 'equity', 3, 0, 'trade_shy', '{\"schema_version\": 1}', 'active')"
+            )
+
+
+def test_v006_schema_version_is_6(db_with_legacy_schema) -> None:
+    """Task 9: SELECT max(version) FROM schema_migrations == 6 after apply_migrations."""
     from swingrl.data.migration_runner import apply_migrations
 
     apply_migrations(db_with_legacy_schema)
     with db_with_legacy_schema.connection() as conn:
         row = conn.execute("SELECT max(version) AS v FROM schema_migrations").fetchone()
-    assert row["v"] == 5
+    assert row["v"] == 6
