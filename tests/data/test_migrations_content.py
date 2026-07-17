@@ -213,11 +213,20 @@ def test_v002_ensemble_weight_history_set_by_check_rejects_invalid(
 
 
 def test_v004_schema_version_is_4(db_with_legacy_schema) -> None:
-    """V004 is the newest applied migration after this task."""
-    from swingrl.data.migration_runner import apply_migrations, current_schema_version
+    """V004 lands in the ledger (was newest; V005 now raises the ceiling to 5).
+
+    The newest-version invariant moved to ``test_v005_schema_version_is_5`` when
+    Track B Task 8 shipped V005 — this asserts V004 was applied, not that it is the
+    maximum, so it stays green as later migrations extend the ledger.
+    """
+    from swingrl.data.migration_runner import apply_migrations
 
     apply_migrations(db_with_legacy_schema)
-    assert current_schema_version(db_with_legacy_schema) == 4
+    with db_with_legacy_schema.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM schema_migrations WHERE version = 4"
+        ).fetchone()
+    assert row["n"] == 1
 
 
 def test_v003_inference_cycles_has_turbulence_column(db_with_legacy_schema) -> None:

@@ -62,9 +62,12 @@ def db_config_yaml(tmp_path: Path) -> str:
 
 
 def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
-    """Drop all V001-V004 artifacts and clear their schema_migrations ledger rows.
+    """Drop all V001-V005 artifacts and clear their schema_migrations ledger rows.
 
-    FK-safe order throughout: V004 coach-record artifacts (intent_verdicts/
+    FK-safe order throughout: V005 training-record leaf tables (backtest_trades/
+    season_results/fold_results/epoch_snapshots — nothing references them, so they
+    drop first) before their referenced training_runs/eras/gate_versions parents;
+    then V004 coach-record artifacts (intent_verdicts/
     intent_applications -> intent_records, referenced by the ensemble_weight_history
     FK -> llm_calls; the ewh FK + two A14 partial UNIQUE indexes are dropped first so
     the DROP TABLE of intent_records succeeds), then V003 (event_outcomes/fill_quality
@@ -80,6 +83,10 @@ def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
     ``UndefinedTable`` without the guard.
     """
     with mgr.connection() as conn:
+        conn.execute("DROP TABLE IF EXISTS backtest_trades")
+        conn.execute("DROP TABLE IF EXISTS season_results")
+        conn.execute("DROP TABLE IF EXISTS fold_results")
+        conn.execute("DROP TABLE IF EXISTS epoch_snapshots")
         conn.execute(
             "DO $$ BEGIN "
             "IF to_regclass('public.ensemble_weight_history') IS NOT NULL THEN "
@@ -115,7 +122,7 @@ def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
         conn.execute(
             "DO $$ BEGIN "
             "IF to_regclass('public.schema_migrations') IS NOT NULL THEN "
-            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4); "
+            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4, 5); "
             "END IF; "
             "END $$;"
         )
