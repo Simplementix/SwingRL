@@ -28,7 +28,11 @@ dependencies = [
     # stockstats: FinRL's native technical indicator library (Python 3.11 compatible)
     "stockstats>=0.4.0",
     # Broker APIs
-    "alpaca-py>=0.20",
+    # Upper bound pinned after changelog review 0.43.2 -> 0.43.5 (Task 13):
+    # 0.43.3-0.43.5 are patch-only (pytz dep, DocumentType enum, PDT/DTBP field
+    # tolerance, docstring fixes) — no breaking changes to submit_order / positions /
+    # account / StockHistoricalDataClient. <0.44 blocks the un-reviewed 0.44 minor.
+    "alpaca-py>=0.20,<0.44",
     # Config
     "pydantic>=2.5",
     "pyyaml>=6.0",
