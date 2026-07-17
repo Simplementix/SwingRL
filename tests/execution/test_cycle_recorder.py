@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from swingrl.execution.cycle_recorder import AlgoProposal, CycleRecorder, RegimeStamp
-
 from tests.conftest import make_mock_db
 
 
