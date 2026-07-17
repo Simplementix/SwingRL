@@ -119,6 +119,8 @@ class CycleRecorder:
         target_weights: dict[str, float],
         proposals: list[AlgoProposal],
         deployed_iteration: int | None,
+        dry_run: bool = False,
+        skip_reasons: dict[str, str] | None = None,
     ) -> int | None:
         """Write the inference_cycles row and one cycle_algo_proposals row per algo.
 
@@ -136,6 +138,10 @@ class CycleRecorder:
             target_weights: Blended per-symbol target weights ``{symbol: frac}``.
             proposals: One AlgoProposal per algorithm that produced actions.
             deployed_iteration: Max active-model iteration (display only, A20).
+            dry_run: Whether this cycle was a dry-run — tagged in the payload so the
+                ``run_cycle.py`` second-writer's simulations stay distinguishable (fold d).
+            skip_reasons: Per-symbol M2 skip reasons ``{symbol: reason}`` (fold c);
+                symbols the model held are absent.
 
         Returns:
             The new ``cycle_id``, or ``None`` if capture failed.
@@ -146,30 +152,24 @@ class CycleRecorder:
                     "schema_version": _SCHEMA_VERSION,
                     "raw": raw_actions,
                     "target_weights_frac": target_weights,
+                    "skip_reasons": skip_reasons or {},
+                    "dry_run": dry_run,
                 }
             )
             with self._db.connection() as conn:
-                row = conn.execute(
-                    _INFERENCE_INSERT_SQL,
-                    (
-                        env_name,
-                        mode,
-                        cycle_ts,
-                        deployed_iteration,
-                        regime.hmm_p_bull,
-                        regime.hmm_p_bear,
-                        regime.vix,
-                        regime.turbulence,
-                        regime.active_event_ids,
-                        blended_payload,
-                    ),
-                ).fetchone()
-                if row is None:
-                    # RETURNING always yields a row on success; None means the
-                    # write did not land — treat as a capture failure (fail-open).
-                    raise DataError("inference_cycles insert returned no cycle_id")
-                cycle_id = int(row["cycle_id"])
-
+                cycle_id = self._insert_cycle_row(
+                    conn,
+                    env_name=env_name,
+                    mode=mode,
+                    cycle_ts=cycle_ts,
+                    deployed_iteration=deployed_iteration,
+                    hmm_p_bull=regime.hmm_p_bull,
+                    hmm_p_bear=regime.hmm_p_bear,
+                    vix=regime.vix,
+                    turbulence=regime.turbulence,
+                    active_event_ids=regime.active_event_ids,
+                    payload=blended_payload,
+                )
                 for proposal in proposals:
                     proposed_payload = json.dumps(
                         {"schema_version": _SCHEMA_VERSION, "raw": proposal.raw_actions}
@@ -193,18 +193,111 @@ class CycleRecorder:
             )
             return cycle_id
         except Exception:
-            log.warning("cycle_capture_failed", env=env_name, exc_info=True)
-            if self._alerter is not None:
-                self._alerter.send_alert(
-                    level="warning",
-                    title="Cycle capture failed",
-                    message=(
-                        f"Inference-cycle capture failed for {env_name} — trading "
-                        "continues, but this cycle was not recorded."
-                    ),
-                    environment=env_name,
-                )
+            self._alert_capture_failed(env_name)
             return None
+
+    def record_halt(
+        self,
+        *,
+        env_name: str,
+        mode: str,
+        cycle_ts: datetime,
+        reason: str,
+        turbulence: float | None = None,
+        dry_run: bool = False,
+    ) -> int | None:
+        """Write a minimal inference_cycles row for an early-exit (halted) cycle.
+
+        Regime fields are NULL (not computed before the exit) except ``turbulence``,
+        which is passed when known (e.g. the turbulence-halt exit). No proposal rows
+        are written; the payload carries the halt reason. Fail-open like
+        ``record_cycle`` so a capture failure never changes the exit's behavior.
+
+        Args:
+            env_name: "equity" or "crypto".
+            mode: Trading mode ("paper" or "live").
+            cycle_ts: The canonical cycle timestamp (UTC).
+            reason: Short halt-reason code (e.g. "circuit_breaker", "turbulence_halt").
+            turbulence: Decision-time turbulence when available at the exit, else None.
+            dry_run: Whether the halted cycle was a dry-run (tagged in the payload).
+
+        Returns:
+            The new ``cycle_id``, or ``None`` if capture failed.
+        """
+        try:
+            payload = json.dumps(
+                {"schema_version": _SCHEMA_VERSION, "halt_reason": reason, "dry_run": dry_run}
+            )
+            with self._db.connection() as conn:
+                cycle_id = self._insert_cycle_row(
+                    conn,
+                    env_name=env_name,
+                    mode=mode,
+                    cycle_ts=cycle_ts,
+                    deployed_iteration=None,
+                    hmm_p_bull=None,
+                    hmm_p_bear=None,
+                    vix=None,
+                    turbulence=turbulence,
+                    active_event_ids=None,
+                    payload=payload,
+                )
+            log.info("cycle_halt_captured", env=env_name, cycle_id=cycle_id, reason=reason)
+            return cycle_id
+        except Exception:
+            self._alert_capture_failed(env_name)
+            return None
+
+    def _insert_cycle_row(
+        self,
+        conn: Any,
+        *,
+        env_name: str,
+        mode: str,
+        cycle_ts: datetime,
+        deployed_iteration: int | None,
+        hmm_p_bull: float | None,
+        hmm_p_bear: float | None,
+        vix: float | None,
+        turbulence: float | None,
+        active_event_ids: list[int] | None,
+        payload: str,
+    ) -> int:
+        """Insert one inference_cycles row and return its cycle_id (shared writer)."""
+        row = conn.execute(
+            _INFERENCE_INSERT_SQL,
+            (
+                env_name,
+                mode,
+                cycle_ts,
+                deployed_iteration,
+                hmm_p_bull,
+                hmm_p_bear,
+                vix,
+                turbulence,
+                active_event_ids,
+                payload,
+            ),
+        ).fetchone()
+        if row is None:
+            # RETURNING always yields a row on success; None means the write did not
+            # land — treat as a capture failure (surfaced by the fail-open caller).
+            raise DataError("inference_cycles insert returned no cycle_id")
+        return int(row["cycle_id"])
+
+    def _alert_capture_failed(self, env_name: str) -> None:
+        """Log + alert a fail-open capture failure (a silent outage must not go unseen)."""
+        log.warning("cycle_capture_failed", env=env_name, exc_info=True)
+        if self._alerter is not None:
+            self._alerter.send_alert(
+                level="warning",
+                title="Cycle capture failed",
+                message=(
+                    f"Inference-cycle capture failed for {env_name} — trading "
+                    "continues, but this cycle was not recorded."
+                ),
+                environment=env_name,
+            )
 
     def active_event_ids(self, cycle_ts: datetime) -> list[int]:
         """Return the ids of calendar events whose window brackets ``cycle_ts``.

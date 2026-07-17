@@ -172,6 +172,7 @@ class ExecutionPipeline:
             state = cb.get_state()
             if state == CBState.HALTED:
                 log.warning("cycle_halted_by_cb", env=env_name)
+                self._record_halt(env_name, cycle_ts, "circuit_breaker", dry_run)
                 return []
 
         # Resolve the cycle date once so the turbulence halt check and the
@@ -182,6 +183,16 @@ class ExecutionPipeline:
         # Step 2: Check turbulence crash protection (PAPER-20)
         if self._check_turbulence(env_name, current_date_str):
             log.warning("cycle_halted_by_turbulence", env=env_name)
+            # Record the halt with the turbulence that triggered it. compute_turbulence
+            # is cached per (env, date), so this reuses the value _check_turbulence just
+            # computed — a cache hit, not a re-computation (fold f consistency holds).
+            self._record_halt(
+                env_name,
+                cycle_ts,
+                "turbulence_halt",
+                dry_run,
+                self._feature_pipeline.compute_turbulence(env_name, current_date_str),
+            )
             return []
 
         # Step 2.5: Equity market-calendar gate (fail-safe). Crypto trades 24/7.
@@ -211,6 +222,7 @@ class ExecutionPipeline:
                     title="Trading Blocked",
                     message=f"Trading blocked for {env_name}: {obs_health.reason}",
                 )
+            self._record_halt(env_name, cycle_ts, "degraded_features", dry_run)
             return []
 
         # Step 3c: Track NaN observations in inference_outcomes table
@@ -227,6 +239,7 @@ class ExecutionPipeline:
 
         if had_nan:
             log.warning("nan_observation_detected", env=env_name)
+            self._record_halt(env_name, cycle_ts, "nan_obs", dry_run)
             return []
 
         # Step 3d: F1b — era-0 models were trained with the turbulence slot frozen
@@ -286,23 +299,6 @@ class ExecutionPipeline:
             current_weights=current_weights.tolist(),
         )
 
-        # Step 8b: Capture this cycle (regime + per-algo proposals + blended
-        # weights) for the training/attribution system. Fail-open — never blocks
-        # the money path (§4.7). Skipped on dry-run so the run_cycle.py CLI's
-        # simulations never write untagged rows into the capture dataset (fold d).
-        cycle_id: int | None = None
-        if not dry_run:
-            cycle_id = self._capture_cycle(
-                env_name=env_name,
-                cycle_ts=cycle_ts,
-                current_date_str=current_date_str,
-                turbulence_at_decision=turbulence_at_decision,
-                symbols=env_symbols,
-                actions=actions,
-                ensemble_weights=weights,
-                target_weights=target_weights,
-            )
-
         # Step 9: Generate rebalancing orders from weight deltas
         symbols = (
             self._config.equity.symbols if env_name == "equity" else self._config.crypto.symbols
@@ -316,10 +312,33 @@ class ExecutionPipeline:
 
         if portfolio_value <= 0:
             log.error("zero_portfolio_value", env=env_name, value=portfolio_value)
+            # Early-exit cycle still recorded so a zero-portfolio halt is visible (fold b).
+            self._record_halt(env_name, cycle_ts, "zero_portfolio", dry_run, turbulence_at_decision)
             return []
 
         # Minimum order value comes from config per env (no hardcoded floor).
         min_order_value = self._min_order_value(env_name)
+
+        # Step 9b: Capture this cycle (regime + per-algo proposals + blended weights +
+        # per-symbol M2 skip reasons + dry_run tag). Placed after the min-order
+        # threshold is known so skip reasons are classified from the same inputs Step 9
+        # uses, but BEFORE any order-submission side effect. Fail-open — never blocks
+        # the money path (§4.7). Dry-runs are recorded and tagged (fold d), not skipped.
+        skip_reasons = self._classify_skips(
+            env_symbols, target_weights, current_weights, portfolio_value, min_order_value
+        )
+        cycle_id = self._capture_cycle(
+            env_name=env_name,
+            cycle_ts=cycle_ts,
+            current_date_str=current_date_str,
+            turbulence_at_decision=turbulence_at_decision,
+            symbols=env_symbols,
+            actions=actions,
+            ensemble_weights=weights,
+            target_weights=target_weights,
+            dry_run=dry_run,
+            skip_reasons=skip_reasons,
+        )
 
         for i, symbol in enumerate(symbols):
             target_value = float(target_weights[i]) * portfolio_value
@@ -913,6 +932,8 @@ class ExecutionPipeline:
         actions: dict[str, np.ndarray],
         ensemble_weights: dict[str, float],
         target_weights: np.ndarray,
+        dry_run: bool,
+        skip_reasons: dict[str, str],
     ) -> int | None:
         """Assemble the RegimeStamp + proposals and hand them to the CycleRecorder.
 
@@ -929,6 +950,8 @@ class ExecutionPipeline:
             actions: Per-algo raw action vectors.
             ensemble_weights: Ensemble weights keyed by algo (may be partial).
             target_weights: Blended per-symbol target weights (array over symbols).
+            dry_run: Whether this cycle was a dry-run (tagged in the payload, fold d).
+            skip_reasons: Per-symbol M2 skip reasons for the payload (fold c).
 
         Returns:
             The new ``cycle_id``, or ``None`` on any capture failure.
@@ -955,10 +978,79 @@ class ExecutionPipeline:
                 target_weights=target_weights_map,
                 proposals=proposals,
                 deployed_iteration=self._cycle_recorder.deployed_iteration(env_name),
+                dry_run=dry_run,
+                skip_reasons=skip_reasons,
             )
         except Exception:
             log.warning("cycle_capture_failed", env=env_name, exc_info=True)
             return None
+
+    def _record_halt(
+        self,
+        env_name: str,
+        cycle_ts: datetime,
+        reason: str,
+        dry_run: bool,
+        turbulence: float | None = None,
+    ) -> None:
+        """Fail-open early-exit capture (fold b): record a halt row, never affect the exit.
+
+        Wrapped so a capture failure can never change the halted cycle's behavior or
+        return value. The CycleRecorder's write is itself fail-open; this is a backstop.
+
+        Args:
+            env_name: Environment name.
+            cycle_ts: The canonical cycle timestamp.
+            reason: Short halt-reason code.
+            dry_run: Whether the halted cycle was a dry-run.
+            turbulence: Decision-time turbulence when known at the exit, else None.
+        """
+        try:
+            self._cycle_recorder.record_halt(
+                env_name=env_name,
+                mode=self._config.trading_mode,
+                cycle_ts=cycle_ts,
+                reason=reason,
+                turbulence=turbulence,
+                dry_run=dry_run,
+            )
+        except Exception:
+            log.warning("cycle_capture_failed", env=env_name, reason=reason, exc_info=True)
+
+    @staticmethod
+    def _classify_skips(
+        symbols: list[str],
+        target_weights: np.ndarray,
+        current_weights: np.ndarray,
+        portfolio_value: float,
+        min_order_value: float,
+    ) -> dict[str, str]:
+        """Classify per-symbol M2 (sub-minimum-delta) skips for the capture payload (fold c).
+
+        Mirrors the Step 9 order-gen filter (``abs(delta_value) < min_order_value``). A
+        symbol the model signaled to change (``target != current``) but whose dollar
+        delta is below the minimum order value is tagged ``below_min_delta`` — the
+        "model signaled, order too small" case, distinguishable from "model held"
+        (``target == current``), which is intentionally absent from the map.
+
+        Args:
+            symbols: Ordered env symbols.
+            target_weights: Post-process target weights (array over symbols).
+            current_weights: Current portfolio weights (array over symbols).
+            portfolio_value: Portfolio value used to size the dollar delta.
+            min_order_value: Minimum order dollar value (the M2 threshold).
+
+        Returns:
+            ``{symbol: "below_min_delta"}`` for signaled-but-too-small symbols only.
+        """
+        reasons: dict[str, str] = {}
+        for i, symbol in enumerate(symbols):
+            target = float(target_weights[i])
+            current = float(current_weights[i])
+            delta_value = (target - current) * portfolio_value
+            if target != current and abs(delta_value) < min_order_value:
+                reasons[symbol] = "below_min_delta"
+        return reasons
 
     def _build_proposals(
         self,
