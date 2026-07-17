@@ -81,6 +81,15 @@ def configure_logging(
     root_logger.handlers = [stream_handler]
     root_logger.setLevel(log_level)
 
+    # httpx logs "HTTP Request: {method} {url} ..." at INFO on every call, and httpcore
+    # logs connection-level detail (including the request target) at DEBUG. Discord webhook
+    # URLs embed their secret token directly in the path, so at the default INFO level this
+    # would otherwise propagate the full webhook URL (token included) into application logs
+    # via the root logger wired above. Cap both to WARNING regardless of log_level — neither
+    # library emits meaningful WARNING+ output we'd lose (Task 15 security finding).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     # Optional file handler — always JSON for machine parsing
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)

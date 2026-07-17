@@ -117,10 +117,10 @@ plain-English rule):
 | `src/swingrl/features/turbulence.py:47` | `BaseTurbulenceCalculator.compute_series(returns) -> np.ndarray` exists — F1 fix needs no schema change | VERIFIED |
 | `model_metadata` (live pg16) | 13 cols, **no iteration column**; `model_id` = `{env}-v1.1.0-{algo}-{date}`; newest-per-algo read by `pipeline.py:410–445` | VERIFIED |
 | Live pg16 | Postgres 16 → `UNIQUE NULLS NOT DISTINCT` available (needed by `calendar_events`) | VERIFIED |
-| `scripts/ci-homelab.sh:47–54` | Tests run against `swingrl_test` DB inside persistent pg16 | VERIFIED |
+| `scripts/ci-homelab.sh:52–59` | Tests run against `swingrl_test` DB inside persistent pg16 | VERIFIED |
 | `monitoring/alerter.py` + `scripts/main.py:248–255` | Discord Alerter wired in production execution path (end-to-end proof = Task 16) | VERIFIED |
 | `pyproject.toml:31` | `alpaca-py>=0.20` — floating lower bound, **no upper pin**; breaking SDK changes can arrive silently | VERIFIED |
-| `pyproject.toml` / `scripts/ci-homelab.sh` | `bandit` runs in CI (static code security) but **no dependency CVE scanner** (`pip-audit`/`osv`) exists anywhere | VERIFIED |
+| `pyproject.toml` / `scripts/ci-homelab.sh` | `bandit` runs in CI (static code security); **no dependency CVE scanner existed** — **SUPERSEDED (Task 14, 2026-07-17):** `pip-audit --strict` now runs as `ci-homelab.sh` Stage `[5/6]` against all three dependency surfaces (root `pyproject.toml`, `services/memory/requirements.txt`, `dashboard/requirements.txt`); see `docs/execution/cve-triage.md` | SUPERSEDED |
 | `execution/adapters/binance_sim.py` | Crypto fills are simulated in-process (`trade_id=uuid4`, `:94,160`) — no Binance SDK dependency exists; Binance.US is only called by data ingestion | VERIFIED |
 
 ## Assumptions register — each with its concrete verification method

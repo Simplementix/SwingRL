@@ -2,7 +2,10 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    # swingrl/2.R-training-redesign added 2026-07-17 (Task 14 Step 5 enabler): the redesign's
+    # child PRs target the integration branch, and the Postgres-service fix (issue #18) must
+    # prove itself on those PRs — not first on the final integration→main PR.
+    branches: [main, swingrl/2.R-training-redesign]
   push:
     branches: [main]
 
@@ -63,6 +66,25 @@ jobs:
   test:
     name: Tests (coverage >= 85%)
     runs-on: ubuntu-latest
+    # Postgres 16 service — mirrors homelab CI's pg16 (scripts/ci-homelab.sh Stage 2.5/2.7).
+    # POSTGRES_USER/PASSWORD/DB are all the CI-only throwaway value "swingrl_test" — this
+    # database exists only for the lifetime of the job, no real credential involved.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: swingrl_test
+          POSTGRES_PASSWORD: swingrl_test  # pragma: allowlist secret
+          POSTGRES_DB: swingrl_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://swingrl_test:swingrl_test@localhost:5432/swingrl_test  # pragma: allowlist secret
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
@@ -72,5 +94,21 @@ jobs:
         with:
           python-version: "3.11"
       - run: uv sync --locked --group dev
+      - name: Initialize schema (legacy DDL + versioned migrations)
+        # Mirrors scripts/ci-homelab.sh Stage 2.7 exactly: init_schema() first (legacy
+        # postgres_schema.py DDL that V001 ALTERs depend on), then apply_migrations().
+        # Inline (not scripts/init_db.py): that script's post-init verification step has a
+        # pre-existing dict-row bug (`result[0]`) unrelated to this change that makes it
+        # exit non-zero even though schema creation itself succeeds.
+        run: |
+          uv run python -c "
+          from swingrl.config.schema import load_config
+          from swingrl.data.db import DatabaseManager
+          from swingrl.data.migration_runner import apply_migrations, current_schema_version
+          db = DatabaseManager(load_config('config/swingrl.yaml'))
+          db.init_schema()
+          n = apply_migrations(db)
+          print(f'applied={n} current_version={current_schema_version(db)}')
+          "
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=swingrl --cov-report=term-missing --cov-fail-under=85

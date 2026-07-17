@@ -85,15 +85,15 @@ class TestMidPriceCalculation:
 
 
 class TestSlippageAndCommission:
-    """Verify slippage application and commission calculation."""
+    """Verify book-crossing fills and commission (D1/D4 — was mid ± constant, decision notional)."""
 
-    def test_buy_slippage_applied(
+    def test_buy_fills_at_best_ask(
         self,
         sim_adapter: BinanceSimAdapter,
         crypto_order: ValidatedOrder,
         order_book_response: dict[str, list[list[str]]],
     ) -> None:
-        """Buy order fill price includes positive slippage."""
+        """D1: a buy crosses the book and pays the best ask (was mid × 1.0003)."""
         mock_resp = MagicMock()
         mock_resp.json.return_value = order_book_response
         mock_resp.raise_for_status = MagicMock()
@@ -101,16 +101,15 @@ class TestSlippageAndCommission:
         with patch("swingrl.execution.adapters.binance_sim.requests.get", return_value=mock_resp):
             result = sim_adapter.submit_order(crypto_order)
 
-        # Mid = 50005.0, slippage 0.03% => fill = 50005 * 1.0003 = 50020.0015
-        expected_fill = 50005.0 * 1.0003
-        assert result.fill_price == pytest.approx(expected_fill, rel=1e-6)
+        # Best ask = 50010.00 (book crossed), not mid 50005 × 1.0003.
+        assert result.fill_price == pytest.approx(50010.00)
 
-    def test_sell_slippage_applied(
+    def test_sell_fills_at_best_bid(
         self,
         sim_adapter: BinanceSimAdapter,
         order_book_response: dict[str, list[list[str]]],
     ) -> None:
-        """Sell order fill price includes negative slippage."""
+        """D1: a sell crosses the book and receives the best bid (was mid × 0.9997)."""
         sell_order = ValidatedOrder(
             order=SizedOrder(
                 symbol="BTCUSDT",
@@ -129,8 +128,8 @@ class TestSlippageAndCommission:
         with patch("swingrl.execution.adapters.binance_sim.requests.get", return_value=mock_resp):
             result = sim_adapter.submit_order(sell_order)
 
-        expected_fill = 50005.0 * (1 - 0.0003)
-        assert result.fill_price == pytest.approx(expected_fill, rel=1e-6)
+        # Best bid = 50000.00 (book crossed), not mid 50005 × 0.9997.
+        assert result.fill_price == pytest.approx(50000.00)
 
     def test_commission_calculation(
         self,
@@ -138,7 +137,7 @@ class TestSlippageAndCommission:
         crypto_order: ValidatedOrder,
         order_book_response: dict[str, list[list[str]]],
     ) -> None:
-        """Commission is 0.10% of dollar amount."""
+        """D4: commission is 0.10% of the executed fill notional (best_ask × qty), not $ amount."""
         mock_resp = MagicMock()
         mock_resp.json.return_value = order_book_response
         mock_resp.raise_for_status = MagicMock()
@@ -146,8 +145,8 @@ class TestSlippageAndCommission:
         with patch("swingrl.execution.adapters.binance_sim.requests.get", return_value=mock_resp):
             result = sim_adapter.submit_order(crypto_order)
 
-        # 0.10% of $50 = $0.05
-        assert result.commission == pytest.approx(0.05)
+        # fill notional = best_ask 50010.00 × qty 0.001 = 50.01 -> commission 0.05001.
+        assert result.commission == pytest.approx(50010.00 * 0.001 * 0.001)
         assert result.broker == "binance_us"
 
 

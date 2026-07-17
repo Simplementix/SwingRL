@@ -26,6 +26,7 @@ Usage:
 from __future__ import annotations
 
 import hashlib
+import re
 import threading
 import uuid
 from collections import deque
@@ -48,6 +49,25 @@ _COLORS: dict[str, int] = {
     "warning": 0xFFA500,
     "info": 0x3498DB,
 }
+
+# Discord webhook URLs embed their secret token directly in the path
+# (".../webhooks/<id>/<token>"), unlike header-based auth schemes. Any raw exception
+# text that echoes the request URL -- e.g. httpx.HTTPStatusError's message -- must be
+# redacted before it reaches a log call (Task 15 security finding: _post_webhook used to
+# log such exceptions with exc_info=True, leaking the token in console-render mode).
+_WEBHOOK_PATH_RE = re.compile(r"(discord\.com/api/webhooks/)[^\s'\"]+")
+
+
+def _sanitize(msg: str) -> str:
+    """Redact the id/token segment of any Discord webhook URL found in a message.
+
+    Args:
+        msg: Raw text that may contain a Discord webhook URL (e.g. str(exception)).
+
+    Returns:
+        The same text with any webhook id/token replaced by ``<redacted>``.
+    """
+    return _WEBHOOK_PATH_RE.sub(r"\1<redacted>", msg)
 
 
 class Alerter:
@@ -305,8 +325,21 @@ class Alerter:
             log.info("alert_sent", level=level, title=title)
             self._log_alert(level, title, message_hash, sent=True)
             return True
-        except Exception:
-            log.error("alert_send_failed", level=level, title=title, exc_info=True)
+        except Exception as exc:
+            # No exc_info=True here: httpx.HTTPStatusError's message embeds the full
+            # request URL, and a Discord webhook URL embeds its secret token in the path
+            # (see _sanitize). Log structured, secret-free diagnostics instead --
+            # exception class + HTTP status (when present) + a redacted message is
+            # enough to debug a failed send without ever emitting exc_info/traceback.
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            log.error(
+                "alert_send_failed",
+                level=level,
+                title=title,
+                exc_type=type(exc).__name__,
+                status_code=status_code,
+                detail=_sanitize(str(exc)),
+            )
             self._log_alert(level, title, message_hash, sent=False)
             return False
 
