@@ -1,9 +1,10 @@
-# Binance.US sim-fidelity audit (Task 13, Step 2)
+# Binance.US sim-fidelity audit (Task 13, Steps 2–4)
 
 **Date:** 2026-07-17 · **Branch:** `swingrl/2.R-A-capture-foundation` · **Author:** Task 13 audit
-**Scope:** divergence inventory only. No `binance_sim.py` behavior was changed. The
-`disposition` column is a *recommendation*; the user decides fix-now vs accept + document
-before Step 3 (failing tests) and Step 4 (fixes) run in a later dispatch.
+**Status:** divergence inventory (Step 2) + the approved fix bundle (Steps 3–4). The user
+approved **D1 + D4 + D8 + D9** (2026-07-17, AskUserQuestion); those four are now **FIXED**
+(RED-first TDD — `tests/execution/test_binance_sim_fidelity.py`). The other nine divergences
+remain **accept + document** by the same ruling.
 
 This document compares what `src/swingrl/execution/adapters/binance_sim.py` models against the
 current real Binance.US venue (fee schedule + exchange-info filters, fetched live 2026-07-17)
@@ -78,15 +79,15 @@ regime or conservative direction · **Low** = cosmetic or already guarded upstre
 
 | # | Behavior | Sim value (file:line) | Real value (source) | Impact | Recommendation (fix now / accept + document) |
 |---|---|---|---|---|---|
-| **D1** | **Fill price = constant slippage off mid.** Buy = mid×(1+0.0003), sell = mid×(1−0.0003); the fetched best bid/ask are computed then **discarded**. | `binance_sim.py:36,88,91–94` (bid/ask fetched at `:257–258`, unused for the fill) | Real taker fills cross the spread: buy at best ask, sell at best bid, then walks the book. BTC/ETH USDT top-of-book spread is real and time-varying (typ. 1–5 bps, wider in stress). | **High** | **Fix now.** Fill buys at `best_ask`, sells at `best_bid` (both already in hand at `:275`). Today every `fill_quality.slippage_frac` ≈ 0.03% *by construction* → zero informational value for the exact analysis Task 10 exists to enable. Cheapest high-value fix in the list. |
+| **D1** | **Fill price = constant slippage off mid.** Buy = mid×(1+0.0003), sell = mid×(1−0.0003); the fetched best bid/ask are computed then **discarded**. | `binance_sim.py:36,88,91–94` (bid/ask fetched at `:257–258`, unused for the fill) | Real taker fills cross the spread: buy at best ask, sell at best bid, then walks the book. BTC/ETH USDT top-of-book spread is real and time-varying (typ. 1–5 bps, wider in stress). | **High** | **FIXED (Step 4).** `submit_order`/`emergency_sell` now fill buys at `best_ask`, sells at `best_bid`; recorded slippage is the real half-spread. Every `fill_quality.slippage_frac` now carries real information instead of a tautological 0.03%. |
 | **D2** | **Commission rate hardcoded 0.10%/side.** | `binance_sim.py:37,96,167` | Binance.US Tier 0: **0% maker / 0.01% taker**; market orders are takers → ~0.01%/side (fee page, see honest gap). | **Medium** | **Accept + document** short-term — the sim errs *conservative* (overstates cost ~10×), so paper P&L is pessimistic, which is safe. But reconcile the number with config as part of D9 so expected == realized. Do **not** silently lower it without confirming the account's real fee tier. |
 | **D3** | **Fee never deducted from a virtual balance.** Docstrings claim "virtual balance tracking" but there is **no balance/cash ledger** in the adapter — commission is returned on `FillResult` and recorded to `fill_quality`, but nothing is subtracted from a cash/equity balance (zero P&L drag). | `binance_sim.py:1,42,61` (docstring-only "balance"); no ledger code (grep) — review §5.3 | Real fees reduce spendable USD every fill. | **Medium** | **Accept + document now** (correct the misleading docstring), **defer** a real cash ledger. Commission *is* captured in `realized_cost_frac`, so it is not fully invisible to analysis — the gap is P&L accounting, not data capture. A ledger is a larger change; scope it separately. |
-| **D4** | **Commission notional-basis is inconsistent.** `submit_order` charges commission on `dollar_amount` (decision-time notional); `emergency_sell` charges on `quantity × fill_price` (fill notional). | `binance_sim.py:96` vs `binance_sim.py:167` | A real venue always charges on the executed fill notional. | **Low** | **Fix now** (trivial): both paths should use fill notional. One-line consistency fix; folds naturally into the D1/D9 pass. |
+| **D4** | **Commission notional-basis is inconsistent.** `submit_order` charges commission on `dollar_amount` (decision-time notional); `emergency_sell` charges on `quantity × fill_price` (fill notional). | `binance_sim.py:96` vs `binance_sim.py:167` | A real venue always charges on the executed fill notional. | **Low** | **FIXED (Step 4).** Both `submit_order` and `emergency_sell` now charge commission on the executed fill notional (`fill_price × quantity × _COMMISSION_RATE`). |
 | **D5** | **No LOT_SIZE / stepSize rounding.** Sim fills the raw `quantity = dollar/price`; `position_sizer` never snaps to `stepSize` either. | `binance_sim.py` (no rounding anywhere); `position_sizer.py:133` | BTCUSDT step 0.00001, ETHUSDT step 0.0001 (exchange-info). Real orders are rounded/rejected on sub-step qty. | **Low** | **Accept + document.** Fractional-dust difference on a $10–$50 order is negligible P&L. Note it; snap-to-step only if capital scales up. |
 | **D6** | **No MIN_NOTIONAL rejection.** Sim always accepts. | `binance_sim.py:75–126` (no filter check) | MIN_NOTIONAL = $1.00, `applyToMarket=true` (exchange-info). | **Low** | **Accept + document.** Guarded upstream: the $10 app floor (`position_sizer.py:112`) is 10× the exchange minimum, so a real order can never fall below MIN_NOTIONAL. Documentation, not a fix. |
 | **D7** | **Never rejects, always fills fully, no partial fills, no order lifecycle.** Every order returns `status="filled"` for the full quantity. | `binance_sim.py:113–126` (`status="filled"`, full qty) — review §5.2 | Real market orders can partial-fill on thin books, or reject (insufficient balance / filters). | **Medium** | **Accept + document** for the current small-order BTC/ETH regime, where full immediate fill is realistic. Revisit (partial-fill modeling) if per-order size grows relative to top-of-book depth. |
-| **D8** | **Fills on the USDT book while the stop-poller watches USD; wide spreads only warn, still fill at mid.** | `binance_sim.py:245–248` (USDT depth), `:264–273` (warn-only at 0.5%) — review §5.4 / H5 | USDT and USD books are distinct, with different (thinner USDT) depth; a real fill at a 0.5%+ spread pays that spread, it is not a free mid-fill. | **Medium** | **Accept + document**, but pair with D1: once fills cross the real spread, add a **hard spread reject** (raise `BrokerError` above the current warn-only threshold) so wide-spread events don't silently fill at an unrealistic mid. |
-| **D9** | **`expected_cost_frac` snapshots config 0.0022 while the sim realizes ≈0.0013 → systematic ~0.09% expected-minus-realized artifact on every crypto `fill_quality` row.** Compounded: config comments 0.0022 as "round-trip" but `fill_processor` applies it **per fill**. | `fill_processor.py:236,242,246,295` (snapshots `crypto_transaction_cost_pct`); sim constants `binance_sim.py:36–37`; config `swingrl.yaml:47` | N/A — this is an internal self-consistency defect, not a venue divergence. | **High** | **Fix now.** Make one source of truth: derive `expected_cost_frac` from the same commission+slippage constants the sim applies (or set the config figure to match), so expected−realized reflects *real* execution surprise, not a 0.09% modeling offset. Also resolve the round-trip-vs-per-side semantic mismatch. This is the artifact that biases Task 10's core analysis. |
+| **D8** | **Fills on the USDT book while the stop-poller watches USD; wide spreads only warn, still fill at mid.** | `binance_sim.py:245–248` (USDT depth), `:264–273` (warn-only at 0.5%) — review §5.4 / H5 | USDT and USD books are distinct, with different (thinner USDT) depth; a real fill at a 0.5%+ spread pays that spread, it is not a free mid-fill. | **Medium** | **FIXED (Step 4).** `submit_order` now raises `BrokerError` when the spread exceeds `_SPREAD_REJECT_THRESHOLD = 0.01` (1.0% — a named constant, 2× the 0.5% warn band; kept out of config as an execution-safety guardrail, not a tunable). `emergency_sell` is deliberately **exempt** — a forced exit must never be blocked by a wide book. |
+| **D9** | **`expected_cost_frac` snapshots config 0.0022 while the sim realizes ≈0.0013 → systematic ~0.09% expected-minus-realized artifact on every crypto `fill_quality` row.** Compounded: config comments 0.0022 as "round-trip" but `fill_processor` applies it **per fill**. | `fill_processor.py:236,242,246,295` (snapshots `crypto_transaction_cost_pct`); sim constants `binance_sim.py:36–37`; config `swingrl.yaml:47` | N/A — this is an internal self-consistency defect, not a venue divergence. | **High** | **FIXED (Step 4).** `fill_processor._expected_cost_frac` now reads `binance_sim.modeled_crypto_cost_frac()` (= `_COMMISSION_RATE + _DEFAULT_SLIPPAGE` = 0.0013), the single source of truth, instead of the config figure. `expected_cost_frac` is now unambiguously per-fill (round-trip-vs-per-side resolved). Equity stays 0.0 (Task 10 contract). Config `crypto_transaction_cost_pct = 0.0022` is **unchanged** (training reward still uses it) — the D2 caveat holds: we aligned the expectation to the sim, not the sim to Binance.US. |
 | **D10** | **Time-to-fill ≡ 0.** `submitted_at` and `filled_at` are stamped in the same synchronous call. | `binance_sim.py:100,124–125,170` | Real fills take tens–hundreds of ms of venue + network latency. | **Medium** | **Accept + document.** The sim genuinely cannot know venue latency; faking a number is worse than none. Document that crypto `time_to_fill_ms ≈ 0` is a sim artifact, not a live latency estimate (consider recording NULL rather than 0). |
 | **D11** | **Decision price ≠ fill price by construction** — two separate depth calls milliseconds apart; the sim can't express "price moved between decision and fill." | `binance_sim.py:88` (fill-time depth) vs sizing-time depth call (`pipeline.py`) — review §5.6 | Real slippage between decision and fill is a genuine, single-tape phenomenon. | **Low** | **Accept + document.** Two-call jitter adds noise to `slippage_frac`; after D1 (fill at bid/ask) the dominant signal will be the real spread, so this residual noise is acceptable. |
 | **D12** | **Blocking retry sleeps inside the trading cycle** (up to ~1+2s backoff per symbol on depth-fetch failure). | `binance_sim.py:34–35,285–287` (same pattern in `alpaca_adapter.py:_retry`) — review §5.7 | N/A — an availability/latency concern, not a fill-price divergence. | **Low** | **Accept + document.** Bounded (max ~3 attempts). Note as a known cycle-latency cost; async retry is a hardening-phase item, not a fidelity fix. |
@@ -100,30 +101,35 @@ regime or conservative direction · **Low** = cosmetic or already guarded upstre
 - **Medium impact: 6** — D2, D3, D7, D8, D10, D13.
 - **Low impact: 5** — D4, D5, D6, D11, D12.
 
-## Opinionated recommendation
+## Resolution (2026-07-17) — approved fix bundle implemented
 
-If the user greenlights a fill-model improvement, the highest-leverage minimal change is a
-single pass over `binance_sim.submit_order` / `emergency_sell` that:
+The user approved the recommended bundle. Implemented via RED-first TDD
+(`tests/execution/test_binance_sim_fidelity.py`):
 
-1. **D1 — fills at best ask (buy) / best bid (sell)** instead of mid ± constant. The bid/ask are
-   already fetched and discarded, so this is nearly free and it is the *only* change that makes
-   `fill_quality.slippage_frac` carry real information.
-2. **D8 — hard-rejects wide spreads** (raise `BrokerError` above the 0.5% threshold instead of
-   warn-and-fill-at-mid), so stress events don't fill at fantasy prices.
-3. **D9 — unifies the cost source** so `expected_cost_frac` is derived from the same constants
-   the sim charges, killing the systematic 0.09% offset in Task 10's analysis.
-4. **D4 — fixes the commission notional basis** to fill notional on both paths (one-liner).
+1. **D1 — fills at best ask (buy) / best bid (sell)** instead of mid ± constant. The bid/ask were
+   already fetched and discarded; this is the change that makes `fill_quality.slippage_frac` carry
+   real information (recorded slippage is now the real half-spread).
+2. **D8 — hard-rejects wide spreads**: `submit_order` raises `BrokerError` above
+   `_SPREAD_REJECT_THRESHOLD = 0.01` (1.0%, a named constant = 2× the 0.5% warn band).
+   `emergency_sell` is exempt — forced exits must never be blocked.
+3. **D9 — unifies the cost source**: `expected_cost_frac` is derived from
+   `binance_sim.modeled_crypto_cost_frac()` (0.0013), killing the systematic 0.09% offset and
+   resolving the round-trip-vs-per-side semantics. Equity stays 0.0.
+4. **D4 — commission on fill notional** on both paths.
 
-Everything else (D2 rate, D3 ledger, D5 stepSize, D6 min-notional, D7 partials, D10 latency,
-D11 two-call jitter, D12 blocking retries, D13 IEX feed) I would **accept + document**: each is
-either conservative (safe direction), guarded upstream, bounded by the small-order regime, or a
-paid-plan / larger-refactor item that doesn't belong in a fidelity pass.
+The other nine (D2 rate, D3 ledger, D5 stepSize, D6 min-notional, D7 partials, D10 latency,
+D11 two-call jitter, D12 blocking retries, D13 IEX feed) remain **accept + document** per the same
+ruling: each is either conservative (safe direction), guarded upstream, bounded by the small-order
+regime, or a paid-plan / larger-refactor item that doesn't belong in a fidelity pass.
 
-**Net:** D1 + D8 + D9 + D4 together are a small, well-contained edit that removes both High-impact
-distortions and the worst Medium one, and they are exactly the fixes that make the *captured data*
-trustworthy. That is the recommended "improve the fill model" option. The alternative — accept +
-document all of it — is defensible only if the crypto capture is treated as telemetry-only and no
-analysis will lean on `slippage_frac` or `expected_cost_frac` until the fill model is revised.
+> **Residual note (D9):** the config `crypto_transaction_cost_pct = 0.0022` that the training reward
+> still uses now differs from the sim's realized cost (0.0013). That expected-vs-realized gap has
+> moved out of `fill_quality` (fixed) but persists as a *training-assumption* vs *sim-reality*
+> mismatch — a Plan B concern, out of Task 13 scope.
+>
+> **Reviewer note:** `FillProcessor`'s `config` param is now only a presence-gate for the crypto
+> cost (it no longer supplies the value). Retained for API compatibility / the legacy no-config
+> fallback (0.0); a later cleanup could drop it. Kept here to keep the fix bundle focused.
 
 ---
 

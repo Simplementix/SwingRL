@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from swingrl.config.schema import SwingRLConfig
+from swingrl.execution.adapters.binance_sim import modeled_crypto_cost_frac
 from swingrl.execution.fill_processor import FillProcessor
 from swingrl.execution.types import FillResult
 from swingrl.utils.exceptions import DataError
@@ -875,7 +876,12 @@ class TestFillQualityAdjustmentExclusion:
 
 
 class TestFillQualityExpectedCost:
-    """Step 3: expected_cost_frac / expected_fill_price_usd — config-driven, side-aware."""
+    """Step 3 + D9: expected_cost_frac / expected_fill_price_usd — sim-constant-derived, side-aware.
+
+    D9 (Task 13): the crypto modeled cost now comes from the sim's own commission + slippage
+    constants (``binance_sim.modeled_crypto_cost_frac``, single source of truth), not the config
+    round-trip figure ``crypto_transaction_cost_pct`` which diverged from the sim by ~0.09%.
+    """
 
     def test_equity_expected_cost_frac_is_zero(self, exec_config: SwingRLConfig) -> None:
         """Equity is commission-free -> expected_cost_frac = 0.0."""
@@ -891,8 +897,8 @@ class TestFillQualityExpectedCost:
         # expected_fill_price_usd == decision_price (no cost applied) -> "100.0"
         assert fq_call.args[1][2] == str(round(100.0, 8))
 
-    def test_crypto_expected_cost_frac_from_config(self, exec_config: SwingRLConfig) -> None:
-        """Crypto's modeled cost is config.environment.crypto_transaction_cost_pct."""
+    def test_crypto_expected_cost_frac_is_sim_derived(self, exec_config: SwingRLConfig) -> None:
+        """D9: crypto's modeled cost is the sim's commission + slippage constants, not config."""
         db, conn = make_mock_db(fetchone_returns=[None])
         processor = FillProcessor(db=db, config=exec_config)
 
@@ -904,7 +910,10 @@ class TestFillQualityExpectedCost:
         fq_call = next(
             c for c in conn.execute.call_args_list if "INSERT INTO fill_quality" in c.args[0]
         )
-        expected_cost_frac = exec_config.environment.crypto_transaction_cost_pct
+        expected_cost_frac = modeled_crypto_cost_frac()
+        assert expected_cost_frac != pytest.approx(
+            exec_config.environment.crypto_transaction_cost_pct
+        )  # no longer the config round-trip figure (D9)
         assert fq_call.args[1][5] == pytest.approx(expected_cost_frac)
         expected_fill_price = 50000.0 * (1 + expected_cost_frac)
         assert fq_call.args[1][2] == str(round(expected_fill_price, 8))
@@ -912,7 +921,7 @@ class TestFillQualityExpectedCost:
     def test_crypto_expected_fill_price_side_aware_for_sell(
         self, exec_config: SwingRLConfig
     ) -> None:
-        """Sell side subtracts the modeled cost from decision_price (side-aware)."""
+        """Sell side subtracts the sim-derived modeled cost from decision_price (side-aware)."""
         db, conn = make_mock_db(fetchone_returns=[None])
         processor = FillProcessor(db=db, config=exec_config)
 
@@ -924,8 +933,7 @@ class TestFillQualityExpectedCost:
         fq_call = next(
             c for c in conn.execute.call_args_list if "INSERT INTO fill_quality" in c.args[0]
         )
-        expected_cost_frac = exec_config.environment.crypto_transaction_cost_pct
-        expected_fill_price = 50000.0 * (1 - expected_cost_frac)
+        expected_fill_price = 50000.0 * (1 - modeled_crypto_cost_frac())
         assert fq_call.args[1][2] == str(round(expected_fill_price, 8))
 
     def test_no_config_injected_falls_back_to_zero_cost(self) -> None:

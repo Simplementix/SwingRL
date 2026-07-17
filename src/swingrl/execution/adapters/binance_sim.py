@@ -1,8 +1,12 @@
-"""Binance.US simulated fill adapter with virtual balance.
+"""Binance.US simulated fill adapter.
 
-Fetches order book mid-price from Binance.US public API, applies slippage,
-and records fills locally. No actual orders are placed -- this is a simulation
-adapter for paper trading the crypto environment.
+Fetches the order book from the Binance.US public API and simulates a fill by crossing
+the real spread (buy pays the best ask, sell receives the best bid), then records the fill
+locally. No actual orders are placed -- this is a simulation adapter for paper trading the
+crypto environment. See ``docs/execution/sim-fidelity.md`` for the divergence audit; the
+D1/D4/D8/D9 fixes cross the book, charge commission on the fill notional, reject
+fantasy-wide spreads, and expose the modeled cost as the single source of truth for
+``fill_quality.expected_cost_frac``.
 
 Usage:
     from swingrl.execution.adapters.binance_sim import BinanceSimAdapter
@@ -33,9 +37,32 @@ log = structlog.get_logger(__name__)
 
 _MAX_RETRIES = 3
 _BACKOFF_BASE_SECONDS = 1.0
-_DEFAULT_SLIPPAGE = 0.0003  # 0.03%
-_COMMISSION_RATE = 0.001  # 0.10% per side
-_SPREAD_WARNING_THRESHOLD = 0.005  # 0.5%
+_DEFAULT_SLIPPAGE = 0.0003  # 0.03% — modeled baseline half-spread (expected slippage)
+_COMMISSION_RATE = 0.001  # 0.10% per side (see docs/execution/sim-fidelity.md D2 caveat)
+_SPREAD_WARNING_THRESHOLD = 0.005  # 0.5% — log a warning, still fill
+# D8: hard reject above this spread. Set to 2× the warn band — a book this wide (100 bps on
+# BTC/ETH, normally 1–5 bps) is broken/illiquid, and a fill would be fiction. A named constant
+# (not config): this is an execution-safety guardrail, not a user-tunable trading parameter,
+# so it stays out of the config surface to avoid schema churn.
+_SPREAD_REJECT_THRESHOLD = 0.01  # 1.0%
+
+
+def modeled_crypto_cost_frac() -> float:
+    """Modeled per-fill crypto cost fraction — single source of truth (D9).
+
+    Commission constant + baseline slippage constant. ``fill_processor`` reads this for
+    ``fill_quality.expected_cost_frac`` so the *expected* cost and the sim's *realized* cost
+    share one definition, instead of the config round-trip figure (``crypto_transaction_cost_pct``)
+    diverging from the sim by ~0.09% on every fill. This value is inherently per-fill (per-side),
+    resolving the round-trip-vs-per-side semantic mismatch.
+
+    After D1 the sim fills across the real spread, so ``_DEFAULT_SLIPPAGE`` is the *expected*
+    half-spread baseline here, not a constant applied to the fill price.
+
+    Returns:
+        The modeled per-fill cost fraction (commission + baseline slippage).
+    """
+    return _COMMISSION_RATE + _DEFAULT_SLIPPAGE
 
 
 class BinanceSimAdapter:
@@ -52,28 +79,33 @@ class BinanceSimAdapter:
         config: SwingRLConfig,
         db: DatabaseManager,
         alerter: Alerter | None = None,
-        slippage: float = _DEFAULT_SLIPPAGE,
     ) -> None:
         """Initialize Binance.US simulated adapter.
 
         Args:
             config: Validated SwingRLConfig.
-            db: DatabaseManager for position reads and virtual balance tracking.
+            db: DatabaseManager for position reads.
             alerter: Optional Discord alerter for critical failures.
-            slippage: Slippage rate to apply (default 0.03%).
         """
         self._config = config
         self._db = db
         self._alerter = alerter
-        self._slippage = slippage
         # Emergency sells are recorded through the same fill processor as normal
         # fills so a trades row is written and the position row is deleted (review M3).
         self._fill_processor = FillProcessor(db=db)
 
-        log.info("binance_sim_adapter_initialized", slippage=slippage)
+        log.info(
+            "binance_sim_adapter_initialized",
+            reject_spread_pct=_SPREAD_REJECT_THRESHOLD,
+        )
 
     def submit_order(self, order: ValidatedOrder) -> FillResult:
-        """Simulate a fill using order book mid-price with slippage.
+        """Simulate a fill by crossing the real spread (best bid/ask).
+
+        The fill crosses the book: a buy pays the best ask, a sell receives the best bid
+        (D1) — so the recorded slippage is the real half-spread, not a constant. Commission
+        is charged on the executed fill notional (D4). A spread wider than the reject
+        threshold is refused rather than filled at a fantasy mid (D8).
 
         Args:
             order: Validated order with sized_order details.
@@ -82,18 +114,32 @@ class BinanceSimAdapter:
             FillResult with simulated fill price, commission, and UUID trade_id.
 
         Raises:
-            BrokerError: If mid-price fetch fails after all retries.
+            BrokerError: If the price fetch fails after all retries, or the spread is so wide
+                a simulated fill would be unrealistic (D8 hard reject).
         """
         sized = order.order
-        mid_price, _bid, _ask = self._get_mid_price(sized.symbol)
+        mid_price, best_bid, best_ask = self._get_mid_price(sized.symbol)
 
-        # Apply slippage: buy pays more, sell receives less
-        if sized.side == "buy":
-            fill_price = mid_price * (1 + self._slippage)
-        else:
-            fill_price = mid_price * (1 - self._slippage)
+        # D8: refuse a book so wide a fill would be fiction (guardrail, above warn-only).
+        spread_pct = (best_ask - best_bid) / mid_price
+        if spread_pct > _SPREAD_REJECT_THRESHOLD:
+            log.warning(
+                "wide_spread_rejected",
+                symbol=sized.symbol,
+                side=sized.side,
+                spread_pct=spread_pct,
+                reject_threshold=_SPREAD_REJECT_THRESHOLD,
+            )
+            raise BrokerError(
+                f"Spread {spread_pct:.4f} for {sized.symbol} exceeds reject threshold "
+                f"{_SPREAD_REJECT_THRESHOLD} — order refused (no simulated fill)"
+            )
 
-        commission = sized.dollar_amount * _COMMISSION_RATE
+        # D1: cross the book — buy pays the ask, sell receives the bid.
+        fill_price = best_ask if sized.side == "buy" else best_bid
+
+        # D4: commission on the executed fill notional (consistent with emergency_sell).
+        commission = fill_price * sized.quantity * _COMMISSION_RATE
         slippage_amount = abs(fill_price - mid_price) * sized.quantity
         trade_id = str(uuid.uuid4())
         # Simulated fills are synchronous — status and both lifecycle timestamps are set here.
@@ -162,9 +208,12 @@ class BinanceSimAdapter:
         Raises:
             BrokerError: If mid-price fetch fails.
         """
-        mid_price, _bid, _ask = self._get_mid_price(symbol)
-        fill_price = mid_price * (1 - self._slippage)
-        commission = quantity * fill_price * _COMMISSION_RATE
+        # D1: a forced sell receives the best bid. D8's wide-spread reject is deliberately
+        # NOT applied here — an emergency exit (circuit breaker / stop) must never be blocked
+        # by a wide book; being stuck in a position we must liquidate is the worse outcome.
+        mid_price, best_bid, _best_ask = self._get_mid_price(symbol)
+        fill_price = best_bid
+        commission = quantity * fill_price * _COMMISSION_RATE  # D4: on the fill notional
         slippage_amount = abs(fill_price - mid_price) * quantity
         trade_id = str(uuid.uuid4())
         now = datetime.now(UTC).isoformat()
