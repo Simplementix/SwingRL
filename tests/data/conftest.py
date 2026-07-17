@@ -79,10 +79,10 @@ def db_with_legacy_schema(
     version-2, and version-3 ledger rows — keeping the persistent scratch
     database re-runnable across test sessions.
 
-    LOUD NOTE for Task 12 (V004): when V004 ships, this teardown's
-    dropped-artifacts list AND its ``WHERE version IN (1, 2, 3)`` ledger cleanup
-    must BOTH be extended to cover V004's artifacts/version — otherwise the
-    scratch database stops being re-runnable the moment V004 lands.
+    V004 (Task 12) extends this teardown: the coach-record artifacts
+    (intent_verdicts/intent_applications/intent_records/llm_calls, FK-safe order),
+    the ensemble_weight_history.intent_id FK constraint, and the two A14 partial
+    UNIQUE indexes are all dropped, and the ledger cleanup covers version 4.
     """
     config_file = tmp_path / "swingrl.yaml"
     config_file.write_text(db_config_yaml)
@@ -92,7 +92,17 @@ def db_with_legacy_schema(
     mgr.init_schema()
     yield mgr
     with mgr.connection() as conn:
-        # V003 teardown first (FK-safe order): event_outcomes/fill_quality ->
+        # V004 teardown first (FK-safe order): intent_verdicts/intent_applications ->
+        # intent_records (referenced by the ewh FK) -> llm_calls. Drop the ewh FK
+        # + partial UNIQUE indexes before intent_records so the DROP TABLE succeeds.
+        conn.execute("ALTER TABLE ensemble_weight_history DROP CONSTRAINT IF EXISTS fk_ewh_intent")
+        conn.execute("DROP INDEX IF EXISTS uq_mt_commentary_per_cycle")
+        conn.execute("DROP INDEX IF EXISTS uq_llm_commentary_cycle")
+        conn.execute("DROP TABLE IF EXISTS intent_verdicts")
+        conn.execute("DROP TABLE IF EXISTS intent_applications")
+        conn.execute("DROP TABLE IF EXISTS intent_records")
+        conn.execute("DROP TABLE IF EXISTS llm_calls")
+        # V003 teardown (FK-safe order): event_outcomes/fill_quality ->
         # calendar_events/trades.cycle_id -> cycle_algo_proposals -> inference_cycles.
         conn.execute("DROP TABLE IF EXISTS event_outcomes")
         conn.execute("DROP TABLE IF EXISTS calendar_events")
@@ -118,7 +128,7 @@ def db_with_legacy_schema(
         conn.execute(
             "DO $$ BEGIN "
             "IF to_regclass('public.schema_migrations') IS NOT NULL THEN "
-            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3); "
+            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4); "
             "END IF; "
             "END $$;"
         )
