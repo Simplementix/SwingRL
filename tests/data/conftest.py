@@ -62,11 +62,14 @@ def db_config_yaml(tmp_path: Path) -> str:
 
 
 def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
-    """Drop all V001-V006 artifacts and clear their schema_migrations ledger rows.
+    """Drop all V001-V007 artifacts and clear their schema_migrations ledger rows.
 
-    FK-safe order throughout: V006 patterns-family tables (pattern_presentations/
+    FK-safe order throughout: V007 harness tables (harness_replays/harness_experiment_runs
+    -- both point at llm_calls/training_runs dropped further down, and harness_experiments
+    -- referenced by both, so all three drop first of all, before any of their FK targets);
+    then V006 patterns-family tables (pattern_presentations/
     pattern_links/pattern_sources/patterns — nothing references them, and they point
-    at llm_calls/eras dropped further down, so they drop first of all); then V005
+    at llm_calls/eras dropped further down); then V005
     training-record leaf tables (backtest_trades/
     season_results/fold_results/epoch_snapshots — nothing references them, so they
     drop next) before their referenced training_runs/eras/gate_versions parents;
@@ -86,6 +89,14 @@ def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
     ``UndefinedTable`` without the guard.
     """
     with mgr.connection() as conn:
+        # V007 harness tables (leaf tables first): harness_replays references
+        # llm_calls + harness_experiments (both dropped below); harness_experiment_runs
+        # references training_runs + harness_experiments (both dropped below) — so the
+        # two leaves drop before harness_experiments, which drops before any of those
+        # FK targets.
+        conn.execute("DROP TABLE IF EXISTS harness_replays")
+        conn.execute("DROP TABLE IF EXISTS harness_experiment_runs")
+        conn.execute("DROP TABLE IF EXISTS harness_experiments")
         # V006 patterns family (leaf tables first): pattern_presentations references
         # llm_calls (dropped below) and the three pattern_* children reference patterns
         # and eras (also dropped below), so all four must go before any of those FK
@@ -133,7 +144,7 @@ def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
         conn.execute(
             "DO $$ BEGIN "
             "IF to_regclass('public.schema_migrations') IS NOT NULL THEN "
-            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4, 5, 6); "
+            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4, 5, 6, 7); "
             "END IF; "
             "END $$;"
         )
