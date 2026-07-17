@@ -105,6 +105,49 @@ options_collector:
     rclone_remote: "b2:swingrl-options"
     time_et: "02:30"
 
+calendar:                           # Plan A Task 11: FRED + FOMC -> calendar_events (jobs run in swingrl-collector)
+  enabled: true
+  fred_release_ids:                 # P-A4 verified live 2026-07-16 (release name == expected)
+    cpi: 10                         # Consumer Price Index
+    nfp: 50                         # Employment Situation
+    gdp: 53                         # Gross Domestic Product
+  window_hours:                     # [before, after] hours, materialized at ingest (D-T3.14)
+    fomc: [24, 24]
+    cpi: [12, 12]
+    nfp: [12, 12]
+    gdp: [12, 12]
+  min_future_days: 10               # staleness alarm fires if newest future event nearer than this
+  backfill_start: "2015-01-01"      # covers min(ohlcv_daily)=2016-01-04 (verified live)
+  fomc_backfill_csv: config/fomc_dates_historical.csv   # historical decision dates for backfill
+  ingest_day_of_week: sun           # weekly ingest (America/New_York)
+  ingest_time_et: "06:30"
+  staleness_check_time_et: "07:00"  # daily
+  fomc_dates:                       # forward FOMC decision days, 14:00 ET (federalreserve.gov, 2026-07-16)
+    - "2025-01-29T14:00:00"
+    - "2025-03-19T14:00:00"
+    - "2025-05-07T14:00:00"
+    - "2025-06-18T14:00:00"
+    - "2025-07-30T14:00:00"
+    - "2025-09-17T14:00:00"
+    - "2025-10-29T14:00:00"
+    - "2025-12-10T14:00:00"
+    - "2026-01-28T14:00:00"
+    - "2026-03-18T14:00:00"
+    - "2026-04-29T14:00:00"
+    - "2026-06-17T14:00:00"
+    - "2026-07-29T14:00:00"
+    - "2026-09-16T14:00:00"
+    - "2026-10-28T14:00:00"
+    - "2026-12-09T14:00:00"
+    - "2027-01-27T14:00:00"
+    - "2027-03-17T14:00:00"
+    - "2027-04-28T14:00:00"
+    - "2027-06-09T14:00:00"
+    - "2027-07-28T14:00:00"
+    - "2027-09-15T14:00:00"
+    - "2027-10-27T14:00:00"
+    - "2027-12-08T14:00:00"
+
 shadow:
   equity_eval_days: 10              # trading days to evaluate shadow equity model
   crypto_eval_cycles: 30            # 4H cycles to evaluate shadow crypto model
