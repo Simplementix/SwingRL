@@ -364,6 +364,61 @@ class TestWebhookFailure:
         # Should not raise
         alerter.send_alert("critical", "Test", "msg")
 
+    def test_http_status_error_does_not_leak_webhook_url_in_console_logs(self, mocker: Any) -> None:
+        """SEC-15 (reviewer round): a failed webhook POST must not leak the URL via exc_info.
+
+        httpx.HTTPStatusError's message embeds the full request URL, and Discord webhook
+        URLs embed their secret token directly in that URL's path. _post_webhook's except
+        clause used to log the exception with exc_info=True; in console-render mode
+        (json_logs=False -- the currently-deployed homelab config), structlog's
+        ConsoleRenderer expands the traceback text (including the exception's message),
+        printing the token to stderr. Reproduced end-to-end: a real 401 response via
+        httpx.MockTransport, driven through the real Alerter._post_webhook (not a
+        synthetic exception injection) -- this is the most-likely-to-fire path in
+        production (wrong/revoked/rate-limited token -> alerting about the failure
+        prints the token that caused it).
+        """
+        import io
+        import logging
+
+        import httpx
+
+        from swingrl.utils import configure_logging
+
+        fake_token = "SEC15_REVIEWER_FIXTURE_TOKEN_zz9"  # noqa: S105 -- fixture, not real
+        webhook_url = f"https://discord.com/api/webhooks/999999999/{fake_token}"
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={"message": "Unauthorized"})
+
+        def _fake_post(url: str, **kwargs: object) -> httpx.Response:
+            with httpx.Client(transport=httpx.MockTransport(_handler)) as client:
+                return client.post(url, **kwargs)  # type: ignore[arg-type]
+
+        mocker.patch("swingrl.monitoring.alerter.httpx.post", side_effect=_fake_post)
+
+        # Console-render mode -- matches the currently-deployed homelab config
+        # (config/swingrl.yaml: json_logs: false).
+        configure_logging(json_logs=False, log_level="INFO")
+        buf = io.StringIO()
+        root = logging.getLogger()
+        for handler in root.handlers:
+            handler.stream = buf
+
+        test_alerter = Alerter(webhook_url=webhook_url, cooldown_minutes=30)
+        test_alerter.send_alert("critical", "Test Alert", "test message")
+
+        for handler in root.handlers:
+            handler.flush()
+        rendered = buf.getvalue()
+
+        assert "alert_send_failed" in rendered, (
+            "expected the alert_send_failed event to still be logged"
+        )
+        assert fake_token not in rendered, (
+            f"webhook token leaked into rendered console log output: {rendered!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test: Embed payload structure

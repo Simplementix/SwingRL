@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
+import structlog
 
 from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.data.db import DatabaseManager
@@ -60,6 +61,36 @@ def _reset_db_singleton() -> None:
     """Reset DatabaseManager singleton after every test to prevent pool thread leaks."""
     yield
     DatabaseManager.reset()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_structlog_config() -> Generator[None, None, None]:
+    """Snapshot structlog's global config before each test and restore it after.
+
+    structlog.configure() mutates process-global state and is NOT scoped to the
+    caller. `structlog.configure(**kwargs)` only overrides the params it is given —
+    any omitted param (e.g. `processors`) is left as whatever is currently
+    installed, not reset to structlog's own default. This bites us for real:
+    `services/memory/app.py` calls
+    `structlog.configure(wrapper_class=..., logger_factory=structlog.PrintLoggerFactory())`
+    with no `processors=` argument. If an earlier test in the same pytest process
+    called `swingrl.utils.logging.configure_logging()` (which installs
+    `structlog.stdlib.add_logger_name` as a processor), that processor is still
+    active when the memory service's partial `configure()` runs — but the logger
+    factory is now `PrintLoggerFactory`. `add_logger_name` does
+    `event_dict["logger"] = logger.name`, and `PrintLogger` has no `.name`
+    attribute, so every log call raises
+    `AttributeError: 'PrintLogger' object has no attribute 'name'`.
+    This only shows up when the whole suite runs in one process (test order
+    dependent) — never in production, where the memory service is its own
+    process and never inherits another module's structlog config. Restoring the
+    exact pre-test config after every test removes the cross-test leak.
+    """
+    saved = structlog.get_config()
+    try:
+        yield
+    finally:
+        structlog.configure(**saved)
 
 
 @pytest.fixture(scope="session")

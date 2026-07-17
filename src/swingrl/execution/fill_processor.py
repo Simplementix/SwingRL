@@ -275,24 +275,29 @@ class FillProcessor:
             log.warning("fill_quality_capture_failed", trade_id=fill.trade_id, exc_info=True)
 
     def _expected_cost_frac(self, environment: str) -> float:
-        """Return the modeled round-trip cost fraction for the environment (P-A5).
+        """Return the modeled per-fill cost fraction for the environment (P-A5, D9).
 
-        Equity is commission-free (Alpaca) -> always 0.0. Crypto's modeled cost is
-        ``config.environment.crypto_transaction_cost_pct`` — the same figure the
-        training reward function uses — since the live sim adapter's commission +
-        slippage constants aren't themselves surfaced through config. Falls back to
-        0.0 when no config was injected (legacy callers: the crypto sim adapter's
-        emergency-sell path, reconciliation) rather than raising.
+        Equity is commission-free (Alpaca) -> always 0.0. Crypto's modeled cost is the
+        sim's own commission + baseline-slippage constants (``binance_sim.modeled_crypto_cost_frac``)
+        — the single source of truth, so ``expected_cost_frac`` matches what the sim actually
+        realizes instead of the config round-trip figure (which diverged by ~0.09% per fill and
+        conflated round-trip with per-fill; see docs/execution/sim-fidelity.md D9). This value is
+        per-fill, resolving that semantic mismatch. Config presence is retained as the legacy gate:
+        callers without config (the crypto sim adapter's emergency-sell path, reconciliation) fall
+        back to 0.0 rather than raising — config no longer *supplies* the value, only gates it.
 
         Args:
             environment: "equity" or "crypto".
 
         Returns:
-            The modeled cost fraction, or 0.0 for equity / when config is unavailable.
+            The modeled per-fill cost fraction, or 0.0 for equity / when config is unavailable.
         """
         if environment != "crypto" or self._config is None:
             return 0.0
-        return self._config.environment.crypto_transaction_cost_pct
+        # Lazy import breaks the binance_sim -> fill_processor module cycle (D9 single source).
+        from swingrl.execution.adapters.binance_sim import modeled_crypto_cost_frac
+
+        return modeled_crypto_cost_frac()
 
     @staticmethod
     def _time_to_fill_ms(fill: FillResult) -> int | None:
