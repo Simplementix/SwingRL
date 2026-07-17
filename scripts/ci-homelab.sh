@@ -7,7 +7,10 @@
 #   [3/6] Run tests             — pytest inside container (MPS test skipped on Linux)
 #   [4/6] Lint + types          — ruff check + ruff format --check + mypy inside container
 #   [4a/6] Memory service lint  — build swingrl-memory and run ruff + mypy inside it
-#   [5/6] Cleanup               — dev-compose-project down + prune dangling images.
+#   [5/6] Dependency CVE audit  — pip-audit --strict against pyproject.toml's declared deps;
+#                                 known-accepted findings suppressed via --ignore-vuln
+#                                 (see docs/execution/cve-triage.md for dispositions).
+#   [6/6] Cleanup               — dev-compose-project down + prune dangling images.
 #                                 Production compose is NEVER touched by cleanup:
 #                                 always-on services (trader, collector) must survive CI runs.
 #
@@ -97,7 +100,32 @@ docker compose run --rm --no-deps --entrypoint "" swingrl-memory sh -c \
 # NOTE: mypy for memory service skipped — pre-existing type errors in query.py
 # (parsed dict returns str|int|None, functions expect str). To be fixed separately.
 
-echo "=== [5/6] Cleanup ==="
+echo "=== [5/6] Dependency CVE audit ==="
+# pip-audit resolves and audits pyproject.toml's declared dependencies directly
+# (project-path mode: the positional "." argument), NOT the installed venv. Auditing the
+# installed environment instead fails outright either way: default env-audit mode errors
+# `swingrl: Dependency not found on PyPI` (this project isn't published), and
+# `--local --skip-editable` (to work around that) instead errors
+# `swingrl: distribution marked as editable` — --strict treats both as fatal. Project-path
+# mode reads [project.dependencies]/[dependency-groups] and resolves them independently of
+# what's installed, sidestepping both failure modes.
+#
+# The --ignore-vuln flags below suppress 20 known findings, all in torch (pinned <2.4 in
+# pyproject.toml; every available fix version for these is >=2.5 — no fix exists inside the
+# current pin, so accepting was the only option short of an unreviewed major-version bump).
+# Full per-finding disposition + rationale: docs/execution/cve-triage.md.
+# Review by 2026-10-15 — re-run without --ignore-vuln and re-triage alongside a dedicated
+# torch major-version upgrade review (same rigor as the Task 13 alpaca-py pin review).
+$DEV_COMPOSE run --rm --entrypoint "" swingrl uv run pip-audit --strict . \
+    --ignore-vuln PYSEC-2025-191 --ignore-vuln PYSEC-2025-41 --ignore-vuln PYSEC-2024-259 \
+    --ignore-vuln PYSEC-2025-205 --ignore-vuln PYSEC-2025-206 --ignore-vuln PYSEC-2025-207 \
+    --ignore-vuln PYSEC-2025-204 --ignore-vuln PYSEC-2026-139 --ignore-vuln PYSEC-2025-209 \
+    --ignore-vuln PYSEC-2025-208 --ignore-vuln PYSEC-2025-198 --ignore-vuln PYSEC-2025-203 \
+    --ignore-vuln PYSEC-2026-1970 --ignore-vuln PYSEC-2026-2286 --ignore-vuln CVE-2025-2148 \
+    --ignore-vuln CVE-2025-2149 --ignore-vuln CVE-2025-2998 --ignore-vuln CVE-2025-2999 \
+    --ignore-vuln CVE-2025-3000 --ignore-vuln CVE-2025-3001
+
+echo "=== [6/6] Cleanup ==="
 docker exec pg16 psql -U temporal -d postgres -c "DROP DATABASE IF EXISTS swingrl_test;" || true
 # Cleanup is scoped to the dev compose project ONLY. `docker compose down` against the
 # production project would stop every always-on service (trader, collector) on each CI
