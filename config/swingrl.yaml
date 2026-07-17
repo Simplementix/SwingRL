@@ -12,6 +12,10 @@ equity:
   max_drawdown_pct: 0.10        # circuit breaker: halt equity env at 10% DD
   daily_loss_limit_pct: 0.02    # circuit breaker: halt equity env at 2% daily loss
   min_order_usd: 1.0            # Alpaca minimum order floor ($1.00 fractional shares)
+  cycle_time_et: "15:45"        # daily rebalance time (ET); 15m before close so fills land intraday
+  market_calendar_gate: true    # gate the equity cycle on the Alpaca market clock (fail-safe)
+  order_fill_timeout_s: 60      # cancel an unfilled order after N seconds (never a $0 trade)
+  order_poll_interval_s: 2      # poll order status every N seconds during the fill wait
 
 crypto:
   symbols: [BTCUSDT, ETHUSDT]
@@ -44,6 +48,8 @@ environment:
   signal_deadzone: 0.02                  # hold threshold: suppress weight changes < 2%
   position_penalty_coeff: 10.0           # soft penalty for position limit breach
   drawdown_penalty_coeff: 5.0            # soft penalty for drawdown threshold breach
+  zero_turbulence_obs: true              # F1b: freeze turbulence obs slot at 0.0 for era-0 models
+                                         # (real value still captured); flip to false at era-1 cutover
 
 system:
   database_url: ""                       # PostgreSQL — override via DATABASE_URL env var in Docker
@@ -59,7 +65,10 @@ alerting:
 scheduler:
   enabled: true                           # set true for live/paper trading; false during training-only
   apscheduler_db_path: db/apscheduler_jobs.sqlite  # SEPARATE from trading_ops.db
-  misfire_grace_time: 300                  # seconds to tolerate late job execution
+  misfire_grace_time: 300                  # default grace (seconds) for non-cycle jobs
+  misfire_grace_s:                         # per-env grace for the trading cycle jobs (A30)
+    equity: 720                            # a restart shortly after 15:45 still runs late; past ~15:57 it skips
+    crypto: 3600                           # 4H cadence — an hour late is immaterial
   max_workers: 4                           # APScheduler thread pool size
 
 backup:
@@ -90,10 +99,54 @@ options_collector:
     contract_count_drop_warn_frac: 0.5   # partial-chain guard (CBOE has no truncation flag)
     audit_day_of_month: 1
     audit_time_et: "18:00"
+    late_warn_s: 30.0                    # cron-jitter tolerance before a lateness warning fires (2026-07-16)
   backup:
     enabled: true
     rclone_remote: "b2:swingrl-options"
     time_et: "02:30"
+
+calendar:                           # Plan A Task 11: FRED + FOMC -> calendar_events (jobs run in swingrl-collector)
+  enabled: true
+  fred_release_ids:                 # P-A4 verified live 2026-07-16 (release name == expected)
+    cpi: 10                         # Consumer Price Index
+    nfp: 50                         # Employment Situation
+    gdp: 53                         # Gross Domestic Product
+  window_hours:                     # [before, after] hours, materialized at ingest (D-T3.14)
+    fomc: [24, 24]
+    cpi: [12, 12]
+    nfp: [12, 12]
+    gdp: [12, 12]
+  min_future_days: 10               # staleness alarm fires if newest future event nearer than this
+  backfill_start: "2015-01-01"      # covers min(ohlcv_daily)=2016-01-04 (verified live)
+  fomc_backfill_csv: config/fomc_dates_historical.csv   # historical decision dates for backfill
+  ingest_day_of_week: sun           # weekly ingest (America/New_York)
+  ingest_time_et: "06:30"
+  staleness_check_time_et: "07:00"  # daily
+  fomc_dates:                       # forward FOMC decision days, 14:00 ET (federalreserve.gov, 2026-07-16)
+    - "2025-01-29T14:00:00"
+    - "2025-03-19T14:00:00"
+    - "2025-05-07T14:00:00"
+    - "2025-06-18T14:00:00"
+    - "2025-07-30T14:00:00"
+    - "2025-09-17T14:00:00"
+    - "2025-10-29T14:00:00"
+    - "2025-12-10T14:00:00"
+    - "2026-01-28T14:00:00"
+    - "2026-03-18T14:00:00"
+    - "2026-04-29T14:00:00"
+    - "2026-06-17T14:00:00"
+    - "2026-07-29T14:00:00"
+    - "2026-09-16T14:00:00"
+    - "2026-10-28T14:00:00"
+    - "2026-12-09T14:00:00"
+    - "2027-01-27T14:00:00"
+    - "2027-03-17T14:00:00"
+    - "2027-04-28T14:00:00"
+    - "2027-06-09T14:00:00"
+    - "2027-07-28T14:00:00"
+    - "2027-09-15T14:00:00"
+    - "2027-10-27T14:00:00"
+    - "2027-12-08T14:00:00"
 
 shadow:
   equity_eval_days: 10              # trading days to evaluate shadow equity model
@@ -190,6 +243,10 @@ memory_agent:
         api_key: ""                         # OVERRIDE via NVIDIA_API_KEY in .env
         default_model: "moonshotai/kimi-k2.5"
 
+meta_trader:                          # Task 12: rotation-gated trade-time coach (skeleton)
+  enabled: false                      # runtime gate — Task 16 go/no-go before switching on
+  commentary_provider: cerebras       # provider for the mt-commentary-v0 shadow prompt
+
 training:
   # Config lifecycle note: `bounds` below is loaded once into module-level constants
   # at import time (src/swingrl/memory/training/bounds.py:HYPERPARAM_BOUNDS/REWARD_BOUNDS/
@@ -262,5 +319,10 @@ features:
   correlation_threshold: 0.85      # Pearson r threshold for feature pruning
   zscore_epsilon: 0.00000001      # floor for rolling std to prevent division by zero
   equity_turbulence_warmup: 252    # expanding lookback warmup for equity turbulence
-  crypto_turbulence_window: 1080   # rolling window for crypto turbulence (4H bars)
-  crypto_turbulence_warmup: 360    # crypto turbulence minimum warmup bars
+  equity_turbulence_half_life: 126 # EWMA half-life for equity Mahalanobis (trading days)
+  crypto_turbulence_window: 1080   # realized-vol percentile lookback for crypto OR-gate (4H bars)
+  crypto_turbulence_warmup: 1080   # crypto turbulence minimum warmup bars (raised 360->1080)
+  crypto_turbulence_half_life: 750 # EWMA half-life for crypto Mahalanobis (4H bars)
+  turbulence_halt_percentile: 0.97       # hard-halt percentile (method review 2026-07-07)
+  turbulence_baseline_lookback_equity: 756  # trailing baseline window (~3y trading days)
+  turbulence_baseline_lookback_crypto: 0    # 0 = full-history baseline for crypto

@@ -29,6 +29,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNorm
 from swingrl.config.schema import SwingRLConfig
 from swingrl.envs.crypto import CryptoTradingEnv
 from swingrl.envs.equity import StockTradingEnv
+from swingrl.execution.model_paths import active_model_paths
 from swingrl.training.callbacks import ConvergenceCallback
 from swingrl.utils.exceptions import ModelError
 
@@ -558,11 +559,8 @@ class TrainingOrchestrator:
         Returns:
             Tuple of (model_path, vec_normalize_path).
         """
-        save_dir = self._models_dir / "active" / env_name / algo_name
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        model_path = save_dir / "model.zip"
-        vec_path = save_dir / "vec_normalize.pkl"
+        model_path, vec_path = active_model_paths(self._models_dir, env_name, algo_name)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
 
         model.save(str(model_path))
 
@@ -624,9 +622,7 @@ class TrainingOrchestrator:
             ModelError: If any smoke test fails.
         """
         algo_cls = ALGO_MAP[algo_name]
-        save_dir = self._models_dir / "active" / env_name / algo_name
-        model_path = save_dir / "model.zip"
-        vec_path = save_dir / "vec_normalize.pkl"
+        model_path, vec_path = active_model_paths(self._models_dir, env_name, algo_name)
 
         # 1. Model deserializes
         try:

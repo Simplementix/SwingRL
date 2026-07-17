@@ -162,3 +162,12 @@ standing plan for that boundary:
 - **2026-07-15** — Initial version (Task 15). Delay convention marked PENDING T6 probe.
 - **2026-07-15** — Document `trade_time_utc` ET-localization convention (C2): `last_trade_time`
   is parsed as ET and converted to UTC, inferred from fixtures, pending T6 confirmation.
+- **2026-07-16** — First scheduled captures verified (9/9 both labels; delay 15 m 26 s;
+  decision content 24 s pre-label — no-lookahead re-confirmed; eod = 16:15 freeze). Three
+  alerting defects found live and fixed same day (`swingrl/2.R-C-collector-alert-fix`):
+  (1) millisecond cron jitter counted as "late" → `late_warn_s` tolerance (default 30 s;
+  `late_by_s` provenance still stamped verbatim); (2) warnings replaced the capture-success
+  message → summary now ALWAYS sent (succeeded or skipped), warnings inline; (3) Alerter
+  suppressed the first 2 consecutive warnings → capture-failure warnings bypass suppression
+  (day-1 delivery; a failed pull is un-backfillable). Offsite backup superseded: Duplicati
+  (local drive, user decision 2026-07-16) + nightly host-cron `pg_dump` into `backups/`.

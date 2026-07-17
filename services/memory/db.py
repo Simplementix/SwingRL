@@ -440,6 +440,161 @@ def insert_audit_log(
         log.warning("audit_log_write_failed", call_type=call_type, exc_info=True)
 
 
+# ---------------------------------------------------------------------------
+# V004 coach records (spec §4.4): llm_calls + intent_records writers.
+# ---------------------------------------------------------------------------
+
+
+def insert_llm_call(
+    *,
+    call_type: str,
+    cycle_id: int,
+    provider: str,
+    model: str,
+    prompt_version: str,
+    prompt_text: str,
+    response_text: str | None = None,
+    response_parsed: str | None = None,
+    latency_ms: int | None = None,
+    success: bool = True,
+    error_text: str | None = None,
+    tokens_in: int | None = None,
+    tokens_out: int | None = None,
+    environment: str | None = None,
+    algorithm: str | None = None,
+) -> int:
+    """Insert a trade-time ``llm_calls`` transcript row; return its llm_call_id.
+
+    Trade-time coach='meta_trader'. Used for the LLM-failure path where no intent
+    is written but the call is still counted (fail-open but counted, F3/§4.4).
+    The A15 identity CHECK requires cycle_id NOT NULL for trade_commentary/
+    trade_alarm/event_significance.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "INSERT INTO llm_calls (coach, call_type, cycle_id, environment, algorithm,"
+            " provider, model, prompt_version, prompt_text, response_text, response_parsed,"
+            " success, error, latency_ms, tokens_in, tokens_out)"
+            " VALUES ('meta_trader', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s,"
+            " %s, %s) RETURNING llm_call_id",
+            [
+                call_type,
+                cycle_id,
+                environment,
+                algorithm,
+                provider,
+                model,
+                prompt_version,
+                prompt_text,
+                response_text,
+                response_parsed,
+                success,
+                error_text,
+                latency_ms,
+                tokens_in,
+                tokens_out,
+            ],
+        ).fetchone()
+        conn.commit()
+        return int(row["llm_call_id"])
+
+
+def insert_trade_commentary(
+    *,
+    cycle_id: int,
+    environment: str,
+    algorithm: str,
+    deployed_iteration: int,
+    provider: str,
+    model: str,
+    prompt_version: str,
+    prompt_text: str,
+    response_text: str | None,
+    response_parsed: str | None,
+    latency_ms: int | None,
+    success: bool,
+    error_text: str | None,
+    tokens_in: int | None,
+    tokens_out: int | None,
+    evidence: str,
+    proposal: str,
+    bet_metric: str,
+    bet_direction: str,
+    bet_baseline_value: float,
+    horizon_spec: str,
+) -> tuple[int, int]:
+    """Write one ``llm_calls`` + one shadow ``MT_commentary`` ``intent_records`` row.
+
+    Both inserts share one transaction: if the intent insert is rejected (e.g. the
+    A14 per-cycle cap or a CHECK violation), the llm_calls insert rolls back too —
+    no orphan transcript rows. Returns (llm_call_id, intent_id).
+
+    The ``evidence``/``proposal``/``horizon_spec`` args are JSON strings (cast to
+    JSONB in SQL). ``horizon_spec`` is system-written by the caller from config.
+    """
+    with get_connection() as conn:
+        llm_call_id = conn.execute(
+            "INSERT INTO llm_calls (coach, call_type, cycle_id, environment, algorithm,"
+            " provider, model, prompt_version, prompt_text, response_text, response_parsed,"
+            " success, error, latency_ms, tokens_in, tokens_out)"
+            " VALUES ('meta_trader', 'trade_commentary', %s, %s, %s, %s, %s, %s, %s, %s,"
+            " %s::jsonb, %s, %s, %s, %s, %s) RETURNING llm_call_id",
+            [
+                cycle_id,
+                environment,
+                algorithm,
+                provider,
+                model,
+                prompt_version,
+                prompt_text,
+                response_text,
+                response_parsed,
+                success,
+                error_text,
+                latency_ms,
+                tokens_in,
+                tokens_out,
+            ],
+        ).fetchone()["llm_call_id"]
+        intent_id = conn.execute(
+            "INSERT INTO intent_records"
+            " (llm_call_id, coach, lever, mode, environment, algorithm, iteration_number,"
+            "  evidence, proposal, bet_metric, bet_direction, bet_baseline_value, horizon_spec)"
+            " VALUES (%s, 'meta_trader', 'MT_commentary', 'shadow', %s, %s, %s,"
+            "  %s::jsonb, %s::jsonb, %s, %s, %s, %s::jsonb) RETURNING intent_id",
+            [
+                llm_call_id,
+                environment,
+                algorithm,
+                deployed_iteration,
+                evidence,
+                proposal,
+                bet_metric,
+                bet_direction,
+                bet_baseline_value,
+                horizon_spec,
+            ],
+        ).fetchone()["intent_id"]
+        conn.commit()
+    log.info(
+        "trade_commentary_written",
+        cycle_id=cycle_id,
+        llm_call_id=int(llm_call_id),
+        intent_id=int(intent_id),
+    )
+    return int(llm_call_id), int(intent_id)
+
+
+async def insert_llm_call_async(**kwargs: Any) -> int:
+    """Async wrapper for insert_llm_call (runs in the live thread pool)."""
+    return await _run_live(lambda: insert_llm_call(**kwargs))
+
+
+async def insert_trade_commentary_async(**kwargs: Any) -> tuple[int, int]:
+    """Async wrapper for insert_trade_commentary (runs in the live thread pool)."""
+    return await _run_live(lambda: insert_trade_commentary(**kwargs))
+
+
 def get_memories(
     source: str | None = None,
     limit: int = 100,

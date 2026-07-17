@@ -200,6 +200,23 @@ class TestDailySummaryJob:
         mock_alerter.send_embed.assert_called()
 
 
+class TestDailySummaryDigestFlush:
+    """A30 Discord wiring (Task E): daily_summary_job flushes the buffered INFO digest."""
+
+    def test_flushes_info_digest_even_when_halted(self) -> None:
+        """A30: send_daily_digest had zero callers; the EOD job must flush it.
+
+        The flush runs before the halt gate so INFO buffered on a halted day still
+        reaches Discord instead of dying in memory on the next restart. Built on plain
+        mocks so it runs without a database (DATABASE_URL-independent).
+        """
+        alerter = MagicMock()
+        init_job_context(config=MagicMock(), db=MagicMock(), pipeline=MagicMock(), alerter=alerter)
+        with patch("swingrl.scheduler.jobs.is_halted", return_value=True):
+            daily_summary_job()
+        alerter.send_daily_digest.assert_called_once()
+
+
 class TestStuckAgentCheckJob:
     """stuck_agent_check_job detects consecutive all-cash cycles."""
 
@@ -436,3 +453,71 @@ class TestFredImportPath:
                 mock_fred_cls.assert_called_once_with(mock_config)
                 # run_all() called (not refresh())
                 mock_ingestor.run_all.assert_called_once()
+
+
+class TestTradeCommentary:
+    """Task 12: post-cycle MT commentary skeleton — inert by default (meta_trader.enabled)."""
+
+    def test_noop_when_meta_trader_disabled(self) -> None:
+        """Task 12: with meta_trader.enabled=False the skeleton makes NO memory call."""
+        from swingrl.scheduler.jobs import init_job_context, maybe_post_trade_commentary
+
+        config = MagicMock()
+        config.meta_trader.enabled = False
+        ctx = init_job_context(
+            config=config, db=MagicMock(), pipeline=MagicMock(), alerter=MagicMock()
+        )
+        with patch("swingrl.memory.client.MemoryClient") as mock_client_cls:
+            maybe_post_trade_commentary(ctx, "equity")
+        mock_client_cls.assert_not_called()
+
+    def test_posts_when_enabled_with_cycle(self) -> None:
+        """Task 12: when enabled, POSTs the latest cycle's context to /trade/commentary."""
+        from contextlib import contextmanager
+
+        from swingrl.scheduler.jobs import init_job_context, maybe_post_trade_commentary
+
+        config = MagicMock()
+        config.meta_trader.enabled = True
+        config.meta_trader.commentary_provider = "cerebras"
+        config.memory_agent.base_url = "http://swingrl-memory:8889"
+        config.memory_agent.api_key = ""
+        config.memory_agent.timeout_sec = 3.0
+
+        cycle_row = {
+            "cycle_id": 77,
+            "hmm_p_bull": 0.6,
+            "hmm_p_bear": 0.4,
+            "vix": 15.0,
+            "turbulence": 1.2,
+            "deployed_iteration": 5,
+        }
+        db = MagicMock()
+
+        @contextmanager
+        def _conn_ctx():
+            conn = MagicMock()
+            conn.execute.return_value.fetchone.return_value = cycle_row
+            yield conn
+
+        db.connection = _conn_ctx
+        ctx = init_job_context(config=config, db=db, pipeline=MagicMock(), alerter=MagicMock())
+
+        with patch("swingrl.memory.client.MemoryClient") as mock_client_cls:
+            client = MagicMock()
+            mock_client_cls.return_value = client
+            maybe_post_trade_commentary(ctx, "equity")
+
+        client.trade_commentary.assert_called_once()
+        payload = client.trade_commentary.call_args.args[0]
+        assert payload["cycle_id"] == 77
+        assert payload["environment"] == "equity"
+
+    def test_equity_cycle_inert_by_default(
+        self, job_ctx: JobContext, mock_pipeline: MagicMock
+    ) -> None:
+        """Task 12: equity_cycle with default config makes no MemoryClient commentary call."""
+        mock_pipeline.execute_cycle.return_value = []
+        with patch("swingrl.memory.client.MemoryClient") as mock_client_cls:
+            equity_cycle()
+        mock_client_cls.assert_not_called()

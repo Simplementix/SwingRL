@@ -16,12 +16,27 @@ from typing import Any
 import numpy as np
 import structlog
 
+from swingrl.execution.model_paths import (
+    MODEL_FILENAME,
+    VEC_NORMALIZE_FILENAME,
+    active_model_paths,
+)
 from swingrl.utils.exceptions import ModelError
 
 log = structlog.get_logger(__name__)
 
 _SMOKE_TEST_ITERATIONS = 10
 _INFERENCE_TIME_LIMIT_MS = 100.0
+_ALGO_NAMES: tuple[str, ...] = ("ppo", "a2c", "sac")
+
+
+def _detect_algo(name: str) -> str | None:
+    """Detect the algorithm from a model filename ('ppo'/'a2c'/'sac' substring)."""
+    lower = name.lower()
+    for algo in _ALGO_NAMES:
+        if algo in lower:
+            return algo
+    return None
 
 
 class ModelState(enum.Enum):
@@ -77,64 +92,95 @@ class ModelLifecycle:
         log.info("model_deployed_to_shadow", model=model_path.name, env=env_name)
         return dest
 
-    def promote(self, env_name: str) -> Path:
-        """Promote shadow model to active, archiving any current active model.
+    def promote(self, env_name: str) -> list[Path]:
+        """Promote flat shadow candidate(s) into the per-algo active layout.
+
+        For each ``*.zip`` in ``shadow/{env}/``, the algorithm is detected from the
+        filename and the model — plus its sibling ``.pkl`` VecNormalize stats, when
+        present — is moved into ``active/{env}/{algo}/`` (model.zip + vec_normalize.pkl):
+        the exact layout the loader reads (review H2). Any current active model for
+        that algo is archived first (both files).
 
         Args:
             env_name: Environment name (equity or crypto).
 
         Returns:
-            Path to the newly active model.
+            List of newly-active model.zip paths (one per promoted algo).
 
         Raises:
-            ModelError: If no shadow model exists for the environment.
+            ModelError: If no shadow model exists, or a candidate's algo is unknown.
         """
         shadow_dir = self._models_dir / "shadow" / env_name
-        shadow_models = list(shadow_dir.glob("*.zip")) if shadow_dir.exists() else []
+        shadow_models = sorted(shadow_dir.glob("*.zip")) if shadow_dir.exists() else []
 
         if not shadow_models:
             log.error("no_shadow_model", env=env_name)
             raise ModelError(f"No shadow model found for {env_name}")
 
-        shadow_model = shadow_models[0]
+        promoted: list[Path] = []
+        for shadow_model in shadow_models:
+            algo = _detect_algo(shadow_model.name)
+            if algo is None:
+                log.error("promote_unknown_algo", model=shadow_model.name, env=env_name)
+                raise ModelError(
+                    f"Cannot detect algorithm from shadow model name: {shadow_model.name}"
+                )
 
-        # Archive current active model if one exists
-        active_dir = self._models_dir / "active" / env_name
-        if active_dir.exists():
-            active_models = list(active_dir.glob("*.zip"))
-            if active_models:
-                self._archive_model(active_models[0], env_name)
+            model_dest, vec_dest = active_model_paths(self._models_dir, env_name, algo)
 
-        # Move shadow to active
-        active_dir.mkdir(parents=True, exist_ok=True)
-        dest = active_dir / shadow_model.name
-        shutil.move(str(shadow_model), str(dest))
-        log.info("model_promoted", model=shadow_model.name, env=env_name)
-        return dest
+            # Archive the current active set for this algo (both files) if present.
+            if model_dest.exists():
+                self._archive_algo(env_name, algo)
 
-    def archive(self, env_name: str) -> Path:
-        """Move the active model to archive.
+            model_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(shadow_model), str(model_dest))
+
+            shadow_vec = shadow_model.with_suffix(".pkl")
+            vec_moved = shadow_vec.exists()
+            if vec_moved:
+                shutil.move(str(shadow_vec), str(vec_dest))
+
+            log.info(
+                "model_promoted",
+                model=shadow_model.name,
+                env=env_name,
+                algo=algo,
+                dest=str(model_dest),
+                vec_moved=vec_moved,
+            )
+            promoted.append(model_dest)
+
+        return promoted
+
+    def archive(self, env_name: str) -> list[Path]:
+        """Move every active per-algo model set for the environment to archive.
 
         Args:
             env_name: Environment name (equity or crypto).
 
         Returns:
-            Path to the archived model.
+            List of archived model.zip paths (one per algo that was active).
 
         Raises:
             ModelError: If no active model exists for the environment.
         """
-        active_dir = self._models_dir / "active" / env_name
-        active_models = list(active_dir.glob("*.zip")) if active_dir.exists() else []
+        archived: list[Path] = []
+        for algo in _ALGO_NAMES:
+            model_path, _ = active_model_paths(self._models_dir, env_name, algo)
+            if model_path.exists():
+                archived.append(self._archive_algo(env_name, algo))
 
-        if not active_models:
+        if not archived:
             log.error("no_active_model", env=env_name)
             raise ModelError(f"No active model found for {env_name}")
 
-        return self._archive_model(active_models[0], env_name)
+        return archived
 
     def archive_shadow(self, env_name: str) -> Path:
         """Move the shadow model to archive (failed evaluation).
+
+        The flat shadow candidate and its sibling ``.pkl`` stats (when present) are
+        moved under ``archive/{env}/shadow_{stem}_{timestamp}/``.
 
         Args:
             env_name: Environment name (equity or crypto).
@@ -146,42 +192,71 @@ class ModelLifecycle:
             ModelError: If no shadow model exists for the environment.
         """
         shadow_dir = self._models_dir / "shadow" / env_name
-        shadow_models = list(shadow_dir.glob("*.zip")) if shadow_dir.exists() else []
+        shadow_models = sorted(shadow_dir.glob("*.zip")) if shadow_dir.exists() else []
 
         if not shadow_models:
             log.error("no_shadow_model_to_archive", env=env_name)
             raise ModelError(f"No shadow model found for {env_name}")
 
-        return self._archive_model(shadow_models[0], env_name)
+        shadow_model = shadow_models[0]
+        timestamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
+        archive_dir = (
+            self._models_dir / "archive" / env_name / f"shadow_{shadow_model.stem}_{timestamp}"
+        )
+        archive_dir.mkdir(parents=True, exist_ok=True)
 
-    def rollback(self, env_name: str) -> Path:
-        """Restore the most recent archived model to active.
+        dest = archive_dir / shadow_model.name
+        shutil.move(str(shadow_model), str(dest))
+        shadow_vec = shadow_model.with_suffix(".pkl")
+        if shadow_vec.exists():
+            shutil.move(str(shadow_vec), str(archive_dir / shadow_vec.name))
+
+        log.info("shadow_model_archived", model=shadow_model.name, env=env_name, archive=dest.name)
+        return dest
+
+    def rollback(self, env_name: str) -> list[Path]:
+        """Restore the most recent archived per-algo set(s) to active.
+
+        For each algo with archived sets under ``archive/{env}/{algo}/{timestamp}/``,
+        the newest timestamped set (model.zip + vec_normalize.pkl) is moved back into
+        ``active/{env}/{algo}/``.
 
         Args:
             env_name: Environment name (equity or crypto).
 
         Returns:
-            Path to the restored active model.
+            List of restored active model.zip paths.
 
         Raises:
             ModelError: If no archived model exists for the environment.
         """
-        archive_dir = self._models_dir / "archive" / env_name
-        archived = sorted(archive_dir.glob("*.zip")) if archive_dir.exists() else []
+        restored: list[Path] = []
+        for algo in _ALGO_NAMES:
+            algo_archive = self._models_dir / "archive" / env_name / algo
+            if not algo_archive.exists():
+                continue
+            timestamp_dirs = sorted(
+                d for d in algo_archive.iterdir() if d.is_dir() and (d / MODEL_FILENAME).exists()
+            )
+            if not timestamp_dirs:
+                continue
 
-        if not archived:
+            latest = timestamp_dirs[-1]
+            model_dest, vec_dest = active_model_paths(self._models_dir, env_name, algo)
+            model_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(latest / MODEL_FILENAME), str(model_dest))
+            latest_vec = latest / VEC_NORMALIZE_FILENAME
+            if latest_vec.exists():
+                shutil.move(str(latest_vec), str(vec_dest))
+
+            log.info("model_rolled_back", env=env_name, algo=algo, source=str(latest))
+            restored.append(model_dest)
+
+        if not restored:
             log.error("no_archive_model", env=env_name)
             raise ModelError(f"No archive model found for {env_name}")
 
-        latest = archived[-1]
-        active_dir = self._models_dir / "active" / env_name
-        active_dir.mkdir(parents=True, exist_ok=True)
-
-        # Strip timestamp suffix from archived name for active name
-        dest = active_dir / latest.name
-        shutil.move(str(latest), str(dest))
-        log.info("model_rolled_back", model=latest.name, env=env_name)
-        return dest
+        return restored
 
     def delete_archived(self, model_path: Path) -> None:
         """Remove a specific archived model file.
@@ -200,47 +275,60 @@ class ModelLifecycle:
         log.info("model_deleted", path=str(model_path))
 
     def get_state(self, env_name: str) -> dict[str, Any]:
-        """Return current lifecycle state for an environment.
+        """Return current lifecycle state for an environment (per-algo aware).
 
         Args:
             env_name: Environment name (equity or crypto).
 
         Returns:
-            Dict with active_model, shadow_model, archive_count keys.
+            Dict with active_model, active_algos, shadow_model, archive_count keys.
         """
-        active_dir = self._models_dir / "active" / env_name
+        active_algos = [
+            algo
+            for algo in _ALGO_NAMES
+            if active_model_paths(self._models_dir, env_name, algo)[0].exists()
+        ]
         shadow_dir = self._models_dir / "shadow" / env_name
-        archive_dir = self._models_dir / "archive" / env_name
+        archive_root = self._models_dir / "archive" / env_name
 
-        active_models = list(active_dir.glob("*.zip")) if active_dir.exists() else []
         shadow_models = list(shadow_dir.glob("*.zip")) if shadow_dir.exists() else []
-        archive_models = list(archive_dir.glob("*.zip")) if archive_dir.exists() else []
+        archive_models = list(archive_root.glob("**/*.zip")) if archive_root.exists() else []
 
         return {
-            "active_model": active_models[0].name if active_models else None,
+            "active_model": active_algos[0] if active_algos else None,
+            "active_algos": active_algos,
             "shadow_model": shadow_models[0].name if shadow_models else None,
             "archive_count": len(archive_models),
         }
 
-    def _archive_model(self, model_path: Path, env_name: str) -> Path:
-        """Move a model file to the archive directory with timestamp suffix.
+    def _archive_algo(self, env_name: str, algo: str) -> Path:
+        """Move the active per-algo model set (both files) to a timestamped archive dir.
 
         Args:
-            model_path: Path to the model file.
             env_name: Environment name.
+            algo: Algorithm name.
 
         Returns:
-            Path to the archived model.
+            Path to the archived model.zip.
+
+        Raises:
+            ModelError: If no active model exists for the algo.
         """
-        archive_dir = self._models_dir / "archive" / env_name
-        archive_dir.mkdir(parents=True, exist_ok=True)
+        model_src, vec_src = active_model_paths(self._models_dir, env_name, algo)
+        if not model_src.exists():
+            raise ModelError(f"No active model to archive for {env_name}/{algo}")
 
         timestamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
-        stem = model_path.stem
-        dest = archive_dir / f"{stem}_{timestamp}.zip"
-        shutil.move(str(model_path), str(dest))
-        log.info("model_archived", model=model_path.name, archive=dest.name, env=env_name)
-        return dest
+        archive_dir = self._models_dir / "archive" / env_name / algo / timestamp
+        archive_dir.mkdir(parents=True, exist_ok=True)
+
+        model_dest = archive_dir / MODEL_FILENAME
+        shutil.move(str(model_src), str(model_dest))
+        if vec_src.exists():
+            shutil.move(str(vec_src), str(archive_dir / VEC_NORMALIZE_FILENAME))
+
+        log.info("model_archived", env=env_name, algo=algo, archive=str(archive_dir))
+        return model_dest
 
 
 def _load_sb3_model(model_path: Path) -> Any:

@@ -185,6 +185,52 @@ class TestEnvVarOverrides:
         assert config.equity.max_position_size == pytest.approx(0.99)
 
 
+class TestMetaTraderConfig:
+    """Task 12: meta_trader config gates the rotation-gated MT commentary skeleton."""
+
+    def test_meta_trader_disabled_by_default(self, tmp_path: Path) -> None:
+        """Task 12: meta_trader.enabled defaults to False (runtime gate; inert skeleton)."""
+        from swingrl.config.schema import load_config
+
+        config = load_config(tmp_path / "empty.yaml")
+        assert config.meta_trader.enabled is False
+
+    def test_meta_trader_commentary_provider_default(self, tmp_path: Path) -> None:
+        """Task 12: meta_trader.commentary_provider defaults to 'cerebras'."""
+        from swingrl.config.schema import load_config
+
+        config = load_config(tmp_path / "empty.yaml")
+        assert config.meta_trader.commentary_provider == "cerebras"
+
+    def test_meta_trader_configurable_via_yaml(self, tmp_path: Path) -> None:
+        """Task 12: meta_trader block is yaml-settable."""
+        from swingrl.config.schema import load_config
+
+        yaml_file = tmp_path / "swingrl.yaml"
+        yaml_file.write_text(
+            textwrap.dedent(
+                """\
+                meta_trader:
+                  enabled: true
+                  commentary_provider: groq
+                """
+            )
+        )
+        config = load_config(yaml_file)
+        assert config.meta_trader.enabled is True
+        assert config.meta_trader.commentary_provider == "groq"
+
+    def test_meta_trader_enabled_env_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Task 12: SWINGRL_META_TRADER__ENABLED env override reaches the nested field."""
+        from swingrl.config.schema import load_config
+
+        monkeypatch.setenv("SWINGRL_META_TRADER__ENABLED", "true")
+        config = load_config(tmp_path / "empty.yaml")
+        assert config.meta_trader.enabled is True
+
+
 class TestImportability:
     def test_all_classes_importable_from_swingrl_config(self) -> None:
         """ENV-11: SwingRLConfig and all sub-configs importable from swingrl.config."""

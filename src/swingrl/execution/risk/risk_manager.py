@@ -14,6 +14,7 @@ Check order (Doc 04):
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -59,7 +60,7 @@ class RiskManager:
         self._circuit_breakers = circuit_breakers
         self._global_cb = global_cb
 
-    def evaluate(self, order: SizedOrder) -> RiskDecision:
+    def evaluate(self, order: SizedOrder, portfolio_value: float | None = None) -> RiskDecision:
         """Evaluate an order against all risk rules.
 
         Checks in order: CB state, position size, exposure, drawdown,
@@ -67,6 +68,12 @@ class RiskManager:
 
         Args:
             order: Sized order to evaluate.
+            portfolio_value: Freshly computed mark-to-market portfolio value for this
+                cycle (amendment 2026-07-16). When provided, the drawdown/daily-loss
+                breakers measure this value — marked to the cycle's fetched prices — not
+                the last stored snapshot, so a held-position drawdown with zero fills is
+                visible at that cycle's risk evaluation. Falls back to the stored snapshot
+                value (and stored daily P&L) when ``None``.
 
         Returns:
             RiskDecision indicating approval.
@@ -93,8 +100,13 @@ class RiskManager:
                 )
                 raise CircuitBreakerError(f"Circuit breaker halted for {env}; trading suspended")
 
-        # Get portfolio state for remaining checks
-        portfolio_value = self._tracker.get_portfolio_value(env)
+        # Get portfolio state for remaining checks. Prefer the freshly computed
+        # mark-to-market value (and matching daily P&L) when the caller supplies it.
+        if portfolio_value is None:
+            portfolio_value = self._tracker.get_portfolio_value(env)
+            daily_pnl = self._tracker.get_daily_pnl(env)
+        else:
+            daily_pnl = self._tracker.compute_daily_pnl(env, portfolio_value)
         env_config = self._config.equity if env == "equity" else self._config.crypto
 
         # 2. Position size check
@@ -129,7 +141,7 @@ class RiskManager:
                     cb.check_and_update(
                         portfolio_value=portfolio_value,
                         high_water_mark=hwm,
-                        daily_pnl=self._tracker.get_daily_pnl(env),
+                        daily_pnl=daily_pnl,
                     )
                 decision = self._make_decision(
                     order,
@@ -143,7 +155,6 @@ class RiskManager:
                 )
 
         # 5. Daily loss check (use HWM as denominator — consistent with circuit_breaker)
-        daily_pnl = self._tracker.get_daily_pnl(env)
         if daily_pnl < 0 and hwm > 0:
             daily_loss_pct = abs(daily_pnl) / hwm
             if daily_loss_pct >= env_config.daily_loss_limit_pct:
@@ -179,17 +190,6 @@ class RiskManager:
             self._record_decision(decision)
             raise CircuitBreakerError("Global circuit breaker triggered; all trading suspended")
 
-        # Scale order if CB is ramping
-        if cb is not None:
-            capacity = cb.get_capacity_fraction()
-            if capacity < 1.0:
-                log.info(
-                    "order_scaled_by_ramp",
-                    environment=env,
-                    capacity=capacity,
-                    original_amount=order.dollar_amount,
-                )
-
         # All checks passed
         decision = self._make_decision(order, order.side, "none", "approved")
         self._record_decision(decision)
@@ -201,6 +201,54 @@ class RiskManager:
             environment=env,
         )
         return decision
+
+    def apply_ramp_capacity(self, order: SizedOrder) -> SizedOrder:
+        """Scale an order to the environment's post-halt ramp capacity (review H4).
+
+        The circuit breaker re-enters trading gradually after a cooldown (25% → 50%
+        → 75% → 100% capacity). The old code logged the capacity but never applied
+        it, so full-size orders went to the broker during ramp-up. This scales the
+        order down by the current capacity fraction *before* validation and
+        submission. Call it before ``validate``/``evaluate`` so both the risk checks
+        and the submitted order see the scaled order.
+
+        Both ``dollar_amount`` and ``quantity`` are scaled by the capacity fraction
+        (user ruling, supersedes the dollar-only contract): the equity broker
+        (Alpaca) fills by ``notional=dollar_amount`` while the crypto sim adapter
+        (``BinanceSimAdapter``) fills by ``quantity`` — so the ramp only genuinely
+        shrinks the order in *both* environments if it scales both fields. Scaling
+        dollars alone would leave the crypto fill full size. An ACTIVE breaker
+        (capacity 1.0) returns the order unchanged.
+
+        Args:
+            order: The sized order about to be validated.
+
+        Returns:
+            The order scaled to the current ramp capacity (unchanged when ACTIVE).
+        """
+        cb = self._circuit_breakers.get(order.environment)
+        if cb is None:
+            return order
+        capacity = cb.get_capacity_fraction()
+        if capacity >= 1.0:
+            return order
+
+        scaled = dataclasses.replace(
+            order,
+            dollar_amount=order.dollar_amount * capacity,
+            quantity=order.quantity * capacity,
+        )
+        log.info(
+            "order_scaled_by_ramp",
+            environment=order.environment,
+            symbol=order.symbol,
+            capacity=capacity,
+            original_amount=order.dollar_amount,
+            scaled_amount=scaled.dollar_amount,
+            original_quantity=order.quantity,
+            scaled_quantity=scaled.quantity,
+        )
+        return scaled
 
     def check_turbulence(
         self,

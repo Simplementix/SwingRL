@@ -26,7 +26,7 @@ import structlog
 from fastapi import FastAPI
 from memory_agents.consolidate import validate_consolidation_config
 from memory_agents.query import validate_query_config
-from routers import core, debug, training
+from routers import core, debug, trade, training
 
 from db import init_capacity_limiters, init_db
 
@@ -82,4 +82,5 @@ app = FastAPI(
 
 app.include_router(core.router)
 app.include_router(training.router, prefix="/training")
+app.include_router(trade.router, prefix="/trade")
 app.include_router(debug.router, prefix="/debug")

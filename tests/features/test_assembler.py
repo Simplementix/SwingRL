@@ -256,3 +256,58 @@ class TestSymbolOrdering:
         """FEAT-07: Symbols are alpha-sorted regardless of config order."""
         assert assembler._equity_symbols == sorted(assembler._equity_symbols)
         assert assembler._crypto_symbols == sorted(assembler._crypto_symbols)
+
+
+class TestTurbulenceObsIndex:
+    """Task 7 (F1b): turbulence_obs_index derives the turbulence slot from layout constants."""
+
+    def test_equity_index_matches_feature_name(self, assembler: ObservationAssembler) -> None:
+        """F1b: the returned index selects the slot named 'turbulence_index' (equity)."""
+        from swingrl.features.assembler import turbulence_obs_index
+
+        names = assembler.get_feature_names_equity()
+        idx = turbulence_obs_index("equity", len(assembler._equity_symbols), False)
+        assert names[idx] == "turbulence_index"
+
+    def test_equity_index_matches_feature_name_with_sentiment(
+        self, assembler: ObservationAssembler
+    ) -> None:
+        """F1b: index tracks the sentiment-widened per-asset block (equity + sentiment)."""
+        from swingrl.features.assembler import turbulence_obs_index
+
+        names = assembler.get_feature_names_equity(sentiment_enabled=True)
+        idx = turbulence_obs_index("equity", len(assembler._equity_symbols), True)
+        assert names[idx] == "turbulence_index"
+
+    def test_crypto_index_matches_feature_name(self, assembler: ObservationAssembler) -> None:
+        """F1b: the returned index selects the slot named 'turbulence_index' (crypto)."""
+        from swingrl.features.assembler import turbulence_obs_index
+
+        names = assembler.get_feature_names_crypto()
+        idx = turbulence_obs_index("crypto", len(assembler._crypto_symbols), False)
+        assert names[idx] == "turbulence_index"
+
+    def test_index_derived_from_layout_constants(self, assembler: ObservationAssembler) -> None:
+        """F1b: index is per-asset block + macro + hmm — never a magic number."""
+        from swingrl.features.assembler import (
+            CRYPTO_PER_ASSET,
+            HMM_REGIME,
+            SHARED_MACRO,
+            equity_per_asset_dim,
+            turbulence_obs_index,
+        )
+
+        eq = turbulence_obs_index("equity", 8, False)
+        assert eq == equity_per_asset_dim(False) * 8 + SHARED_MACRO + HMM_REGIME
+        eq_sent = turbulence_obs_index("equity", 8, True)
+        assert eq_sent == equity_per_asset_dim(True) * 8 + SHARED_MACRO + HMM_REGIME
+        cr = turbulence_obs_index("crypto", 2, False)
+        assert cr == CRYPTO_PER_ASSET * 2 + SHARED_MACRO + HMM_REGIME
+
+    def test_unknown_env_raises_data_error(self) -> None:
+        """F1b: an unknown environment name is a typed DataError, not a silent index."""
+        from swingrl.features.assembler import turbulence_obs_index
+        from swingrl.utils.exceptions import DataError
+
+        with pytest.raises(DataError):
+            turbulence_obs_index("forex", 3, False)

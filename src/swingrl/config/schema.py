@@ -55,6 +55,15 @@ class EquityConfig(BaseModel):
     max_drawdown_pct: float = Field(default=0.10, gt=0.0, lt=1.0)
     daily_loss_limit_pct: float = Field(default=0.02, gt=0.0, lt=1.0)
     min_order_usd: float = Field(default=1.0, ge=1.0)  # Alpaca $1 floor for fractional shares
+    # Daily rebalance time (ET, HH:MM). 15:45 fires 15m before the 16:00 close so fills
+    # land intraday, not post-close (review C2). The scheduler restricts it to weekdays.
+    cycle_time_et: str = Field(default="15:45")
+    # Gate the equity cycle on the Alpaca market clock (skip on closed/holiday). Fail-safe.
+    market_calendar_gate: bool = Field(default=True)
+    # Post-submit fill polling bounds (review C2): wait up to timeout, polling each interval,
+    # before cancelling an unfilled order. Never a $0 trade.
+    order_fill_timeout_s: int = Field(default=60, ge=1)
+    order_poll_interval_s: int = Field(default=2, ge=1)
 
     @field_validator("symbols")
     @classmethod
@@ -63,6 +72,28 @@ class EquityConfig(BaseModel):
         if not v:
             raise ConfigError("equity.symbols must not be empty")
         return v
+
+    @field_validator("cycle_time_et")
+    @classmethod
+    def cycle_time_is_hh_mm(cls, v: str) -> str:
+        """Validate cycle_time_et parses as a 24h HH:MM clock time."""
+        parts = v.split(":")
+        if len(parts) != 2 or not all(p.isdigit() for p in parts):
+            raise ConfigError(f"equity.cycle_time_et must be HH:MM, got {v!r}")
+        hour, minute = int(parts[0]), int(parts[1])
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ConfigError(f"equity.cycle_time_et out of range, got {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def poll_interval_within_timeout(self) -> EquityConfig:
+        """The poll interval must fit within the fill timeout (at least one poll)."""
+        if self.order_poll_interval_s > self.order_fill_timeout_s:
+            raise ConfigError(
+                f"equity.order_poll_interval_s ({self.order_poll_interval_s}) must not exceed "
+                f"equity.order_fill_timeout_s ({self.order_fill_timeout_s})"
+            )
+        return self
 
     @model_validator(mode="after")
     def daily_loss_below_drawdown(self) -> EquityConfig:
@@ -175,8 +206,33 @@ class FeaturesConfig(BaseModel):
     # Turbulence
     equity_turbulence_warmup: int = Field(default=252, ge=50)
     equity_turbulence_half_life: int = Field(default=126, ge=10)
+    # crypto_turbulence_window now governs the realized-vol percentile lookback
+    # (the OR-gate history), not a rolling Mahalanobis window.
     crypto_turbulence_window: int = Field(default=1080, ge=100)
-    crypto_turbulence_warmup: int = Field(default=360, ge=50)
+    crypto_turbulence_warmup: int = Field(default=1080, ge=50)
+    crypto_turbulence_half_life: int = Field(default=750, ge=10)
+
+    # Turbulence hard-halt baseline (F1 fix, method review 2026-07-07)
+    turbulence_halt_percentile: float = Field(default=0.97, gt=0.0, lt=1.0)
+    # Trailing window (in bars) the halt percentile is computed over. Equity =
+    # ~3y of trading days; crypto = 0 (sentinel) meaning full history.
+    turbulence_baseline_lookback_equity: int = Field(default=756, ge=50)
+    turbulence_baseline_lookback_crypto: int = Field(default=0, ge=0)
+
+    def turbulence_baseline_lookback_bars(self, env_name: str) -> int | None:
+        """Trailing baseline window in bars for ``env_name`` (None = full history).
+
+        Args:
+            env_name: "equity" or "crypto".
+
+        Returns:
+            Number of trailing bars, or None when the configured value is 0
+            (full-history baseline, used for crypto).
+        """
+        if env_name == "equity":
+            return self.turbulence_baseline_lookback_equity
+        value = self.turbulence_baseline_lookback_crypto
+        return value if value > 0 else None
 
 
 class EnvironmentConfig(BaseModel):
@@ -190,6 +246,18 @@ class EnvironmentConfig(BaseModel):
     signal_deadzone: float = Field(default=0.02, ge=0.0, le=0.1)
     position_penalty_coeff: float = Field(default=10.0, ge=0.0)
     drawdown_penalty_coeff: float = Field(default=5.0, ge=0.0)
+    zero_turbulence_obs: bool = Field(
+        default=True,
+        description=(
+            "F1b: freeze the turbulence observation slot at 0.0 before inference. "
+            "Era-0 models were trained with this slot frozen at 0.0, so feeding a real "
+            "value would multiply it by untrained weights (pure noise). The real sensor "
+            "value is still read out and kept for capture before the slot is zeroed. Flip "
+            "to false once era-1 models (trained with a live turbulence input) deploy -- "
+            "Plan B automates this off the models table. Override via "
+            "SWINGRL_ENVIRONMENT__ZERO_TURBULENCE_OBS."
+        ),
+    )
 
 
 class SystemConfig(BaseModel):
@@ -215,7 +283,23 @@ class SchedulerConfig(BaseModel):
     enabled: bool = Field(default=True)
     apscheduler_db_path: str = Field(default="db/apscheduler_jobs.sqlite")
     misfire_grace_time: int = Field(default=300, ge=60)
+    # Per-env misfire grace for the trading cycle jobs (A30 restart addendum). Equity 720s:
+    # a restart shortly after 15:45 still runs the cycle late, but past the graced window it
+    # cleanly skips (never a post-close submit). Crypto 3600s: an hour late is immaterial on
+    # a 4H cadence. Missed-beyond-grace cycles are skipped, never replayed.
+    misfire_grace_s: dict[str, int] = Field(default_factory=lambda: {"equity": 720, "crypto": 3600})
     max_workers: int = Field(default=4, ge=1)
+
+    @field_validator("misfire_grace_s")
+    @classmethod
+    def misfire_grace_has_both_envs(cls, v: dict[str, int]) -> dict[str, int]:
+        """Both cycle environments need a positive misfire grace."""
+        for env in ("equity", "crypto"):
+            if env not in v:
+                raise ConfigError(f"scheduler.misfire_grace_s must include '{env}'")
+            if v[env] <= 0:
+                raise ConfigError(f"scheduler.misfire_grace_s['{env}'] must be positive")
+        return v
 
 
 class BackupConfig(BaseModel):
@@ -264,6 +348,9 @@ class OptionsIntegrityConfig(BaseModel):
     contract_count_drop_warn_frac: float = Field(default=0.5, gt=0.0, le=1.0)
     audit_day_of_month: int = Field(default=1, ge=1, le=28)
     audit_time_et: str = Field(default="18:00")
+    # Cron always fires a little late (millisecond-scale jitter is normal). Only warn on
+    # the decision snapshot once lateness exceeds this tolerance (D8 lookahead guard).
+    late_warn_s: float = Field(default=30.0, ge=0.0)
 
 
 class OptionsBackupConfig(BaseModel):
@@ -305,6 +392,53 @@ class OptionsCollectorConfig(BaseModel):
     postgres_store_raw_json: bool = Field(default=True)
     integrity: OptionsIntegrityConfig = Field(default_factory=OptionsIntegrityConfig)
     backup: OptionsBackupConfig = Field(default_factory=OptionsBackupConfig)
+
+
+class CalendarConfig(BaseModel):
+    """Event-calendar ingest config (Plan A Task 11; spec §4 D-T3.14).
+
+    Seeds ``calendar_events`` with macro release dates (FRED release/dates API) and FOMC
+    meeting dates (forward schedule in ``fomc_dates`` yaml; historical dates in the
+    ``fomc_backfill_csv`` seed). Windows are materialized at ingest from ``window_hours``.
+    The weekly ingest + daily staleness jobs run in the swingrl-collector (amended
+    2026-07-14), not the trader.
+    """
+
+    enabled: bool = Field(default=True)
+    fred_api_base_url: str = Field(default="https://api.stlouisfed.org/fred")
+    fred_release_ids: dict[str, int] = Field(
+        default_factory=lambda: {"cpi": 10, "nfp": 50, "gdp": 53}
+    )
+    request_timeout_s: float = Field(default=30.0, gt=0.0)
+    release_fetch_limit: int = Field(default=30, ge=1)  # recent-mode desc limit
+    fomc_dates: list[str] = Field(default_factory=list)  # forward ISO datetimes (ET)
+    fomc_backfill_csv: str = Field(default="config/fomc_dates_historical.csv")
+    window_hours: dict[str, list[int]] = Field(
+        default_factory=lambda: {
+            "fomc": [24, 24],
+            "cpi": [12, 12],
+            "nfp": [12, 12],
+            "gdp": [12, 12],
+        }
+    )
+    min_future_days: int = Field(default=10, ge=1)
+    backfill_start: str = Field(default="2015-01-01")  # covers min(ohlcv_daily)=2016-01-04
+    # Collector scheduling (America/New_York); jobs register in scripts/collector_main.py.
+    ingest_day_of_week: str = Field(default="sun")
+    ingest_time_et: str = Field(default="06:30")
+    staleness_check_time_et: str = Field(default="07:00")
+
+    @field_validator("window_hours")
+    @classmethod
+    def windows_are_before_after_pairs(cls, v: dict[str, list[int]]) -> dict[str, list[int]]:
+        """Each event type maps to a [before_hours, after_hours] pair of non-negative ints."""
+        for event_type, hours in v.items():
+            if len(hours) != 2 or any(h < 0 for h in hours):
+                raise ConfigError(
+                    f"calendar.window_hours[{event_type!r}] must be [before, after] "
+                    f"non-negative hours, got {hours!r}"
+                )
+        return v
 
 
 class ShadowConfig(BaseModel):
@@ -491,6 +625,20 @@ class MemoryAgentConfig(BaseModel):
     # Empty list = all folds are treatment (backward compatible).
     control_folds_equity: list[int] = Field(default_factory=list)
     control_folds_crypto: list[int] = Field(default_factory=list)
+
+
+class MetaTraderConfig(BaseModel):
+    """Meta-Trader (trade-time coach) configuration — Task 12 rotation-gated skeleton.
+
+    ``enabled`` is the runtime gate for the post-cycle MT commentary skeleton: when
+    False (the default), the scheduler job is a provable no-op — it makes no memory
+    call at all. Key rotation is complete (2026-07-07); Task 16's go/no-go is the
+    remaining gate before this is switched on. Graders/verdicts land in Plan B, so
+    day-one intents accumulate ungraded until then (documented, accepted).
+    """
+
+    enabled: bool = False
+    commentary_provider: str = "cerebras"
 
 
 class HyperparamBoundsConfig(BaseModel):
@@ -696,10 +844,12 @@ class SwingRLConfig(BaseSettings):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
     options_collector: OptionsCollectorConfig = Field(default_factory=OptionsCollectorConfig)
+    calendar: CalendarConfig = Field(default_factory=CalendarConfig)
     shadow: ShadowConfig = Field(default_factory=ShadowConfig)
     sentiment: SentimentConfig = Field(default_factory=SentimentConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     memory_agent: MemoryAgentConfig = Field(default_factory=MemoryAgentConfig)
+    meta_trader: MetaTraderConfig = Field(default_factory=MetaTraderConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
 
 

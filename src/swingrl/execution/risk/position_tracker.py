@@ -72,6 +72,63 @@ class PositionTracker:
         )
         return fallback
 
+    def compute_cash(self, env: str) -> float:
+        """Return derived cash balance for environment from the trades ledger.
+
+        Cash is *derived*, never a stored running balance (review M4)::
+
+            cash = initial_capital + Σ(signed fill flow) − Σ(commission)
+
+        A buy is a negative flow (cash spent), a sell a positive flow (cash
+        received); commissions always reduce cash. Computed with one SQL
+        aggregate over the append-only ``trades`` table.
+
+        Args:
+            env: "equity" or "crypto".
+
+        Returns:
+            Derived cash balance as float.
+        """
+        with self._db.connection() as conn:
+            row = conn.execute(
+                "SELECT "
+                "COALESCE(SUM(CASE WHEN side = 'sell' THEN quantity * price "
+                "ELSE -quantity * price END), 0.0) AS net_flow, "
+                "COALESCE(SUM(commission), 0.0) AS total_commission "
+                "FROM trades WHERE environment = %s",
+                (env,),
+            ).fetchone()
+        net_flow = float(row["net_flow"]) if row is not None else 0.0
+        total_commission = float(row["total_commission"]) if row is not None else 0.0
+        return self._initial_capital(env) + net_flow - total_commission
+
+    def compute_portfolio_value(self, env: str, prices: dict[str, float]) -> float:
+        """Return mark-to-market portfolio value for environment (review C1).
+
+        ``value = Σ(position quantity × current price) + derived cash``. Positions
+        are marked to the supplied ``prices`` map (already fetched by the trading
+        cycle — no extra broker calls). Symbols absent from the map fall back to
+        the position's stored ``last_price``. Cash is derived from the trades
+        ledger (see :meth:`compute_cash`), so the value moves when prices move
+        even with no new fills.
+
+        Args:
+            env: "equity" or "crypto".
+            prices: Map of symbol -> current price for symbols priced this cycle.
+
+        Returns:
+            Total portfolio value as float.
+        """
+        marked = 0.0
+        for pos in self.get_positions(env):
+            symbol = pos["symbol"]
+            qty = pos["quantity"] or 0.0
+            price = prices.get(symbol)
+            if price is None:
+                price = pos["last_price"] or 0.0
+            marked += qty * price
+        return float(marked + self.compute_cash(env))
+
     def get_positions(self, env: str) -> list[dict[str, Any]]:
         """Return list of positions for environment.
 
@@ -146,6 +203,42 @@ class PositionTracker:
         if row is not None:
             return float(row["daily_pnl"])
         return 0.0
+
+    def compute_daily_pnl(
+        self, env: str, current_value: float, now: datetime | None = None
+    ) -> float:
+        """Return today's P&L for environment as value change since the prior day.
+
+        Daily P&L is measured against the last snapshot from a *prior* ET
+        trading day, not the previous cycle (review C1) — intraday cycles all
+        share one baseline so daily P&L does not silently reset each cycle. When
+        no prior-day snapshot exists (first trading day) the baseline is the
+        config initial capital.
+
+        ET dates on both sides: a bare ``timestamp::date`` renders in the server
+        session timezone, so the prior-day cutoff must use ``AT TIME ZONE`` to
+        avoid the 20:00–24:00 ET boundary bug (mirrors :meth:`get_daily_pnl`).
+
+        Args:
+            env: "equity" or "crypto".
+            current_value: The freshly computed mark-to-market portfolio value.
+            now: Injectable tz-aware current time; defaults to ``datetime.now(UTC)``.
+
+        Returns:
+            Today's P&L as float (current value − prior-day baseline value).
+        """
+        now = now or datetime.now(tz=UTC)
+        today_et = now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+        with self._db.connection() as conn:
+            row = conn.execute(
+                "SELECT total_value FROM portfolio_snapshots "
+                "WHERE environment = %s "
+                "AND (timestamp AT TIME ZONE 'America/New_York')::date < %s::date "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (env, today_et),
+            ).fetchone()
+        prior_value = float(row["total_value"]) if row is not None else self._initial_capital(env)
+        return current_value - prior_value
 
     def get_exposure(self, env: str) -> float:
         """Return current exposure ratio for environment.

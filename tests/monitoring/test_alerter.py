@@ -285,6 +285,41 @@ class TestConsecutiveFailures:
         # Only the 3rd should have triggered a post
         assert mock_post.call_count == 1
 
+    def test_bypass_suppression_sends_on_first_occurrence(self, mocker: Any) -> None:
+        """OPT-ALERT-3 (2026-07-16): bypass_suppression=True reaches the webhook on the
+        FIRST identical warning, even under a threshold=3 gate. Same-day, un-backfillable
+        data-loss warnings (e.g. an options-capture failure) must not wait for 3
+        consecutive occurrences before alerting."""
+        a = Alerter(
+            webhook_url="https://discord.com/api/webhooks/test/token",
+            cooldown_minutes=30,
+            consecutive_failures_before_alert=3,
+        )
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+
+        a.send_alert("warning", "Capture Failed", "SPY failed", bypass_suppression=True)
+
+        mock_post.assert_called_once()
+
+    def test_default_still_suppresses_first_occurrence(self, mocker: Any) -> None:
+        """OPT-ALERT-4 (2026-07-16): default bypass_suppression=False leaves the
+        consecutive-suppression gate unchanged for other callers (e.g. the backup job) --
+        a single occurrence under threshold=3 is still suppressed."""
+        a = Alerter(
+            webhook_url="https://discord.com/api/webhooks/test/token",
+            cooldown_minutes=30,
+            consecutive_failures_before_alert=3,
+        )
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+
+        a.send_alert("warning", "Backup Warn", "disk low")
+
+        mock_post.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Test: Thread safety
