@@ -7,9 +7,11 @@
 #   [3/6] Run tests             — pytest inside container (MPS test skipped on Linux)
 #   [4/6] Lint + types          — ruff check + ruff format --check + mypy inside container
 #   [4a/6] Memory service lint  — build swingrl-memory and run ruff + mypy inside it
-#   [5/6] Dependency CVE audit  — pip-audit --strict against pyproject.toml's declared deps;
-#                                 known-accepted findings suppressed via --ignore-vuln
-#                                 (see docs/execution/cve-triage.md for dispositions).
+#   [5/6] Dependency CVE audit  — pip-audit --strict against all three dependency surfaces
+#                                 (root pyproject.toml, services/memory/requirements.txt,
+#                                 dashboard/requirements.txt); known-accepted findings
+#                                 suppressed via --ignore-vuln (see docs/execution/cve-triage.md
+#                                 for dispositions).
 #   [6/6] Cleanup               — dev-compose-project down + prune dangling images.
 #                                 Production compose is NEVER touched by cleanup:
 #                                 always-on services (trader, collector) must survive CI runs.
@@ -101,21 +103,25 @@ docker compose run --rm --no-deps --entrypoint "" swingrl-memory sh -c \
 # (parsed dict returns str|int|None, functions expect str). To be fixed separately.
 
 echo "=== [5/6] Dependency CVE audit ==="
-# pip-audit resolves and audits pyproject.toml's declared dependencies directly
-# (project-path mode: the positional "." argument), NOT the installed venv. Auditing the
-# installed environment instead fails outright either way: default env-audit mode errors
-# `swingrl: Dependency not found on PyPI` (this project isn't published), and
+# Three surfaces, all always-on/live: the root project (trader/trainer image), the
+# swingrl-memory service (own requirements.txt, own Dockerfile), and the dashboard (same).
+# pip-audit resolves and audits each manifest's declared dependencies directly (project-path
+# mode for the root "." — reads pyproject.toml; "-r <file>" mode for the other two — reads
+# that requirements.txt), rather than auditing any installed venv. Auditing the installed
+# environment instead fails outright for the root project either way: default env-audit mode
+# errors `swingrl: Dependency not found on PyPI` (this project isn't published), and
 # `--local --skip-editable` (to work around that) instead errors
-# `swingrl: distribution marked as editable` — --strict treats both as fatal. Project-path
-# mode reads [project.dependencies]/[dependency-groups] and resolves them independently of
-# what's installed, sidestepping both failure modes.
+# `swingrl: distribution marked as editable` — --strict treats both as fatal. Manifest-mode
+# resolves declared constraints independently of what's installed, sidestepping both.
 #
-# The --ignore-vuln flags below suppress 20 known findings, all in torch (pinned <2.4 in
-# pyproject.toml; every available fix version for these is >=2.5 — no fix exists inside the
-# current pin, so accepting was the only option short of an unreviewed major-version bump).
-# Full per-finding disposition + rationale: docs/execution/cve-triage.md.
-# Review by 2026-10-15 — re-run without --ignore-vuln and re-triage alongside a dedicated
-# torch major-version upgrade review (same rigor as the Task 13 alpaca-py pin review).
+# Full per-finding disposition + rationale for every --ignore-vuln below:
+# docs/execution/cve-triage.md. Review by 2026-10-15 on all of them.
+
+echo "--- [5/6a] Root project (pyproject.toml) ---"
+# 20 known findings, all in torch (pinned <2.4 in pyproject.toml; every available fix
+# version for these is >=2.5 — no fix exists inside the current pin, so accepting was the
+# only option short of an unreviewed major-version bump; re-triage alongside a dedicated
+# torch major-version upgrade review, same rigor as the Task 13 alpaca-py pin review).
 $DEV_COMPOSE run --rm --entrypoint "" swingrl uv run pip-audit --strict . \
     --ignore-vuln PYSEC-2025-191 --ignore-vuln PYSEC-2025-41 --ignore-vuln PYSEC-2024-259 \
     --ignore-vuln PYSEC-2025-205 --ignore-vuln PYSEC-2025-206 --ignore-vuln PYSEC-2025-207 \
@@ -124,6 +130,22 @@ $DEV_COMPOSE run --rm --entrypoint "" swingrl uv run pip-audit --strict . \
     --ignore-vuln PYSEC-2026-1970 --ignore-vuln PYSEC-2026-2286 --ignore-vuln CVE-2025-2148 \
     --ignore-vuln CVE-2025-2149 --ignore-vuln CVE-2025-2998 --ignore-vuln CVE-2025-2999 \
     --ignore-vuln CVE-2025-3000 --ignore-vuln CVE-2025-3001
+
+echo "--- [5/6b] swingrl-memory service (services/memory/requirements.txt) ---"
+# 6 known findings, all in starlette (transitive via fastapi~=0.116.0 — bumped from
+# ~=0.115.0 by this same review, which already closed a 7th finding, PYSEC-2026-1941).
+# Remaining 6 all need starlette >=1.0.1-1.3.1 (a fastapi major-line jump, out of scope
+# here) or (one of them) >=0.49.1, which fastapi's own pin still excludes (<0.49.0).
+$DEV_COMPOSE run --rm --entrypoint "" swingrl uv run pip-audit --strict \
+    -r services/memory/requirements.txt \
+    --ignore-vuln PYSEC-2026-161 --ignore-vuln PYSEC-2026-248 --ignore-vuln PYSEC-2026-249 \
+    --ignore-vuln PYSEC-2026-1942 --ignore-vuln PYSEC-2026-2281 --ignore-vuln PYSEC-2026-2280
+
+echo "--- [5/6c] dashboard (dashboard/requirements.txt) ---"
+# Clean as of 2026-07-17 — no --ignore-vuln flags. Any future finding here fails CI until
+# triaged into docs/execution/cve-triage.md, same as the other two surfaces.
+$DEV_COMPOSE run --rm --entrypoint "" swingrl uv run pip-audit --strict \
+    -r dashboard/requirements.txt
 
 echo "=== [6/6] Cleanup ==="
 docker exec pg16 psql -U temporal -d postgres -c "DROP DATABASE IF EXISTS swingrl_test;" || true
