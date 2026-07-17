@@ -120,6 +120,33 @@ class TestRecordCycle:
         )
         assert payload == {"schema_version": 1, "raw": {"SPY": 0.1}}
 
+    def test_payload_tags_dry_run_and_skip_reasons(
+        self, exec_config: Any, mock_alerter: Any
+    ) -> None:
+        """Folds c/d: the blended payload carries dry_run and per-symbol skip reasons."""
+        db, conn = make_mock_db(fetchone_returns=[{"cycle_id": 5}])
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        recorder.record_cycle(
+            env_name="equity",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            regime=_regime(),
+            raw_actions={"ppo": [0.1, -0.2]},
+            target_weights={"SPY": 0.2, "QQQ": 0.1},
+            proposals=[],
+            deployed_iteration=4,
+            dry_run=True,
+            skip_reasons={"QQQ": "below_min_delta"},
+        )
+
+        cycle_params = conn.execute.call_args_list[0].args[1]
+        payload = next(
+            json.loads(p) for p in cycle_params if isinstance(p, str) and "schema_version" in p
+        )
+        assert payload["dry_run"] is True
+        assert payload["skip_reasons"] == {"QQQ": "below_min_delta"}
+
     def test_returns_none_and_does_not_raise_on_db_error(
         self, exec_config: Any, mock_alerter: Any
     ) -> None:
@@ -141,6 +168,69 @@ class TestRecordCycle:
 
         assert result is None
         mock_alerter.send_alert.assert_called_once()
+        kwargs = mock_alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert kwargs["title"] == "Cycle capture failed"
+
+
+class TestRecordHalt:
+    """record_halt writes a minimal inference_cycles row for early-exit cycles (fold b)."""
+
+    def test_writes_minimal_row_with_halt_reason(self, exec_config: Any, mock_alerter: Any) -> None:
+        """Halt row: regime NULL, no proposals, payload carries halt_reason + dry_run."""
+        db, conn = make_mock_db(fetchone_returns=[{"cycle_id": 99}])
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        cycle_id = recorder.record_halt(
+            env_name="equity",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            reason="circuit_breaker",
+        )
+
+        assert cycle_id == 99
+        # Exactly one write — the inference_cycles row; no proposal rows for a halt.
+        assert len(conn.execute.call_args_list) == 1
+        sql, params = conn.execute.call_args.args[0], conn.execute.call_args.args[1]
+        assert "inference_cycles" in sql
+        # Regime columns (hmm_p_bull, hmm_p_bear, vix, active_event_ids) are NULL.
+        assert params[4] is None and params[5] is None and params[6] is None
+        payload = next(
+            json.loads(p) for p in params if isinstance(p, str) and "schema_version" in p
+        )
+        assert payload["halt_reason"] == "circuit_breaker"
+        assert payload["dry_run"] is False
+
+    def test_includes_turbulence_when_provided(self, exec_config: Any, mock_alerter: Any) -> None:
+        """The turbulence value (present at the turbulence-halt exit) is stored."""
+        db, conn = make_mock_db(fetchone_returns=[{"cycle_id": 100}])
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        recorder.record_halt(
+            env_name="crypto",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            reason="turbulence_halt",
+            turbulence=8.5,
+        )
+
+        # turbulence is the 8th positional insert param (index 7).
+        assert conn.execute.call_args.args[1][7] == 8.5
+
+    def test_fail_open_returns_none_and_alerts(self, exec_config: Any, mock_alerter: Any) -> None:
+        """A DB failure during halt capture is swallowed and alerted, never raised."""
+        db, conn = make_mock_db()
+        conn.execute.side_effect = RuntimeError("connection reset")
+        recorder = _recorder(db, mock_alerter, exec_config)
+
+        result = recorder.record_halt(
+            env_name="equity",
+            mode="paper",
+            cycle_ts=datetime(2026, 7, 16, 20, 0, tzinfo=UTC),
+            reason="nan_obs",
+        )
+
+        assert result is None
         kwargs = mock_alerter.send_alert.call_args.kwargs
         assert kwargs["level"] == "warning"
         assert kwargs["title"] == "Cycle capture failed"
