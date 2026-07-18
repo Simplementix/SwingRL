@@ -157,17 +157,17 @@ The memory subsystem lives largely in `services/memory/` (FastAPI service in its
 - **Cardinality cadence:** ~5-50 source rows per consolidation (size of LLM context batch). Total UNKNOWN.
 - **Readers:** **no readers found in src/ or services/**. Audit-only / traceability.
 
-### `pattern_presentations`
+### `pattern_presentations_legacy`
 - **Purpose:** Records every time a consolidation pattern is presented to the LLM during `advise_run_config()` or `advise_epoch()`. Used to attribute outcomes back to specific patterns. (`postgres_schema.py:602-612`)
 - **Writers:** `services/memory/db.py:748-777::insert_pattern_presentation()`; trigger `services/memory/memory_agents/query.py:1466,1502` per advice query.
 - **Cardinality cadence:** ~5-10 patterns presented per `run_config` query, ~1-5 per `epoch_advice` query. Per-iteration total UNKNOWN.
 - **Readers:** `services/memory/db.py:827-842::get_pattern_effectiveness()` (LEFT JOIN with `pattern_outcomes` on `(iteration, env_name)`); `services/memory/routers/training.py:177-186` (`/training/pattern_effectiveness` GET endpoint).
 
 ### `pattern_outcomes`
-- **Purpose:** Iteration-level realized metrics (`gate_passed`, `sharpe`, `mdd`, `sortino`, `pnl`) plus `patterns_presented` JSON list. Joined with `pattern_presentations` to measure pattern effectiveness. (`postgres_schema.py:614-627`)
+- **Purpose:** Iteration-level realized metrics (`gate_passed`, `sharpe`, `mdd`, `sortino`, `pnl`) plus `patterns_presented` JSON list. Joined with `pattern_presentations_legacy` to measure pattern effectiveness. (`postgres_schema.py:614-627`)
 - **Writers:** `services/memory/db.py:780-824::insert_pattern_outcome()`; trigger HTTP POST `/training/record_outcome` (`services/memory/routers/training.py:148-174`) from `scripts/train_pipeline.py:576`.
 - **Cardinality cadence:** 2 rows per iteration (equity + crypto). For iters 0-N: 2N rows.
-- **Readers:** same as `pattern_presentations` (joined view).
+- **Readers:** same as `pattern_presentations_legacy` (joined view).
 - **Honest gaps:** No UNIQUE constraint on `(iteration, env_name)` — accidental double-write would create duplicates silently.
 
 ### `llm_audit_log`
@@ -297,7 +297,7 @@ Strategic indexes confirmed at `postgres_schema.py:743-761`:
 | `ON CONFLICT (pk) DO NOTHING` | `ohlcv_daily`, `ohlcv_4h`, `consolidation_sources` |
 | `ON CONFLICT (pk) DO UPDATE` | `fundamentals`, `features_equity`, `features_crypto`, `model_metadata`, `iteration_results`, `wash_sale_tracker`, `emergency_flags` (UPSERT shape), `positions` (UPSERT shape) |
 | Plain INSERT (PK uniqueness) | `trades`, `risk_decisions`, `circuit_breaker_events`, `alert_log`, `shadow_trades`, `corporate_actions` |
-| IDENTITY auto-PK (no idempotency by design) | `data_quarantine`, `training_epochs`, `meta_decisions`, `reward_adjustments`, `memories`, `consolidations`, `consolidation_quality`, `pattern_presentations`, `pattern_outcomes`, `llm_audit_log`, `api_errors`, `inference_outcomes` |
+| IDENTITY auto-PK (no idempotency by design) | `data_quarantine`, `training_epochs`, `meta_decisions`, `reward_adjustments`, `memories`, `consolidations`, `consolidation_quality`, `pattern_presentations_legacy`, `pattern_outcomes`, `llm_audit_log`, `api_errors`, `inference_outcomes` |
 
 ### Buffered vs direct writers
 

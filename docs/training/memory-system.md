@@ -6,7 +6,7 @@ Living reference for SwingRL's memory subsystem — the LLM-backed pattern store
 
 **Honest-gap policy:** every concrete claim is `file:line`-cited. Where a behavior or writer is referenced from project memory but cannot be located in current code, the gap is flagged inline and aggregated in [Known issues](#known-issues--open-questions). Discrepancies between code and `MEMORY.md` are surfaced rather than silently corrected.
 
-**Schema cross-link:** the 7 memory-system tables (`memories, consolidations, consolidation_quality, consolidation_sources, pattern_presentations, pattern_outcomes, llm_audit_log`) are defined in [`training-data-capture.md`](training-data-capture.md) cluster 3 (writer file:line, readers, indexes, idempotency). This doc covers the *flow* and *lifecycle* — what calls what, when, and why — not the schema.
+**Schema cross-link:** the 7 memory-system tables (`memories, consolidations, consolidation_quality, consolidation_sources, pattern_presentations_legacy, pattern_outcomes, llm_audit_log`) are defined in [`training-data-capture.md`](training-data-capture.md) cluster 3 (writer file:line, readers, indexes, idempotency). This doc covers the *flow* and *lifecycle* — what calls what, when, and why — not the schema.
 
 ## Architecture at a glance
 
@@ -271,11 +271,11 @@ The regime vector is sourced from the latest `hmm_state_history` row. The `conte
 }
 ```
 
-Fields are nullable so the LLM can choose to leave a knob alone. `rationale` is required and propagates to `pattern_presentations.advice_response` (truncated to 200 chars at `query.py:1498`).
+Fields are nullable so the LLM can choose to leave a knob alone. `rationale` is required and propagates to `pattern_presentations_legacy.advice_response` (truncated to 200 chars at `query.py:1498`).
 
 **Side effects:**
 
-- `pattern_presentations` insert per pattern shown (`query.py:1502-1508`): `request_type='run_config'`.
+- `pattern_presentations_legacy` insert per pattern shown (`query.py:1502-1508`): `request_type='run_config'`.
 - `llm_audit_log` insert (`call_type='run_config'`, `query.py:1077-1086`).
 
 ### `/training/epoch_advice`
@@ -333,7 +333,7 @@ appends `{epoch, timestep, pct_complete, reason}` to `self._stop_requests` for T
 future intent writer; `model.stop_training` is never set and `_on_step()` always returns
 `True`, so the fold always runs to completion.
 
-**Side effects:** Same `pattern_presentations` write per pattern shown (`query.py:1237`); `llm_audit_log` with `call_type='epoch_advice'`. Audit row has `fold_number` and `is_control_fold` parsed from the run_id (`query.py:1186-1189, 1220-1231`). When advice is accepted and weights are updated, a row is appended to `reward_adjustments` including 6 attribution columns:
+**Side effects:** Same `pattern_presentations_legacy` write per pattern shown (`query.py:1237`); `llm_audit_log` with `call_type='epoch_advice'`. Audit row has `fold_number` and `is_control_fold` parsed from the run_id (`query.py:1186-1189, 1220-1231`). When advice is accepted and weights are updated, a row is appended to `reward_adjustments` including 6 attribution columns:
 
 | Column | Written when | Value |
 |--------|-------------|-------|
@@ -558,7 +558,7 @@ The composite score is applied only when `limit_per_category` is set (advice pat
 
 Two append-only tables let humans (and dashboards) measure whether the LLM advice is actually helping.
 
-### `pattern_presentations` writer
+### `pattern_presentations_legacy` writer
 
 Inserted once per pattern shown to the LLM during `run_config` or `epoch_advice` (`db.py:748-777`). Fields:
 
@@ -586,7 +586,7 @@ Endpoint: `routers/training.py:177-186` → `db.py:827-842`.
 ```sql
 SELECT pp.consolidation_id, pp.iteration, pp.env_name, pp.request_type,
        pp.advice_response, po.gate_passed, po.sharpe, po.mdd, po.sortino, po.pnl
-  FROM pattern_presentations pp
+  FROM pattern_presentations_legacy pp
   LEFT JOIN pattern_outcomes po
     ON pp.iteration = po.iteration AND pp.env_name = po.env_name
  ORDER BY pp.presented_at DESC
