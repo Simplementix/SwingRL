@@ -62,9 +62,11 @@ def db_config_yaml(tmp_path: Path) -> str:
 
 
 def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
-    """Drop all V001-V007 artifacts and clear their schema_migrations ledger rows.
+    """Drop all V001-V008 artifacts and clear their schema_migrations ledger rows.
 
-    FK-safe order throughout: V007 harness tables (harness_replays/harness_experiment_runs
+    FK-safe order throughout: V008 views drop first (they depend on V002-V007 tables),
+    then the three V008 tables (weakness_evidence -> weakness_profiles; operator_actions
+    standalone); then V007 harness tables (harness_replays/harness_experiment_runs
     -- both point at llm_calls/training_runs dropped further down, and harness_experiments
     -- referenced by both, so all three drop first of all, before any of their FK targets);
     then V006 patterns-family tables (pattern_presentations/
@@ -89,6 +91,18 @@ def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
     ``UndefinedTable`` without the guard.
     """
     with mgr.connection() as conn:
+        # V008 derived views (drop FIRST — they depend on V002-V007 tables below).
+        conn.execute("DROP VIEW IF EXISTS v_consolidation_corpus")
+        conn.execute("DROP VIEW IF EXISTS v_l2_settings_history")
+        conn.execute("DROP VIEW IF EXISTS v_lever_track_record")
+        conn.execute("DROP VIEW IF EXISTS v_consolidator_quality")
+        conn.execute("DROP VIEW IF EXISTS v_pattern_effectiveness")
+        conn.execute("DROP VIEW IF EXISTS v_live_transfer")
+        # V008 tables (FK-safe: weakness_evidence -> weakness_profiles; operator_actions
+        # is standalone). Nothing else references these, so they drop before everything.
+        conn.execute("DROP TABLE IF EXISTS weakness_evidence")
+        conn.execute("DROP TABLE IF EXISTS weakness_profiles")
+        conn.execute("DROP TABLE IF EXISTS operator_actions")
         # V007 harness tables (leaf tables first): harness_replays references
         # llm_calls + harness_experiments (both dropped below); harness_experiment_runs
         # references training_runs + harness_experiments (both dropped below) — so the
@@ -144,7 +158,7 @@ def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
         conn.execute(
             "DO $$ BEGIN "
             "IF to_regclass('public.schema_migrations') IS NOT NULL THEN "
-            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4, 5, 6, 7); "
+            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4, 5, 6, 7, 8); "
             "END IF; "
             "END $$;"
         )
