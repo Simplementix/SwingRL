@@ -4,6 +4,23 @@
 -- only at STRUCTURED records. All JSONB payloads carry a "schema_version" key (A8),
 -- enforced by the writers (not a DB constraint — same as V005).
 
+-- Name collision (user ruling 2026-07-17): the LEGACY memory schema
+-- (postgres_schema.py / services/memory/db.py) creates its own `pattern_presentations`
+-- (consolidation_id, presented_at, iteration, ...). This §4.5 table wants the same
+-- name. When init_schema() runs before this migration, V006's CREATE TABLE collided
+-- (DuplicateTable). Ruling: the legacy table cedes the name — rename it to
+-- `pattern_presentations_legacy` (legacy writers keep working until the Task 28
+-- cutover); the §4.5 table below keeps the spec name. The `consolidation_id` column
+-- discriminates the legacy shape, so this no-ops on pure-fresh DBs and on teardown
+-- re-applies (where the §4.5 table has no consolidation_id).
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'pattern_presentations'
+               AND column_name = 'consolidation_id') THEN
+    ALTER TABLE pattern_presentations RENAME TO pattern_presentations_legacy;
+  END IF;
+END $$;
+
 -- patterns: playbook notes with a machine-readable core (claim JSONB NOT NULL).
 CREATE TABLE patterns (
     pattern_id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

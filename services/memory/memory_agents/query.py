@@ -10,7 +10,7 @@ Both methods:
 - Call OpenRouter (nemotron-120b) as primary, NVIDIA NIM (kimi-k2.5) as backup
 - Return safe clamped defaults on any failure (cold-start guard)
 - XML-wrap all memory text injected into prompts
-- Track which patterns were presented via pattern_presentations table
+- Track which patterns were presented via pattern_presentations_legacy table
 
 Clamp bounds are defined inline (matching src/swingrl/memory/training/bounds.py constants)
 to avoid importing from src/swingrl/ (cross-container boundary, Pitfall 4).
@@ -1599,7 +1599,7 @@ class QueryAgent:
         request_type: str,
         result: dict[str, Any],
     ) -> None:
-        """Log which patterns were presented to pattern_presentations table.
+        """Log which patterns were presented to pattern_presentations_legacy table.
 
         Args:
             consolidation_ids: IDs of consolidations included in context.

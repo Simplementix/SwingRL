@@ -7,7 +7,7 @@ TRAIN-06, TRAIN-07: Covers:
 - Two-stage consolidation pipeline (Stage 1 per-env, Stage 2 cross-env)
 - Pattern lifecycle (active → superseded → retired)
 - Dedup/merge (similar patterns confirmed, old incremented)
-- Presentation tracking (query logs to pattern_presentations)
+- Presentation tracking (query logs to pattern_presentations_legacy)
 - Outcome recording (record_outcome endpoint stores data)
 - Pattern effectiveness (joins presentations + outcomes)
 - APScheduler removed (no scheduler in lifespan)
@@ -470,7 +470,7 @@ class TestConsolidation:
         memory_db_module.init_db()
         with memory_db_module.get_connection() as conn:
             conn.execute(
-                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "TRUNCATE consolidation_sources, pattern_presentations_legacy, "
                 "consolidation_quality, pattern_outcomes, consolidations, memories "
                 "CASCADE"
             )
@@ -632,7 +632,7 @@ class TestConsolidationArchiving:
         memory_db_module.init_db()
         with memory_db_module.get_connection() as conn:
             conn.execute(
-                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "TRUNCATE consolidation_sources, pattern_presentations_legacy, "
                 "consolidation_quality, pattern_outcomes, consolidations, memories "
                 "CASCADE"
             )
@@ -857,7 +857,7 @@ class TestUnarchiveMechanism:
         memory_db_module.init_db()
         with memory_db_module.get_connection() as conn:
             conn.execute(
-                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "TRUNCATE consolidation_sources, pattern_presentations_legacy, "
                 "consolidation_quality, pattern_outcomes, consolidations, memories "
                 "CASCADE"
             )
@@ -986,8 +986,8 @@ class TestDBSchema:
             ).fetchall()
         assert len(rows) == 1
 
-    def test_pattern_presentations_table_exists(self, memory_db_env: str) -> None:
-        """19.1: pattern_presentations table is created."""
+    def test_pattern_presentations_legacy_table_exists(self, memory_db_env: str) -> None:
+        """19.1: pattern_presentations_legacy table is created (renamed per 2026-07-17 ruling)."""
         for mod_name in list(_MEMORY_MODULE_NAMES):
             sys.modules.pop(mod_name, None)
         import db as memory_db_module
@@ -996,7 +996,7 @@ class TestDBSchema:
         with memory_db_module.get_connection() as conn:
             rows = conn.execute(
                 "SELECT tablename FROM pg_tables "
-                "WHERE schemaname='public' AND tablename='pattern_presentations'"
+                "WHERE schemaname='public' AND tablename='pattern_presentations_legacy'"
             ).fetchall()
         assert len(rows) == 1
 
@@ -1089,7 +1089,7 @@ class TestDBFunctions:
         memory_db_module.init_db()
         with memory_db_module.get_connection() as conn:
             conn.execute(
-                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "TRUNCATE consolidation_sources, pattern_presentations_legacy, "
                 "consolidation_quality, pattern_outcomes, consolidations, memories "
                 "CASCADE"
             )
@@ -2074,7 +2074,7 @@ class TestRetrievalEfficiency:
         memory_db_module.init_db()
         with memory_db_module.get_connection() as conn:
             conn.execute(
-                "TRUNCATE consolidation_sources, pattern_presentations, "
+                "TRUNCATE consolidation_sources, pattern_presentations_legacy, "
                 "consolidation_quality, pattern_outcomes, consolidations, memories "
                 "CASCADE"
             )
