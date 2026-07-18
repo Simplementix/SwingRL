@@ -1019,7 +1019,7 @@ consolidations mention CPS — they encode the harmful pre-CPS goal).
 |---|---|---|
 | **KEEP (live, retro-stamped era 0)** | `iteration_results` (10 rows, iters 0–4), `backtest_results` (564 rows) | §2.8 derives new gate thresholds from these; `TRADE_BASELINES` source; the harm table (S1 evidence). Era-0 stamp = evidence, never score-compared |
 | **KEEP (retired, tiny)** | `consolidations` — all 84 rows marked retired/era-0, barred from prompts | C6 §7 QA gate needs the text of harmful patterns 61/62/67/69/73 |
-| **ARCHIVE → DROP** (verified pg_dump to cold storage, then drop from live DB) | `memories` (4.96M), `training_epochs` (850k), `reward_adjustments`, `pattern_presentations` (9.6k), `pattern_outcomes`, `meta_decisions`, `consolidation_sources`, `consolidation_quality`, `llm_audit_log` | Forensic access preserved at zero operational cost; the dump is the F2 root-cause evidence base |
+| **ARCHIVE → DROP** (verified pg_dump to cold storage, then drop from live DB) | `memories` (4.96M), `training_epochs` (850k), `reward_adjustments`, `pattern_presentations` (9.6k) (renamed `pattern_presentations_legacy` at V006 — name ceded to the §4.5 table), `pattern_outcomes`, `meta_decisions`, `consolidation_sources`, `consolidation_quality`, `llm_audit_log` | Forensic access preserved at zero operational cost; the dump is the F2 root-cause evidence base |
 
 Consequences: **Group A dissolves** (its blocker was the unverifiable iter-5 selector on
 `memories`/`training_epochs`; wholesale archive-and-drop needs no selector — the iter-5
@@ -1357,6 +1357,7 @@ walkthrough).
 | A28 | Era-1 training-env live-parity definition pointer — real turbulence obs, live-parity breakers, decomposed features per adopted memo; full definition → Plan B (§2.5) (2026-07-07) | G2 |
 | A29 | `gate_versions` surrogate PK `gate_version_id` + `version_number` + UNIQUE(gate_type, version_number); FK ripple to `eras`, `fold_results`, `season_results` (§4.1, §4.3) (2026-07-07, signed off in-session) | G2 |
 | A30 | Steady-state deploy isolation (§4.14): trader/trainer compose split (pinned trader tag), market-safe trader windows, schema-assertion **floor semantics**, additive-only migrations while trader runs, `models/active/` written only by gated promotion. Verified basis: single `swingrl` service runs scheduler + training; code baked into image; loader hot-reloads on mtime (2026-07-12, user-approved) | G2 |
+| A31 | Legacy memory-schema `pattern_presentations` renamed to `pattern_presentations_legacy` (§4.5/§4.9): the §4.5 cede-to table keeps the spec name; legacy writers keep the `_legacy` table until the Task 28 cutover. V006 gained a shape-guarded (`consolidation_id`) in-place rename; `postgres_schema.py` + `services/memory/db.py` DDL/DML renamed. Fixes the CI schema-init collision (`DuplicateTable` when `init_schema()` precedes `apply_migrations()`) (2026-07-17, user ruling) | Plan B |
 
 ## §5 — Bug & finding catalogue (running; fix scope varies)
 

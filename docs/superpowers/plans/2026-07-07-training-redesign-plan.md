@@ -1361,7 +1361,7 @@ this task ships the *runbook and scripts*, not an autonomous cutover.
     V010 has a documented `GRANT`-restoring counterpart script.
   - **V010**: `REVOKE INSERT, UPDATE, DELETE` from the application role on the legacy
     training tables — `memories`, `training_epochs`, `reward_adjustments`,
-    `meta_decisions`, `pattern_outcomes`, `pattern_presentations` (legacy writer),
+    `meta_decisions`, `pattern_outcomes`, `pattern_presentations_legacy` (legacy writer),
     `consolidation_sources`, `consolidation_quality`, `llm_audit_log`,
     `backtest_results`, `iteration_results`, `consolidations` — stragglers fail loudly
     (A25). `model_metadata` is **not** revoked (execution-side; Plan A owns its
@@ -1369,7 +1369,7 @@ this task ships the *runbook and scripts*, not an autonomous cutover.
     deleted in the same commit — the code and the REVOKE land together).
   - **Archive-and-drop** (§4.9): `archive_and_drop_legacy.sh` dumps the ARCHIVE list
     (`memories` 4.96M, `training_epochs` 850k, `reward_adjustments`,
-    `pattern_presentations`, `pattern_outcomes`, `meta_decisions`,
+    `pattern_presentations_legacy`, `pattern_outcomes`, `meta_decisions`,
     `consolidation_sources`, `consolidation_quality`, `llm_audit_log`) to cold storage,
     restores into an ephemeral instance, compares row counts per table, and only then
     prints the DROP statements for **manual** execution under plan-mode approval. KEEP

@@ -72,7 +72,9 @@ _MEMORY_TABLES = [
     "consolidations",
     "consolidation_quality",
     "consolidation_sources",
-    "pattern_presentations",
+    # Renamed 2026-07-17 (user ruling): the Postgres legacy target is now
+    # pattern_presentations_legacy — the bare name belongs to the V006 §4.5 table.
+    "pattern_presentations_legacy",
     "pattern_outcomes",
     "llm_audit_log",
 ]
@@ -281,7 +283,7 @@ def main() -> None:
         "memories",
         "consolidations",
         "consolidation_quality",
-        "pattern_presentations",
+        "pattern_presentations_legacy",
         "pattern_outcomes",
         "llm_audit_log",
         "inference_outcomes",

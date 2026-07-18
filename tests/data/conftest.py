@@ -19,7 +19,7 @@ import pytest
 
 from swingrl.config.schema import load_config
 from swingrl.data.db import DatabaseManager
-from swingrl.data.migration_runner import apply_migrations
+from tests.fixtures.db_cleanup import drop_migration_artifacts, reapply_migrated_schema
 
 
 @pytest.fixture
@@ -61,66 +61,6 @@ def db_config_yaml(tmp_path: Path) -> str:
     """)
 
 
-def _drop_migration_artifacts(mgr: DatabaseManager) -> None:
-    """Drop all V001-V004 artifacts and clear their schema_migrations ledger rows.
-
-    FK-safe order throughout: V004 coach-record artifacts (intent_verdicts/
-    intent_applications -> intent_records, referenced by the ensemble_weight_history
-    FK -> llm_calls; the ewh FK + two A14 partial UNIQUE indexes are dropped first so
-    the DROP TABLE of intent_records succeeds), then V003 (event_outcomes/fill_quality
-    -> calendar_events/trades.cycle_id -> cycle_algo_proposals -> inference_cycles),
-    then V002 (ensemble_weight_history -> models -> training_runs, since
-    training_runs.era_id references eras, dropped below), then V001 (the two new
-    registry tables and the four added columns).
-
-    The very first statement guards on ``to_regclass`` (table existence) before the
-    ``ALTER TABLE ... DROP CONSTRAINT IF EXISTS`` — ``IF EXISTS`` there only makes the
-    *constraint* drop conditional, not the table; calling this when
-    ``ensemble_weight_history`` was never created (V002 not applied) raises
-    ``UndefinedTable`` without the guard.
-    """
-    with mgr.connection() as conn:
-        conn.execute(
-            "DO $$ BEGIN "
-            "IF to_regclass('public.ensemble_weight_history') IS NOT NULL THEN "
-            "ALTER TABLE ensemble_weight_history DROP CONSTRAINT IF EXISTS fk_ewh_intent; "
-            "END IF; "
-            "END $$;"
-        )
-        conn.execute("DROP INDEX IF EXISTS uq_mt_commentary_per_cycle")
-        conn.execute("DROP INDEX IF EXISTS uq_llm_commentary_cycle")
-        conn.execute("DROP TABLE IF EXISTS intent_verdicts")
-        conn.execute("DROP TABLE IF EXISTS intent_applications")
-        conn.execute("DROP TABLE IF EXISTS intent_records")
-        conn.execute("DROP TABLE IF EXISTS llm_calls")
-        conn.execute("DROP TABLE IF EXISTS event_outcomes")
-        conn.execute("DROP TABLE IF EXISTS calendar_events")
-        conn.execute("DROP TABLE IF EXISTS fill_quality")
-        conn.execute("ALTER TABLE trades DROP COLUMN IF EXISTS cycle_id")
-        conn.execute("DROP TABLE IF EXISTS cycle_algo_proposals")
-        conn.execute("DROP TABLE IF EXISTS inference_cycles")
-        conn.execute("DROP TABLE IF EXISTS ensemble_weight_history")
-        conn.execute("DROP TABLE IF EXISTS models")
-        conn.execute("DROP TABLE IF EXISTS training_runs")
-        conn.execute(
-            "ALTER TABLE backtest_results "
-            "DROP COLUMN IF EXISTS era_id, DROP COLUMN IF EXISTS gate_version_id"
-        )
-        conn.execute(
-            "ALTER TABLE iteration_results "
-            "DROP COLUMN IF EXISTS era_id, DROP COLUMN IF EXISTS gate_version_ensemble_id"
-        )
-        conn.execute("DROP TABLE IF EXISTS eras")
-        conn.execute("DROP TABLE IF EXISTS gate_versions")
-        conn.execute(
-            "DO $$ BEGIN "
-            "IF to_regclass('public.schema_migrations') IS NOT NULL THEN "
-            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4); "
-            "END IF; "
-            "END $$;"
-        )
-
-
 @pytest.fixture
 def db_with_legacy_schema(
     tmp_path: Path, db_config_yaml: str
@@ -132,9 +72,10 @@ def db_with_legacy_schema(
     iteration_results, ...) exist, possibly empty — the V001 back-stamp must hold for
     0 rows in CI and 574 in production. V001/V002/V003/V004's plain ``CREATE TABLE`` /
     ``ALTER TABLE ADD COLUMN`` statements are not idempotent by themselves, so both
-    SETUP and TEARDOWN call ``_drop_migration_artifacts()`` (see above) before doing
-    anything else, to guarantee a clean legacy starting point regardless of what any
-    other test using this fixture left behind.
+    SETUP and TEARDOWN call the shared ``drop_migration_artifacts()``
+    (tests/fixtures/db_cleanup.py) before doing anything else, to guarantee a clean
+    legacy starting point regardless of what any other test using this fixture left
+    behind.
 
     Calling the drop at SETUP (not only teardown) is what makes the entry state
     deterministic: most tests using this fixture call ``apply_migrations()``
@@ -148,15 +89,16 @@ def db_with_legacy_schema(
     raised ``UndefinedTable`` trying to ``ALTER TABLE ensemble_weight_history`` when
     the table didn't exist — the guard above fixes that too).
 
-    Calling the same drop again at TEARDOWN, followed by ``apply_migrations()``,
-    restores the suite-wide invariant CI stage 2.7 establishes once per run (schema
-    migrated before any test executes) and that every other DB-gated fixture (e.g.
-    tests/execution/conftest.py's ``mock_db``) assumes holds for the rest of the
-    suite — without the re-apply, the drops left the shared DB in legacy state for the
-    remainder of the run, causing order-dependent ``UndefinedColumn`` failures (e.g.
-    ``trades.cycle_id``) in any later DB-gated test that needs V001-V004 artifacts.
-    This also keeps the persistent scratch database re-runnable across test sessions:
-    every session both starts and ends fully migrated, never legacy.
+    Teardown calls the shared ``reapply_migrated_schema()`` (drop again, then
+    ``apply_migrations()``), which restores the suite-wide invariant CI stage 2.7
+    establishes once per run (schema migrated before any test executes) and that every
+    other DB-gated fixture (e.g. tests/execution/conftest.py's ``mock_db``) assumes
+    holds for the rest of the suite — without the re-apply, the drops left the shared
+    DB in legacy state for the remainder of the run, causing order-dependent
+    ``UndefinedColumn`` failures (e.g. ``trades.cycle_id``) in any later DB-gated test
+    that needs V001-V004 artifacts. This also keeps the persistent scratch database
+    re-runnable across test sessions: every session both starts and ends fully
+    migrated, never legacy.
     """
     config_file = tmp_path / "swingrl.yaml"
     config_file.write_text(db_config_yaml)
@@ -164,8 +106,7 @@ def db_with_legacy_schema(
     DatabaseManager.reset()
     mgr = DatabaseManager(config)
     mgr.init_schema()
-    _drop_migration_artifacts(mgr)
+    drop_migration_artifacts(mgr)
     yield mgr
-    _drop_migration_artifacts(mgr)
-    apply_migrations(mgr)
+    reapply_migrated_schema(mgr)
     DatabaseManager.reset()

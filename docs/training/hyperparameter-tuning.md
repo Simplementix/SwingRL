@@ -30,7 +30,7 @@ train_pipeline.py per fold/iteration
               ├── system_prompt = _build_algo_system_prompt(bounds, algo)
               ├── _call_lm(user, schema, system_prompt) — primary then backup      query.py:1646-1694
               │     └── _is_provider_blocked() — skips providers in 429 backoff    query.py:361-378
-              ├── _track_presentations_async(...)  →  pattern_presentations
+              ├── _track_presentations_async(...)  →  pattern_presentations_legacy
               ├── _audit_log(call_type="run_config", ...)  →  llm_audit_log
               ├── merged = _SAFE_DEFAULTS | result
               ├── clamped = _clamp_run_config(merged, algo=algo)  ◄── service-side clamp
@@ -221,7 +221,7 @@ Four pg16 tables back the HP-tuning audit chain:
 |-------|--------|-------------|-----------------|
 | `meta_decisions` | `_write_meta_decision` (`meta_orchestrator.py:525-545`) | per `meta.run()` call | `run_id`, `algo`, `env`, `decision_type='hp_tuning'`, `decision_json` (post-clamp), `rationale`, `created_at`. DDL: `postgres_schema.py:325-336`. |
 | `llm_audit_log` | `_audit_log` in QueryAgent (`query.py:1003-1033`) | per LLM call (any provider) | `call_type='run_config'`, `provider`, `model_name`, `prompt_text`, `response_text`, `response_parsed`, `latency_ms`, `success`, `error_text`, plus `algo`/`env`/`fold_number`/`iteration_number` context. DDL: `services/memory/db.py:170-189`. |
-| `pattern_presentations` | `insert_pattern_presentation_async` (`query.py:1500-1510`) | per consolidation × per query | `consolidation_id`, `iteration`, `env_name`, `request_type`, `advice_response` (rationale ≤200 chars). DDL: `services/memory/db.py:143-151`. |
+| `pattern_presentations_legacy` | `insert_pattern_presentation_async` (`query.py:1500-1510`) | per consolidation × per query | `consolidation_id`, `iteration`, `env_name`, `request_type`, `advice_response` (rationale ≤200 chars). DDL: `services/memory/db.py:143-151`. |
 | `iteration_results` | `store_iteration_results_to_duckdb` (`backtest.py:882-1015`) | per iteration × env | `ppo_hyperparams`, `a2c_hyperparams`, `sac_hyperparams` (post-clamp JSON of what actually shipped to SB3), `hp_source` (`'baseline'` or `'llm'`). DDL: `postgres_schema.py:171-208`. |
 
 Note: `model_metadata` (`postgres_schema.py:105-121`) does **not** carry per-fold HP JSON — only `validation_sharpe`, `ensemble_weight`, `total_timesteps`, `converged_at_step`. For "what HPs shipped in iter N", join `iteration_results` on `iteration_number` + `environment`.
@@ -344,7 +344,7 @@ Hardcoded: 5 min → 15 min → 60 min → rest-of-UTC-day.
 | Production callers (WF + final retrain entry points) | `scripts/train_pipeline.py` |
 | Trainer baseline HPs | `src/swingrl/training/trainer.py` (`HYPERPARAMS`) |
 | pg16 DDL (`meta_decisions`, `iteration_results`, `model_metadata`) | `src/swingrl/data/postgres_schema.py` |
-| Service-side DDL (`llm_audit_log`, `pattern_presentations`, `pattern_outcomes`) | `services/memory/db.py` |
+| Service-side DDL (`llm_audit_log`, `pattern_presentations_legacy`, `pattern_outcomes`) | `services/memory/db.py` |
 | Config schema (`MemoryAgentConfig`, `HyperparamBoundsConfig`, `RewardBoundsConfig`, `TrainingBoundsConfig`) | `src/swingrl/config/schema.py` |
 | Provider yaml (per-provider URLs / models / timeouts) | `config/swingrl.yaml` (`memory_agent.consolidation.providers.*`) |
 | Mechanistic HP background (per-HP semantics, financial-RL ranges) | `.planning/research/hp-tuning-reference.md` |

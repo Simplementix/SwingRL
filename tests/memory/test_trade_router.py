@@ -36,11 +36,16 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def memory_db_at_v004() -> Generator[Any, None, None]:
-    """Scratch DB with V001–V004 applied; memory pool reset to the same DATABASE_URL.
+    """Fully-migrated scratch DB; memory pool reset to the same DATABASE_URL.
 
-    Teardown drops V004→V001 artifacts and clears ledger rows 1–4 (mirrors
-    tests/data/conftest.py's db_with_legacy_schema) so the persistent scratch DB
-    stays re-runnable.
+    Setup applies every migration (V001–V008); teardown calls the shared
+    ``reapply_migrated_schema()`` (tests/fixtures/db_cleanup.py) — the same
+    de-migration + re-apply helper tests/data/conftest.py's ``db_with_legacy_schema``
+    uses — so the persistent scratch DB is left fully migrated (ledger at max version)
+    and stays re-runnable. This replaced a hand-rolled DROP sequence frozen at V004
+    that broke once V008's views (which depend on ``intent_verdicts``) coexisted with
+    it: ``DependentObjectsStillExist``. The fixture name is retained for callers; it
+    no longer stops at V004.
     """
     import textwrap
 
@@ -48,6 +53,7 @@ def memory_db_at_v004() -> Generator[Any, None, None]:
     from swingrl.config.schema import load_config
     from swingrl.data.db import DatabaseManager
     from swingrl.data.migration_runner import apply_migrations
+    from tests.fixtures.db_cleanup import reapply_migrated_schema
 
     db_url = os.environ["DATABASE_URL"]
     cfg_yaml = textwrap.dedent(f"""\
@@ -74,41 +80,11 @@ def memory_db_at_v004() -> Generator[Any, None, None]:
             yield memory_db
         finally:
             memory_db._pool = None
-            with mgr.connection() as conn:
-                conn.execute(
-                    "ALTER TABLE ensemble_weight_history DROP CONSTRAINT IF EXISTS fk_ewh_intent"
-                )
-                conn.execute("DROP INDEX IF EXISTS uq_mt_commentary_per_cycle")
-                conn.execute("DROP INDEX IF EXISTS uq_llm_commentary_cycle")
-                conn.execute("DROP TABLE IF EXISTS intent_verdicts")
-                conn.execute("DROP TABLE IF EXISTS intent_applications")
-                conn.execute("DROP TABLE IF EXISTS intent_records")
-                conn.execute("DROP TABLE IF EXISTS llm_calls")
-                conn.execute("DROP TABLE IF EXISTS event_outcomes")
-                conn.execute("DROP TABLE IF EXISTS calendar_events")
-                conn.execute("DROP TABLE IF EXISTS fill_quality")
-                conn.execute("ALTER TABLE trades DROP COLUMN IF EXISTS cycle_id")
-                conn.execute("DROP TABLE IF EXISTS cycle_algo_proposals")
-                conn.execute("DROP TABLE IF EXISTS inference_cycles")
-                conn.execute("DROP TABLE IF EXISTS ensemble_weight_history")
-                conn.execute("DROP TABLE IF EXISTS models")
-                conn.execute("DROP TABLE IF EXISTS training_runs")
-                conn.execute(
-                    "ALTER TABLE backtest_results "
-                    "DROP COLUMN IF EXISTS era_id, DROP COLUMN IF EXISTS gate_version_id"
-                )
-                conn.execute(
-                    "ALTER TABLE iteration_results "
-                    "DROP COLUMN IF EXISTS era_id, DROP COLUMN IF EXISTS gate_version_ensemble_id"
-                )
-                conn.execute("DROP TABLE IF EXISTS eras")
-                conn.execute("DROP TABLE IF EXISTS gate_versions")
-                conn.execute(
-                    "DO $$ BEGIN "
-                    "IF to_regclass('public.schema_migrations') IS NOT NULL THEN "
-                    "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4); "
-                    "END IF; END $$;"
-                )
+            # Shared de-migration + re-apply: drops V001–V008 (FK-safe, views first —
+            # a V004-frozen copy here is exactly what broke CI once V008 views depended
+            # on intent_verdicts) and re-applies every migration, leaving the shared
+            # scratch DB fully migrated for the rest of the run.
+            reapply_migrated_schema(mgr)
             DatabaseManager.reset()
 
 
