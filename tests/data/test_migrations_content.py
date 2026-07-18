@@ -1155,10 +1155,191 @@ def test_v007_harness_replays_valid_accepted(db_with_legacy_schema) -> None:
 
 
 def test_v007_schema_version_is_7(db_with_legacy_schema) -> None:
-    """Task 10: SELECT max(version) FROM schema_migrations == 7 after apply_migrations."""
+    """V007 lands in the ledger (was newest; V008 now raises the ceiling to 8).
+
+    The newest-version invariant moved to ``test_v008_schema_version_is_8`` when
+    Track B Task 11 shipped V008 — this asserts V007 was applied, not that it is the
+    maximum, so it stays green as later migrations extend the ledger.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM schema_migrations WHERE version = 7"
+        ).fetchone()
+    assert row["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# V008 (Task 11): §4.8 weakness_profiles (append-only per-(env,algo,failure_mode)
+# versioning) + weakness_evidence (polymorphic, same shape as pattern_sources),
+# operator_actions (N14 — append-only human interventions outside the pre-built
+# slots), and the six derived views. Constraint tests here; view smoke tests in
+# tests/data/test_views.py.
+# ---------------------------------------------------------------------------
+
+
+def _insert_weakness_profile(
+    db: DatabaseManager,
+    *,
+    environment: str = "equity",
+    algorithm: str = "ppo",
+    failure_mode: str = "trade_shy",
+    version: int = 1,
+    status: str = "active",
+) -> int:
+    """Insert a minimal valid weakness_profiles row and return its weakness_id.
+
+    ``signature`` (JSONB NOT NULL) is the only payload the DDL forces beyond the
+    identity/classification fields; ``version``/``status`` carry defaults.
+    """
+    with db.connection() as conn:
+        return int(
+            conn.execute(
+                "INSERT INTO weakness_profiles (environment, algorithm, failure_mode,"
+                " signature, version, status)"
+                " VALUES (%s, %s, %s, '{\"schema_version\": 1}'::jsonb, %s, %s)"
+                " RETURNING weakness_id",
+                (environment, algorithm, failure_mode, version, status),
+            ).fetchone()["weakness_id"]
+        )
+
+
+def test_v008_weakness_profiles_unique_env_algo_mode_version(db_with_legacy_schema) -> None:
+    """§4.8: UNIQUE(environment, algorithm, failure_mode, version) — append-only versioning.
+
+    Revisions are new rows (a new version); a duplicate of the same four bounces off
+    the schema, and a fresh version of the same (env, algo, failure_mode) is accepted.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    _insert_weakness_profile(db_with_legacy_schema, version=1)
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        _insert_weakness_profile(db_with_legacy_schema, version=1)
+    _insert_weakness_profile(db_with_legacy_schema, version=2)  # new version OK
+
+
+def test_v008_weakness_profiles_requires_signature(db_with_legacy_schema) -> None:
+    """§4.8: weakness_profiles.signature is NOT NULL JSONB — no scouting report without one."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO weakness_profiles (environment, algorithm, failure_mode, status)"
+                " VALUES ('equity', 'ppo', 'trade_shy', 'active')"
+            )
+
+
+def test_v008_weakness_profiles_status_check(db_with_legacy_schema) -> None:
+    """§4.8: weakness_profiles.status CHECK (active, retired) — trained-out weaknesses retire."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _insert_weakness_profile(db_with_legacy_schema, status="bogus")
+
+
+def test_v008_weakness_evidence_source_table_check(db_with_legacy_schema) -> None:
+    """§4.8: weakness_evidence.source_table CHECK — points only at structured records + patterns.
+
+    A confirmed pattern graduating into the career file (``patterns``) is accepted;
+    retired raw ``memories`` bounces off the CHECK. ``source_id`` is polymorphic (no FK).
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    weakness_id = _insert_weakness_profile(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(
+            "INSERT INTO weakness_evidence (weakness_id, source_table, source_id)"
+            " VALUES (%s, 'patterns', 1)",
+            (weakness_id,),
+        )
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO weakness_evidence (weakness_id, source_table, source_id)"
+                " VALUES (%s, 'memories', 2)",
+                (weakness_id,),
+            )
+
+
+def test_v008_weakness_evidence_weakness_fk_rejects_nonexistent(db_with_legacy_schema) -> None:
+    """§4.8: weakness_evidence.weakness_id FK -> weakness_profiles."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO weakness_evidence (weakness_id, source_table, source_id)"
+                " VALUES (999999, 'fold_results', 1)"
+            )
+
+
+def test_v008_operator_actions_requires_actor(db_with_legacy_schema) -> None:
+    """N14: operator_actions.actor is NOT NULL — an intervention names who did it."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO operator_actions (action_type, reason)"
+                " VALUES ('demote', 'ladder demotion after 3 losing seasons')"
+            )
+
+
+def test_v008_operator_actions_requires_action_type(db_with_legacy_schema) -> None:
+    """N14: operator_actions.action_type is NOT NULL."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO operator_actions (actor, reason)"
+                " VALUES ('varun', 'ladder demotion after 3 losing seasons')"
+            )
+
+
+def test_v008_operator_actions_requires_reason(db_with_legacy_schema) -> None:
+    """N14: operator_actions.reason is NOT NULL — every intervention carries its why."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO operator_actions (actor, action_type) VALUES ('varun', 'demote')"
+            )
+
+
+def test_v008_operator_actions_valid_accepted(db_with_legacy_schema) -> None:
+    """N14: a fully specified intervention row (all NOT NULLs + optional payload) is accepted."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        row_id = conn.execute(
+            "INSERT INTO operator_actions (actor, action_type, target_table, target_id,"
+            " reason, payload)"
+            " VALUES ('varun', 'demote', 'season_results', 42, 'ladder demotion',"
+            ' \'{"schema_version": 1, "from_level": 3, "to_level": 2}\'::jsonb)'
+            " RETURNING id"
+        ).fetchone()["id"]
+    assert row_id is not None
+
+
+def test_v008_schema_version_is_8(db_with_legacy_schema) -> None:
+    """Task 11: SELECT max(version) FROM schema_migrations == 8 after apply_migrations."""
     from swingrl.data.migration_runner import apply_migrations
 
     apply_migrations(db_with_legacy_schema)
     with db_with_legacy_schema.connection() as conn:
         row = conn.execute("SELECT max(version) AS v FROM schema_migrations").fetchone()
-    assert row["v"] == 7
+    assert row["v"] == 8
