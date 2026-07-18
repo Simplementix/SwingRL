@@ -108,12 +108,17 @@ JOIN corpus_run cr ON cr.run_pk = lc.run_pk
 JOIN training_runs tr ON tr.run_pk = lc.run_pk
 WHERE lc.call_type <> 'harness_replay'
 UNION ALL
--- run-scoped intent_records (L1/U1 mid-fold — run_pk NOT NULL)
+-- run-scoped intent_records (L1/U1 mid-fold — run_pk NOT NULL). A19: an intent whose
+-- PARENT llm_call is a Stage-2 harness_replay is quarantined even when tagged to a
+-- canonical run_pk (the call-level filter above does not reach intents); intents with no
+-- parent call are kept (IS DISTINCT FROM lets a NULL call_type through).
 SELECT 'intent_records', ir.intent_id::text, ir.run_pk, tr.iteration_number, tr.environment,
        tr.algorithm
 FROM intent_records ir
 JOIN corpus_run cr ON cr.run_pk = ir.run_pk
 JOIN training_runs tr ON tr.run_pk = ir.run_pk
+LEFT JOIN llm_calls lc ON lc.llm_call_id = ir.llm_call_id
+WHERE lc.call_type IS DISTINCT FROM 'harness_replay'
 UNION ALL
 -- non-run-scoped allowlist: season_results (canonical result_version only)
 SELECT 'season_results', sr.id::text, NULL::bigint, sr.iteration_number, sr.environment,
@@ -254,11 +259,25 @@ GROUP BY ir.coach, ir.lever, ir.environment, ir.algorithm, cc.coach_config;
 -- prompt_version + model. patterns carry no FK to their producing call, so the join is
 -- reconstructed on (created_iteration, environment) against the consolidator's
 -- consolidate_stage1/stage2 calls — the natural producer per A15's identity matrix.
+-- Two guards keep a retried or multi-config consolidation from double-counting /
+-- mis-attributing a pattern: (1) only SUCCESSFUL calls count (success IS TRUE — a failed
+-- retry is not a producer); (2) at most ONE producing call per (created_iteration,
+-- environment) — the newest — so each pattern is credited to exactly one call, never
+-- summed across a retry and never spread across two prompt_version/model groups.
 -- Sustained contradiction dominance ⇒ patterns withheld from prompts (application layer).
 CREATE VIEW v_consolidator_quality AS
+WITH producing_call AS (
+    SELECT DISTINCT ON (lc.iteration_number, lc.environment)
+        lc.iteration_number, lc.environment, lc.prompt_version, lc.model
+    FROM llm_calls lc
+    WHERE lc.coach = 'consolidator'
+      AND lc.call_type IN ('consolidate_stage1', 'consolidate_stage2')
+      AND lc.success IS TRUE
+    ORDER BY lc.iteration_number, lc.environment, lc.created_at DESC, lc.llm_call_id DESC
+)
 SELECT
-    lc.prompt_version,
-    lc.model,
+    pc.prompt_version,
+    pc.model,
     count(DISTINCT p.pattern_id)                      AS pattern_count,
     sum(p.confirmation_count)                         AS total_confirmations,
     sum(p.contradiction_count)                        AS total_contradictions,
@@ -267,13 +286,11 @@ SELECT
               / (sum(p.confirmation_count) + sum(p.contradiction_count))
          ELSE NULL END                                AS confirmation_ratio
 FROM patterns p
-JOIN llm_calls lc
-    ON lc.coach = 'consolidator'
-   AND lc.call_type IN ('consolidate_stage1', 'consolidate_stage2')
-   AND lc.iteration_number = p.created_iteration
-   AND (lc.environment = p.environment
-        OR (lc.environment IS NULL AND p.environment IS NULL))
-GROUP BY lc.prompt_version, lc.model;
+JOIN producing_call pc
+    ON pc.iteration_number = p.created_iteration
+   AND (pc.environment = p.environment
+        OR (pc.environment IS NULL AND p.environment IS NULL))
+GROUP BY pc.prompt_version, pc.model;
 
 -- v_pattern_effectiveness (§4.5): presentations → llm_calls → season/fold results.
 -- Per pattern: how often it was presented and how the seasons/folds it was presented
