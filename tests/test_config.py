@@ -118,6 +118,25 @@ class TestBackupConfig:
             load_config(bad_yaml)
         assert "backup_retention_days" in str(exc_info.value)
 
+    def test_trader_backup_jobs_enabled_defaults_true(self, tmp_config: Path) -> None:
+        """USER RULING 2026-07-19: default True preserves legacy behavior for deployments
+        that still have pg_dump; the shipped yamls turn it off explicitly."""
+        config = load_config(tmp_config)
+        assert config.backup.trader_backup_jobs_enabled is True
+
+    def test_trader_backup_jobs_enabled_yaml_override_false(self, tmp_path: Path) -> None:
+        """USER RULING 2026-07-19: trader_backup_jobs_enabled: false loads from YAML."""
+        yaml_path = tmp_path / "backup_disabled.yaml"
+        yaml_path.write_text(
+            textwrap.dedent("""\
+                trading_mode: paper
+                backup:
+                  trader_backup_jobs_enabled: false
+            """)
+        )
+        config = load_config(yaml_path)
+        assert config.backup.trader_backup_jobs_enabled is False
+
 
 class TestShadowConfig:
     """HARD-02: ShadowConfig sub-model validation."""

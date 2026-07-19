@@ -156,6 +156,107 @@ class TestMainRegistersJobs:
         assert recon_call.kwargs["timezone"] == "America/New_York"
 
 
+class TestBackupJobGating:
+    """USER RULING 2026-07-19: the trader's in-container backup jobs (daily_sqlite_backup,
+    weekly_duckdb_backup, monthly_offsite) are config-gated behind
+    config.backup.trader_backup_jobs_enabled — the trader image has no pg_dump binary, so
+    they failed nightly; host-side dumps + Duplicati already cover backups.
+    """
+
+    BACKUP_JOB_IDS = frozenset({"daily_sqlite_backup", "weekly_duckdb_backup", "monthly_offsite"})
+    NON_BACKUP_JOB_IDS = frozenset(
+        {
+            "equity_cycle",
+            "crypto_cycle",
+            "daily_summary",
+            "stuck_agent_check",
+            "weekly_fundamentals",
+            "monthly_macro",
+            "shadow_promotion_check",
+            "automated_trigger_check",
+            "daily_reconciliation",
+        }
+    )
+
+    def test_flag_true_registers_backup_jobs(self, mock_config: MagicMock) -> None:
+        """Flag true (default): the three backup ids are registered alongside every other job."""
+        from scripts.main import create_scheduler_and_register_jobs
+
+        mock_config.backup.trader_backup_jobs_enabled = True
+        mock_scheduler = MagicMock()
+        create_scheduler_and_register_jobs(mock_scheduler, mock_config)
+
+        job_ids = {c.kwargs["id"] for c in mock_scheduler.add_job.call_args_list}
+        assert job_ids == self.BACKUP_JOB_IDS | self.NON_BACKUP_JOB_IDS
+
+    def test_flag_false_skips_backup_jobs(self, mock_config: MagicMock) -> None:
+        """Flag false: none of the three backup ids are registered; every other job still is."""
+        from scripts.main import create_scheduler_and_register_jobs
+
+        mock_config.backup.trader_backup_jobs_enabled = False
+        mock_scheduler = MagicMock()
+        create_scheduler_and_register_jobs(mock_scheduler, mock_config)
+
+        job_ids = {c.kwargs["id"] for c in mock_scheduler.add_job.call_args_list}
+        assert job_ids == self.NON_BACKUP_JOB_IDS
+        assert job_ids.isdisjoint(self.BACKUP_JOB_IDS)
+
+    def test_flag_false_removes_stale_backup_jobs_tolerant_of_absence(
+        self, mock_config: MagicMock
+    ) -> None:
+        """No stale-job sweep exists in scripts/main.py (unlike the collector's
+        remove_stale_jobs), so replace_existing=True alone would leave a previously
+        persisted backup job behind once the flag flips to False. The targeted cleanup
+        must attempt removal of all three ids and swallow JobLookupError when a job id
+        was never persisted (e.g. a fresh deployment)."""
+        from apscheduler.jobstores.base import JobLookupError
+
+        from scripts.main import create_scheduler_and_register_jobs
+
+        mock_config.backup.trader_backup_jobs_enabled = False
+        mock_scheduler = MagicMock()
+        mock_scheduler.remove_job.side_effect = JobLookupError("missing")
+
+        create_scheduler_and_register_jobs(mock_scheduler, mock_config)
+
+        removed_ids = {c.args[0] for c in mock_scheduler.remove_job.call_args_list}
+        assert removed_ids == self.BACKUP_JOB_IDS
+
+    def test_flag_false_removes_persisted_stale_backup_job(self, tmp_path) -> None:
+        """End-to-end with a real SQLAlchemy jobstore: a backup job persisted while the flag
+        was True is dropped once trader_backup_jobs_enabled flips to False, and a second
+        call with nothing left to remove does not raise (absence tolerated)."""
+        from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+        from apscheduler.schedulers.background import BackgroundScheduler
+
+        from scripts.main import create_scheduler_and_register_jobs
+        from swingrl.config.schema import SwingRLConfig
+
+        cfg = SwingRLConfig()
+        cfg.backup.trader_backup_jobs_enabled = True
+        scheduler = BackgroundScheduler(
+            jobstores={"default": SQLAlchemyJobStore(url=f"sqlite:///{tmp_path / 'jobs.sqlite'}")},
+            job_defaults={"coalesce": True, "max_instances": 1},
+        )
+        create_scheduler_and_register_jobs(scheduler, cfg)
+        scheduler.start(paused=True)  # flushes pending jobs to the persistent jobstore
+        try:
+            ids = {job.id for job in scheduler.get_jobs()}
+            assert self.BACKUP_JOB_IDS <= ids
+
+            cfg.backup.trader_backup_jobs_enabled = False
+            create_scheduler_and_register_jobs(scheduler, cfg)
+
+            ids_after = {job.id for job in scheduler.get_jobs()}
+            assert ids_after.isdisjoint(self.BACKUP_JOB_IDS)
+            assert self.NON_BACKUP_JOB_IDS <= ids_after
+
+            # Nothing left to remove now — must not raise.
+            create_scheduler_and_register_jobs(scheduler, cfg)
+        finally:
+            scheduler.shutdown(wait=False)
+
+
 class TestMainInitSequence:
     """Verify init_emergency_flags and init_job_context called before scheduler.start()."""
 
