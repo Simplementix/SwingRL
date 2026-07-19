@@ -297,7 +297,12 @@ class HMMRegimeDetector:
         probs: np.ndarray,
         log_likelihood: float,
     ) -> None:
-        """Write HMM state to PostgreSQL hmm_state_history table.
+        """Upsert HMM state into PostgreSQL hmm_state_history table.
+
+        Idempotent on (environment, date) — the primary key that
+        feature recomputation (``run_features`` re-visiting an already-computed
+        date) would otherwise collide against. On conflict, the newest fit's
+        probabilities/log-likelihood/fitted_at overwrite the existing row.
 
         Args:
             db: PostgreSQL connection (or mock with execute method).
@@ -314,7 +319,13 @@ class HMMRegimeDetector:
         db.execute(
             """INSERT INTO hmm_state_history
                (environment, date, p_bull, p_bear, p_crisis, log_likelihood, fitted_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (environment, date) DO UPDATE SET
+                   p_bull = EXCLUDED.p_bull,
+                   p_bear = EXCLUDED.p_bear,
+                   p_crisis = EXCLUDED.p_crisis,
+                   log_likelihood = EXCLUDED.log_likelihood,
+                   fitted_at = EXCLUDED.fitted_at""",
             [self.environment, dt, p_bull, p_bear, p_crisis, log_likelihood, fitted_at],
         )
 
