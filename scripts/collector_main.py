@@ -305,8 +305,10 @@ def candles_equity_job() -> None:
 
     Owns equity candle freshness while training is paused so the paper trader never reads
     stale bars (USER RULING 2026-07-18). ``run_features`` recomputes both envs (no env-scoped
-    variant), so it runs only when new rows landed. Never raises — an ingestion failure is
-    logged and alerted (the collector sends its own alerts) but the scheduler must survive.
+    variant), so it runs only when new rows landed. Sends an INFO alert on every success
+    (rows added) mirroring the options snapshot "captured" pattern (USER RULING 2026-07-19).
+    Never raises — an ingestion failure is logged and alerted (the collector sends its own
+    alerts) but the scheduler must survive.
     """
     components = get_components()
     config = components["config"]
@@ -315,6 +317,17 @@ def candles_equity_job() -> None:
         if rows > 0:
             run_features(config)
         log.info("candles_equity_job_done", rows_added=rows, features_ran=rows > 0)
+        # USER RULING 2026-07-19: mirror the options snapshot "captured" INFO (D9-style
+        # success visibility) — every successful ingest, not just failures, reaches
+        # Discord. Own inner try: an alerter exception here is a notification failure,
+        # not an ingest failure, so it must not fall into the except below and get
+        # reported as one.
+        try:
+            components["alerter"].send_alert(
+                "info", "Equity candles ingested", f"rows_added={rows}"
+            )
+        except Exception as exc:
+            log.error("candles_equity_info_alert_failed", error=str(exc))
     except Exception as exc:
         log.error("candles_equity_job_failed", error=str(exc))
         components["alerter"].send_alert("warning", "Equity candle ingestion failed", str(exc))
@@ -326,7 +339,9 @@ def candles_crypto_job() -> None:
     Fires a minute past each 4H UTC bar close, ahead of the trader's :05 crypto cycles, so the
     trader reads fresh bars (USER RULING 2026-07-18). Gap-fill runs between ingest and features;
     ``run_features`` recomputes both envs (no env-scoped variant), so it runs when either new
-    rows landed or gaps were filled. Never raises — a failure is logged + alerted only.
+    rows landed or gaps were filled. Sends an INFO alert on every success (rows added + gaps
+    filled) mirroring the options snapshot "captured" pattern (USER RULING 2026-07-19). Never
+    raises — a failure is logged + alerted only.
     """
     components = get_components()
     config = components["config"]
@@ -343,6 +358,16 @@ def candles_crypto_job() -> None:
             gaps_filled=gaps_filled,
             features_ran=features_ran,
         )
+        # USER RULING 2026-07-19: mirror the options snapshot "captured" INFO — see the
+        # equity job's identical comment. Own inner try for the same reason.
+        try:
+            components["alerter"].send_alert(
+                "info",
+                "Crypto candles ingested",
+                f"rows_added={rows} gaps_filled={gaps_filled}",
+            )
+        except Exception as exc:
+            log.error("candles_crypto_info_alert_failed", error=str(exc))
     except Exception as exc:
         log.error("candles_crypto_job_failed", error=str(exc))
         components["alerter"].send_alert("warning", "Crypto candle ingestion failed", str(exc))
