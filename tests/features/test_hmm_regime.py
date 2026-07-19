@@ -7,6 +7,7 @@ Updated for 3-state (bull/bear/crisis) model per Plan 19-02.
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -256,3 +257,75 @@ class TestStoreHmmState:
         sql = mock_db.execute.call_args[0][0]
         assert "p_crisis" in sql
         assert "ADD COLUMN IF NOT EXISTS" in sql
+
+    def test_insert_is_upsert_on_environment_date(self, config: SwingRLConfig) -> None:
+        """store_hmm_state's INSERT carries an ON CONFLICT (environment, date) upsert.
+
+        Recomputation (run_features re-visiting an already-computed date) must
+        refresh the existing row instead of raising a duplicate-key violation
+        against the hmm_state_history_pkey (environment, date) primary key.
+        """
+        from swingrl.features.hmm_regime import HMMRegimeDetector
+
+        detector = HMMRegimeDetector(environment="equity", config=config)
+        mock_db = MagicMock()
+        probs = np.array([[0.7, 0.2, 0.1]])
+        detector.store_hmm_state(
+            db=mock_db,
+            dt=date(2026, 1, 15),
+            probs=probs,
+            log_likelihood=-100.5,
+        )
+        mock_db.execute.assert_called_once()
+        sql = mock_db.execute.call_args[0][0]
+        assert "ON CONFLICT (environment, date) DO UPDATE SET" in sql
+        assert "p_bull = EXCLUDED.p_bull" in sql
+        assert "p_bear = EXCLUDED.p_bear" in sql
+        assert "p_crisis = EXCLUDED.p_crisis" in sql
+        assert "log_likelihood = EXCLUDED.log_likelihood" in sql
+        assert "fitted_at = EXCLUDED.fitted_at" in sql
+
+    def test_double_write_same_key_no_raise_second_wins(
+        self, config: SwingRLConfig, pg_conn: Any
+    ) -> None:
+        """Writing the same (environment, date) twice does not raise; latest values win.
+
+        Reproduces the live 4H-recompute collision against a real PostgreSQL
+        connection: initial_fit -> store, then a recompute that fits fresh
+        probabilities for the same date -> store again. Second write must
+        overwrite the first (newest fit wins), not raise
+        UniqueViolation on hmm_state_history_pkey.
+        """
+        from swingrl.data.postgres_schema import init_postgres_schema
+        from swingrl.features.hmm_regime import HMMRegimeDetector
+
+        init_postgres_schema(pg_conn)
+        pg_conn.commit()
+
+        detector = HMMRegimeDetector(environment="equity", config=config)
+        dt = date(2026, 1, 15)
+
+        first_probs = np.array([[0.7, 0.2, 0.1]])
+        detector.store_hmm_state(db=pg_conn, dt=dt, probs=first_probs, log_likelihood=-100.5)
+        pg_conn.commit()
+
+        second_probs = np.array([[0.1, 0.3, 0.6]])
+        detector.store_hmm_state(db=pg_conn, dt=dt, probs=second_probs, log_likelihood=-55.25)
+        pg_conn.commit()
+
+        row = pg_conn.execute(
+            "SELECT p_bull, p_bear, p_crisis, log_likelihood FROM hmm_state_history "
+            "WHERE environment = %s AND date = %s",
+            ["equity", dt],
+        ).fetchone()
+        assert row is not None
+        assert row["p_bull"] == pytest.approx(0.1)
+        assert row["p_bear"] == pytest.approx(0.3)
+        assert row["p_crisis"] == pytest.approx(0.6)
+        assert row["log_likelihood"] == pytest.approx(-55.25)
+
+        count = pg_conn.execute(
+            "SELECT COUNT(*) AS n FROM hmm_state_history WHERE environment = %s AND date = %s",
+            ["equity", dt],
+        ).fetchone()
+        assert count["n"] == 1
