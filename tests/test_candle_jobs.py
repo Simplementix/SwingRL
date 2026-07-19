@@ -118,7 +118,45 @@ def test_candles_equity_job_failure_alerts_and_does_not_raise(monkeypatch) -> No
     cm.set_components(components)
     cm.candles_equity_job()  # must not raise
     run_features.assert_not_called()
-    assert any(c.args[0] == "warning" for c in components["alerter"].send_alert.call_args_list)
+    calls = components["alerter"].send_alert.call_args_list
+    assert any(c.args[0] == "warning" for c in calls)
+    assert not any(c.args[0] == "info" for c in calls)
+
+
+def test_candles_equity_job_sends_info_on_success(monkeypatch) -> None:
+    """CANDLE-12: USER RULING 2026-07-19 — success sends exactly one INFO alert mirroring
+    the options snapshot "captured" pattern, titled for equity, with the rows count."""
+    monkeypatch.setattr(cm, "run_equity", MagicMock(return_value=5))
+    monkeypatch.setattr(cm, "run_features", MagicMock())
+    components = _components()
+    cm.set_components(components)
+    cm.candles_equity_job()
+    calls = components["alerter"].send_alert.call_args_list
+    info_calls = [c for c in calls if c.args[0] == "info"]
+    assert len(info_calls) == 1
+    level, title, message = info_calls[0].args
+    assert title == "Equity candles ingested"
+    assert "5" in message
+
+
+def test_candles_equity_job_info_alert_failure_does_not_raise(monkeypatch) -> None:
+    """CANDLE-13: the Alerter itself is expected to swallow send failures (httpx errors
+    caught in _post_webhook), but this proves the job is defensively isolated too — an
+    INFO-send exception must not propagate and must not be mistaken for an ingest failure
+    (no 'ingestion failed' warning gets sent)."""
+    monkeypatch.setattr(cm, "run_equity", MagicMock(return_value=3))
+    monkeypatch.setattr(cm, "run_features", MagicMock())
+    components = _components()
+
+    def _raise_on_info(level: str, *args: object, **kwargs: object) -> None:
+        if level == "info":
+            raise RuntimeError("discord webhook down")
+
+    components["alerter"].send_alert.side_effect = _raise_on_info
+    cm.set_components(components)
+    cm.candles_equity_job()  # must not raise
+    calls = components["alerter"].send_alert.call_args_list
+    assert not any(c.args[0] == "warning" for c in calls)
 
 
 # ---------------------------------------------------------------------------
@@ -175,4 +213,44 @@ def test_candles_crypto_job_failure_alerts_and_does_not_raise(monkeypatch) -> No
     cm.set_components(components)
     cm.candles_crypto_job()  # must not raise
     run_features.assert_not_called()
-    assert any(c.args[0] == "warning" for c in components["alerter"].send_alert.call_args_list)
+    calls = components["alerter"].send_alert.call_args_list
+    assert any(c.args[0] == "warning" for c in calls)
+    assert not any(c.args[0] == "info" for c in calls)
+
+
+def test_candles_crypto_job_sends_info_on_success(monkeypatch) -> None:
+    """CANDLE-14: USER RULING 2026-07-19 — success sends exactly one INFO alert mirroring
+    the options snapshot "captured" pattern, titled for crypto, with rows AND gaps filled."""
+    monkeypatch.setattr(cm, "run_crypto", MagicMock(return_value=9))
+    gaps = [MagicMock(filled=True), MagicMock(filled=True), MagicMock(filled=False)]
+    monkeypatch.setattr(cm, "detect_and_fill_crypto_gaps", MagicMock(return_value=gaps))
+    monkeypatch.setattr(cm, "run_features", MagicMock())
+    components = _components()
+    cm.set_components(components)
+    cm.candles_crypto_job()
+    calls = components["alerter"].send_alert.call_args_list
+    info_calls = [c for c in calls if c.args[0] == "info"]
+    assert len(info_calls) == 1
+    level, title, message = info_calls[0].args
+    assert title == "Crypto candles ingested"
+    assert "9" in message
+    assert "2" in message
+
+
+def test_candles_crypto_job_info_alert_failure_does_not_raise(monkeypatch) -> None:
+    """CANDLE-15: an INFO-send exception on the crypto job must not propagate and must not
+    be mistaken for an ingest failure (no 'ingestion failed' warning gets sent)."""
+    monkeypatch.setattr(cm, "run_crypto", MagicMock(return_value=4))
+    monkeypatch.setattr(cm, "detect_and_fill_crypto_gaps", MagicMock(return_value=[]))
+    monkeypatch.setattr(cm, "run_features", MagicMock())
+    components = _components()
+
+    def _raise_on_info(level: str, *args: object, **kwargs: object) -> None:
+        if level == "info":
+            raise RuntimeError("discord webhook down")
+
+    components["alerter"].send_alert.side_effect = _raise_on_info
+    cm.set_components(components)
+    cm.candles_crypto_job()  # must not raise
+    calls = components["alerter"].send_alert.call_args_list
+    assert not any(c.args[0] == "warning" for c in calls)
