@@ -66,6 +66,8 @@ backup:
   backup_dir: /app/backups/         # absolute path in Docker
   offsite_host: ""                  # SET: rsync destination host for off-site backups
   offsite_path: ""                  # SET: rsync destination path
+  # 2026-07-19: host-side dumps + Duplicati are the backup path; trader image has no pg_dump
+  trader_backup_jobs_enabled: false
 
 # NOTE: only the field changed by the 2026-07-16 alert fix is annotated here — the rest
 # of options_collector (provider, symbols, snapshots, backup, ...) is not yet curated

@@ -309,6 +309,15 @@ class BackupConfig(BaseModel):
     backup_dir: str = Field(default="backups/")
     offsite_host: str = Field(default="")
     offsite_path: str = Field(default="")
+    trader_backup_jobs_enabled: bool = Field(
+        default=True,
+        description=(
+            "Register the trader's in-container backup jobs (daily_sqlite_backup, "
+            "weekly_duckdb_backup, monthly_offsite). Default True preserves legacy "
+            "behavior for deployments with a pg_dump binary; set False when backups are "
+            "handled host-side (2026-07-19 ruling: trader image has no pg_dump)."
+        ),
+    )
 
 
 class OptionsSnapshotConfig(BaseModel):

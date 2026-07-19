@@ -1,8 +1,8 @@
 """SwingRL production entrypoint -- APScheduler with cron jobs and stop-price polling.
 
-Initializes all components, registers 12 jobs (6 trading + 3 backup + 1 shadow + 1 trigger +
-1 reconciliation), starts crypto stop-price polling daemon thread, and blocks until
-SIGTERM/SIGINT.
+Initializes all components, registers up to 12 jobs (6 trading + up to 3 config-gated
+backup + 1 shadow + 1 trigger + 1 reconciliation), starts crypto stop-price polling daemon
+thread, and blocks until SIGTERM/SIGINT.
 
 Usage:
     python scripts/main.py --config config/swingrl.yaml
@@ -53,19 +53,35 @@ log = structlog.get_logger(__name__)
 # Lazy import to allow mocking in tests
 try:
     from apscheduler.executors.pool import ThreadPoolExecutor
+    from apscheduler.jobstores.base import JobLookupError
     from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
     from apscheduler.schedulers.background import BackgroundScheduler
 except ImportError:  # pragma: no cover
     BackgroundScheduler = None  # type: ignore[assignment,misc]
+    JobLookupError = Exception  # type: ignore[assignment,misc]
     SQLAlchemyJobStore = None  # type: ignore[assignment,misc]
     ThreadPoolExecutor = None  # type: ignore[assignment,misc]
+
+# The trader's in-container backup jobs (daily + weekly pg_dump, monthly rsync of those
+# dumps). Config-gated by config.backup.trader_backup_jobs_enabled (2026-07-19 ruling: the
+# trader image has no pg_dump binary, so these failed nightly/weekly; host-side dumps +
+# Duplicati already cover backups). Kept as a single tuple so registration and the
+# flag-false cleanup below can never drift apart.
+TRADER_BACKUP_JOB_IDS = ("daily_sqlite_backup", "weekly_duckdb_backup", "monthly_offsite")
 
 
 def create_scheduler_and_register_jobs(
     scheduler: Any,
     config: Any,
 ) -> None:
-    """Register all 12 jobs on the scheduler (6 trading + 3 backup + 1 shadow + 1 trigger + 1 reconciliation).
+    """Register trading/monitoring jobs, plus the trader's backup jobs when enabled.
+
+    9 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation). The
+    3 in-container backup jobs (see TRADER_BACKUP_JOB_IDS) are registered only when
+    config.backup.trader_backup_jobs_enabled is True (default). When False, any of those
+    three ids left behind in the persistent jobstore by a prior run are explicitly removed
+    (replace_existing=True only replaces jobs that are re-registered; it does not drop ids
+    that stop being registered).
 
     Args:
         scheduler: APScheduler BackgroundScheduler instance.
@@ -139,38 +155,42 @@ def create_scheduler_and_register_jobs(
         replace_existing=True,
     )
 
-    # Backup jobs (run even when trading is halted)
-    scheduler.add_job(
-        daily_backup_job,
-        trigger="cron",
-        hour=2,
-        minute=0,
-        timezone="America/New_York",
-        id="daily_sqlite_backup",
-        replace_existing=True,
-    )
+    # Backup jobs (run even when trading is halted) — config-gated (2026-07-19 ruling: no
+    # pg_dump binary in the trader image; host-side dumps + Duplicati are the backup path).
+    if config.backup.trader_backup_jobs_enabled:
+        scheduler.add_job(
+            daily_backup_job,
+            trigger="cron",
+            hour=2,
+            minute=0,
+            timezone="America/New_York",
+            id="daily_sqlite_backup",
+            replace_existing=True,
+        )
 
-    scheduler.add_job(
-        weekly_duckdb_backup_job,
-        trigger="cron",
-        day_of_week="sun",
-        hour=3,
-        minute=0,
-        timezone="America/New_York",
-        id="weekly_duckdb_backup",
-        replace_existing=True,
-    )
+        scheduler.add_job(
+            weekly_duckdb_backup_job,
+            trigger="cron",
+            day_of_week="sun",
+            hour=3,
+            minute=0,
+            timezone="America/New_York",
+            id="weekly_duckdb_backup",
+            replace_existing=True,
+        )
 
-    scheduler.add_job(
-        monthly_offsite_job,
-        trigger="cron",
-        day=1,
-        hour=4,
-        minute=0,
-        timezone="America/New_York",
-        id="monthly_offsite",
-        replace_existing=True,
-    )
+        scheduler.add_job(
+            monthly_offsite_job,
+            trigger="cron",
+            day=1,
+            hour=4,
+            minute=0,
+            timezone="America/New_York",
+            id="monthly_offsite",
+            replace_existing=True,
+        )
+    else:
+        _remove_stale_trader_backup_jobs(scheduler)
 
     # Shadow promotion check (daily at 7 PM ET, after daily summary)
     scheduler.add_job(
@@ -203,7 +223,31 @@ def create_scheduler_and_register_jobs(
         replace_existing=True,
     )
 
-    log.info("scheduler_jobs_registered", count=12)
+    job_count = 9 + (len(TRADER_BACKUP_JOB_IDS) if config.backup.trader_backup_jobs_enabled else 0)
+    log.info("scheduler_jobs_registered", count=job_count)
+
+
+def _remove_stale_trader_backup_jobs(scheduler: Any) -> None:
+    """Drop any persisted trader backup job id when trader_backup_jobs_enabled is False.
+
+    scripts/main.py has no general stale-job sweep (unlike the collector's
+    remove_stale_jobs in scripts/collector_main.py); this is a targeted removal for the
+    three trader backup job ids only. Tolerant of absence -- a job id that was never
+    persisted (e.g. a fresh deployment, or a second call with nothing left to remove) is
+    expected, not an error.
+
+    Args:
+        scheduler: APScheduler BackgroundScheduler instance.
+    """
+    removed: list[str] = []
+    for job_id in TRADER_BACKUP_JOB_IDS:
+        try:
+            scheduler.remove_job(job_id)
+            removed.append(job_id)
+        except JobLookupError:
+            pass
+    if removed:
+        log.info("trader_backup_jobs_removed", removed=removed)
 
 
 def make_signal_handler(
