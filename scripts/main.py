@@ -70,6 +70,17 @@ except ImportError:  # pragma: no cover
 TRADER_BACKUP_JOB_IDS = ("daily_sqlite_backup", "weekly_duckdb_backup", "monthly_offsite")
 
 
+def _job_count(config: Any) -> int:
+    """Number of jobs create_scheduler_and_register_jobs registers for this config.
+
+    9 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation); the
+    3 in-container backup jobs join that count only when
+    config.backup.trader_backup_jobs_enabled is True. Single source of truth for both
+    startup log lines so they can never drift apart.
+    """
+    return 9 + (len(TRADER_BACKUP_JOB_IDS) if config.backup.trader_backup_jobs_enabled else 0)
+
+
 def create_scheduler_and_register_jobs(
     scheduler: Any,
     config: Any,
@@ -78,10 +89,14 @@ def create_scheduler_and_register_jobs(
 
     9 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation). The
     3 in-container backup jobs (see TRADER_BACKUP_JOB_IDS) are registered only when
-    config.backup.trader_backup_jobs_enabled is True (default). When False, any of those
-    three ids left behind in the persistent jobstore by a prior run are explicitly removed
-    (replace_existing=True only replaces jobs that are re-registered; it does not drop ids
-    that stop being registered).
+    config.backup.trader_backup_jobs_enabled is True (default).
+
+    Registration only -- no stale-job removal here. This can run on a not-yet-started
+    scheduler (build_app() calls it before scheduler.start()), and remove_job() on a
+    STOPPED scheduler only sees this process's in-memory pending-jobs list, never the
+    persistent jobstore -- so a job persisted by a *prior* process run would silently
+    survive. See _remove_stale_trader_backup_jobs(), which callers must invoke AFTER
+    scheduler.start() (mirrors scripts/collector_main.py's remove_stale_jobs D4 pattern).
 
     Args:
         scheduler: APScheduler BackgroundScheduler instance.
@@ -189,8 +204,6 @@ def create_scheduler_and_register_jobs(
             id="monthly_offsite",
             replace_existing=True,
         )
-    else:
-        _remove_stale_trader_backup_jobs(scheduler)
 
     # Shadow promotion check (daily at 7 PM ET, after daily summary)
     scheduler.add_job(
@@ -223,22 +236,36 @@ def create_scheduler_and_register_jobs(
         replace_existing=True,
     )
 
-    job_count = 9 + (len(TRADER_BACKUP_JOB_IDS) if config.backup.trader_backup_jobs_enabled else 0)
-    log.info("scheduler_jobs_registered", count=job_count)
+    log.info("scheduler_jobs_registered", count=_job_count(config))
 
 
-def _remove_stale_trader_backup_jobs(scheduler: Any) -> None:
+def _remove_stale_trader_backup_jobs(scheduler: Any, config: Any) -> list[str]:
     """Drop any persisted trader backup job id when trader_backup_jobs_enabled is False.
 
-    scripts/main.py has no general stale-job sweep (unlike the collector's
-    remove_stale_jobs in scripts/collector_main.py); this is a targeted removal for the
-    three trader backup job ids only. Tolerant of absence -- a job id that was never
-    persisted (e.g. a fresh deployment, or a second call with nothing left to remove) is
-    expected, not an error.
+    MUST be called AFTER scheduler.start() -- not from create_scheduler_and_register_jobs()
+    or anywhere else pre-start. APScheduler's remove_job()/get_jobs() on a STOPPED
+    scheduler only consult self._pending_jobs (jobs added earlier in *this* process, not
+    yet flushed); they never touch the actual jobstore file. A job persisted by a *previous*
+    process run (e.g. the last deploy, before this ruling flipped the flag) is therefore
+    invisible pre-start -- remove_job() raises JobLookupError, which looks like "already
+    gone" but really means "never checked." Calling this after start() is what makes it see
+    (and remove) jobs a prior run persisted. Mirrors scripts/collector_main.py's
+    remove_stale_jobs D4 pattern (that call is likewise sequenced after scheduler.start()
+    in collector_main.main()).
+
+    No-ops when the flag is True (the three ids are the desired state, not stale). Tolerant
+    of absence otherwise -- a job id that was never persisted (e.g. a fresh deployment, or a
+    second call with nothing left to remove) is expected, not an error.
 
     Args:
-        scheduler: APScheduler BackgroundScheduler instance.
+        scheduler: APScheduler BackgroundScheduler instance. Must already be started.
+        config: Validated SwingRLConfig.
+
+    Returns:
+        List of job ids actually removed (empty when the flag is True or nothing is stale).
     """
+    if config.backup.trader_backup_jobs_enabled:
+        return []
     removed: list[str] = []
     for job_id in TRADER_BACKUP_JOB_IDS:
         try:
@@ -248,6 +275,7 @@ def _remove_stale_trader_backup_jobs(scheduler: Any) -> None:
             pass
     if removed:
         log.info("trader_backup_jobs_removed", removed=removed)
+    return removed
 
 
 def make_signal_handler(
@@ -362,7 +390,7 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
     log.info(
         "swingrl_app_built",
         jobstore_path=config.scheduler.apscheduler_db_path,
-        job_count=12,
+        job_count=_job_count(config),
     )
 
     return {
@@ -385,6 +413,7 @@ def main() -> None:
     app = build_app(config_path=args.config)
     scheduler = app["scheduler"]
     stop_event = app["stop_event"]
+    config = app["config"]
 
     handler = make_signal_handler(scheduler, stop_event)
     signal.signal(signal.SIGTERM, handler)
@@ -392,6 +421,9 @@ def main() -> None:
 
     if scheduler is not None:
         scheduler.start()
+        # Must run AFTER start() -- see _remove_stale_trader_backup_jobs docstring. A job
+        # persisted by a prior process run is invisible to remove_job() pre-start.
+        _remove_stale_trader_backup_jobs(scheduler, config)
         log.info("scheduler_started")
     else:
         log.info("scheduler_skipped_idle_mode")

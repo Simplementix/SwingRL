@@ -51,6 +51,10 @@ class TestMainRegistersJobs:
         """PAPER-12: main.py registers 12 cron jobs with correct IDs."""
         from scripts.main import create_scheduler_and_register_jobs
 
+        # Explicit (review minor finding #4): an unconfigured MagicMock attribute is
+        # truthy by default, so this passed before by coincidence, not because the flag
+        # was actually exercised. TestBackupJobGating covers both explicit states.
+        mock_config.backup.trader_backup_jobs_enabled = True
         mock_scheduler = MagicMock()
         create_scheduler_and_register_jobs(mock_scheduler, mock_config)
 
@@ -201,60 +205,151 @@ class TestBackupJobGating:
         assert job_ids == self.NON_BACKUP_JOB_IDS
         assert job_ids.isdisjoint(self.BACKUP_JOB_IDS)
 
-    def test_flag_false_removes_stale_backup_jobs_tolerant_of_absence(
-        self, mock_config: MagicMock
-    ) -> None:
-        """No stale-job sweep exists in scripts/main.py (unlike the collector's
+    def test_remove_stale_backup_jobs_tolerant_of_absence(self, mock_config: MagicMock) -> None:
+        """No general stale-job sweep exists in scripts/main.py (unlike the collector's
         remove_stale_jobs), so replace_existing=True alone would leave a previously
         persisted backup job behind once the flag flips to False. The targeted cleanup
-        must attempt removal of all three ids and swallow JobLookupError when a job id
-        was never persisted (e.g. a fresh deployment)."""
+        (called by main() AFTER scheduler.start() -- see TestMainStaleBackupCleanupOrder
+        and test_flag_false_removes_persisted_stale_backup_job_across_restart below) must
+        attempt removal of all three ids and swallow JobLookupError when a job id was never
+        persisted (e.g. a fresh deployment)."""
         from apscheduler.jobstores.base import JobLookupError
 
-        from scripts.main import create_scheduler_and_register_jobs
+        from scripts.main import _remove_stale_trader_backup_jobs
 
         mock_config.backup.trader_backup_jobs_enabled = False
         mock_scheduler = MagicMock()
         mock_scheduler.remove_job.side_effect = JobLookupError("missing")
 
-        create_scheduler_and_register_jobs(mock_scheduler, mock_config)
+        removed = _remove_stale_trader_backup_jobs(mock_scheduler, mock_config)
 
         removed_ids = {c.args[0] for c in mock_scheduler.remove_job.call_args_list}
         assert removed_ids == self.BACKUP_JOB_IDS
+        # JobLookupError was swallowed for every id, so nothing is reported as removed.
+        assert removed == []
 
-    def test_flag_false_removes_persisted_stale_backup_job(self, tmp_path) -> None:
-        """End-to-end with a real SQLAlchemy jobstore: a backup job persisted while the flag
-        was True is dropped once trader_backup_jobs_enabled flips to False, and a second
-        call with nothing left to remove does not raise (absence tolerated)."""
+    def test_remove_stale_backup_jobs_noop_when_flag_true(self, mock_config: MagicMock) -> None:
+        """Flag true: the three ids are the desired state, not stale -- no removal attempt
+        at all (would otherwise race against the jobs this same boot just registered)."""
+        from scripts.main import _remove_stale_trader_backup_jobs
+
+        mock_config.backup.trader_backup_jobs_enabled = True
+        mock_scheduler = MagicMock()
+
+        removed = _remove_stale_trader_backup_jobs(mock_scheduler, mock_config)
+
+        mock_scheduler.remove_job.assert_not_called()
+        assert removed == []
+
+    def test_flag_false_removes_persisted_stale_backup_job_across_restart(self, tmp_path) -> None:
+        """Reproduces the real production sequence across a redeploy/restart, the exact
+        scenario the CRITICAL review finding proved broken.
+
+        Process 1 (prior deploy): flag True, register, start, persist the three backup
+        jobs to the on-disk jobstore file, shut down.
+
+        Process 2 (this deploy): a FRESH BackgroundScheduler instance -- not the same
+        object as process 1, mirroring build_app() constructing a brand-new scheduler on
+        every boot -- registers with the flag False via create_scheduler_and_register_jobs()
+        BEFORE scheduler.start() (exactly like build_app() calls it), then starts, then
+        runs _remove_stale_trader_backup_jobs() AFTER start() (exactly like main() calls
+        it). Only that ordering can see jobs process 1 persisted: calling the cleanup
+        pre-start (the bug this fixes) would leave them behind, because remove_job() on a
+        STOPPED scheduler only consults this process's in-memory pending-jobs list, never
+        the jobstore file a prior process wrote to.
+        """
         from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
         from apscheduler.schedulers.background import BackgroundScheduler
 
-        from scripts.main import create_scheduler_and_register_jobs
+        from scripts.main import (
+            _remove_stale_trader_backup_jobs,
+            create_scheduler_and_register_jobs,
+        )
         from swingrl.config.schema import SwingRLConfig
 
-        cfg = SwingRLConfig()
-        cfg.backup.trader_backup_jobs_enabled = True
-        scheduler = BackgroundScheduler(
-            jobstores={"default": SQLAlchemyJobStore(url=f"sqlite:///{tmp_path / 'jobs.sqlite'}")},
+        jobstore_url = f"sqlite:///{tmp_path / 'jobs.sqlite'}"
+
+        # --- Process 1 (prior deploy): flag True, register, start, persist, shut down. ---
+        cfg1 = SwingRLConfig()
+        cfg1.backup.trader_backup_jobs_enabled = True
+        scheduler1 = BackgroundScheduler(
+            jobstores={"default": SQLAlchemyJobStore(url=jobstore_url)},
             job_defaults={"coalesce": True, "max_instances": 1},
         )
-        create_scheduler_and_register_jobs(scheduler, cfg)
-        scheduler.start(paused=True)  # flushes pending jobs to the persistent jobstore
+        create_scheduler_and_register_jobs(scheduler1, cfg1)
+        scheduler1.start(paused=True)  # flushes pending jobs to the persistent jobstore
+        ids_persisted = {job.id for job in scheduler1.get_jobs()}
+        assert self.BACKUP_JOB_IDS <= ids_persisted
+        scheduler1.shutdown(wait=False)
+
+        # --- Process 2 (this deploy): FRESH scheduler, flag now False. Mirrors
+        # build_app() (register before start) then main() (cleanup after start). ---
+        cfg2 = SwingRLConfig()
+        cfg2.backup.trader_backup_jobs_enabled = False
+        scheduler2 = BackgroundScheduler(
+            jobstores={"default": SQLAlchemyJobStore(url=jobstore_url)},
+            job_defaults={"coalesce": True, "max_instances": 1},
+        )
+        create_scheduler_and_register_jobs(scheduler2, cfg2)  # build_app(): before start()
+        scheduler2.start(paused=True)
         try:
-            ids = {job.id for job in scheduler.get_jobs()}
-            assert self.BACKUP_JOB_IDS <= ids
+            removed = _remove_stale_trader_backup_jobs(scheduler2, cfg2)  # main(): after start()
+            assert set(removed) == self.BACKUP_JOB_IDS
 
-            cfg.backup.trader_backup_jobs_enabled = False
-            create_scheduler_and_register_jobs(scheduler, cfg)
-
-            ids_after = {job.id for job in scheduler.get_jobs()}
-            assert ids_after.isdisjoint(self.BACKUP_JOB_IDS)
+            ids_after = {job.id for job in scheduler2.get_jobs()}
+            assert ids_after.isdisjoint(self.BACKUP_JOB_IDS), (
+                f"stale backup ids survived a restart: {ids_after & self.BACKUP_JOB_IDS}"
+            )
             assert self.NON_BACKUP_JOB_IDS <= ids_after
 
-            # Nothing left to remove now — must not raise.
-            create_scheduler_and_register_jobs(scheduler, cfg)
+            # Nothing left to remove now — must not raise (absence tolerated).
+            removed_again = _remove_stale_trader_backup_jobs(scheduler2, cfg2)
+            assert removed_again == []
         finally:
-            scheduler.shutdown(wait=False)
+            scheduler2.shutdown(wait=False)
+
+
+class TestMainStaleBackupCleanupOrder:
+    """CRITICAL fix regression guard: main() must invoke the stale-backup cleanup strictly
+    AFTER scheduler.start(), never before. This pins the call order at the exact call site
+    the review flagged, independent of the real-jobstore proof above."""
+
+    def test_main_calls_cleanup_after_scheduler_start(
+        self, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A future refactor that moves the cleanup call back before scheduler.start()
+        (or back inside create_scheduler_and_register_jobs()) would reintroduce the bug
+        silently; this test fails immediately if that ordering regresses."""
+        import scripts.main as main_mod
+
+        call_order: list[str] = []
+        mock_scheduler = MagicMock()
+        mock_scheduler.start.side_effect = lambda *a, **k: call_order.append("start")
+        mock_stop_event = MagicMock()
+
+        monkeypatch.setattr(
+            main_mod,
+            "build_app",
+            lambda config_path: {
+                "scheduler": mock_scheduler,
+                "stop_event": mock_stop_event,
+                "config": mock_config,
+            },
+        )
+
+        def fake_cleanup(scheduler: MagicMock, config: MagicMock) -> list[str]:
+            call_order.append("cleanup")
+            return []
+
+        monkeypatch.setattr(main_mod, "_remove_stale_trader_backup_jobs", fake_cleanup)
+        monkeypatch.setattr(main_mod.signal, "signal", MagicMock())
+        monkeypatch.setattr(main_mod.sys, "argv", ["main.py"])
+
+        with pytest.raises(SystemExit) as exc_info:
+            main_mod.main()
+
+        assert exc_info.value.code == 0
+        assert call_order == ["start", "cleanup"]
 
 
 class TestMainInitSequence:
