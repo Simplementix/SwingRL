@@ -25,6 +25,12 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from swingrl.config.schema import OptionsSnapshotConfig, SwingRLConfig, load_config
 from swingrl.data.calendar import CalendarIngestor, run_calendar_staleness_check
 from swingrl.data.db import DatabaseManager
+from swingrl.data.ingest_all import (
+    detect_and_fill_crypto_gaps,
+    run_crypto,
+    run_equity,
+    run_features,
+)
 from swingrl.data.options import market_calendar
 from swingrl.data.options.audit import run_data_quality_audit
 from swingrl.data.options.cboe_client import CboeChainClient
@@ -46,6 +52,11 @@ FIXED_JOB_IDS = [
 # updates never require a trader rebuild (A30/D10). Registered only when calendar.enabled.
 CALENDAR_JOB_IDS = ["calendar_ingest", "calendar_staleness"]
 
+# Candle-ingestion jobs (USER RULING 2026-07-18): the collector owns OHLCV freshness while
+# training is paused, so the paper trader never reads stale bars. Registered only when
+# options_collector.candle_jobs.enabled.
+CANDLE_JOB_IDS = ["candles_equity", "candles_crypto"]
+
 
 def _snapshot_job_id(label: str) -> str:
     """Stable APScheduler job id for a snapshot label."""
@@ -61,6 +72,8 @@ def all_job_ids(config: SwingRLConfig) -> list[str]:
     ids = [_snapshot_job_id(s.label) for s in config.options_collector.snapshots] + FIXED_JOB_IDS
     if config.calendar.enabled:
         ids += CALENDAR_JOB_IDS
+    if config.options_collector.candle_jobs.enabled:
+        ids += CANDLE_JOB_IDS
     return ids
 
 
@@ -287,6 +300,54 @@ def calendar_staleness_job() -> None:
     run_calendar_staleness_check(components["config"], components["db"], components["alerter"])
 
 
+def candles_equity_job() -> None:
+    """Picklable equity-candle job (C1): incremental daily OHLCV ingest, then features.
+
+    Owns equity candle freshness while training is paused so the paper trader never reads
+    stale bars (USER RULING 2026-07-18). ``run_features`` recomputes both envs (no env-scoped
+    variant), so it runs only when new rows landed. Never raises — an ingestion failure is
+    logged and alerted (the collector sends its own alerts) but the scheduler must survive.
+    """
+    components = get_components()
+    config = components["config"]
+    try:
+        rows = run_equity(config, backfill=False)
+        if rows > 0:
+            run_features(config)
+        log.info("candles_equity_job_done", rows_added=rows, features_ran=rows > 0)
+    except Exception as exc:
+        log.error("candles_equity_job_failed", error=str(exc))
+        components["alerter"].send_alert("warning", "Equity candle ingestion failed", str(exc))
+
+
+def candles_crypto_job() -> None:
+    """Picklable crypto-candle job (C1): incremental 4H OHLCV ingest, gap-fill, then features.
+
+    Fires a minute past each 4H UTC bar close, ahead of the trader's :05 crypto cycles, so the
+    trader reads fresh bars (USER RULING 2026-07-18). Gap-fill runs between ingest and features;
+    ``run_features`` recomputes both envs (no env-scoped variant), so it runs when either new
+    rows landed or gaps were filled. Never raises — a failure is logged + alerted only.
+    """
+    components = get_components()
+    config = components["config"]
+    try:
+        rows = run_crypto(config, backfill=False)
+        gap_results = detect_and_fill_crypto_gaps(config)
+        gaps_filled = sum(1 for g in gap_results if g.filled)
+        features_ran = rows > 0 or gaps_filled > 0
+        if features_ran:
+            run_features(config)
+        log.info(
+            "candles_crypto_job_done",
+            rows_added=rows,
+            gaps_filled=gaps_filled,
+            features_ran=features_ran,
+        )
+    except Exception as exc:
+        log.error("candles_crypto_job_failed", error=str(exc))
+        components["alerter"].send_alert("warning", "Crypto candle ingestion failed", str(exc))
+
+
 def remove_stale_jobs(scheduler: Any, config: SwingRLConfig) -> list[str]:
     """Drop any persisted job whose id is no longer in the desired set (D4).
 
@@ -392,6 +453,34 @@ def register_jobs(scheduler: Any, components: dict[str, Any]) -> None:
             minute=cm,
             timezone="America/New_York",
             id="calendar_staleness",
+            replace_existing=True,
+        )
+
+    # Candle ingestion (USER RULING 2026-07-18): the collector keeps OHLCV bars fresh while
+    # training is paused (it used to run before every iteration), so the paper trader never
+    # reads stale bars. Existing Alpaca/Binance ingestors — CBOE stays options-only.
+    cj = oc.candle_jobs
+    if cj.enabled:
+        eh, em = _hhmm(cj.equity_time_et)
+        scheduler.add_job(
+            candles_equity_job,
+            trigger="cron",
+            day_of_week="mon-fri",
+            hour=eh,
+            minute=em,
+            timezone="America/New_York",
+            id="candles_equity",
+            misfire_grace_time=cj.equity_misfire_grace_s,
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            candles_crypto_job,
+            trigger="cron",
+            hour="0,4,8,12,16,20",
+            minute=cj.crypto_minute,
+            timezone="UTC",
+            id="candles_crypto",
+            misfire_grace_time=cj.crypto_misfire_grace_s,
             replace_existing=True,
         )
 

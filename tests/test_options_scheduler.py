@@ -34,8 +34,9 @@ def test_register_jobs_registers_snapshots_plus_fixed() -> None:
     registered = {call.kwargs["id"] for call in scheduler.add_job.call_args_list}
     assert registered == set(all_job_ids(cfg))
     assert {"options_decision_snapshot", "options_eod_snapshot"} <= registered
-    # 2 default snapshots + 3 fixed + 2 calendar jobs (Plan A Task 11, calendar.enabled default)
-    assert len(registered) == 7
+    # 2 default snapshots + 3 fixed + 2 calendar jobs (Plan A Task 11) + 2 candle jobs
+    # (2026-07-18); all four optional jobs enabled by default.
+    assert len(registered) == 9
 
 
 def test_snapshot_jobs_use_pull_time_and_per_label_grace() -> None:
@@ -167,7 +168,7 @@ def test_jobs_are_serializable_in_sqlalchemy_jobstore(tmp_path) -> None:
     try:
         ids = {job.id for job in scheduler.get_jobs()}
         assert ids == set(all_job_ids(cfg))
-        assert len(ids) == 7  # + 2 calendar jobs (Plan A Task 11)
+        assert len(ids) == 9  # + 2 calendar (Task 11) + 2 candle jobs (2026-07-18)
     finally:
         scheduler.shutdown(wait=False)
 
@@ -208,7 +209,7 @@ def test_remove_stale_jobs_drops_unknown_ids(tmp_path) -> None:
         ids = {j.id for j in scheduler.get_jobs()}
         assert "options_LEGACY_snapshot" not in ids
         assert ids == set(all_job_ids(cfg))
-        assert len(ids) == 7  # + 2 calendar jobs (Plan A Task 11)
+        assert len(ids) == 9  # + 2 calendar (Task 11) + 2 candle jobs (2026-07-18)
     finally:
         scheduler.shutdown(wait=False)
 
