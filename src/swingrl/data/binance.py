@@ -76,6 +76,22 @@ _KLINES_COLUMNS: list[str] = [
 _MICROSECOND_THRESHOLD: int = 2_000_000_000_000
 
 
+def _incomplete_bar_open_ms(now_ms: int) -> int:
+    """Open time (ms) of the 4H bar currently in progress — the exclusive upper bound.
+
+    Flooring ``now_ms`` to the 4H grid yields the openTime of the bar that is still
+    forming. Any kline with ``openTime >= this value`` is incomplete and must never be
+    stored. The last *completed* bar opened one interval earlier.
+
+    Args:
+        now_ms: Current wall-clock time in epoch milliseconds.
+
+    Returns:
+        The current incomplete bar's open time in epoch milliseconds.
+    """
+    return now_ms - (now_ms % FOUR_HOURS_MS)
+
+
 class BinanceIngestor(BaseIngestor):
     """Ingest crypto 4H OHLCV bars from Binance.US.
 
@@ -202,6 +218,25 @@ class BinanceIngestor(BaseIngestor):
         df["volume"] = df["volume_quote"]
         return df[["open", "high", "low", "close", "volume"]]
 
+    def _drop_incomplete_bars(self, df: pd.DataFrame, boundary_ms: int) -> pd.DataFrame:
+        """Drop rows whose bar open time is at or after ``boundary_ms``.
+
+        Belt-and-braces guard paired with the exclusive API ``endTime``: even if a
+        future API quirk returns the just-opened partial bar (openTime == boundary),
+        this removes it by open time so it can never be stored.
+
+        Args:
+            df: Parsed OHLCV DataFrame with a UTC DatetimeIndex.
+            boundary_ms: Open time (ms) of the current incomplete bar (exclusive bound).
+
+        Returns:
+            DataFrame containing only bars whose open time is strictly before boundary.
+        """
+        if df.empty:
+            return df
+        boundary_ts = pd.Timestamp(boundary_ms, unit="ms", tz="UTC")
+        return df[df.index < boundary_ts]
+
     def fetch(self, symbol: str, since: str | None = None) -> pd.DataFrame:
         """Fetch 4H OHLCV bars for a crypto symbol.
 
@@ -235,19 +270,23 @@ class BinanceIngestor(BaseIngestor):
             start_ms = int(pd.Timestamp(since, tz="UTC").timestamp() * 1000)
 
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
-        # Cap to last completed 4H bar boundary (exclude current incomplete bar)
-        now_ms = now_ms - (now_ms % FOUR_HOURS_MS)
+        # Open time of the current incomplete bar — the EXCLUSIVE upper bound. Any bar
+        # with openTime >= boundary_ms is still forming and must never be stored.
+        boundary_ms = _incomplete_bar_open_ms(now_ms)
+        # Binance endTime is INCLUSIVE of a kline whose openTime equals it, so cap the
+        # request one ms below the boundary to exclude the just-opened partial bar.
+        end_ms = boundary_ms - 1
 
         # Nothing to fetch if data is already up to date
-        if start_ms >= now_ms:
+        if start_ms >= boundary_ms:
             log.info("binance_fetch_skip_up_to_date", symbol=symbol)
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
         all_klines: list[list[str | int]] = []
         current_start = start_ms
 
-        while current_start < now_ms:
-            batch = self._fetch_klines(symbol, "4h", current_start, now_ms)
+        while current_start < boundary_ms:
+            batch = self._fetch_klines(symbol, "4h", current_start, end_ms)
             if not batch:
                 break
             all_klines.extend(batch)
@@ -255,7 +294,8 @@ class BinanceIngestor(BaseIngestor):
             last_open_time = int(batch[-1][0])
             current_start = last_open_time + FOUR_HOURS_MS
 
-        return self._parse_klines(all_klines)
+        # Belt-and-braces: drop any incomplete bar that slipped through the API param.
+        return self._drop_incomplete_bars(self._parse_klines(all_klines), boundary_ms)
 
     def validate(
         self,
@@ -443,19 +483,23 @@ class BinanceIngestor(BaseIngestor):
         # Phase 2: Fetch API data from (stitch - overlap) to end
         overlap_start = stitch_ts - pd.Timedelta(days=30)
         api_start_ms = int(overlap_start.timestamp() * 1000)
-        now_ms = int(end_ts.timestamp() * 1000)
+        # Same completed-bar cap as fetch(): when end_date defaults to now, a plain
+        # inclusive endTime would freeze the just-opened partial bar (the 2026-07-18
+        # backfill stored a 2h19m partial). Exclude anything at/after the boundary.
+        boundary_ms = _incomplete_bar_open_ms(int(end_ts.timestamp() * 1000))
+        end_ms = boundary_ms - 1
 
         all_klines: list[list[str | int]] = []
         current_start = api_start_ms
-        while current_start < now_ms:
-            batch = self._fetch_klines(symbol, "4h", current_start, now_ms)
+        while current_start < boundary_ms:
+            batch = self._fetch_klines(symbol, "4h", current_start, end_ms)
             if not batch:
                 break
             all_klines.extend(batch)
             last_open_time = int(batch[-1][0])
             current_start = last_open_time + FOUR_HOURS_MS
 
-        api_df = self._parse_klines(all_klines)
+        api_df = self._drop_incomplete_bars(self._parse_klines(all_klines), boundary_ms)
 
         # Phase 3: Validate stitch
         self._validate_stitch(archive_df, api_df)
