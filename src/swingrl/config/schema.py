@@ -361,6 +361,24 @@ class OptionsBackupConfig(BaseModel):
     time_et: str = Field(default="02:30")
 
 
+class CandleJobsConfig(BaseModel):
+    """Collector-scheduled OHLCV candle ingestion (equity daily + crypto 4H).
+
+    Training used to keep candles fresh by running the ingest pipeline before every
+    iteration; with training paused mid-redesign, the collector owns candle freshness so the
+    paper trader never reads stale bars (USER RULING 2026-07-18). Both jobs call the EXISTING
+    Alpaca/Binance ingestors — CBOE stays options-only.
+    """
+
+    enabled: bool = Field(default=True)
+    # After the 16:35 EOD options snapshot and outside the 15:30–16:45 ET quiet window.
+    equity_time_et: str = Field(default="16:50")  # HH:MM, Mon–Fri
+    # Minute past each 4H UTC bar close (hours 0,4,8,12,16,20) — ahead of the trader's :05 cycles.
+    crypto_minute: int = Field(default=1, ge=0, le=59)
+    equity_misfire_grace_s: int = Field(default=21600, gt=0)
+    crypto_misfire_grace_s: int = Field(default=10800, gt=0)
+
+
 class OptionsCollectorConfig(BaseModel):
     """EOD option-chain collector configuration (spec §5 as amended §17)."""
 
@@ -392,6 +410,7 @@ class OptionsCollectorConfig(BaseModel):
     postgres_store_raw_json: bool = Field(default=True)
     integrity: OptionsIntegrityConfig = Field(default_factory=OptionsIntegrityConfig)
     backup: OptionsBackupConfig = Field(default_factory=OptionsBackupConfig)
+    candle_jobs: CandleJobsConfig = Field(default_factory=CandleJobsConfig)
 
 
 class CalendarConfig(BaseModel):

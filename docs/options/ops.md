@@ -76,7 +76,9 @@ session; and the next boot's self-check (below) catches anything still missing b
 ## Jobs & schedule
 
 One job per configured snapshot (`options_collector.snapshots` in `config/swingrl.yaml`) plus
-three fixed jobs. All times are `America/New_York`, Mon–Fri unless noted.
+three fixed jobs, and optional calendar + candle jobs (gated on their `enabled` flags). All
+times are `America/New_York`, Mon–Fri unless noted — except `candles_crypto`, which runs on a
+UTC 4H grid.
 
 | Job id | Trigger (ET) | Represents / does |
 |---|---|---|
@@ -85,6 +87,14 @@ three fixed jobs. All times are `America/New_York`, Mon–Fri unless noted.
 | `options_health_check` | 17:15 | Scans the last `health_lookback_days` (3) NYSE sessions for missing/incomplete snapshots per symbol. CRITICAL if a whole snapshot is missing for any session; WARNING if only some symbols are missing. |
 | `options_data_audit` | 1st of month, 18:00 | Runs `run_data_quality_audit` over the trailing 30 days (greeks range, crossed markets, OI-null, OI same-day stability). CRITICAL on any failure; INFO digest (rows/median IV per symbol) on pass. Fires on the calendar day regardless of weekday. |
 | `options_offsite_backup` | 02:30, every day | `rclone sync data/options_eod/cboe → b2:swingrl-options`. Not trading-day-gated (runs weekends too, harmlessly a no-op sync). WARNING on failure. |
+| `candles_equity` | `candle_jobs.equity_time_et` (16:50), Mon–Fri | Incremental daily-bar ingest via `run_equity(config, backfill=False)`, then `run_features(config)` only when new rows landed. Owns equity OHLCV freshness while training is paused (2026-07-18). `misfire_grace_time=candle_jobs.equity_misfire_grace_s` (6h). WARNING on ingestion failure — never raises (the scheduler survives). |
+| `candles_crypto` | `candle_jobs.crypto_minute` (:01) past 4H UTC closes 0,4,8,12,16,20 | Incremental 4H-bar ingest via `run_crypto(config, backfill=False)`, then `detect_and_fill_crypto_gaps(config)`, then `run_features(config)` when new rows OR gaps filled. Fires ahead of the trader's :05 crypto cycles so it reads fresh bars. `misfire_grace_time=candle_jobs.crypto_misfire_grace_s` (3h). WARNING on failure — never raises. |
+
+Both candle jobs are optional, gated on `options_collector.candle_jobs.enabled` (default on), and
+drop out of the keep-set when disabled. `run_features` has no env-scoped variant, so each job
+recomputes both equity and crypto features on a new-rows run. They call the EXISTING
+Alpaca/Binance ingestors — CBOE stays options-only ("NEVER replace Alpaca/Binance for trader
+candles", source-seams ruling 2026-07-14).
 
 Snapshot jobs additionally skip themselves entirely on non-trading days
 (`guarded_snapshot` checks `market_calendar.is_trading_day`) — no separate holiday

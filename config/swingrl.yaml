@@ -104,6 +104,12 @@ options_collector:
     enabled: true
     rclone_remote: "b2:swingrl-options"
     time_et: "02:30"
+  candle_jobs:                      # 2026-07-18: collector keeps OHLCV bars fresh (training paused); existing Alpaca/Binance ingestors, CBOE stays options-only
+    enabled: true
+    equity_time_et: "16:50"         # Mon–Fri; after the 16:35 eod snapshot, outside the 15:30–16:45 quiet window
+    crypto_minute: 1                # minute past each 4H UTC bar close (0,4,8,12,16,20), ahead of the trader's :05 cycles
+    equity_misfire_grace_s: 21600   # 6h: a late equity daily bar still valid to capture much later
+    crypto_misfire_grace_s: 10800   # 3h: within a 4H cycle, past that skip rather than double-fire
 
 calendar:                           # Plan A Task 11: FRED + FOMC -> calendar_events (jobs run in swingrl-collector)
   enabled: true
