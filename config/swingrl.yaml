@@ -77,6 +77,8 @@ backup:
   backup_dir: backups/              # relative to repo root
   # offsite_host: ""                # rsync destination host (production only)
   # offsite_path: ""                # rsync destination path (production only)
+  # 2026-07-19: host-side dumps + Duplicati are the backup path; trader image has no pg_dump
+  trader_backup_jobs_enabled: false
 
 options_collector:
   enabled: true

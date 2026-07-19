@@ -1,8 +1,8 @@
 """SwingRL production entrypoint -- APScheduler with cron jobs and stop-price polling.
 
-Initializes all components, registers 12 jobs (6 trading + 3 backup + 1 shadow + 1 trigger +
-1 reconciliation), starts crypto stop-price polling daemon thread, and blocks until
-SIGTERM/SIGINT.
+Initializes all components, registers up to 12 jobs (6 trading + up to 3 config-gated
+backup + 1 shadow + 1 trigger + 1 reconciliation), starts crypto stop-price polling daemon
+thread, and blocks until SIGTERM/SIGINT.
 
 Usage:
     python scripts/main.py --config config/swingrl.yaml
@@ -53,19 +53,50 @@ log = structlog.get_logger(__name__)
 # Lazy import to allow mocking in tests
 try:
     from apscheduler.executors.pool import ThreadPoolExecutor
+    from apscheduler.jobstores.base import JobLookupError
     from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
     from apscheduler.schedulers.background import BackgroundScheduler
 except ImportError:  # pragma: no cover
     BackgroundScheduler = None  # type: ignore[assignment,misc]
+    JobLookupError = Exception  # type: ignore[assignment,misc]
     SQLAlchemyJobStore = None  # type: ignore[assignment,misc]
     ThreadPoolExecutor = None  # type: ignore[assignment,misc]
+
+# The trader's in-container backup jobs (daily + weekly pg_dump, monthly rsync of those
+# dumps). Config-gated by config.backup.trader_backup_jobs_enabled (2026-07-19 ruling: the
+# trader image has no pg_dump binary, so these failed nightly/weekly; host-side dumps +
+# Duplicati already cover backups). Kept as a single tuple so registration and the
+# flag-false cleanup below can never drift apart.
+TRADER_BACKUP_JOB_IDS = ("daily_sqlite_backup", "weekly_duckdb_backup", "monthly_offsite")
+
+
+def _job_count(config: Any) -> int:
+    """Number of jobs create_scheduler_and_register_jobs registers for this config.
+
+    9 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation); the
+    3 in-container backup jobs join that count only when
+    config.backup.trader_backup_jobs_enabled is True. Single source of truth for both
+    startup log lines so they can never drift apart.
+    """
+    return 9 + (len(TRADER_BACKUP_JOB_IDS) if config.backup.trader_backup_jobs_enabled else 0)
 
 
 def create_scheduler_and_register_jobs(
     scheduler: Any,
     config: Any,
 ) -> None:
-    """Register all 12 jobs on the scheduler (6 trading + 3 backup + 1 shadow + 1 trigger + 1 reconciliation).
+    """Register trading/monitoring jobs, plus the trader's backup jobs when enabled.
+
+    9 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation). The
+    3 in-container backup jobs (see TRADER_BACKUP_JOB_IDS) are registered only when
+    config.backup.trader_backup_jobs_enabled is True (default).
+
+    Registration only -- no stale-job removal here. This can run on a not-yet-started
+    scheduler (build_app() calls it before scheduler.start()), and remove_job() on a
+    STOPPED scheduler only sees this process's in-memory pending-jobs list, never the
+    persistent jobstore -- so a job persisted by a *prior* process run would silently
+    survive. See _remove_stale_trader_backup_jobs(), which callers must invoke AFTER
+    scheduler.start() (mirrors scripts/collector_main.py's remove_stale_jobs D4 pattern).
 
     Args:
         scheduler: APScheduler BackgroundScheduler instance.
@@ -139,38 +170,40 @@ def create_scheduler_and_register_jobs(
         replace_existing=True,
     )
 
-    # Backup jobs (run even when trading is halted)
-    scheduler.add_job(
-        daily_backup_job,
-        trigger="cron",
-        hour=2,
-        minute=0,
-        timezone="America/New_York",
-        id="daily_sqlite_backup",
-        replace_existing=True,
-    )
+    # Backup jobs (run even when trading is halted) — config-gated (2026-07-19 ruling: no
+    # pg_dump binary in the trader image; host-side dumps + Duplicati are the backup path).
+    if config.backup.trader_backup_jobs_enabled:
+        scheduler.add_job(
+            daily_backup_job,
+            trigger="cron",
+            hour=2,
+            minute=0,
+            timezone="America/New_York",
+            id="daily_sqlite_backup",
+            replace_existing=True,
+        )
 
-    scheduler.add_job(
-        weekly_duckdb_backup_job,
-        trigger="cron",
-        day_of_week="sun",
-        hour=3,
-        minute=0,
-        timezone="America/New_York",
-        id="weekly_duckdb_backup",
-        replace_existing=True,
-    )
+        scheduler.add_job(
+            weekly_duckdb_backup_job,
+            trigger="cron",
+            day_of_week="sun",
+            hour=3,
+            minute=0,
+            timezone="America/New_York",
+            id="weekly_duckdb_backup",
+            replace_existing=True,
+        )
 
-    scheduler.add_job(
-        monthly_offsite_job,
-        trigger="cron",
-        day=1,
-        hour=4,
-        minute=0,
-        timezone="America/New_York",
-        id="monthly_offsite",
-        replace_existing=True,
-    )
+        scheduler.add_job(
+            monthly_offsite_job,
+            trigger="cron",
+            day=1,
+            hour=4,
+            minute=0,
+            timezone="America/New_York",
+            id="monthly_offsite",
+            replace_existing=True,
+        )
 
     # Shadow promotion check (daily at 7 PM ET, after daily summary)
     scheduler.add_job(
@@ -203,7 +236,46 @@ def create_scheduler_and_register_jobs(
         replace_existing=True,
     )
 
-    log.info("scheduler_jobs_registered", count=12)
+    log.info("scheduler_jobs_registered", count=_job_count(config))
+
+
+def _remove_stale_trader_backup_jobs(scheduler: Any, config: Any) -> list[str]:
+    """Drop any persisted trader backup job id when trader_backup_jobs_enabled is False.
+
+    MUST be called AFTER scheduler.start() -- not from create_scheduler_and_register_jobs()
+    or anywhere else pre-start. APScheduler's remove_job()/get_jobs() on a STOPPED
+    scheduler only consult self._pending_jobs (jobs added earlier in *this* process, not
+    yet flushed); they never touch the actual jobstore file. A job persisted by a *previous*
+    process run (e.g. the last deploy, before this ruling flipped the flag) is therefore
+    invisible pre-start -- remove_job() raises JobLookupError, which looks like "already
+    gone" but really means "never checked." Calling this after start() is what makes it see
+    (and remove) jobs a prior run persisted. Mirrors scripts/collector_main.py's
+    remove_stale_jobs D4 pattern (that call is likewise sequenced after scheduler.start()
+    in collector_main.main()).
+
+    No-ops when the flag is True (the three ids are the desired state, not stale). Tolerant
+    of absence otherwise -- a job id that was never persisted (e.g. a fresh deployment, or a
+    second call with nothing left to remove) is expected, not an error.
+
+    Args:
+        scheduler: APScheduler BackgroundScheduler instance. Must already be started.
+        config: Validated SwingRLConfig.
+
+    Returns:
+        List of job ids actually removed (empty when the flag is True or nothing is stale).
+    """
+    if config.backup.trader_backup_jobs_enabled:
+        return []
+    removed: list[str] = []
+    for job_id in TRADER_BACKUP_JOB_IDS:
+        try:
+            scheduler.remove_job(job_id)
+            removed.append(job_id)
+        except JobLookupError:
+            pass
+    if removed:
+        log.info("trader_backup_jobs_removed", removed=removed)
+    return removed
 
 
 def make_signal_handler(
@@ -318,7 +390,7 @@ def build_app(config_path: str = "config/swingrl.yaml") -> dict[str, Any]:
     log.info(
         "swingrl_app_built",
         jobstore_path=config.scheduler.apscheduler_db_path,
-        job_count=12,
+        job_count=_job_count(config),
     )
 
     return {
@@ -341,6 +413,7 @@ def main() -> None:
     app = build_app(config_path=args.config)
     scheduler = app["scheduler"]
     stop_event = app["stop_event"]
+    config = app["config"]
 
     handler = make_signal_handler(scheduler, stop_event)
     signal.signal(signal.SIGTERM, handler)
@@ -348,6 +421,9 @@ def main() -> None:
 
     if scheduler is not None:
         scheduler.start()
+        # Must run AFTER start() -- see _remove_stale_trader_backup_jobs docstring. A job
+        # persisted by a prior process run is invisible to remove_job() pre-start.
+        _remove_stale_trader_backup_jobs(scheduler, config)
         log.info("scheduler_started")
     else:
         log.info("scheduler_skipped_idle_mode")

@@ -203,4 +203,8 @@ Renaming the service from `swingrl` to `swingrl-trader` is itself a one-time tra
    stays `swingrl`, the running container name and all `docker exec swingrl` runbooks are
    unchanged.
 3. Verify: `docker ps` shows the `swingrl` container healthy; `docker logs --tail 50 swingrl`
-   shows `scheduler_jobs_registered count=12` and a clean boot reconciliation.
+   shows `scheduler_jobs_registered count=9` and a clean boot reconciliation. The count is 9
+   with `backup.trader_backup_jobs_enabled: false` (both shipped configs' default since
+   2026-07-19 — the trader image has no `pg_dump` binary; host-side dumps + Duplicati are the
+   backup path) or 12 if that flag is set `true` (adds `daily_sqlite_backup`,
+   `weekly_duckdb_backup`, `monthly_offsite`).
