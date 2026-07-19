@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -418,3 +419,88 @@ def test_cli_backfill_flag() -> None:
     args = parser.parse_args(["--backfill", "--symbols", "BTCUSDT"])
     assert args.backfill is True
     assert args.symbols == ["BTCUSDT"]
+
+
+# --- Exclusive completed-bar boundary tests (data-integrity fix) ---
+
+
+def _make_kline(open_ms: int, close: float = 100.0) -> list:
+    """Build a 12-field raw kline array opening at open_ms."""
+    return [
+        open_ms,
+        f"{close:.2f}",
+        f"{close + 1:.2f}",
+        f"{close - 1:.2f}",
+        f"{close:.2f}",
+        "10.0",
+        open_ms + FOUR_HOURS_MS - 1,
+        "1000.00",
+        50,
+        "5.0",
+        "500.00",
+        "0",
+    ]
+
+
+@responses_lib.activate
+def test_fetch_excludes_incomplete_boundary_bar(binance_ingestor: BinanceIngestor) -> None:
+    """DATA-02: the just-opened bar (openTime == boundary) is never stored, and the
+    API endTime is set exclusive (boundary - 1) so a well-behaved API never returns it."""
+    # Freeze now at 08:01 UTC — boundary (current incomplete bar open) is 08:00 UTC.
+    frozen_now = datetime(2026, 7, 19, 8, 1, 0, tzinfo=UTC)
+    now_ms = int(frozen_now.timestamp() * 1000)
+    boundary_ms = now_ms - (now_ms % FOUR_HOURS_MS)  # 2026-07-19 08:00:00 UTC
+    completed_open_ms = boundary_ms - FOUR_HOURS_MS  # 04:00:00 UTC (last completed bar)
+
+    # API (mimicking the inclusive-endTime quirk) returns BOTH the completed bar and
+    # the just-opened partial bar at the boundary.
+    responses_lib.add(
+        responses_lib.GET,
+        _KLINES_URL,
+        json=[_make_kline(completed_open_ms, 100.0), _make_kline(boundary_ms, 999.0)],
+        status=200,
+        headers={"X-MBX-USED-WEIGHT-1M": "5"},
+    )
+
+    mock_dt = MagicMock(wraps=datetime)
+    mock_dt.now.return_value = frozen_now
+    with patch("swingrl.data.binance.datetime", mock_dt):
+        df = binance_ingestor.fetch("BTCUSDT", since="2026-07-19")
+
+    boundary_ts = pd.Timestamp(boundary_ms, unit="ms", tz="UTC")
+    completed_ts = pd.Timestamp(completed_open_ms, unit="ms", tz="UTC")
+    # Filter layer: the boundary (incomplete) bar must be dropped from the result.
+    assert boundary_ts not in df.index
+    # The last completed bar is retained.
+    assert completed_ts in df.index
+
+    # Param layer: endTime is exclusive of the boundary (boundary - 1 ms).
+    end_time_param = int(responses_lib.calls[0].request.params["endTime"])
+    assert end_time_param == boundary_ms - 1
+
+
+def test_drop_incomplete_bars_filters_boundary_row(binance_ingestor: BinanceIngestor) -> None:
+    """DATA-02: _drop_incomplete_bars drops rows whose open time is at/after the boundary."""
+    boundary_ms = int(pd.Timestamp("2026-07-19 08:00:00", tz="UTC").timestamp() * 1000)
+    idx = pd.DatetimeIndex(
+        [
+            pd.Timestamp("2026-07-19 00:00:00", tz="UTC"),
+            pd.Timestamp("2026-07-19 04:00:00", tz="UTC"),
+            pd.Timestamp("2026-07-19 08:00:00", tz="UTC"),  # boundary — incomplete
+        ],
+        name="timestamp",
+    )
+    df = pd.DataFrame(
+        {
+            "open": [1.0, 2.0, 3.0],
+            "high": [1.0, 2.0, 3.0],
+            "low": [1.0, 2.0, 3.0],
+            "close": [1.0, 2.0, 3.0],
+            "volume": [1.0, 2.0, 3.0],
+        },
+        index=idx,
+    )
+    result = binance_ingestor._drop_incomplete_bars(df, boundary_ms)
+    assert len(result) == 2
+    assert pd.Timestamp("2026-07-19 08:00:00", tz="UTC") not in result.index
+    assert pd.Timestamp("2026-07-19 04:00:00", tz="UTC") in result.index
