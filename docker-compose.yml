@@ -74,7 +74,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: production
-    image: swingrl:trader-2026-07-16
+    image: swingrl:trader-2026-07-19-2
     # No mem_limit — swingrl-trader is the primary workload on 64 GB homelab.
     # Other containers use ~1.5 GB (memory 1G + dashboard 0.5G).
     cpus: 10.0
@@ -149,7 +149,7 @@ services:
       target: production
     # Pinned tag (D9): bumped by hand, only outside the 15:30-16:45 ET quiet window.
     # A bare `docker compose up -d` after unrelated image builds must not recreate this.
-    image: swingrl-collector:2026-07-15
+    image: swingrl-collector:2026-07-19-4
     cpus: 2.0
     env_file: .env
     environment:

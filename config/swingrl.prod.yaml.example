@@ -120,7 +120,10 @@ shadow:
   mdd_tolerance_ratio: 1.2          # shadow MDD tolerance: 1.2x active MDD
 
 sentiment:
-  enabled: false                    # enable when finnhub key + transformers installed
+  enabled: false                    # OFF for era-0 paper trading (2026-07-18 user ruling):
+                                    # deployed equity vintage iter_4 is 164-dim (pre-sentiment);
+                                    # enabled:true builds 180-dim obs -> shape mismatch at cycle.
+                                    # Re-enable only when an era trained WITH sentiment deploys.
   model_name: ProsusAI/finbert      # HuggingFace sentiment model
   max_headlines_per_asset: 10       # headlines per asset per cycle
   # finnhub_api_key: ""             # OVERRIDE via SWINGRL_SENTIMENT__FINNHUB_API_KEY
