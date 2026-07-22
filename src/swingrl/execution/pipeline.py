@@ -29,7 +29,7 @@ from swingrl.execution.order_validator import OrderValidator
 from swingrl.execution.risk.circuit_breaker import CBState, CircuitBreaker, GlobalCircuitBreaker
 from swingrl.execution.risk.position_tracker import PositionTracker
 from swingrl.execution.risk.risk_manager import RiskManager
-from swingrl.execution.types import FillResult, SizedOrder
+from swingrl.execution.types import CycleOrderSummary, FillResult, SizedOrder
 from swingrl.features.assembler import turbulence_obs_index
 from swingrl.features.health import FeatureHealthTracker
 from swingrl.utils.exceptions import CircuitBreakerError, DataError, RiskVetoError
@@ -226,10 +226,12 @@ class ExecutionPipeline:
             return []
 
         # Step 2.5: Equity market-calendar gate (fail-safe). Crypto trades 24/7.
-        # Market closed/holiday -> skip + info log; clock unreachable -> skip + alert
-        # (when in doubt, don't trade — review C2).
+        # Non-trading day (weekend/holiday) -> skip + info log; clock unreachable -> skip +
+        # alert (when in doubt, don't trade — review C2). D11 reconciliation: the 09:15 cycle
+        # runs pre-open (market closed now) to submit opening-auction orders, so the gate
+        # allows a trading day whose session opens later TODAY, not just an already-open one.
         if env_name == "equity" and self._config.equity.market_calendar_gate:
-            if not self._equity_market_open():
+            if not self._equity_cycle_allowed():
                 return []
             # Data-freshness guard (log-only): warn on a stale latest daily bar.
             self._warn_if_stale_ohlcv(env_name)
@@ -340,6 +342,10 @@ class ExecutionPipeline:
         # to close the no-order breaker-evaluation gap (T16 drill finding #1) without
         # double-evaluating cycles that already traded.
         orders_attempted = False
+        # Submitted orders this cycle, for the D12 cycle-orders INFO ping (both envs). One
+        # entry per order actually sent to the broker (buys and sells, incl. pending pre-open
+        # equity orders) — the ping lists what was PLACED, not what filled.
+        cycle_orders: list[CycleOrderSummary] = []
         # Prices fetched this cycle, reused to mark the portfolio to market for the
         # end-of-cycle snapshot (review C1 — no extra broker calls).
         cycle_prices: dict[str, float] = {}
@@ -445,9 +451,26 @@ class ExecutionPipeline:
                 # caused by network timeouts (Alpaca bracket orders are atomic).
                 fill = adapter.submit_order(validated_order)
 
+                # D12: record the order that was PLACED for the cycle-orders INFO ping (both
+                # buys and sells, including a pending pre-open equity order). Uses the sized
+                # order (post-ramp) so the ping reflects the amount actually submitted.
+                cycle_orders.append(
+                    CycleOrderSummary(
+                        symbol=sized_order.symbol,
+                        side=sized_order.side,
+                        notional_usd=sized_order.dollar_amount,
+                        quantity=sized_order.quantity if sized_order.side == "sell" else None,
+                    )
+                )
+
                 # Only real fills are recorded (review C2). A pending/rejected result
                 # (unfilled + cancelled) is dropped — never a $0 trades row.
                 if fill.status != "filled":
+                    # D11: a pending equity result is a pre-open opening-auction order that
+                    # will fill at the open. Persist it to pending_orders (restart-safe) so
+                    # the ~09:35 confirmation job records the real fill.
+                    if fill.status == "pending" and env_name == "equity":
+                        self._record_pending_order(fill, cycle_id)
                     log.warning(
                         "order_unfilled_skipped",
                         symbol=fill.symbol,
@@ -460,37 +483,18 @@ class ExecutionPipeline:
                 # moved without a ledger entry — alert critical for manual reconciliation.
                 # cycle_id/decision_price thread this fill back to its inference cycle and
                 # sizing-time price (Task 10, §3.7.5) — decision_price is current_price,
-                # the get_current_price() value Step 9 used to size this order.
-                try:
-                    realized_pnl = self._fill_processor.process(
-                        fill,
-                        sized_order=sized_order,
-                        cycle_id=cycle_id,
-                        decision_price=current_price,
-                    )
-                except Exception:
-                    log.critical(
-                        "fill_recorded_failed_after_execution",
-                        symbol=fill.symbol,
-                        trade_id=fill.trade_id,
-                        exc_info=True,
-                    )
-                    if self._alerter is not None:
-                        self._alerter.send_alert(
-                            level="critical",
-                            title="Fill Executed But Not Recorded",
-                            message=(
-                                f"{env_name} {fill.symbol} {fill.side} executed but recording "
-                                "failed — manual reconciliation required."
-                            ),
-                            environment=env_literal,
-                        )
+                # the get_current_price() value Step 9 used to size this order. The shared
+                # record_fill path is reused by the 09:35 fill-confirmation job (D11).
+                recorded = self.record_fill(
+                    fill,
+                    sized_order=sized_order,
+                    cycle_id=cycle_id,
+                    decision_price=current_price,
+                    env_name=env_name,
+                )
+                if recorded is None:
                     continue
-
-                # Attach realized P&L (sell fills only; None for buys) so the trade embed
-                # can surface it (Task 6, PNL-D8). process() computed it from the position
-                # cost basis before the fill reduced it.
-                fill = dataclasses.replace(fill, realized_pnl=realized_pnl)
+                fill = recorded
                 fills.append(fill)
 
                 log.info(
@@ -576,6 +580,13 @@ class ExecutionPipeline:
                     daily_pnl=daily_pnl,
                 )
 
+        # D12: cycle-orders INFO ping — one INFO per cycle (both envs) listing every order
+        # placed (buys as notional, sells as qty + approx value) or a deadzone-held line. A
+        # dry-run submits nothing, so its empty order list would read as a false deadzone —
+        # gate the ping on a real cycle.
+        if not dry_run:
+            self._send_cycle_orders_ping(env_name, cycle_orders)
+
         log.info(
             "cycle_complete",
             env=env_name,
@@ -584,6 +595,160 @@ class ExecutionPipeline:
             cycle_id=cycle_id,
         )
         return fills
+
+    def record_fill(
+        self,
+        fill: FillResult,
+        *,
+        sized_order: SizedOrder | None,
+        cycle_id: int | None,
+        decision_price: float | None,
+        env_name: str,
+    ) -> FillResult | None:
+        """Record a real fill to the ledger + fill_quality and attach realized P&L (shared).
+
+        Single post-fill path used by BOTH the synchronous cycle order loop and the 09:35
+        equity fill-confirmation job (D11): it runs ``FillProcessor.process`` (trades +
+        positions + fill_quality) and attaches the returned realized P&L (sells only) to the
+        FillResult so the caller's trade embed can surface it (Task 6, PNL-D8).
+
+        M10 backstop: a fill that fails to record is money that moved without a ledger entry —
+        it emits a critical alert and returns ``None`` (the caller drops it; the pending row,
+        if any, is left unresolved for the next confirmation run).
+
+        Args:
+            fill: A ``status="filled"`` FillResult.
+            sized_order: The originating SizedOrder (stop/TP persistence on buys), or None.
+            cycle_id: The originating inference cycle id, or None.
+            decision_price: The sizing-time price for fill_quality slippage, or None.
+            env_name: "equity" or "crypto" (alert context).
+
+        Returns:
+            The fill with realized_pnl attached, or ``None`` if recording failed.
+        """
+        env_literal: Literal["equity", "crypto"] = "equity" if env_name == "equity" else "crypto"
+        try:
+            realized_pnl = self._fill_processor.process(
+                fill,
+                sized_order=sized_order,
+                cycle_id=cycle_id,
+                decision_price=decision_price,
+            )
+        except Exception:
+            log.critical(
+                "fill_recorded_failed_after_execution",
+                symbol=fill.symbol,
+                trade_id=fill.trade_id,
+                exc_info=True,
+            )
+            if self._alerter is not None:
+                self._alerter.send_alert(
+                    level="critical",
+                    title="Fill Executed But Not Recorded",
+                    message=(
+                        f"{env_name} {fill.symbol} {fill.side} executed but recording "
+                        "failed — manual reconciliation required."
+                    ),
+                    environment=env_literal,
+                )
+            return None
+        return dataclasses.replace(fill, realized_pnl=realized_pnl)
+
+    def _record_pending_order(self, fill: FillResult, cycle_id: int | None) -> None:
+        """Persist a pending pre-open equity order for the 09:35 confirmation job (D11).
+
+        Restart-safe worklist: the order was submitted at 09:15 and fills at the open; this
+        row survives a restart before 09:35 so the fill is never lost. Capital preservation —
+        a pending order we cannot persist means a fill we cannot later record, so a persist
+        failure emits a critical alert (never crashes the cycle).
+
+        Args:
+            fill: The pending FillResult (its ``trade_id`` is the broker order id).
+            cycle_id: The originating inference cycle id, or None (capture failed).
+        """
+        submitted_at = fill.submitted_at or datetime.now(UTC).isoformat()
+        try:
+            with self._db.connection() as conn:
+                conn.execute(
+                    "INSERT INTO pending_orders "
+                    "(order_id, cycle_id, symbol, side, submitted_at) "
+                    "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (order_id) DO NOTHING",
+                    (fill.trade_id, cycle_id, fill.symbol, fill.side, submitted_at),
+                )
+            log.info(
+                "pending_order_recorded",
+                order_id=fill.trade_id,
+                symbol=fill.symbol,
+                side=fill.side,
+                cycle_id=cycle_id,
+            )
+        except Exception:
+            log.critical(
+                "pending_order_persist_failed",
+                order_id=fill.trade_id,
+                symbol=fill.symbol,
+                exc_info=True,
+            )
+            if self._alerter is not None:
+                self._alerter.send_alert(
+                    level="critical",
+                    title="Pending Order Not Persisted",
+                    message=(
+                        f"equity {fill.symbol} {fill.side} pre-open order {fill.trade_id} "
+                        "could not be persisted — the 09:35 confirmation may miss its fill; "
+                        "manual reconciliation required."
+                    ),
+                    environment="equity",
+                )
+
+    def _send_cycle_orders_ping(self, env_name: str, orders: list[CycleOrderSummary]) -> None:
+        """Emit the D12 cycle-orders INFO ping for a completed cycle (both envs).
+
+        One INFO alert listing each order placed this cycle — buys as notional dollars, sells
+        as qty + approx value — or a deadzone-held line when nothing was placed. Always fires
+        on a real cycle so the user has a per-cycle heartbeat of exactly what was submitted.
+        Fail-open: a ping failure never disturbs the money path (the cycle already completed).
+
+        Args:
+            env_name: "equity" or "crypto".
+            orders: Orders placed this cycle (empty on a deadzone cycle).
+        """
+        if self._alerter is None:
+            return
+        env_literal: Literal["equity", "crypto"] = "equity" if env_name == "equity" else "crypto"
+        try:
+            self._alerter.send_alert(
+                level="info",
+                title=f"Cycle orders submitted — {env_name}",
+                message=self._format_cycle_orders(orders),
+                environment=env_literal,
+            )
+        except Exception:
+            log.warning("cycle_orders_ping_failed", env=env_name, exc_info=True)
+
+    @staticmethod
+    def _format_cycle_orders(orders: list[CycleOrderSummary]) -> str:
+        """Build the D12 ping body: one line per order, or the deadzone-held line.
+
+        buy:  ``BUY SPY $25.00`` (notional)
+        sell: ``SELL QQQ 0.0416 (~$25.00)`` (qty + approx value)
+
+        Args:
+            orders: Orders placed this cycle.
+
+        Returns:
+            One line per order joined by newlines, or ``"no orders — deadzone held"``.
+        """
+        if not orders:
+            return "no orders — deadzone held"
+        lines: list[str] = []
+        for order in orders:
+            if order.side == "buy":
+                lines.append(f"BUY {order.symbol} ${order.notional_usd:.2f}")
+            else:
+                qty = order.quantity if order.quantity is not None else 0.0
+                lines.append(f"SELL {order.symbol} {qty:g} (~${order.notional_usd:.2f})")
+        return "\n".join(lines)
 
     def _load_models(self, env_name: str) -> dict[str, tuple[Any, Any]]:
         """Load trained models for the environment (lazy, mtime-keyed cache).
@@ -923,14 +1088,19 @@ class ExecutionPipeline:
 
         return weights
 
-    def _equity_market_open(self) -> bool:
-        """Return True if the equity market is open per the Alpaca clock (fail-safe).
+    def _equity_cycle_allowed(self) -> bool:
+        """Return True if the equity cycle may run: market open now, or pre-open TODAY (D11).
 
-        Market closed/holiday -> False + info log. Clock unreachable (any error, incl.
-        adapter construction) -> False + critical alert: when in doubt, don't trade.
+        The 09:15 cycle decides on t-1 bars and submits opening-auction orders while the
+        market is still closed, so "closed right now" must NOT skip a trading day. This
+        returns True when the clock reports the market open, OR when it is closed now but the
+        next session opens later TODAY in ET (the pre-open case). Only a genuine non-trading
+        day (weekend/holiday — next open is a future date) skips. Clock unreachable (any
+        error, incl. adapter construction) -> False + critical alert: when in doubt, don't
+        trade (review C2).
 
         Returns:
-            True only when the clock explicitly reports the market open.
+            True when the market is open now or opens later today (ET); False otherwise.
         """
         try:
             adapter = self._get_adapter("equity")
@@ -946,10 +1116,44 @@ class ExecutionPipeline:
                 )
             return False
 
-        is_open = bool(getattr(clock, "is_open", False))
-        if not is_open:
-            log.info("equity_cycle_skipped_market_closed")
-        return is_open
+        if bool(getattr(clock, "is_open", False)):
+            return True
+
+        # Pre-open on a trading day: the market is closed now but opens later TODAY (ET). D11
+        # submits DAY market orders before the 09:28 auction; Alpaca fills them at the open.
+        if self._opens_today_et(getattr(clock, "next_open", None)):
+            log.info("equity_cycle_preopen_trading_day")
+            return True
+
+        log.info("equity_cycle_skipped_market_closed")
+        return False
+
+    @staticmethod
+    def _opens_today_et(next_open: Any) -> bool:  # noqa: ANN401
+        """Return True when the clock's next market open falls on today's ET date.
+
+        Distinguishes "pre-open on a trading day" (next open is today, ET) from a genuine
+        non-trading day (next open is a future date). Accepts an aware datetime or an ISO
+        string; any parse failure is treated as "not today" (skip — the safe direction).
+
+        Args:
+            next_open: The clock's next_open value (aware datetime or ISO string), or None.
+
+        Returns:
+            True only when next_open resolves to today's date in America/New_York.
+        """
+        if next_open is None:
+            return False
+        try:
+            et = ZoneInfo("America/New_York")
+            today_et = datetime.now(tz=UTC).astimezone(et).date()
+            parsed = datetime.fromisoformat(next_open) if isinstance(next_open, str) else next_open
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=et)
+            return parsed.astimezone(et).date() == today_et
+        except Exception:
+            log.warning("next_open_parse_failed", exc_info=True)
+            return False
 
     def _warn_if_stale_ohlcv(self, env_name: str) -> None:
         """Log a warning when the latest ``ohlcv_daily`` bar is older than the prior session.

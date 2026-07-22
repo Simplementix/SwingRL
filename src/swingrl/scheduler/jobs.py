@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -685,6 +686,173 @@ def reconciliation_job() -> None:
             )
         except Exception:
             log.exception("reconciliation_job_alert_failed")
+
+
+def equity_fill_confirmation_job() -> None:
+    """Confirm pre-open equity opening-auction fills (~09:35 ET, spec D11).
+
+    The 09:15 pre-open cycle submits DAY market orders that Alpaca fills at the official
+    opening print; this job (after the 09:30 open) turns those confirmed fills into real
+    trades. It loads every unresolved ``pending_orders`` row (a restart-safe DB worklist —
+    the orders survive a process restart between 09:15 and 09:35), polls each order's status
+    by id, and for a filled order builds a real FillResult and records it through the SAME
+    post-fill path the synchronous route uses (``pipeline.record_fill`` — trades + positions +
+    fill_quality + realized-P&L attach), sends the trade embed, and stamps ``resolved_at``.
+
+    An order still unfilled/canceled after the auction gets a warning alert and is LEFT
+    unresolved for the next run — never silently dropped. Runs regardless of the halt flag:
+    the auction orders already executed, so their fills must be recorded for the ledger to
+    stay truthful (recording is bookkeeping, not new trading). Never raises.
+    """
+    ctx = _get_ctx()
+
+    try:
+        with ctx.db.connection() as conn:
+            rows = conn.execute(
+                "SELECT order_id, cycle_id, symbol, side, submitted_at FROM pending_orders "
+                "WHERE resolved_at IS NULL ORDER BY submitted_at"
+            ).fetchall()
+    except Exception:
+        log.exception("equity_fill_confirmation_load_failed")
+        return
+
+    if not rows:
+        log.info("equity_fill_confirmation_no_pending")
+        return
+
+    try:
+        adapter = ctx.pipeline.get_adapter("equity")
+    except Exception:
+        log.exception("equity_fill_confirmation_adapter_failed")
+        return
+
+    confirmed = 0
+    for row in rows:
+        try:
+            if _confirm_one_pending_order(ctx, adapter, row):
+                confirmed += 1
+        except Exception:
+            log.exception("equity_fill_confirmation_order_failed", order_id=row["order_id"])
+    log.info("equity_fill_confirmation_complete", pending=len(rows), confirmed=confirmed)
+
+
+def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any]) -> bool:
+    """Confirm a single pending pre-open order; return True if a fill was recorded (D11).
+
+    A filled order is recorded via the pipeline's shared post-fill path and its
+    ``pending_orders`` row is stamped resolved; anything else (unfilled/canceled) alerts a
+    warning and leaves the row unresolved for the next run.
+
+    Args:
+        ctx: The job context.
+        adapter: The equity exchange adapter (Alpaca), exposing ``get_order_status``.
+        row: A ``pending_orders`` row (order_id, cycle_id, symbol, side, submitted_at).
+
+    Returns:
+        True if the auction fill was recorded, False otherwise.
+    """
+    from swingrl.execution.types import FillResult, SizedOrder  # noqa: PLC0415
+
+    order_id = row["order_id"]
+    order = adapter.get_order_status(order_id)
+    status = str(getattr(order, "status", "") or "").lower()
+    filled_price = getattr(order, "filled_avg_price", None)
+    filled_qty = getattr(order, "filled_qty", None)
+
+    if status != "filled" or filled_price is None or filled_qty is None:
+        # Unfilled/canceled after the auction — warn and leave the row unresolved (retry next
+        # run). Never silently dropped; capital-preservation visibility.
+        ctx.alerter.send_alert(
+            level="warning",
+            title="Equity auction order unfilled",
+            message=(
+                f"{row['symbol']} {row['side']} (order {order_id}) is still "
+                f"{status or 'unknown'} after the opening auction — not recorded, left "
+                "pending for the next confirmation run."
+            ),
+            environment="equity",
+        )
+        log.warning(
+            "equity_auction_order_unfilled", order_id=order_id, symbol=row["symbol"], status=status
+        )
+        return False
+
+    fill_price = float(filled_price)
+    quantity = float(filled_qty)
+    submitted_at = _to_iso(row.get("submitted_at"))
+    filled_at = _to_iso(getattr(order, "filled_at", None)) or datetime.now(UTC).isoformat()
+
+    fill = FillResult(
+        trade_id=order_id,
+        symbol=row["symbol"],
+        side=row["side"],
+        quantity=quantity,
+        fill_price=fill_price,
+        commission=0.0,
+        slippage=0.0,
+        environment="equity",
+        broker="alpaca",
+        status="filled",
+        submitted_at=submitted_at,
+        filled_at=filled_at,
+    )
+    # Minimal SizedOrder — equity carries no stops; process() reads side + stop/TP (None).
+    sized_order = SizedOrder(
+        symbol=row["symbol"],
+        side=row["side"],
+        quantity=quantity,
+        dollar_amount=fill_price * quantity,
+        stop_loss_price=None,
+        take_profit_price=None,
+        environment="equity",
+    )
+
+    # Same post-fill path as the synchronous route (trades + positions + fill_quality +
+    # realized-P&L attach). decision_price is None — the 09:15 sizing price is not stored on
+    # the pending row, so fill_quality slippage is NULL (the row is still written).
+    recorded = ctx.pipeline.record_fill(
+        fill,
+        sized_order=sized_order,
+        cycle_id=row.get("cycle_id"),
+        decision_price=None,
+        env_name="equity",
+    )
+    if recorded is None:
+        # Recording failed — record_fill already sent a critical alert. Leave the row
+        # unresolved so the next run retries rather than losing the fill.
+        return False
+
+    # Trade embed (same callback the synchronous equity_cycle fires per fill).
+    if build_trade_embed is not None:
+        try:
+            embed = build_trade_embed(recorded)
+            ctx.alerter.send_embed("info", embed)
+        except Exception:
+            log.exception("equity_fill_confirmation_embed_failed", order_id=order_id)
+
+    with ctx.db.connection() as conn:
+        conn.execute(
+            "UPDATE pending_orders SET resolved_at = %s WHERE order_id = %s",
+            (datetime.now(UTC).isoformat(), order_id),
+        )
+    log.info(
+        "equity_auction_fill_confirmed",
+        order_id=order_id,
+        symbol=row["symbol"],
+        fill_price=fill_price,
+        quantity=quantity,
+        cycle_id=row.get("cycle_id"),
+    )
+    return True
+
+
+def _to_iso(value: Any) -> str | None:  # noqa: ANN401
+    """Normalize a DB/broker timestamp (datetime or str) to a UTC ISO string, or None."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def automated_trigger_check_job() -> None:

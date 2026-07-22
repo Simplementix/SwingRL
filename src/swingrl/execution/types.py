@@ -76,6 +76,21 @@ class FillResult:
     realized_pnl: float | None = None
 
 
+@dataclass(frozen=True)
+class CycleOrderSummary:
+    """One submitted-order line for the D12 cycle-orders INFO ping (env-agnostic).
+
+    Emitted after EVERY cycle, both envs (spec D12). ``notional_usd`` is the dollar amount
+    for a buy and the approximate value (qty × reference price) for a sell; ``quantity`` is
+    set only for sells (the share/coin count the ping shows alongside the approx value).
+    """
+
+    symbol: str
+    side: Literal["buy", "sell"]
+    notional_usd: float
+    quantity: float | None = None
+
+
 @dataclass
 class RiskDecision:
     """Risk evaluation record logged to risk_decisions table."""

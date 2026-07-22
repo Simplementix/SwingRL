@@ -13,6 +13,7 @@ equity:
   daily_loss_limit_pct: 0.02    # circuit breaker: halt equity env at 2% daily loss
   min_order_usd: 1.0            # Alpaca minimum order floor ($1.00 fractional shares)
   cycle_time_et: "09:15"        # pre-open decision on t-1 bars; orders submitted before the 09:28 auction cutoff (spec D2/D11)
+  fill_confirmation_time_et: "09:35"  # after the 09:30 open: record pre-open opening-auction fills (spec D11)
   market_calendar_gate: true    # gate the equity cycle on the Alpaca market clock (fail-safe)
   order_fill_timeout_s: 60      # cancel an unfilled order after N seconds (never a $0 trade)
   order_poll_interval_s: 2      # poll order status every N seconds during the fill wait

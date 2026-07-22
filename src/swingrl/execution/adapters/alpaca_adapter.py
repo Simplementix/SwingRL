@@ -98,6 +98,15 @@ class AlpacaAdapter:
         sized = order.order
         side = OrderSide.BUY if sized.side == "buy" else OrderSide.SELL
 
+        # D11 opening-auction path: the 09:15 pre-open cycle runs while the market is closed.
+        # Submitting a synchronous market order into a closed market and polling for a fill
+        # would time out and cancel a good order (or record a $0 trade). Instead submit a
+        # plain DAY market order (buys as notional dollars, sells as qty) that Alpaca fills at
+        # the official opening print, and return an honest "pending" — the ~09:35 confirmation
+        # job records the real fill. Never a synthetic synchronous fill.
+        if not self._market_open():
+            return self._submit_preopen(sized, side)
+
         if sized.stop_loss_price is not None and sized.take_profit_price is not None:
             # Bracket order with SL/TP legs
             order_req = MarketOrderRequest(
@@ -216,6 +225,97 @@ class AlpacaAdapter:
             submitted_at=submitted_at,
             filled_at=filled_at,
         )
+
+    def _market_open(self) -> bool:
+        """Return True when the Alpaca clock reports the market currently open.
+
+        Drives the submit_order routing (D11): open -> synchronous poll-fill lifecycle;
+        closed -> pre-open opening-auction submission returning a pending result. Any error
+        reaching the clock is treated as "closed" so a submission never silently falls back
+        to a synchronous $0-trade path when the market state is unknown — the safe direction.
+
+        Returns:
+            True only when the clock explicitly reports the market open.
+        """
+        try:
+            clock = self.get_clock()
+        except Exception:
+            log.warning("market_clock_unreachable_in_submit", exc_info=True)
+            return False
+        return bool(getattr(clock, "is_open", False))
+
+    def _submit_preopen(self, sized: Any, side: OrderSide) -> FillResult:  # noqa: ANN401
+        """Submit a pre-open opening-auction DAY market order and return a pending result (D11).
+
+        Buys submit ``notional`` dollar amounts (rounded to cents), sells submit ``qty`` — the
+        auction fills each at the official opening print. The order id is returned in
+        ``trade_id`` so the ~09:35 confirmation job can poll and record the fill. No poll, no
+        cancel, no synthetic fill here.
+
+        Args:
+            sized: The SizedOrder being submitted.
+            side: The Alpaca OrderSide (BUY/SELL).
+
+        Returns:
+            FillResult with status="pending", zero quantity/price, and the broker order id.
+        """
+        if sized.side == "buy":
+            order_req = MarketOrderRequest(
+                symbol=sized.symbol,
+                notional=round(sized.dollar_amount, 2),
+                side=side,
+                time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.SIMPLE,
+            )
+        else:
+            order_req = MarketOrderRequest(
+                symbol=sized.symbol,
+                qty=sized.quantity,
+                side=side,
+                time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.SIMPLE,
+            )
+
+        submitted_at = datetime.now(UTC).isoformat()
+        response = self._retry(lambda: self._client.submit_order(order_data=order_req))
+        order_id = str(response.id)
+        log.info(
+            "preopen_order_submitted",
+            symbol=sized.symbol,
+            side=sized.side,
+            notional=round(sized.dollar_amount, 2) if sized.side == "buy" else None,
+            quantity=sized.quantity if sized.side == "sell" else None,
+            order_id=order_id,
+        )
+        return FillResult(
+            trade_id=order_id,
+            symbol=sized.symbol,
+            side=sized.side,
+            quantity=0.0,
+            fill_price=0.0,
+            commission=0.0,
+            slippage=0.0,
+            environment=sized.environment,
+            broker="alpaca",
+            status="pending",
+            submitted_at=submitted_at,
+            filled_at=None,
+        )
+
+    def get_order_status(self, order_id: str) -> Any:  # noqa: ANN401
+        """Fetch an order's current broker state by id (D11 fill confirmation).
+
+        The ~09:35 fill-confirmation job calls this per pending order to read
+        ``status``/``filled_avg_price``/``filled_qty``/timestamps and decide whether the
+        opening auction filled it.
+
+        Args:
+            order_id: Alpaca broker order id.
+
+        Returns:
+            The Alpaca order object.
+        """
+        return self._retry(lambda: self._client.get_order_by_id(order_id))
 
     def get_clock(self) -> Any:  # noqa: ANN401
         """Return the Alpaca market clock (is_open, next_open, next_close).

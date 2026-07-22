@@ -1336,10 +1336,77 @@ def test_v008_operator_actions_valid_accepted(db_with_legacy_schema) -> None:
 
 
 def test_v008_schema_version_is_8(db_with_legacy_schema) -> None:
-    """Task 11: SELECT max(version) FROM schema_migrations == 8 after apply_migrations."""
+    """V008 lands in the ledger (was newest; V009 now raises the ceiling to 9).
+
+    The newest-version invariant moved to ``test_v009_schema_version_is_9`` when the
+    exec-alignment Task 8 shipped V009 — this asserts V008 was applied, not that it is
+    the maximum, so it stays green as later migrations extend the ledger.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM schema_migrations WHERE version = 8"
+        ).fetchone()
+    assert row["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# V009 (exec-alignment Task 8): D11 pending_orders — the pre-open opening-auction
+# fill-confirmation worklist. order_id PK, nullable cycle_id FK to inference_cycles,
+# side CHECK, submitted_at NOT NULL, resolved_at NULL until confirmed.
+# ---------------------------------------------------------------------------
+
+
+def test_v009_pending_orders_accepts_valid_row(db_with_legacy_schema) -> None:
+    """V009: a valid pending order (unresolved, nullable cycle_id) is accepted."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        order_id = conn.execute(
+            "INSERT INTO pending_orders (order_id, cycle_id, symbol, side, submitted_at)"
+            " VALUES ('o-valid', NULL, 'SPY', 'buy', now()) RETURNING order_id"
+        ).fetchone()["order_id"]
+        row = conn.execute(
+            "SELECT resolved_at FROM pending_orders WHERE order_id = 'o-valid'"
+        ).fetchone()
+    assert order_id == "o-valid"
+    assert row["resolved_at"] is None  # unresolved until the confirmation job stamps it
+
+
+def test_v009_pending_orders_rejects_bad_side(db_with_legacy_schema) -> None:
+    """V009: the side CHECK rejects anything other than buy/sell."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):  # noqa: PT012
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO pending_orders (order_id, symbol, side, submitted_at)"
+                " VALUES ('o-bad', 'SPY', 'hold', now())"
+            )
+
+
+def test_v009_pending_orders_cycle_id_fk_enforced(db_with_legacy_schema) -> None:
+    """V009: a non-null cycle_id must reference an existing inference_cycles row (FK)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):  # noqa: PT012
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO pending_orders (order_id, cycle_id, symbol, side, submitted_at)"
+                " VALUES ('o-orphan', 999999, 'SPY', 'buy', now())"
+            )
+
+
+def test_v009_schema_version_is_9(db_with_legacy_schema) -> None:
+    """Exec-alignment Task 8: SELECT max(version) FROM schema_migrations == 9."""
     from swingrl.data.migration_runner import apply_migrations
 
     apply_migrations(db_with_legacy_schema)
     with db_with_legacy_schema.connection() as conn:
         row = conn.execute("SELECT max(version) AS v FROM schema_migrations").fetchone()
-    assert row["v"] == 8
+    assert row["v"] == 9

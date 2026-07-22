@@ -31,7 +31,7 @@ log = structlog.get_logger(__name__)
 # migrations — genuinely broken). A database AHEAD of this floor (a newer additive
 # migration applied by a trainer-side deploy) only logs a warning — the trader must
 # survive its next restart against a newer schema (A30, 2026-07-12).
-EXPECTED_SCHEMA_VERSION = 8  # Task 11: V008 weakness profiles + operator_actions + views
+EXPECTED_SCHEMA_VERSION = 9  # Exec-align Task 8: V009 pending_orders (pre-open auction, D11)
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _FILE_RE = re.compile(r"^V(\d{3})__[a-z0-9_]+\.sql$")

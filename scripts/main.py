@@ -32,6 +32,7 @@ from swingrl.scheduler.jobs import (
     daily_backup_job,
     daily_summary_job,
     equity_cycle,
+    equity_fill_confirmation_job,
     init_job_context,
     monthly_macro_job,
     monthly_offsite_job,
@@ -74,12 +75,12 @@ TRADER_BACKUP_JOB_IDS = ("daily_sqlite_backup", "weekly_duckdb_backup", "monthly
 def _job_count(config: Any) -> int:
     """Number of jobs create_scheduler_and_register_jobs registers for this config.
 
-    10 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation +
-    1 risk sweep); the 3 in-container backup jobs join that count only when
-    config.backup.trader_backup_jobs_enabled is True. Single source of truth for both
-    startup log lines so they can never drift apart.
+    11 jobs are always registered (6 trading + 1 equity fill-confirmation + 1 shadow +
+    1 trigger + 1 reconciliation + 1 risk sweep); the 3 in-container backup jobs join that
+    count only when config.backup.trader_backup_jobs_enabled is True. Single source of truth
+    for both startup log lines so they can never drift apart.
     """
-    return 10 + (len(TRADER_BACKUP_JOB_IDS) if config.backup.trader_backup_jobs_enabled else 0)
+    return 11 + (len(TRADER_BACKUP_JOB_IDS) if config.backup.trader_backup_jobs_enabled else 0)
 
 
 def create_scheduler_and_register_jobs(
@@ -88,9 +89,10 @@ def create_scheduler_and_register_jobs(
 ) -> None:
     """Register trading/monitoring jobs, plus the trader's backup jobs when enabled.
 
-    10 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation +
-    1 risk sweep). The 3 in-container backup jobs (see TRADER_BACKUP_JOB_IDS) are
-    registered only when config.backup.trader_backup_jobs_enabled is True (default).
+    11 jobs are always registered (6 trading + 1 equity fill-confirmation + 1 shadow +
+    1 trigger + 1 reconciliation + 1 risk sweep). The 3 in-container backup jobs (see
+    TRADER_BACKUP_JOB_IDS) are registered only when
+    config.backup.trader_backup_jobs_enabled is True (default).
 
     Registration only -- no stale-job removal here. This can run on a not-yet-started
     scheduler (build_app() calls it before scheduler.start()), and remove_job() on a
@@ -115,6 +117,22 @@ def create_scheduler_and_register_jobs(
         timezone="America/New_York",
         id="equity_cycle",
         misfire_grace_time=config.scheduler.misfire_grace_s["equity"],
+        replace_existing=True,
+    )
+
+    # Equity fill confirmation (D11): after the 09:30 open, record the pre-open opening-auction
+    # fills submitted by the 09:15 cycle. Time from config (default 09:35 ET), weekdays only.
+    conf_hour, conf_minute = (
+        int(part) for part in config.equity.fill_confirmation_time_et.split(":")
+    )
+    scheduler.add_job(
+        equity_fill_confirmation_job,
+        trigger="cron",
+        hour=conf_hour,
+        minute=conf_minute,
+        day_of_week="mon-fri",
+        timezone="America/New_York",
+        id="equity_fill_confirmation",
         replace_existing=True,
     )
 

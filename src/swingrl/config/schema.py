@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from swingrl.utils.exceptions import ConfigError
@@ -59,6 +59,9 @@ class EquityConfig(BaseModel):
     # submitted before the 09:28 auction cutoff and fill at t's open (spec D2/D11). The
     # scheduler restricts it to weekdays.
     cycle_time_et: str = Field(default="09:15")
+    # Fill-confirmation time (ET, HH:MM). 09:35 (after the 09:30 open) records the pre-open
+    # auction fills submitted at 09:15 (spec D11). Weekdays only, per the scheduler.
+    fill_confirmation_time_et: str = Field(default="09:35")
     # Gate the equity cycle on the Alpaca market clock (skip on closed/holiday). Fail-safe.
     market_calendar_gate: bool = Field(default=True)
     # Post-submit fill polling bounds (review C2): wait up to timeout, polling each interval,
@@ -74,16 +77,17 @@ class EquityConfig(BaseModel):
             raise ConfigError("equity.symbols must not be empty")
         return v
 
-    @field_validator("cycle_time_et")
+    @field_validator("cycle_time_et", "fill_confirmation_time_et")
     @classmethod
-    def cycle_time_is_hh_mm(cls, v: str) -> str:
-        """Validate cycle_time_et parses as a 24h HH:MM clock time."""
+    def time_is_hh_mm(cls, v: str, info: ValidationInfo) -> str:
+        """Validate an ET clock field parses as a 24h HH:MM time."""
+        field = info.field_name
         parts = v.split(":")
         if len(parts) != 2 or not all(p.isdigit() for p in parts):
-            raise ConfigError(f"equity.cycle_time_et must be HH:MM, got {v!r}")
+            raise ConfigError(f"equity.{field} must be HH:MM, got {v!r}")
         hour, minute = int(parts[0]), int(parts[1])
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            raise ConfigError(f"equity.cycle_time_et out of range, got {v!r}")
+            raise ConfigError(f"equity.{field} out of range, got {v!r}")
         return v
 
     @model_validator(mode="after")
