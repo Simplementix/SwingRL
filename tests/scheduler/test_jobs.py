@@ -1123,12 +1123,21 @@ class TestCycleOrdersInfoPing:
         mock_ctx.run_equity_cycle(orders=[("SPY", "buy", 25.0), ("QQQ", "sell", 0.0416, 25.0)])
         kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
         assert kwargs["level"] == "info" and "cycle orders" in kwargs["title"].lower()
-        assert "BUY SPY $25.00" in kwargs["message"]
+        # STYLE-D15: aligned monospace columns (side left-justified to 4 -> "BUY  SPY").
+        assert "BUY  SPY $25.00" in kwargs["message"]
         assert "SELL QQQ 0.0416" in kwargs["message"]  # sells never omitted
 
         mock_ctx.run_crypto_cycle(orders=[("BTCUSDT", "buy", 20.06)])
         kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
-        assert "crypto" in kwargs["title"].lower() and "BUY BTCUSDT $20.06" in kwargs["message"]
+        assert "crypto" in kwargs["title"].lower() and "BUY  BTCUSDT $20.06" in kwargs["message"]
 
         mock_ctx.run_crypto_cycle(orders=[])
         assert "deadzone" in mock_ctx.alerter.send_alert.call_args.kwargs["message"].lower()
+
+    def test_cycle_ping_orders_render_in_code_block(self, mock_ctx: _MockCtx) -> None:
+        """STYLE-D15: D12 cycle-ping order lists are monospace code blocks, aligned."""
+        mock_ctx.run_equity_cycle(orders=[("SPY", "buy", 25.0), ("QQQ", "sell", 0.0416, 25.0)])
+        msg = mock_ctx.alerter.send_alert.call_args.kwargs["message"]
+        assert "```" in msg and "BUY  SPY" in msg
+        # STYLE-D15: the ping is tagged category="cycle" (purple 🔄) for the embed styling.
+        assert mock_ctx.alerter.send_alert.call_args.kwargs["category"] == "cycle"

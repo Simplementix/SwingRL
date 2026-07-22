@@ -83,7 +83,7 @@ class TestBuildTradeEmbed:
         assert embed["embeds"][0]["color"] == 0xFF4444
 
     def test_title_contains_side_and_symbol(self) -> None:
-        """Title is 'BUY SPY' or 'SELL SPY'."""
+        """STYLE-D15: buy title gains the 🟢 prefix — '🟢 BUY SPY'."""
         fill = FillResult(
             trade_id="t3",
             symbol="SPY",
@@ -96,7 +96,7 @@ class TestBuildTradeEmbed:
             broker="alpaca",
         )
         embed = build_trade_embed(fill)
-        assert embed["embeds"][0]["title"] == "BUY SPY"
+        assert embed["embeds"][0]["title"] == "🟢 BUY SPY"
 
     def test_fields_include_required_values(self) -> None:
         """Embed fields include side, quantity, fill price, notional, commission."""
@@ -216,8 +216,8 @@ class TestBuildTradeEmbed:
 class TestBuildDailySummaryEmbed:
     """PAPER-13: Daily summary embed shows per-env P&L and combined value."""
 
-    def test_blue_color(self) -> None:
-        """Daily summary has blue sidebar 0x3498DB."""
+    def test_gold_color(self) -> None:
+        """STYLE-D15: Daily summary has gold sidebar 0xF1C40F."""
         equity_snap = {
             "total_value": 10500.0,
             "daily_pnl": 50.0,
@@ -229,7 +229,18 @@ class TestBuildDailySummaryEmbed:
             equity_trades_today=2,
             crypto_trades_today=0,
         )
-        assert embed["embeds"][0]["color"] == 0x3498DB
+        assert embed["embeds"][0]["color"] == 0xF1C40F
+
+    def test_digest_embed_gold_with_arrows(self) -> None:
+        """STYLE-D15: Daily Summary is gold with ▲/▼ P&L arrows (▼ for negative)."""
+        embed = build_daily_summary_embed(
+            equity_snapshot=None,
+            crypto_snapshot={"total_value": 50.0, "daily_pnl": -1.0},
+            equity_trades_today=0,
+            crypto_trades_today=0,
+        )["embeds"][0]
+        assert embed["color"] == 0xF1C40F
+        assert any("▼" in str(f["value"]) for f in embed["fields"])
 
     def test_title_is_daily_summary(self) -> None:
         """Title is 'Daily Summary'."""
@@ -310,9 +321,9 @@ class TestBuildDailySummaryEmbed:
         fields = {f["name"]: f["value"] for f in embed["embeds"][0]["fields"]}
         names = list(fields)
         assert "Crypto Buy & Hold" in names and "Crypto vs B&H" in names
-        # agent_value 50 vs benchmark 47 -> +$3.00 (+6.38%)
+        # agent_value 50 vs benchmark 47 -> +$3.00 (+6.38%); STYLE-D15 prefixes ✅ (delta >= 0)
         assert fields["Crypto Buy & Hold"] == "$47.00"
-        assert fields["Crypto vs B&H"] == "$+3.00 (+6.38%)"
+        assert fields["Crypto vs B&H"] == "✅ $+3.00 (+6.38%)"
 
     def test_benchmark_fields_omitted_when_none(self) -> None:
         """BENCH-D13: no benchmark -> no Buy & Hold / vs B&H fields (pre-reset shape)."""
