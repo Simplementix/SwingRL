@@ -234,6 +234,117 @@ class TestFillLifecycle:
         adapter._client.cancel_order_by_id.assert_not_called()
 
 
+class TestPreOpenAuctionSubmission:
+    """EXEC-D11: pre-open (market closed at submission) equity execution.
+
+    Buys submit ``notional`` DAY market orders (no qty), sells submit ``qty``; both return
+    ``status='pending'`` immediately — Alpaca fills them at the primary exchange's opening
+    print and the ~09:35 confirmation job records the fill. Never a synthetic synchronous
+    fill, never the poll/cancel path (that is the regular-hours honest-fill lifecycle).
+    """
+
+    @staticmethod
+    def _order(side: str, dollar_amount: float, quantity: float) -> ValidatedOrder:
+        """A validated equity order with no stops (pre-open orders are plain market)."""
+        return ValidatedOrder(
+            order=SizedOrder(
+                symbol="SPY" if side == "buy" else "QQQ",
+                side=side,  # type: ignore[arg-type]
+                quantity=quantity,
+                dollar_amount=dollar_amount,
+                stop_loss_price=None,
+                take_profit_price=None,
+                environment="equity",
+            ),
+            risk_checks_passed=["position_size"],
+        )
+
+    def test_preopen_market_order_submits_notional_and_pends(self, adapter: AlpacaAdapter) -> None:
+        """EXEC-D11: pre-open equity buys submit notional DAY market orders and return
+        status='pending' — never a synthetic synchronous fill, never a poll/cancel."""
+        adapter._client.get_clock.return_value = MagicMock(is_open=False)
+        submitted = MagicMock()
+        submitted.id = "auction-buy-1"
+        submitted.filled_avg_price = None
+        submitted.filled_qty = "0"
+        adapter._client.submit_order.return_value = submitted
+
+        result = adapter.submit_order(self._order("buy", 25.0, 0.05))
+
+        from alpaca.trading.enums import OrderType, TimeInForce
+
+        order_req = adapter._client.submit_order.call_args.kwargs["order_data"]
+        assert order_req.notional == 25.0
+        assert order_req.qty is None
+        assert order_req.time_in_force == TimeInForce.DAY
+        assert order_req.type == OrderType.MARKET
+        assert result.status == "pending"
+        assert result.trade_id == "auction-buy-1"
+        assert result.quantity == 0.0
+        assert result.fill_price == 0.0
+        assert result.submitted_at is not None
+        assert result.filled_at is None
+        # Pre-open orders rest until the opening auction — never polled or cancelled here.
+        adapter._client.get_order_by_id.assert_not_called()
+        adapter._client.cancel_order_by_id.assert_not_called()
+
+    def test_preopen_notional_rounded_to_cents(self, adapter: AlpacaAdapter) -> None:
+        """EXEC-D11: the submitted notional is rounded to two decimals (Alpaca cents)."""
+        adapter._client.get_clock.return_value = MagicMock(is_open=False)
+        submitted = MagicMock()
+        submitted.id = "auction-buy-2"
+        submitted.filled_avg_price = None
+        adapter._client.submit_order.return_value = submitted
+
+        adapter.submit_order(self._order("buy", 25.017, 0.05))
+
+        order_req = adapter._client.submit_order.call_args.kwargs["order_data"]
+        assert order_req.notional == 25.02
+
+    def test_preopen_sell_submits_qty_and_pends(self, adapter: AlpacaAdapter) -> None:
+        """EXEC-D11: pre-open equity sells submit qty (not notional) DAY market orders and
+        return pending — a sell closes a specific share quantity at the open."""
+        adapter._client.get_clock.return_value = MagicMock(is_open=False)
+        submitted = MagicMock()
+        submitted.id = "auction-sell-1"
+        submitted.filled_avg_price = None
+        submitted.filled_qty = "0"
+        adapter._client.submit_order.return_value = submitted
+
+        result = adapter.submit_order(self._order("sell", 25.0, 0.0416))
+
+        from alpaca.trading.enums import OrderSide, TimeInForce
+
+        order_req = adapter._client.submit_order.call_args.kwargs["order_data"]
+        assert order_req.qty == 0.0416
+        assert order_req.notional is None
+        assert order_req.side == OrderSide.SELL
+        assert order_req.time_in_force == TimeInForce.DAY
+        assert result.status == "pending"
+        assert result.trade_id == "auction-sell-1"
+        adapter._client.get_order_by_id.assert_not_called()
+        adapter._client.cancel_order_by_id.assert_not_called()
+
+
+class TestOrderStatusPolling:
+    """EXEC-D11: get_order_status exposes an order's broker state for the 09:35 job."""
+
+    def test_get_order_status_returns_broker_order(self, adapter: AlpacaAdapter) -> None:
+        """get_order_status fetches the order by id so the confirmation job can read
+        status/filled_avg_price/filled_qty."""
+        order = MagicMock()
+        order.status = "filled"
+        order.filled_avg_price = "600.10"
+        order.filled_qty = "0.0416"
+        adapter._client.get_order_by_id.return_value = order
+
+        result = adapter.get_order_status("auction-buy-1")
+
+        adapter._client.get_order_by_id.assert_called_once_with("auction-buy-1")
+        assert result.status == "filled"
+        assert result.filled_avg_price == "600.10"
+
+
 class TestRetryLogic:
     """Verify exponential backoff retry on TradingClient failures."""
 

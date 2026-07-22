@@ -22,6 +22,7 @@ def mock_config() -> MagicMock:
     config.scheduler.max_workers = 4
     config.risk.sweep_interval_minutes = 30
     config.equity.cycle_time_et = "15:45"
+    config.equity.fill_confirmation_time_et = "09:35"
     config.equity.market_calendar_gate = True
     config.alerting.alerts_webhook_url = ""
     config.alerting.daily_webhook_url = ""
@@ -46,10 +47,10 @@ def mock_fill() -> MagicMock:
 
 
 class TestMainRegistersJobs:
-    """Verify that main.py registers all 13 cron/interval jobs."""
+    """Verify that main.py registers all 14 cron/interval jobs."""
 
     def test_main_registers_all_jobs(self, mock_config: MagicMock) -> None:
-        """PAPER-12 + SWEEP-D10: main.py registers 13 jobs with correct IDs."""
+        """PAPER-12 + SWEEP-D10 + EXEC-D11: main.py registers 14 jobs with correct IDs."""
         from scripts.main import create_scheduler_and_register_jobs
 
         # Explicit (review minor finding #4): an unconfigured MagicMock attribute is
@@ -59,11 +60,12 @@ class TestMainRegistersJobs:
         mock_scheduler = MagicMock()
         create_scheduler_and_register_jobs(mock_scheduler, mock_config)
 
-        assert mock_scheduler.add_job.call_count == 13
+        assert mock_scheduler.add_job.call_count == 14
 
         job_ids = {c.kwargs["id"] for c in mock_scheduler.add_job.call_args_list}
         expected_ids = {
             "equity_cycle",
+            "equity_fill_confirmation",
             "crypto_cycle",
             "daily_summary",
             "stuck_agent_check",
@@ -78,6 +80,25 @@ class TestMainRegistersJobs:
             "risk_sweep",
         }
         assert job_ids == expected_ids
+
+    def test_equity_fill_confirmation_schedule(self, mock_config: MagicMock) -> None:
+        """EXEC-D11: equity_fill_confirmation fires from config.equity.fill_confirmation_time_et
+        on weekdays (~09:35 ET, after the 09:30 open — records pre-open auction fills)."""
+        from scripts.main import create_scheduler_and_register_jobs
+
+        mock_scheduler = MagicMock()
+        create_scheduler_and_register_jobs(mock_scheduler, mock_config)
+
+        call = next(
+            c
+            for c in mock_scheduler.add_job.call_args_list
+            if c.kwargs["id"] == "equity_fill_confirmation"
+        )
+        assert call.kwargs["trigger"] == "cron"
+        assert call.kwargs["hour"] == 9
+        assert call.kwargs["minute"] == 35
+        assert call.kwargs["day_of_week"] == "mon-fri"
+        assert call.kwargs["timezone"] == "America/New_York"
 
     def test_risk_sweep_schedule(self, mock_config: MagicMock) -> None:
         """SWEEP-D10: risk_sweep fires on an interval trigger every
@@ -189,6 +210,7 @@ class TestBackupJobGating:
     NON_BACKUP_JOB_IDS = frozenset(
         {
             "equity_cycle",
+            "equity_fill_confirmation",
             "crypto_cycle",
             "daily_summary",
             "stuck_agent_check",

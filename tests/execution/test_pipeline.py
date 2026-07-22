@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pytest
@@ -658,6 +659,117 @@ class TestMarketGateAndSnapshotLifecycle:
 
         assert event is not None
         assert "drawdown" in str(event["reason"])
+
+    def test_preopen_trading_day_runs_and_persists_pending(
+        self, pipeline: ExecutionPipeline
+    ) -> None:
+        """EXEC-D11: at 09:15 the market is closed (opens 09:30) but it IS a trading day —
+        the cycle must proceed and submit pre-open orders (not skip on the calendar gate),
+        and a pending equity result persists a pending_orders row (restart-safe) instead of
+        recording a $0 trade."""
+        self._clear(pipeline)
+        with pipeline._db.connection() as conn:
+            conn.execute("DELETE FROM pending_orders")
+        self._seed_equity_state(pipeline, qty=1.0, buy_price=100.0, snapshot_value=400.0, hwm=400.0)
+        self._patch_common(pipeline)
+
+        pending_fill = FillResult(
+            trade_id="auction-preopen-1",
+            symbol="SPY",
+            side="buy",
+            quantity=0.0,
+            fill_price=0.0,
+            commission=0.0,
+            slippage=0.0,
+            environment="equity",
+            broker="alpaca",
+            status="pending",
+        )
+        # Clock: closed now, but opens later TODAY (ET) — the pre-open trading-day case.
+        et = ZoneInfo("America/New_York")
+        next_open = datetime.now(tz=et).replace(hour=9, minute=30, second=0, microsecond=0)
+        mock_adapter = MagicMock()
+        mock_adapter.get_clock.return_value = MagicMock(is_open=False, next_open=next_open)
+        mock_adapter.get_current_price.return_value = 120.0
+        mock_adapter.submit_order.return_value = pending_fill
+
+        target = np.zeros(8, dtype=np.float32)
+        target[0] = 0.30  # SPY buy that clears the min-order gate
+
+        obs = np.zeros(156, dtype=np.float32)
+        mock_model = MagicMock()
+        mock_model.predict.return_value = (np.zeros(9), None)
+
+        with (
+            patch.object(pipeline, "_check_turbulence", return_value=False),
+            patch.object(pipeline, "_get_adapter", return_value=mock_adapter),
+            patch.object(
+                pipeline,
+                "_load_models",
+                return_value={
+                    "ppo": (mock_model, None),
+                    "a2c": (mock_model, None),
+                    "sac": (mock_model, None),
+                },
+            ),
+            patch.object(
+                pipeline,
+                "_get_ensemble_weights",
+                return_value={"ppo": 0.4, "a2c": 0.3, "sac": 0.3},
+            ),
+            patch.object(pipeline, "_normalize_observation", return_value=_per_algo_obs_dict(obs)),
+            patch("swingrl.execution.pipeline.process_actions", return_value=target),
+        ):
+            result = pipeline.execute_cycle("equity")
+
+        # Cycle was NOT skipped by the calendar gate: the pre-open order was submitted.
+        assert result == []  # pending is not a successful (recorded) fill
+        mock_adapter.submit_order.assert_called_once()
+
+        with pipeline._db.connection() as conn:
+            pending = conn.execute(
+                "SELECT order_id, symbol, side, resolved_at FROM pending_orders "
+                "WHERE order_id = 'auction-preopen-1'"
+            ).fetchone()
+            trade = conn.execute(
+                "SELECT * FROM trades WHERE trade_id = 'auction-preopen-1'"
+            ).fetchone()
+
+        # The pending pre-open order is persisted, unresolved, and never a $0 trade.
+        assert pending is not None
+        assert pending["symbol"] == "SPY"
+        assert pending["side"] == "buy"
+        assert pending["resolved_at"] is None
+        assert trade is None
+
+
+class TestCycleOrdersPing:
+    """EXEC-D12: every non-dry-run cycle ends with one INFO ping listing submitted orders.
+
+    Proves the wiring: execute_cycle emits the ping at cycle completion (the message format
+    itself is pinned by tests/scheduler/test_jobs.py's mock_ctx contract). A deadzone cycle
+    (zero orders) must still fire the ping with the 'deadzone held' body.
+    """
+
+    def test_deadzone_cycle_emits_orders_ping(
+        self,
+        pipeline_fixture: Callable[..., _DeadzoneCycleHarness],
+        mock_alerter: MagicMock,
+    ) -> None:
+        """EXEC-D12: a real deadzone crypto cycle fires the cycle-orders INFO ping with the
+        'deadzone held' body (wiring proof — execute_cycle calls the ping at completion)."""
+        fx = pipeline_fixture(positions={"BTCUSDT": (0.5, 60000.0)}, orders_generated=0)
+        fx.adapter.get_current_price.return_value = 50000.0
+        fx.run_cycle("crypto")
+
+        pings = [
+            c
+            for c in mock_alerter.send_alert.call_args_list
+            if "cycle orders" in str(c.kwargs.get("title", "")).lower()
+        ]
+        assert pings, "cycle-orders INFO ping was not emitted at cycle completion"
+        assert pings[-1].kwargs["level"] == "info"
+        assert "deadzone" in pings[-1].kwargs["message"].lower()
 
 
 class TestNormalizeObservation:

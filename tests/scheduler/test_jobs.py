@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +18,8 @@ import psycopg
 import pytest
 from psycopg.rows import dict_row
 
+from swingrl.config.schema import load_config
+from swingrl.data.db import DatabaseManager
 from swingrl.scheduler.halt_check import init_emergency_flags, set_halt
 from swingrl.scheduler.jobs import (
     JobContext,
@@ -761,3 +765,203 @@ class TestTradeCommentary:
         with patch("swingrl.memory.client.MemoryClient") as mock_client_cls:
             equity_cycle()
         mock_client_cls.assert_not_called()
+
+
+class _MockAlpaca:
+    """Stand-in Alpaca equity adapter for the fill-confirmation job (D11).
+
+    ``order_status`` programs a per-order broker status; the confirmation job reads it back
+    through the production ``get_order_status(order_id)`` call.
+    """
+
+    def __init__(self) -> None:
+        self._statuses: dict[str, SimpleNamespace] = {}
+
+    def order_status(self, order_id: str, **fields: Any) -> None:
+        """Program the broker order state the job will observe for ``order_id``."""
+        self._statuses[order_id] = SimpleNamespace(**fields)
+
+    def get_order_status(self, order_id: str) -> SimpleNamespace:
+        """Return the programmed order (default: an un-filled 'new' order)."""
+        return self._statuses.get(order_id, SimpleNamespace(status="new"))
+
+
+class _MockCtx:
+    """Adapts the brief's ``mock_ctx`` onto the real JobContext -> ExecutionPipeline layout.
+
+    Wires a real (migrated) DB, a real ExecutionPipeline (mock feature pipeline + mock
+    alerter), and a mock Alpaca equity adapter injected into the pipeline's adapter cache
+    so ``equity_fill_confirmation_job()`` and the D12 cycle-orders ping run end-to-end.
+    """
+
+    def __init__(self, db: DatabaseManager, config: Any, alerter: MagicMock) -> None:
+        from swingrl.execution.pipeline import ExecutionPipeline
+
+        self.db = db
+        self.alerter = alerter
+        self.alpaca = _MockAlpaca()
+        self.pipeline = ExecutionPipeline(
+            config=config,
+            db=db,
+            feature_pipeline=MagicMock(),
+            alerter=alerter,
+            models_dir=Path("/tmp/swingrl_task8_models"),
+        )
+        # Inject the mock equity adapter so get_adapter("equity") returns it (no broker).
+        self.pipeline._adapters["equity"] = self.alpaca
+        init_job_context(config=config, db=db, pipeline=self.pipeline, alerter=alerter)
+        self._clear()
+
+    def _clear(self) -> None:
+        """Isolate the shared test DB — each table dropped in its own transaction so a
+        not-yet-migrated table (RED) cannot abort the others."""
+        for table in ("pending_orders", "fill_quality", "trades", "positions"):
+            try:
+                with self.db.connection() as conn:
+                    conn.execute(f"DELETE FROM {table}")  # noqa: S608 — fixed table names
+            except Exception:  # noqa: BLE001 — table may not exist yet at RED
+                pass
+
+    def set_pending_order(self, order_id: str, cycle_id: int, symbol: str, side: str) -> None:
+        """Seed the FK parent inference_cycles row (forced id) + an unresolved pending order."""
+        with self.db.connection() as conn:
+            conn.execute(
+                "INSERT INTO inference_cycles (cycle_id, environment, mode, cycle_ts) "
+                "OVERRIDING SYSTEM VALUE VALUES (%s, 'equity', 'paper', now()) "
+                "ON CONFLICT (cycle_id) DO NOTHING",
+                (cycle_id,),
+            )
+            conn.execute(
+                "INSERT INTO pending_orders (order_id, cycle_id, symbol, side, submitted_at) "
+                "VALUES (%s, %s, %s, %s, now())",
+                (order_id, cycle_id, symbol, side),
+            )
+
+    def inserted_trade(self) -> dict[str, Any] | None:
+        """Return the most recently inserted trades row."""
+        with self.db.connection() as conn:
+            return conn.execute("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 1").fetchone()
+
+    def pending_row(self, order_id: str) -> dict[str, Any] | None:
+        """Return the pending_orders row for ``order_id`` (to assert resolved_at state)."""
+        with self.db.connection() as conn:
+            return conn.execute(
+                "SELECT * FROM pending_orders WHERE order_id = %s", (order_id,)
+            ).fetchone()
+
+    @staticmethod
+    def _to_summaries(orders: list[tuple[Any, ...]]) -> list[Any]:
+        """Convert the brief's order tuples into CycleOrderSummary descriptors.
+
+        buy:  (symbol, "buy", notional)
+        sell: (symbol, "sell", qty, approx_value)
+        """
+        from swingrl.execution.types import CycleOrderSummary
+
+        summaries: list[Any] = []
+        for order in orders:
+            if order[1] == "buy":
+                summaries.append(
+                    CycleOrderSummary(
+                        symbol=order[0], side="buy", notional_usd=float(order[2]), quantity=None
+                    )
+                )
+            else:
+                summaries.append(
+                    CycleOrderSummary(
+                        symbol=order[0],
+                        side="sell",
+                        notional_usd=float(order[3]),
+                        quantity=float(order[2]),
+                    )
+                )
+        return summaries
+
+    def run_equity_cycle(self, orders: list[tuple[Any, ...]]) -> None:
+        """Drive the pipeline's D12 cycle-orders INFO ping for the equity env."""
+        self.pipeline._send_cycle_orders_ping("equity", self._to_summaries(orders))
+
+    def run_crypto_cycle(self, orders: list[tuple[Any, ...]]) -> None:
+        """Drive the pipeline's D12 cycle-orders INFO ping for the crypto env."""
+        self.pipeline._send_cycle_orders_ping("crypto", self._to_summaries(orders))
+
+
+@pytest.fixture
+def mock_ctx(valid_config_yaml: str, tmp_path: Path) -> Generator[_MockCtx, None, None]:
+    """Real-DB harness for the D11 fill-confirmation job + D12 cycle-orders ping."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        pytest.skip("DATABASE_URL not set — no PostgreSQL available for testing")
+
+    config_file = tmp_path / "swingrl.yaml"
+    config_file.write_text(valid_config_yaml)
+    config = load_config(config_file)
+    config.system.database_url = db_url
+
+    DatabaseManager.reset()
+    db = DatabaseManager(config)
+    db.init_schema()  # legacy tables idempotent; V001-V009 applied to the test DB externally
+    ctx = _MockCtx(db, config, MagicMock())
+    yield ctx
+    DatabaseManager.reset()
+
+
+class TestEquityFillConfirmationJob:
+    """EXEC-D11: the 09:35 job turns confirmed pre-open auction fills into trades/embeds."""
+
+    def test_fill_confirmation_records_auction_fill(self, mock_ctx: _MockCtx) -> None:
+        """EXEC-D11: the 09:35 job converts a filled auction order into a trade row with the
+        originating cycle_id, capture rows, and a trade embed."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="o1", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.alpaca.order_status(
+            "o1", status="filled", filled_avg_price=600.10, filled_qty=0.0416
+        )
+
+        equity_fill_confirmation_job()
+
+        trade = mock_ctx.inserted_trade()
+        assert trade is not None
+        assert trade["cycle_id"] == 42
+        assert trade["price"] == pytest.approx(600.10)
+        assert mock_ctx.alerter.send_embed.called  # trade embed fired
+        # The pending order is stamped resolved so the next run does not re-record it.
+        assert mock_ctx.pending_row("o1")["resolved_at"] is not None
+
+    def test_fill_confirmation_warns_on_unfilled(self, mock_ctx: _MockCtx) -> None:
+        """EXEC-D11: an order still unfilled after the auction alerts a warning and stays
+        unresolved for the next run — never silently dropped."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="o2", cycle_id=42, symbol="QQQ", side="buy")
+        mock_ctx.alpaca.order_status("o2", status="canceled")
+
+        equity_fill_confirmation_job()
+
+        assert "unfilled" in mock_ctx.alerter.send_alert.call_args.kwargs["title"].lower()
+        # Row is NOT resolved — it survives for the next confirmation run.
+        assert mock_ctx.pending_row("o2")["resolved_at"] is None
+        # No trade recorded for an unfilled order.
+        assert mock_ctx.inserted_trade() is None
+
+
+class TestCycleOrdersInfoPing:
+    """EXEC-D12: every cycle (both envs) ends with one INFO listing each order."""
+
+    def test_cycle_orders_info_ping_both_envs_incl_sells(self, mock_ctx: _MockCtx) -> None:
+        """EXEC-D12: EVERY cycle (equity AND crypto) ends with one INFO listing each order
+        — buys as notional, SELLS as qty + approx value — or 'no orders — deadzone held'.
+        Fires both ways (candle-alert full-parity precedent, user ruling)."""
+        mock_ctx.run_equity_cycle(orders=[("SPY", "buy", 25.0), ("QQQ", "sell", 0.0416, 25.0)])
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "info" and "cycle orders" in kwargs["title"].lower()
+        assert "BUY SPY $25.00" in kwargs["message"]
+        assert "SELL QQQ 0.0416" in kwargs["message"]  # sells never omitted
+
+        mock_ctx.run_crypto_cycle(orders=[("BTCUSDT", "buy", 20.06)])
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert "crypto" in kwargs["title"].lower() and "BUY BTCUSDT $20.06" in kwargs["message"]
+
+        mock_ctx.run_crypto_cycle(orders=[])
+        assert "deadzone" in mock_ctx.alerter.send_alert.call_args.kwargs["message"].lower()
