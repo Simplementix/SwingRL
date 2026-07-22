@@ -51,17 +51,28 @@ def build_trade_embed(
         {"name": "Fill Price", "value": f"${fill.fill_price:,.2f}", "inline": True},
         {"name": "Notional", "value": f"${notional:,.2f}", "inline": True},
         {"name": "Commission", "value": f"${fill.commission:,.2f}", "inline": True},
-        {
-            "name": "Stop Loss",
-            "value": f"${stop_price:,.2f}" if stop_price is not None else "N/A",
-            "inline": True,
-        },
-        {
-            "name": "Take Profit",
-            "value": f"${take_profit:,.2f}" if take_profit is not None else "N/A",
-            "inline": True,
-        },
     ]
+
+    # Realized P&L: populated only for sell fills (Task 6, PNL-D8) — buys never carry it.
+    if fill.realized_pnl is not None:
+        fields.append(
+            {"name": "Realized P&L", "value": f"${fill.realized_pnl:+,.2f}", "inline": True}
+        )
+
+    fields.extend(
+        [
+            {
+                "name": "Stop Loss",
+                "value": f"${stop_price:,.2f}" if stop_price is not None else "N/A",
+                "inline": True,
+            },
+            {
+                "name": "Take Profit",
+                "value": f"${take_profit:,.2f}" if take_profit is not None else "N/A",
+                "inline": True,
+            },
+        ]
+    )
 
     return {
         "embeds": [

@@ -59,7 +59,7 @@ class FillProcessor:
         *,
         cycle_id: int | None = None,
         decision_price: float | None = None,
-    ) -> None:
+    ) -> float | None:
         """Record a fill to trades table and update positions.
 
         Only ``status="filled"`` results are recorded (review C2/M11): a ``pending`` or
@@ -78,6 +78,12 @@ class FillProcessor:
                 order), or ``None`` when unavailable. Feeds the ``fill_quality``
                 slippage calculation — never blocks fill recording when absent.
 
+        Returns:
+            Realized P&L for a sell fill (Task 6, PNL-D8) — computed from the position
+            cost basis as it stood BEFORE this fill reduced it — so the pipeline can
+            attach it to the FillResult for the sell embed. ``None`` for buys, for a
+            dropped (non-filled) result, and for a sell with no existing position row.
+
         Raises:
             DataError: If a fill marked ``filled`` carries a non-positive quantity or price
                 (backstop against silently recording a $0 trade).
@@ -90,10 +96,10 @@ class FillProcessor:
                 status=fill.status,
                 environment=fill.environment,
             )
-            return
+            return None
 
         self._record_trade(fill, cycle_id=cycle_id)
-        self._update_position(fill, sized_order)
+        realized_pnl = self._update_position(fill, sized_order)
         self._record_fill_quality(fill, decision_price=decision_price)
 
         log.info(
@@ -105,6 +111,7 @@ class FillProcessor:
             fill_price=fill.fill_price,
             environment=fill.environment,
         )
+        return realized_pnl
 
     def record_adjustment(
         self,
@@ -334,7 +341,9 @@ class FillProcessor:
         """
         return None if value is None else str(round(value, 8))
 
-    def _update_position(self, fill: FillResult, sized_order: SizedOrder | None = None) -> None:
+    def _update_position(
+        self, fill: FillResult, sized_order: SizedOrder | None = None
+    ) -> float | None:
         """Update the positions table based on the fill.
 
         Buy: create new position or adjust cost basis (weighted average).
@@ -345,8 +354,18 @@ class FillProcessor:
         Args:
             fill: FillResult with trade details.
             sized_order: Optional SizedOrder with stop/TP prices (buy fills only).
+
+        Returns:
+            Realized P&L on a sell fill against an existing position (Task 6, PNL-D8),
+            computed from the cost basis read BEFORE this fill mutates the row. ``None``
+            for buys and for a sell with no existing position row.
         """
         now = datetime.now(UTC).isoformat()
+
+        # Realized P&L on the shares sold at THIS fill's price (Task 6, PNL-D8). Stays
+        # None for buys and for a sell with no position row; set in the sell branch below
+        # from the cost basis as it stands BEFORE this fill reduces the position.
+        realized_pnl: float | None = None
 
         # Extract stop/TP values from sized_order (buy path only)
         new_stop = sized_order.stop_loss_price if sized_order is not None else None
@@ -416,6 +435,11 @@ class FillProcessor:
             else:
                 # Sell: reduce quantity
                 if existing is not None:
+                    # Realized on the shares sold at this fill's price, net of commission,
+                    # against the cost basis BEFORE the fill (unchanged by a partial sell).
+                    realized_pnl = (
+                        fill.fill_price - existing["cost_basis"]
+                    ) * fill.quantity - fill.commission
                     new_qty = existing["quantity"] - fill.quantity
 
                     if new_qty <= 0:
@@ -455,3 +479,5 @@ class FillProcessor:
                                 carried_side,
                             ),
                         )
+
+        return realized_pnl

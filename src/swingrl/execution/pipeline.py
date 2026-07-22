@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -432,7 +433,7 @@ class ExecutionPipeline:
                 # sizing-time price (Task 10, §3.7.5) — decision_price is current_price,
                 # the get_current_price() value Step 9 used to size this order.
                 try:
-                    self._fill_processor.process(
+                    realized_pnl = self._fill_processor.process(
                         fill,
                         sized_order=sized_order,
                         cycle_id=cycle_id,
@@ -457,6 +458,10 @@ class ExecutionPipeline:
                         )
                     continue
 
+                # Attach realized P&L (sell fills only; None for buys) so the trade embed
+                # can surface it (Task 6, PNL-D8). process() computed it from the position
+                # cost basis before the fill reduced it.
+                fill = dataclasses.replace(fill, realized_pnl=realized_pnl)
                 fills.append(fill)
 
                 log.info(
