@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from swingrl.execution.pipeline import ExecutionPipeline
+from swingrl.execution.risk.circuit_breaker import CBState
 from swingrl.execution.types import FillResult
 from swingrl.utils.exceptions import BrokerError
 
@@ -77,21 +78,40 @@ class _DeadzoneCycleHarness:
         pipeline: ExecutionPipeline,
         positions: dict[str, tuple[float, float]],
         orders_generated: int,
+        high_water_mark: float | None = None,
+        max_drawdown_pct: float | None = None,
     ) -> None:
         if orders_generated != 0:
             raise ValueError("harness only models deadzone (zero-order) cycles")
         self._pipeline = pipeline
         self.adapter = MagicMock()
-        self._seed(positions)
+        # Scenario knobs for the breaker-evaluation drill (finding #1): a seeded
+        # high-water mark and drawdown threshold define the crash the zero-order path
+        # must still measure against.
+        if max_drawdown_pct is not None:
+            pipeline._config.crypto.max_drawdown_pct = max_drawdown_pct
+        self._seed(positions, high_water_mark)
         # Derived cash at seed time (no trades seeded -> config initial capital). The
         # deadzone cycle adds no fills, so this stays valid through run_cycle().
         self.cash = pipeline._position_tracker.compute_cash(self._ENV)
         # Bypass the feature-health gate so the order loop always runs.
         pipeline._health_tracker = MagicMock()
         pipeline._health_tracker.assess.return_value = MagicMock(should_block=False)
+        # Swap the env circuit breaker for a spy so the breaker-evaluation assertions
+        # can observe whether the zero-order path evaluates it (drill finding #1).
+        # get_state() -> ACTIVE mirrors a fresh breaker with no halt events, so the
+        # cycle proceeds exactly as it would against the real ACTIVE breaker.
+        self.circuit_breaker = MagicMock()
+        self.circuit_breaker.get_state.return_value = CBState.ACTIVE
+        pipeline._circuit_breakers[self._ENV] = self.circuit_breaker
 
-    def _seed(self, positions: dict[str, tuple[float, float]]) -> None:
-        """Clear the shared tables and seed one held position per entry."""
+    def _seed(
+        self,
+        positions: dict[str, tuple[float, float]],
+        high_water_mark: float | None = None,
+    ) -> None:
+        """Clear the shared tables, seed one held position per entry, and optionally
+        seed a high-water-mark snapshot the breaker check reads."""
         now = datetime.now(tz=UTC).isoformat()
         with self._pipeline._db.connection() as conn:
             for table in (
@@ -106,6 +126,14 @@ class _DeadzoneCycleHarness:
                     "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
                     "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                     (symbol, self._ENV, qty, cost_basis, cost_basis, 0.0, now),
+                )
+            if high_water_mark is not None:
+                conn.execute(
+                    "INSERT INTO portfolio_snapshots "
+                    "(timestamp, environment, total_value, cash_balance, "
+                    "high_water_mark, daily_pnl, drawdown_pct) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (now, self._ENV, high_water_mark, 0.0, high_water_mark, 0.0, 0.0),
                 )
 
     def run_cycle(self, env: str) -> list[FillResult]:
@@ -158,9 +186,14 @@ def pipeline_fixture(pipeline: ExecutionPipeline) -> Callable[..., _DeadzoneCycl
     """Factory for a seeded deadzone-cycle harness (see :class:`_DeadzoneCycleHarness`)."""
 
     def _make(
-        positions: dict[str, tuple[float, float]], orders_generated: int = 0
+        positions: dict[str, tuple[float, float]],
+        orders_generated: int = 0,
+        high_water_mark: float | None = None,
+        max_drawdown_pct: float | None = None,
     ) -> _DeadzoneCycleHarness:
-        return _DeadzoneCycleHarness(pipeline, positions, orders_generated)
+        return _DeadzoneCycleHarness(
+            pipeline, positions, orders_generated, high_water_mark, max_drawdown_pct
+        )
 
     return _make
 
@@ -776,3 +809,30 @@ class TestDeadzoneMarkToMarket:
         fx.adapter.get_current_price.side_effect = BrokerError("down")
         fx.run_cycle("crypto")  # must not raise
         assert fx.recorded_snapshot().total_value == pytest.approx(0.5 * 60000.0 + fx.cash)
+
+
+class TestZeroOrderBreakerEvaluation:
+    """CB-D7: zero-order (deadzone) cycles still evaluate the drawdown breaker.
+
+    T16 drill finding #1 (2026-07-21): a cycle that generates no orders skipped
+    circuit-breaker evaluation entirely, so a held-position crash during a deadzone
+    would never trip the drawdown breaker. Step 10 now evaluates the breaker on the
+    no-order path against the cycle's fresh mark-to-market value. The trade path
+    already evaluates the breaker pre-trade, so the no-order path is gated to avoid
+    double-evaluation.
+    """
+
+    def test_zero_order_cycle_trips_breaker_on_crash(
+        self, pipeline_fixture: Callable[..., _DeadzoneCycleHarness]
+    ) -> None:
+        """CB-D7: a deadzone cycle with crashed marks still evaluates the drawdown breaker
+        (drill finding #1: zero-order cycles previously skipped breaker evaluation)."""
+        fx = pipeline_fixture(
+            positions={"BTCUSDT": (0.5, 60000.0)},
+            orders_generated=0,
+            high_water_mark=35000.0,
+            max_drawdown_pct=0.10,
+        )
+        fx.adapter.get_current_price.return_value = 30000.0  # ~50% below entry
+        fx.run_cycle("crypto")
+        assert fx.circuit_breaker.check_and_update.called
