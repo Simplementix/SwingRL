@@ -36,6 +36,8 @@ from typing import TYPE_CHECKING, Literal
 import httpx
 import structlog
 
+from swingrl.monitoring.embeds import _CATEGORY_STYLE
+
 if TYPE_CHECKING:
     from swingrl.data.db import DatabaseManager
 
@@ -145,6 +147,7 @@ class Alerter:
         message: str,
         environment: str | None = None,
         bypass_suppression: bool = False,
+        category: str | None = None,
     ) -> None:
         """Send an alert via Discord webhook or buffer for digest.
 
@@ -160,6 +163,11 @@ class Alerter:
                 warnings that represent one-off, same-day data loss -- e.g. an
                 options-capture failure -- that must not wait for N consecutive
                 occurrences before reaching Discord.
+            category: Optional STYLE-D15 style key (see ``_CATEGORY_STYLE`` in embeds.py,
+                e.g. "ingest", "cycle"). When set on an immediately-sent alert it overrides
+                the level-default sidebar color and prefixes the title with the category
+                emoji; routing, footer, cooldown and dedup are unaffected (they key off
+                level + the original title). Omitted -> behavior byte-identical to before.
         """
         msg_hash = self._compute_hash(title, message)
 
@@ -202,7 +210,7 @@ class Alerter:
                 return
 
         # Build and send
-        payload = self._build_embed(level, title, message, environment)
+        payload = self._build_embed(level, title, message, environment, category=category)
         webhook_url = self._get_webhook_for_level(level)
         success = self._post_webhook(payload, level, title, msg_hash, webhook_url=webhook_url)
 
@@ -265,6 +273,7 @@ class Alerter:
         title: str,
         message: str,
         environment: str | None = None,
+        category: str | None = None,
     ) -> dict[str, list[dict[str, object]]]:
         """Build a Discord webhook JSON payload with embed.
 
@@ -273,6 +282,9 @@ class Alerter:
             title: Embed title.
             message: Embed description text.
             environment: Optional environment for footer prefix.
+            category: Optional STYLE-D15 style key. When set, its (color, emoji) from
+                ``_CATEGORY_STYLE`` override the level-default color and prefix the title;
+                the footer still carries the level (routing/severity semantics unchanged).
 
         Returns:
             Discord webhook payload dict.
@@ -282,12 +294,18 @@ class Alerter:
             footer_parts.append(environment)
         footer_parts.append(level.upper())
 
+        color = _COLORS[level]
+        display_title = title
+        if category is not None:
+            color, emoji = _CATEGORY_STYLE[category]
+            display_title = f"{emoji} {title}"
+
         return {
             "embeds": [
                 {
-                    "title": title,
+                    "title": display_title,
                     "description": message,
-                    "color": _COLORS[level],
+                    "color": color,
                     "timestamp": datetime.now(UTC).isoformat(),
                     "footer": {"text": " | ".join(footer_parts)},
                 }

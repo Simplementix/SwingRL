@@ -722,33 +722,49 @@ class ExecutionPipeline:
                 title=f"Cycle orders submitted — {env_name}",
                 message=self._format_cycle_orders(orders),
                 environment=env_literal,
+                category="cycle",  # STYLE-D15: purple 🔄 sidebar + emoji title prefix
             )
         except Exception:
             log.warning("cycle_orders_ping_failed", env=env_name, exc_info=True)
 
     @staticmethod
     def _format_cycle_orders(orders: list[CycleOrderSummary]) -> str:
-        """Build the D12 ping body: one line per order, or the deadzone-held line.
+        """Build the D12 ping body: aligned monospace order rows, or the deadzone-held line.
 
-        buy:  ``BUY SPY $25.00`` (notional)
+        STYLE-D15: order lines render inside a triple-backtick code block with fixed-width
+        columns (side left-justified to 4 so BUY/SELL align, symbol padded to the widest in
+        this cycle), e.g.::
+
+            ```
+            BUY  SPY $25.00
+            SELL QQQ 0.0416 (~$25.00)
+            ```
+
+        buy:  ``BUY  SPY $25.00`` (notional)
         sell: ``SELL QQQ 0.0416 (~$25.00)`` (qty + approx value)
 
         Args:
             orders: Orders placed this cycle.
 
         Returns:
-            One line per order joined by newlines, or ``"no orders — deadzone held"``.
+            A fenced code block of one aligned line per order, or the plain
+            ``"no orders — deadzone held"`` line on a deadzone cycle.
         """
         if not orders:
             return "no orders — deadzone held"
+        sym_w = max(len(order.symbol) for order in orders)
         lines: list[str] = []
         for order in orders:
             if order.side == "buy":
-                lines.append(f"BUY {order.symbol} ${order.notional_usd:.2f}")
+                detail = f"${order.notional_usd:.2f}"
+                side = "BUY"
             else:
                 qty = order.quantity if order.quantity is not None else 0.0
-                lines.append(f"SELL {order.symbol} {qty:g} (~${order.notional_usd:.2f})")
-        return "\n".join(lines)
+                detail = f"{qty:g} (~${order.notional_usd:.2f})"
+                side = "SELL"
+            lines.append(f"{side:<4} {order.symbol:<{sym_w}} {detail}")
+        body = "\n".join(lines)
+        return f"```\n{body}\n```"
 
     def _load_models(self, env_name: str) -> dict[str, tuple[Any, Any]]:
         """Load trained models for the environment (lazy, mtime-keyed cache).
