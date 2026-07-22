@@ -821,8 +821,7 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
 
     if delta_qty > 1e-9 and cum_avg is not None:
         slice_dollars = cum_avg * cum_qty - prev_dollars
-        slice_price = slice_dollars / delta_qty if slice_dollars > 0 else cum_avg
-        if slice_price <= 0:
+        if slice_dollars <= 0:
             slice_price = cum_avg
             log.warning(
                 "pending_order_slice_price_fallback",
@@ -831,6 +830,8 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
                 cum_avg=cum_avg,
                 prev_dollars=prev_dollars,
             )
+        else:
+            slice_price = slice_dollars / delta_qty
         trade_id = order_id if prev_slices == 0 else f"{order_id}#{prev_slices + 1}"
         submitted_at = _to_iso(row.get("submitted_at"))
         filled_at = _to_iso(getattr(order, "filled_at", None)) or datetime.now(UTC).isoformat()
@@ -886,6 +887,35 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
         )
 
     if status == "filled":
+        # Quiet-stamping is only legitimate when the books provably match the broker: a slice
+        # was just recorded, OR previously-recorded quantity covers the broker cumulative
+        # (cum_qty > 0 and delta_qty <= 0). If nothing was recorded this run AND the broker's
+        # amounts are unusable — claims filled with no parseable quantity, or more filled than
+        # recorded but no price — do NOT stamp: warn and leave the row open for the next retry.
+        unusable = not slice_recorded and (
+            cum_qty <= 1e-9 or (delta_qty > 1e-9 and cum_avg is None)
+        )
+        if unusable:
+            ctx.alerter.send_alert(
+                level="warning",
+                title="Equity auction order filled — amounts unparseable",
+                message=(
+                    f"{row['symbol']} {row['side']} (order {order_id}) reports filled but the "
+                    f"broker amounts are unusable (filled_qty="
+                    f"{getattr(order, 'filled_qty', None)}, filled_avg_price="
+                    f"{getattr(order, 'filled_avg_price', None)}) — nothing recorded, row left "
+                    "open for the next confirmation run to retry."
+                ),
+                environment="equity",
+            )
+            log.warning(
+                "equity_auction_fill_unparseable_amounts",
+                order_id=order_id,
+                symbol=row["symbol"],
+                filled_qty=getattr(order, "filled_qty", None),
+                filled_avg_price=getattr(order, "filled_avg_price", None),
+            )
+            return False
         _stamp_pending_resolved(ctx, order_id, "filled")
         if not slice_recorded:
             log.info(
