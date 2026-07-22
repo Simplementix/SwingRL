@@ -89,12 +89,29 @@ def build_trade_embed(
     }
 
 
+def _benchmark_fields(prefix: str, agent_value: float, benchmark: float) -> list[dict[str, object]]:
+    """Buy & Hold + vs B&H fields for one env (Task 9, BENCH-D13).
+
+    ``vs B&H`` is agent_value − benchmark as signed dollars and percent of the
+    benchmark — the daily agent-vs-passive gap. Rendered only when the env has a
+    recorded benchmark (post epoch reset); Task 10 restyles these (color + ✅/❌).
+    """
+    delta = agent_value - benchmark
+    pct = (delta / benchmark * 100) if benchmark != 0 else 0.0
+    return [
+        {"name": f"{prefix} Buy & Hold", "value": f"${benchmark:,.2f}", "inline": True},
+        {"name": f"{prefix} vs B&H", "value": f"${delta:+,.2f} ({pct:+.2f}%)", "inline": True},
+    ]
+
+
 def build_daily_summary_embed(
     equity_snapshot: dict[str, float] | None,
     crypto_snapshot: dict[str, float] | None,
     equity_trades_today: int,
     crypto_trades_today: int,
     cb_status: dict[str, str] | None = None,
+    equity_benchmark: float | None = None,
+    crypto_benchmark: float | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     """Build a daily summary Discord embed.
 
@@ -104,6 +121,10 @@ def build_daily_summary_embed(
         equity_trades_today: Number of equity trades executed today.
         crypto_trades_today: Number of crypto trades executed today.
         cb_status: Dict of active circuit breaker details or None.
+        equity_benchmark: Equal-weight buy-and-hold value of the equity baselines
+            (Task 9, BENCH-D13), or None pre-reset — the digest then omits the
+            "Buy & Hold" / "vs B&H" fields, leaving the pre-reset shape unchanged.
+        crypto_benchmark: Same for the crypto env.
 
     Returns:
         Discord webhook payload dict with embeds list.
@@ -129,6 +150,8 @@ def build_daily_summary_embed(
                 {"name": "Equity Trades", "value": str(equity_trades_today), "inline": True},
             ]
         )
+        if equity_benchmark is not None:
+            fields.extend(_benchmark_fields("Equity", ev, equity_benchmark))
 
     if crypto_snapshot is not None:
         cv = crypto_snapshot["total_value"]
@@ -147,6 +170,8 @@ def build_daily_summary_embed(
                 {"name": "Crypto Trades", "value": str(crypto_trades_today), "inline": True},
             ]
         )
+        if crypto_benchmark is not None:
+            fields.extend(_benchmark_fields("Crypto", cv, crypto_benchmark))
 
     fields.append(
         {"name": "Total Portfolio Value", "value": f"${total_value:,.2f}", "inline": False}

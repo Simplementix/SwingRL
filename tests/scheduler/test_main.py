@@ -634,9 +634,11 @@ class TestEquityCycleSendsTradeEmbeds:
         mock_db = MagicMock()
         mock_config = MagicMock()
 
-        # Mock the connection context manager. daily_summary_job issues TWO queries:
-        # the portfolio_snapshots read and the per-env signal-trade count. Route by SQL
-        # so the trades query returns rows carrying the `n` key the count loop reads.
+        # Mock the connection context manager. daily_summary_job issues THREE query kinds:
+        # the portfolio_snapshots read, the per-env signal-trade count, and the per-env
+        # buy-and-hold benchmark probe (Task 9). Route by SQL so the trades query returns
+        # rows carrying the `n` key the count loop reads, and benchmark_baselines returns
+        # empty (no baselines -> _benchmark_value None -> digest keeps its pre-reset shape).
         snapshot_rows = [
             {
                 "environment": "equity",
@@ -652,6 +654,8 @@ class TestEquityCycleSendsTradeEmbeds:
             result = MagicMock()
             if "FROM trades" in sql:
                 result.fetchall.return_value = trade_count_rows
+            elif "FROM benchmark_baselines" in sql:
+                result.fetchall.return_value = []  # no baselines -> benchmark None
             else:
                 result.fetchall.return_value = snapshot_rows
             return result

@@ -367,6 +367,52 @@ def risk_sweep_job() -> None:
         log.exception("risk_sweep_global_failed")
 
 
+# D13 buy-and-hold: env -> latest-close query. Constant SQL (no interpolation) so
+# bandit stays quiet; the ORDER BY column differs per env (ohlcv_daily.date vs
+# ohlcv_4h.datetime), which is why this is a map of full statements, not an f-string.
+_LATEST_CLOSE_SQL: dict[str, str] = {
+    "equity": "SELECT close FROM ohlcv_daily WHERE symbol = %s ORDER BY date DESC LIMIT 1",
+    "crypto": "SELECT close FROM ohlcv_4h WHERE symbol = %s ORDER BY datetime DESC LIMIT 1",
+}
+
+
+def _benchmark_value(conn: Any, env: str) -> float | None:
+    """Equal-weight buy-and-hold value of the env's baselines, grown to latest close (D13).
+
+    Returns Σ over the env's ``benchmark_baselines`` rows of
+    ``(capital_usd / n_symbols) × latest_close / baseline_price`` — what an equal-weight
+    passive hold of each symbol would be worth today. Returns None when the env has no
+    baselines (pre epoch reset), so the digest omits the "Buy & Hold" fields and its
+    pre-reset shape is unchanged. A symbol with no stored close is skipped (its slice
+    contributes nothing) rather than failing the whole digest.
+
+    Args:
+        conn: An open DB connection (called inside the digest's connection block).
+        env: "equity" or "crypto".
+
+    Returns:
+        The benchmark value in USD, or None when no baselines exist for ``env``.
+    """
+    close_sql = _LATEST_CLOSE_SQL.get(env)
+    if close_sql is None:
+        return None
+    baselines = conn.execute(
+        "SELECT symbol, baseline_price, capital_usd FROM benchmark_baselines"
+        " WHERE environment = %s",
+        (env,),
+    ).fetchall()
+    if not baselines:
+        return None
+    n_symbols = len(baselines)
+    total = 0.0
+    for row in baselines:
+        close_row = conn.execute(close_sql, (row["symbol"],)).fetchone()
+        if close_row is None or close_row["close"] is None:
+            continue
+        total += (row["capital_usd"] / n_symbols) * (close_row["close"] / row["baseline_price"])
+    return total
+
+
 def daily_summary_job() -> None:
     """Query portfolio snapshots and send daily summary alert.
 
@@ -397,6 +443,11 @@ def daily_summary_job() -> None:
         # position_tracker.get_daily_pnl). Replaces the previously hardcoded zeros that
         # made every digest report "0 trades" (found live 2026-07-21).
         counts = {"equity": 0, "crypto": 0}
+        # Buy-and-hold benchmark per env (D13). Computed in the SAME connection block as
+        # the snapshots + trade counts (Task 3's wiring) — one connection per digest.
+        # None until the epoch-reset recorder has written baselines, in which case the
+        # embed omits the "Buy & Hold" fields (pre-reset shape unchanged).
+        benchmarks: dict[str, float | None] = {"equity": None, "crypto": None}
         with ctx.db.connection() as conn:
             rows = conn.execute(
                 "SELECT environment, total_value, cash_balance, daily_pnl, drawdown_pct "
@@ -410,6 +461,8 @@ def daily_summary_job() -> None:
                 "(now() AT TIME ZONE 'America/New_York')::date "
                 "GROUP BY environment"
             ).fetchall()
+            benchmarks["equity"] = _benchmark_value(conn, "equity")
+            benchmarks["crypto"] = _benchmark_value(conn, "crypto")
 
         for r in trade_rows:
             counts[r["environment"]] = int(r["n"])
@@ -438,6 +491,8 @@ def daily_summary_job() -> None:
                 crypto_snapshot=crypto_snap,
                 equity_trades_today=counts["equity"],
                 crypto_trades_today=counts["crypto"],
+                equity_benchmark=benchmarks["equity"],
+                crypto_benchmark=benchmarks["crypto"],
             )
             ctx.alerter.send_embed("info", embed)
         else:
