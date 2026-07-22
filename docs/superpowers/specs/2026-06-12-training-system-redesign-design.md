@@ -252,7 +252,14 @@ by nothing live.
   they will in production; (c) turbulence enters the observation as **decomposed features**
   (equity: magnitude + correlation surprise as percentile-ranks; crypto: signed volatility
   z-score + signed correlation change), never the raw composite — per the adopted method
-  review (`.planning/research/turbulence-method-review.md`).
+  review (`.planning/research/turbulence-method-review.md`); (d) **execution-fill
+  convention (2026-07-21):** era-1 envs decide on completed bars through t and fill at
+  **open(t+1)**, both envs, replacing era-0's fill-at-observed-close idealization — the
+  overnight gap becomes part of training. Pairs with the live-side schedule alignment
+  (equity cycle moved to the morning open; see
+  `docs/superpowers/specs/2026-07-21-execution-alignment-design.md` D2/D9). Config-gated,
+  default off; era-0 models are never trained, fine-tuned, or evaluated under the new
+  convention (era-boundary rule).
 
 ### §2.6 Observability (D-T2.7, D-T2.11; pillar 4)
 
@@ -1354,7 +1361,7 @@ walkthrough).
 | A25 | §4.14 G2/review hand-off additions: grader orchestration + freshness alarm, cutover runbook, corpus backups + Stage 3.5 grants, alerting routes, **L2 evidence-accrual decision**, F1 re-triage, seed fallback, misc | OPS/BLD |
 | A26 | §4.14 L2 evidence-accrual: preferred direction — layered pooling (pooled → ladder L2/L3 + reduce-only; per-scope → L1 + authority expansion; outlier alarm; `coach_config` stratification; option 3 excluded from outcome verdicts); numbers → G2 (2026-07-07, G1 read) | G1 |
 | A27 | Turbulence capture: `inference_cycles.turbulence` decision-time pre-zeroing stamp (§4.7); `fold_results.turbulence_mean` fold regime context (§4.3); editorial: `calendar_events` UNIQUE NULLS NOT DISTINCT (§4.7) (2026-07-07, G2 Plan A walkthrough) | G2 |
-| A28 | Era-1 training-env live-parity definition pointer — real turbulence obs, live-parity breakers, decomposed features per adopted memo; full definition → Plan B (§2.5) (2026-07-07) | G2 |
+| A28 | Era-1 training-env live-parity definition pointer — real turbulence obs, live-parity breakers, decomposed features per adopted memo, open-fill execution convention (2026-07-21); full definition → Plan B (§2.5) (2026-07-07) | G2 |
 | A29 | `gate_versions` surrogate PK `gate_version_id` + `version_number` + UNIQUE(gate_type, version_number); FK ripple to `eras`, `fold_results`, `season_results` (§4.1, §4.3) (2026-07-07, signed off in-session) | G2 |
 | A30 | Steady-state deploy isolation (§4.14): trader/trainer compose split (pinned trader tag), market-safe trader windows, schema-assertion **floor semantics**, additive-only migrations while trader runs, `models/active/` written only by gated promotion. Verified basis: single `swingrl` service runs scheduler + training; code baked into image; loader hot-reloads on mtime (2026-07-12, user-approved) | G2 |
 | A31 | Legacy memory-schema `pattern_presentations` renamed to `pattern_presentations_legacy` (§4.5/§4.9): the §4.5 cede-to table keeps the spec name; legacy writers keep the `_legacy` table until the Task 28 cutover. V006 gained a shape-guarded (`consolidation_id`) in-place rename; `postgres_schema.py` + `services/memory/db.py` DDL/DML renamed. Fixes the CI schema-init collision (`DuplicateTable` when `init_schema()` precedes `apply_migrations()`) (2026-07-17, user ruling) | Plan B |

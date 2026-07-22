@@ -1190,7 +1190,7 @@ source for both containers.
 
 ---
 
-## Phase 7 — Era-1 training environment (Tasks 24–25; A28)
+## Phase 7 — Era-1 training environment (Tasks 24–25b; A28)
 
 ### Task 24: Decomposed turbulence observation features
 
@@ -1266,6 +1266,42 @@ Era-1 policies must experience halts in training exactly as they will in product
   `breaker_active` both ways.
 - [ ] **Step 2–4:** RED → implement → GREEN + full suite. Commit: `feat(envs):
   live-parity training breakers (A28) — era-1 policies train through halts`.
+
+### Task 25b: Era-1 execution convention — decide on t, fill at open(t+1) (A28d, 2026-07-21)
+
+Era-0 envs fill at the close of the last observed bar (`envs/base.py:187-195` — the agent
+transacts at a price it has already seen). Era-1 fills at the **next bar's open**, both
+envs, so training matches live execution exactly: the live equity cycle decides on
+yesterday's completed bars and fills at this morning's open (see
+`docs/superpowers/specs/2026-07-21-execution-alignment-design.md` D2/D9); crypto's
+open(t+1) ≈ close(t) in a 24/7 market, so one uniform convention costs crypto nothing.
+Overnight-gap risk becomes something the policy experiences in training.
+
+**Files:**
+- Modify: `src/swingrl/envs/base.py` (fill-price source in `step()`),
+  `src/swingrl/training/data_loader.py` (supply an `opens` array alongside `prices`),
+  `src/swingrl/config/schema.py` (`environment.era1_open_fill: bool`, default false;
+  era-1 run configs enable — mirrors Task 25's flag pattern)
+- Test: `tests/envs/test_open_fill.py`
+
+**Interfaces:**
+- Consumes: `ohlcv_daily.open` / `ohlcv_4h.open` (already stored); Task 24/25's era-keyed
+  config-flag pattern.
+- Produces: when `era1_open_fill` is true, `step()` executes the rebalance at
+  `self._opens[self._current_step + 1]` instead of `self._prices[self._current_step]`;
+  portfolio valuation and reward continue on closes unchanged. Flag false → behavior
+  byte-identical to today (era-0 reproducibility).
+
+- [ ] **Step 1: Failing tests** — (a) flag on: a known synthetic price path with a
+  deliberate overnight gap produces a fill at open(t+1), not close(t) — assert the
+  portfolio cash delta matches the open price exactly; (b) flag off: trade log and
+  rewards identical to the pre-change env on the same path and seed; (c) terminal-bar
+  edge: the final step (no t+1 bar) executes no trade rather than indexing past the
+  array.
+- [ ] **Step 2–4:** RED → implement → GREEN + full suite. Update
+  `docs/training/environment.md` (or the env-conventions doc that exists at execution
+  time) in the same commit. Commit: `feat(envs): era-1 open-fill execution convention
+  (A28d) — fills at open(t+1)`.
 
 ---
 
