@@ -652,6 +652,48 @@ class TestRiskSweepJob:
         assert set(portfolio_values.keys()) == {"equity", "crypto"}
         assert set(daily_pnls.keys()) == {"equity", "crypto"}
 
+    def test_risk_sweep_per_env_failure_isolation(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: a failure in one env (e.g. adapter lazy-init) must NOT stop the other —
+        env B's per-env breaker still evaluates, so a persistent env-A fault cannot re-open
+        env-B's between-cycle blind window, the exact window this job exists to close."""
+        sweep_ctx.set_positions("equity", {"SPY": (10.0, 400.0)})
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+
+        def _adapter(env: str) -> MagicMock:
+            if env == "equity":  # env A (first-iterated) fails at adapter init
+                raise RuntimeError("alpaca client init failed")
+            return sweep_ctx.adapter
+
+        sweep_ctx.pipeline.get_adapter.side_effect = _adapter
+
+        risk_sweep_job()  # must not raise
+
+        sweep_ctx.circuit_breakers["equity"].check_and_update.assert_not_called()
+        sweep_ctx.circuit_breakers["crypto"].check_and_update.assert_called_once()
+
+    def test_risk_sweep_skips_global_when_env_value_missing(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: when an env errors BEFORE its value is computed, that value is missing
+        from the combined dict — check_combined is SKIPPED (a partial dict would understate
+        total value and risk a false global halt) and the skip is warned. A flat env is NOT
+        missing: it still contributes its cash value."""
+        from structlog.testing import capture_logs
+
+        sweep_ctx.set_positions("equity", {"SPY": (10.0, 400.0)})
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+
+        def _adapter(env: str) -> MagicMock:
+            if env == "equity":
+                raise RuntimeError("alpaca client init failed")
+            return sweep_ctx.adapter
+
+        sweep_ctx.pipeline.get_adapter.side_effect = _adapter
+
+        with capture_logs() as logs:
+            risk_sweep_job()
+
+        sweep_ctx.global_cb.check_combined.assert_not_called()
+        assert any(entry.get("event") == "risk_sweep_global_skipped" for entry in logs)
+
 
 class TestTradeCommentary:
     """Task 12: post-cycle MT commentary skeleton — inert by default (meta_trader.enabled)."""
