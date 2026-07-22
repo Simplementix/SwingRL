@@ -12,7 +12,8 @@ equity:
   max_drawdown_pct: 0.10        # circuit breaker: halt equity env at 10% DD
   daily_loss_limit_pct: 0.02    # circuit breaker: halt equity env at 2% daily loss
   min_order_usd: 1.0            # Alpaca minimum order floor ($1.00 fractional shares)
-  cycle_time_et: "15:45"        # daily rebalance time (ET); 15m before close so fills land intraday
+  cycle_time_et: "09:15"        # pre-open decision on t-1 bars; orders submitted before the 09:28 auction cutoff (spec D2/D11)
+  fill_confirmation_time_et: "09:35"  # after the 09:30 open: record pre-open opening-auction fills (spec D11)
   market_calendar_gate: true    # gate the equity cycle on the Alpaca market clock (fail-safe)
   order_fill_timeout_s: 60      # cancel an unfilled order after N seconds (never a $0 trade)
   order_poll_interval_s: 2      # poll order status every N seconds during the fill wait
@@ -67,9 +68,15 @@ scheduler:
   apscheduler_db_path: db/apscheduler_jobs.sqlite  # SEPARATE from trading_ops.db
   misfire_grace_time: 300                  # default grace (seconds) for non-cycle jobs
   misfire_grace_s:                         # per-env grace for the trading cycle jobs (A30)
-    equity: 720                            # a restart shortly after 15:45 still runs late; past ~15:57 it skips
+    equity: 720                            # a restart up to 09:15+720s=09:27 ET still runs the cycle (before the 09:28 auction cutoff); past that it skips
     crypto: 3600                           # 4H cadence — an hour late is immaterial
   max_workers: 4                           # APScheduler thread pool size
+
+risk:
+  sweep_interval_minutes: 30               # D10: between-cycle risk sweep — mark held positions
+                                           # + evaluate breakers every N min so a crash in the blind
+                                           # window between sparse trading cycles is caught within
+                                           # one sweep. No trading, no snapshots. Floor 5 min.
 
 backup:
   backup_retention_days: 14         # days to keep database backups
@@ -94,8 +101,8 @@ options_collector:
   rate_limit_per_sec: 1.0           # courtesy throttle; 9 GETs per run
   health_check_time_et: "17:15"
   health_lookback_days: 3           # D9: health check scans the last N trading days
-  snapshots:                        # pull trails market time by the feed delay (D8; T6-measured 2026-07-15: content delay 15m27s — 16:00/16:35 confirmed)
-    - { label: decision, market_time_et: "15:45", pull_time_et: "16:00", misfire_grace_s: 900 }
+  snapshots:                        # pull trails market time by the feed delay (D8; T6-measured 2026-07-15: content delay 15m27s — 16-min trail preserves the margin: 09:30→09:46 decision, 16:15→16:35 eod)
+    - { label: decision, market_time_et: "09:30", pull_time_et: "09:46", misfire_grace_s: 900 }
     - { label: eod,      market_time_et: "16:15", pull_time_et: "16:35", misfire_grace_s: 18000 }
   integrity:
     contract_count_drop_warn_frac: 0.5   # partial-chain guard (CBOE has no truncation flag)
@@ -108,7 +115,7 @@ options_collector:
     time_et: "02:30"
   candle_jobs:                      # 2026-07-18: collector keeps OHLCV bars fresh (training paused); existing Alpaca/Binance ingestors, CBOE stays options-only
     enabled: true
-    equity_time_et: "16:50"         # Mon–Fri; after the 16:35 eod snapshot, outside the 15:30–16:45 quiet window
+    equity_time_et: "20:15"         # Mon–Fri; past 00:00 UTC (EDT+EST) so day-D bar lands day-D evening
     crypto_minute: 1                # minute past each 4H UTC bar close (0,4,8,12,16,20), ahead of the trader's :05 cycles
     equity_misfire_grace_s: 21600   # 6h: a late equity daily bar still valid to capture much later
     crypto_misfire_grace_s: 10800   # 3h: within a 4H cycle, past that skip rather than double-fire

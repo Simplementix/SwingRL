@@ -93,7 +93,7 @@ def _truncate_all_public_tables(db_url: str) -> None:
 
 
 def drop_migration_artifacts(mgr: DatabaseManager) -> None:
-    """Drop all V001-V008 artifacts and clear their schema_migrations ledger rows.
+    """Drop all V001-V010 artifacts and clear their schema_migrations ledger rows.
 
     THE single shared de-migration teardown for every DB-gated fixture on the
     shared CI scratch database. It replaced two hand-rolled copies (one in
@@ -179,6 +179,12 @@ def drop_migration_artifacts(mgr: DatabaseManager) -> None:
         conn.execute("DROP TABLE IF EXISTS event_outcomes")
         conn.execute("DROP TABLE IF EXISTS calendar_events")
         conn.execute("DROP TABLE IF EXISTS fill_quality")
+        # V009 pending_orders references inference_cycles(cycle_id), so it must be dropped
+        # before inference_cycles (below) or the FK dependency blocks that DROP.
+        conn.execute("DROP TABLE IF EXISTS pending_orders")
+        # V010 benchmark_baselines is standalone (no FK in either direction), so it can drop
+        # anywhere; kept beside the V009 exec-alignment drop above for provenance.
+        conn.execute("DROP TABLE IF EXISTS benchmark_baselines")
         conn.execute("ALTER TABLE trades DROP COLUMN IF EXISTS cycle_id")
         conn.execute("DROP TABLE IF EXISTS cycle_algo_proposals")
         conn.execute("DROP TABLE IF EXISTS inference_cycles")
@@ -198,7 +204,7 @@ def drop_migration_artifacts(mgr: DatabaseManager) -> None:
         conn.execute(
             "DO $$ BEGIN "
             "IF to_regclass('public.schema_migrations') IS NOT NULL THEN "
-            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4, 5, 6, 7, 8); "
+            "DELETE FROM schema_migrations WHERE version IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10); "
             "END IF; "
             "END $$;"
         )
@@ -207,7 +213,7 @@ def drop_migration_artifacts(mgr: DatabaseManager) -> None:
 def reapply_migrated_schema(mgr: DatabaseManager) -> None:
     """De-migrate then re-apply every migration — the shared-CI-DB teardown invariant.
 
-    Drops all V001-V008 artifacts (via ``drop_migration_artifacts``) and immediately
+    Drops all V001-V010 artifacts (via ``drop_migration_artifacts``) and immediately
     re-runs ``apply_migrations`` so the shared scratch database is left FULLY MIGRATED
     (ledger at max version) after the fixture that used it finishes. This is the CI
     stage-2.7 invariant every DB-gated fixture assumes for the rest of the run; without

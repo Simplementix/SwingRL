@@ -6,6 +6,7 @@ PAPER-13: Trade alert, daily summary, stuck agent, and circuit breaker embeds.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from swingrl.execution.types import FillResult
 from swingrl.monitoring.embeds import (
@@ -14,6 +15,32 @@ from swingrl.monitoring.embeds import (
     build_stuck_agent_embed,
     build_trade_embed,
 )
+
+
+def make_fill(
+    *,
+    side: Literal["buy", "sell"],
+    symbol: str = "SPY",
+    quantity: float = 10.0,
+    fill_price: float = 150.0,
+    commission: float = 0.0,
+    realized_pnl: float | None = None,
+) -> FillResult:
+    """Build a filled FillResult for embed tests (buys default to no realized P&L)."""
+    return FillResult(
+        trade_id="embed-fill",
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        fill_price=fill_price,
+        commission=commission,
+        slippage=0.0,
+        environment="equity",
+        broker="alpaca",
+        status="filled",
+        realized_pnl=realized_pnl,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Test: build_trade_embed
@@ -56,7 +83,7 @@ class TestBuildTradeEmbed:
         assert embed["embeds"][0]["color"] == 0xFF4444
 
     def test_title_contains_side_and_symbol(self) -> None:
-        """Title is 'BUY SPY' or 'SELL SPY'."""
+        """STYLE-D15: buy title gains the 🟢 prefix — '🟢 BUY SPY'."""
         fill = FillResult(
             trade_id="t3",
             symbol="SPY",
@@ -69,7 +96,7 @@ class TestBuildTradeEmbed:
             broker="alpaca",
         )
         embed = build_trade_embed(fill)
-        assert embed["embeds"][0]["title"] == "BUY SPY"
+        assert embed["embeds"][0]["title"] == "🟢 BUY SPY"
 
     def test_fields_include_required_values(self) -> None:
         """Embed fields include side, quantity, fill price, notional, commission."""
@@ -171,6 +198,15 @@ class TestBuildTradeEmbed:
         # Should parse without error
         datetime.fromisoformat(ts)
 
+    def test_sell_embed_shows_realized_pnl(self) -> None:
+        """PNL-D8: sell embeds carry the Realized P&L field; buys never do."""
+        sell = make_fill(side="sell", realized_pnl=19.56)
+        fields = {f["name"] for f in build_trade_embed(sell)["embeds"][0]["fields"]}
+        assert "Realized P&L" in fields
+        buy = make_fill(side="buy")
+        fields = {f["name"] for f in build_trade_embed(buy)["embeds"][0]["fields"]}
+        assert "Realized P&L" not in fields
+
 
 # ---------------------------------------------------------------------------
 # Test: build_daily_summary_embed
@@ -180,8 +216,8 @@ class TestBuildTradeEmbed:
 class TestBuildDailySummaryEmbed:
     """PAPER-13: Daily summary embed shows per-env P&L and combined value."""
 
-    def test_blue_color(self) -> None:
-        """Daily summary has blue sidebar 0x3498DB."""
+    def test_gold_color(self) -> None:
+        """STYLE-D15: Daily summary has gold sidebar 0xF1C40F."""
         equity_snap = {
             "total_value": 10500.0,
             "daily_pnl": 50.0,
@@ -193,17 +229,28 @@ class TestBuildDailySummaryEmbed:
             equity_trades_today=2,
             crypto_trades_today=0,
         )
-        assert embed["embeds"][0]["color"] == 0x3498DB
+        assert embed["embeds"][0]["color"] == 0xF1C40F
+
+    def test_digest_embed_gold_with_arrows(self) -> None:
+        """STYLE-D15: Daily Summary is gold with ▲/▼ P&L arrows (▼ for negative)."""
+        embed = build_daily_summary_embed(
+            equity_snapshot=None,
+            crypto_snapshot={"total_value": 50.0, "daily_pnl": -1.0},
+            equity_trades_today=0,
+            crypto_trades_today=0,
+        )["embeds"][0]
+        assert embed["color"] == 0xF1C40F
+        assert any("▼" in str(f["value"]) for f in embed["fields"])
 
     def test_title_is_daily_summary(self) -> None:
-        """Title is 'Daily Summary'."""
+        """STYLE-D15: title carries the 📊 category emoji prefix — '📊 Daily Summary'."""
         embed = build_daily_summary_embed(
             equity_snapshot=None,
             crypto_snapshot=None,
             equity_trades_today=0,
             crypto_trades_today=0,
         )
-        assert embed["embeds"][0]["title"] == "Daily Summary"
+        assert embed["embeds"][0]["title"] == "📊 Daily Summary"
 
     def test_equity_fields_present(self) -> None:
         """Equity snapshot fields shown when provided."""
@@ -260,6 +307,34 @@ class TestBuildDailySummaryEmbed:
         )
         footer = embed["embeds"][0]["footer"]["text"]
         assert "Daily Summary" in footer
+
+    def test_digest_shows_agent_vs_buy_and_hold(self) -> None:
+        """BENCH-D13: digest embeds carry Buy & Hold + vs B&H fields when baselines exist,
+        and omit them (unchanged shape) when none do."""
+        embed = build_daily_summary_embed(
+            equity_snapshot=None,
+            crypto_snapshot={"total_value": 50.0, "daily_pnl": 1.0},
+            equity_trades_today=0,
+            crypto_trades_today=0,
+            crypto_benchmark=47.0,
+        )
+        fields = {f["name"]: f["value"] for f in embed["embeds"][0]["fields"]}
+        names = list(fields)
+        assert "Crypto Buy & Hold" in names and "Crypto vs B&H" in names
+        # agent_value 50 vs benchmark 47 -> +$3.00 (+6.38%); STYLE-D15 prefixes ✅ (delta >= 0)
+        assert fields["Crypto Buy & Hold"] == "$47.00"
+        assert fields["Crypto vs B&H"] == "✅ $+3.00 (+6.38%)"
+
+    def test_benchmark_fields_omitted_when_none(self) -> None:
+        """BENCH-D13: no benchmark -> no Buy & Hold / vs B&H fields (pre-reset shape)."""
+        embed = build_daily_summary_embed(
+            equity_snapshot={"total_value": 50.0, "daily_pnl": 1.0},
+            crypto_snapshot={"total_value": 50.0, "daily_pnl": 1.0},
+            equity_trades_today=0,
+            crypto_trades_today=0,
+        )
+        names = [f["name"] for f in embed["embeds"][0]["fields"]]
+        assert not any("Buy & Hold" in n or "vs B&H" in n for n in names)
 
 
 # ---------------------------------------------------------------------------

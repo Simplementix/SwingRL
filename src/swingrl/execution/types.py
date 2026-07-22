@@ -55,6 +55,10 @@ class FillResult:
     UTC ISO timestamps consumed downstream (Task 10 time-to-fill). A ``"pending"`` or
     ``"rejected"`` result carries zero quantity/price and is dropped by the processor —
     it must never become a $0 trades row.
+
+    ``realized_pnl`` is populated only for sell fills (Task 6, PNL-D8): the pipeline
+    attaches it via ``dataclasses.replace`` from the value ``FillProcessor.process``
+    returns, so a sell embed can show realized profit/loss. Buys leave it ``None``.
     """
 
     trade_id: str
@@ -69,6 +73,22 @@ class FillResult:
     status: Literal["filled", "pending", "rejected"] = "filled"
     submitted_at: str | None = None
     filled_at: str | None = None
+    realized_pnl: float | None = None
+
+
+@dataclass(frozen=True)
+class CycleOrderSummary:
+    """One submitted-order line for the D12 cycle-orders INFO ping (env-agnostic).
+
+    Emitted after EVERY cycle, both envs (spec D12). ``notional_usd`` is the dollar amount
+    for a buy and the approximate value (qty × reference price) for a sell; ``quantity`` is
+    set only for sells (the share/coin count the ping shows alongside the approx value).
+    """
+
+    symbol: str
+    side: Literal["buy", "sell"]
+    notional_usd: float
+    quantity: float | None = None
 
 
 @dataclass

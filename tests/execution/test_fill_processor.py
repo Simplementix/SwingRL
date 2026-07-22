@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -1118,3 +1119,49 @@ class TestFillQualityLiveDB:
 
         assert row is not None
         assert row["cycle_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Task 6: realized P&L returned from process() on sell fills (PNL-D8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def processor_fixture() -> Any:
+    """Factory: build a FillProcessor whose position SELECT returns ``existing_position``.
+
+    The returned handle exposes ``process_sell(...)``, which submits a filled sell
+    FillResult through ``process()`` and returns the realized P&L it now yields
+    (``None`` for buys / when no position row exists).
+    """
+
+    def _make(*, existing_position: dict[str, Any]) -> Any:
+        db, conn = make_mock_db(fetchone_returns=[existing_position])
+        processor = FillProcessor(db=db)
+
+        def process_sell(*, quantity: float, fill_price: float, commission: float) -> float | None:
+            fill = FillResult(
+                trade_id="fill-pnl-001",
+                symbol="SPY",
+                side="sell",
+                quantity=quantity,
+                fill_price=fill_price,
+                commission=commission,
+                slippage=0.0,
+                environment="equity",
+                broker="alpaca",
+                status="filled",
+            )
+            return processor.process(fill)
+
+        return SimpleNamespace(process_sell=process_sell, processor=processor, conn=conn)
+
+    return _make
+
+
+def test_sell_fill_computes_realized_pnl(processor_fixture: Any) -> None:
+    """PNL-D8: realized = (fill - cost_basis) * qty - commission, computed from the
+    position row as it was BEFORE this fill updates it."""
+    fx = processor_fixture(existing_position={"quantity": 2.0, "cost_basis": 100.0})
+    realized = fx.process_sell(quantity=2.0, fill_price=110.0, commission=0.44)
+    assert realized == pytest.approx((110.0 - 100.0) * 2.0 - 0.44)

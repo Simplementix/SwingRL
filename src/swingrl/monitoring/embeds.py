@@ -18,12 +18,28 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from swingrl.execution.types import FillResult
 
-# Discord embed sidebar colors
+# Discord embed sidebar colors used by the non-category embeds (stuck-agent, circuit
+# breaker, iteration-completion). Trade-fill and digest colors now live in _CATEGORY_STYLE.
 _COLOR_BUY = 0x00FF00
-_COLOR_SELL = 0xFF4444
-_COLOR_BLUE = 0x3498DB
 _COLOR_WARNING = 0xFFA500
 _COLOR_CRITICAL = 0xFF0000
+
+# Central category style map (STYLE-D15): category -> (sidebar color, title emoji).
+# Single source of truth — alerter.py imports this and applies it in send_alert(category=...),
+# and the embed builders below read it too, so there are no scattered hex/emoji literals to
+# retheme in more than one place. NOTE: trade-fill colors are kept at their live values
+# (buy 0x00FF00 / sell 0xFF4444), not the styling brief's 0x2ECC71 / 0xE74C3C recollection —
+# the directive was "colors unchanged" and existing tests pin the live values; only the
+# 🟢/🔴 title emoji is new.
+_CATEGORY_STYLE: dict[str, tuple[int, str]] = {
+    "ingest": (0x3498DB, "📥"),  # data ingests (candles)
+    "digest": (0xF1C40F, "📊"),  # Daily Summary digest — gold
+    "buy": (0x00FF00, "🟢"),  # trade fill — buy (color kept)
+    "sell": (0xFF4444, "🔴"),  # trade fill — sell (color kept)
+    "cycle": (0x9B59B6, "🔄"),  # cycle-orders ping + ops heartbeats — purple
+    "warning": (0xFFA500, "⚠️"),  # warning (level default, unchanged)
+    "critical": (0xFF0000, "🚨"),  # critical (level default, unchanged)
+}
 
 
 def build_trade_embed(
@@ -42,7 +58,8 @@ def build_trade_embed(
         Discord webhook payload dict with embeds list.
     """
     side_upper = fill.side.upper()
-    color = _COLOR_BUY if fill.side == "buy" else _COLOR_SELL
+    # STYLE-D15: color unchanged (green buy / red sell); title gains a 🟢/🔴 prefix.
+    color, side_emoji = _CATEGORY_STYLE["buy" if fill.side == "buy" else "sell"]
     notional = fill.quantity * fill.fill_price
 
     fields: list[dict[str, object]] = [
@@ -51,22 +68,33 @@ def build_trade_embed(
         {"name": "Fill Price", "value": f"${fill.fill_price:,.2f}", "inline": True},
         {"name": "Notional", "value": f"${notional:,.2f}", "inline": True},
         {"name": "Commission", "value": f"${fill.commission:,.2f}", "inline": True},
-        {
-            "name": "Stop Loss",
-            "value": f"${stop_price:,.2f}" if stop_price is not None else "N/A",
-            "inline": True,
-        },
-        {
-            "name": "Take Profit",
-            "value": f"${take_profit:,.2f}" if take_profit is not None else "N/A",
-            "inline": True,
-        },
     ]
+
+    # Realized P&L: populated only for sell fills (Task 6, PNL-D8) — buys never carry it.
+    if fill.realized_pnl is not None:
+        fields.append(
+            {"name": "Realized P&L", "value": f"${fill.realized_pnl:+,.2f}", "inline": True}
+        )
+
+    fields.extend(
+        [
+            {
+                "name": "Stop Loss",
+                "value": f"${stop_price:,.2f}" if stop_price is not None else "N/A",
+                "inline": True,
+            },
+            {
+                "name": "Take Profit",
+                "value": f"${take_profit:,.2f}" if take_profit is not None else "N/A",
+                "inline": True,
+            },
+        ]
+    )
 
     return {
         "embeds": [
             {
-                "title": f"{side_upper} {fill.symbol}",
+                "title": f"{side_emoji} {side_upper} {fill.symbol}",
                 "color": color,
                 "fields": fields,
                 "footer": {
@@ -78,12 +106,34 @@ def build_trade_embed(
     }
 
 
+def _benchmark_fields(prefix: str, agent_value: float, benchmark: float) -> list[dict[str, object]]:
+    """Buy & Hold + vs B&H fields for one env (Task 9, BENCH-D13).
+
+    ``vs B&H`` is agent_value − benchmark as signed dollars and percent of the
+    benchmark — the daily agent-vs-passive gap. Rendered only when the env has a
+    recorded benchmark (post epoch reset); Task 10 restyles these (color + ✅/❌).
+    """
+    delta = agent_value - benchmark
+    pct = (delta / benchmark * 100) if benchmark != 0 else 0.0
+    mark = "✅" if delta >= 0 else "❌"  # STYLE-D15: beating / trailing buy-and-hold
+    return [
+        {"name": f"{prefix} Buy & Hold", "value": f"${benchmark:,.2f}", "inline": True},
+        {
+            "name": f"{prefix} vs B&H",
+            "value": f"{mark} ${delta:+,.2f} ({pct:+.2f}%)",
+            "inline": True,
+        },
+    ]
+
+
 def build_daily_summary_embed(
     equity_snapshot: dict[str, float] | None,
     crypto_snapshot: dict[str, float] | None,
     equity_trades_today: int,
     crypto_trades_today: int,
     cb_status: dict[str, str] | None = None,
+    equity_benchmark: float | None = None,
+    crypto_benchmark: float | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     """Build a daily summary Discord embed.
 
@@ -93,6 +143,10 @@ def build_daily_summary_embed(
         equity_trades_today: Number of equity trades executed today.
         crypto_trades_today: Number of crypto trades executed today.
         cb_status: Dict of active circuit breaker details or None.
+        equity_benchmark: Equal-weight buy-and-hold value of the equity baselines
+            (Task 9, BENCH-D13), or None pre-reset — the digest then omits the
+            "Buy & Hold" / "vs B&H" fields, leaving the pre-reset shape unchanged.
+        crypto_benchmark: Same for the crypto env.
 
     Returns:
         Discord webhook payload dict with embeds list.
@@ -112,12 +166,14 @@ def build_daily_summary_embed(
                 {"name": "Equity Value", "value": f"${ev:,.2f}", "inline": True},
                 {
                     "name": "Equity P&L",
-                    "value": f"${epnl:+,.2f} ({pct:+.2f}%)",
+                    "value": f"{_pnl_arrow(epnl)} ${epnl:+,.2f} ({pct:+.2f}%)",
                     "inline": True,
                 },
                 {"name": "Equity Trades", "value": str(equity_trades_today), "inline": True},
             ]
         )
+        if equity_benchmark is not None:
+            fields.extend(_benchmark_fields("Equity", ev, equity_benchmark))
 
     if crypto_snapshot is not None:
         cv = crypto_snapshot["total_value"]
@@ -130,17 +186,25 @@ def build_daily_summary_embed(
                 {"name": "Crypto Value", "value": f"${cv:,.2f}", "inline": True},
                 {
                     "name": "Crypto P&L",
-                    "value": f"${cpnl:+,.2f} ({pct:+.2f}%)",
+                    "value": f"{_pnl_arrow(cpnl)} ${cpnl:+,.2f} ({pct:+.2f}%)",
                     "inline": True,
                 },
                 {"name": "Crypto Trades", "value": str(crypto_trades_today), "inline": True},
             ]
         )
+        if crypto_benchmark is not None:
+            fields.extend(_benchmark_fields("Crypto", cv, crypto_benchmark))
 
     fields.append(
         {"name": "Total Portfolio Value", "value": f"${total_value:,.2f}", "inline": False}
     )
-    fields.append({"name": "Combined Daily P&L", "value": f"${total_pnl:+,.2f}", "inline": False})
+    fields.append(
+        {
+            "name": "Combined Daily P&L",
+            "value": f"{_pnl_arrow(total_pnl)} ${total_pnl:+,.2f}",
+            "inline": False,
+        }
+    )
 
     cb_text = "All Clear"
     if cb_status:
@@ -149,11 +213,12 @@ def build_daily_summary_embed(
 
     today_str = datetime.now(UTC).strftime("%Y-%m-%d")
 
+    digest_color, digest_emoji = _CATEGORY_STYLE["digest"]  # STYLE-D15: gold + 📊
     return {
         "embeds": [
             {
-                "title": "Daily Summary",
-                "color": _COLOR_BLUE,
+                "title": f"{digest_emoji} Daily Summary",
+                "color": digest_color,
                 "fields": fields,
                 "footer": {"text": f"SwingRL | Daily Summary | {today_str}"},
                 "timestamp": datetime.now(UTC).isoformat(),
@@ -462,6 +527,11 @@ def build_iteration_completion_embed(
 # Formatting helpers (kept private to embeds.py — used only by the
 # iteration completion embed)
 # ---------------------------------------------------------------------------
+
+
+def _pnl_arrow(value: float) -> str:
+    """Return the STYLE-D15 direction arrow for a P&L value (▲ for >= 0, ▼ for negative)."""
+    return "▲" if value >= 0 else "▼"
 
 
 def _fmt_cps(value: float | None, *, delta: float | None = None) -> str:

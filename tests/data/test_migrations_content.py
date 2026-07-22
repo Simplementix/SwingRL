@@ -1336,10 +1336,159 @@ def test_v008_operator_actions_valid_accepted(db_with_legacy_schema) -> None:
 
 
 def test_v008_schema_version_is_8(db_with_legacy_schema) -> None:
-    """Task 11: SELECT max(version) FROM schema_migrations == 8 after apply_migrations."""
+    """V008 lands in the ledger (was newest; V009 now raises the ceiling to 9).
+
+    The newest-version invariant moved to ``test_v009_schema_version_is_9`` when the
+    exec-alignment Task 8 shipped V009 — this asserts V008 was applied, not that it is
+    the maximum, so it stays green as later migrations extend the ledger.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM schema_migrations WHERE version = 8"
+        ).fetchone()
+    assert row["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# V009 (exec-alignment Task 8): D11 pending_orders — the pre-open opening-auction
+# fill-confirmation worklist. order_id PK, nullable cycle_id FK to inference_cycles,
+# side CHECK, submitted_at NOT NULL, resolved_at NULL until confirmed.
+# ---------------------------------------------------------------------------
+
+
+def test_v009_pending_orders_accepts_valid_row(db_with_legacy_schema) -> None:
+    """V009: a valid pending order (unresolved, nullable cycle_id) is accepted."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        order_id = conn.execute(
+            "INSERT INTO pending_orders (order_id, cycle_id, symbol, side, submitted_at)"
+            " VALUES ('o-valid', NULL, 'SPY', 'buy', now()) RETURNING order_id"
+        ).fetchone()["order_id"]
+        row = conn.execute(
+            "SELECT resolved_at FROM pending_orders WHERE order_id = 'o-valid'"
+        ).fetchone()
+    assert order_id == "o-valid"
+    assert row["resolved_at"] is None  # unresolved until the confirmation job stamps it
+
+
+def test_v009_pending_orders_rejects_bad_side(db_with_legacy_schema) -> None:
+    """V009: the side CHECK rejects anything other than buy/sell."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):  # noqa: PT012
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO pending_orders (order_id, symbol, side, submitted_at)"
+                " VALUES ('o-bad', 'SPY', 'hold', now())"
+            )
+
+
+def test_v009_pending_orders_cycle_id_fk_enforced(db_with_legacy_schema) -> None:
+    """V009: a non-null cycle_id must reference an existing inference_cycles row (FK)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):  # noqa: PT012
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO pending_orders (order_id, cycle_id, symbol, side, submitted_at)"
+                " VALUES ('o-orphan', 999999, 'SPY', 'buy', now())"
+            )
+
+
+def test_v009_schema_version_is_9(db_with_legacy_schema) -> None:
+    """V009 lands in the ledger (was newest; V010 now raises the ceiling to 10).
+
+    The newest-version invariant moved to ``test_v010_schema_version_is_10`` when the
+    exec-alignment Task 9 shipped V010 — this asserts V009 was applied, not that it is
+    the maximum, so it stays green as later migrations extend the ledger.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM schema_migrations WHERE version = 9"
+        ).fetchone()
+    assert row["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# V010 (exec-alignment Task 9): D13 benchmark_baselines — the buy-and-hold digest
+# snapshot. One row per env symbol keyed by PRIMARY KEY (environment, symbol) so the
+# recorder's upsert is idempotent; baseline_price/capital_usd NOT NULL (a snapshot
+# with no price or no capital cannot anchor a benchmark). capital_usd persists the
+# env total AT RECORD TIME — the snapshot, not config, is the source of truth after.
+# ---------------------------------------------------------------------------
+
+
+def test_v010_benchmark_baselines_accepts_valid_row(db_with_legacy_schema) -> None:
+    """V010: a valid baseline (env, symbol, date, price, capital) is accepted."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(
+            "INSERT INTO benchmark_baselines"
+            " (environment, symbol, baseline_date, baseline_price, capital_usd)"
+            " VALUES ('crypto', 'BTCUSDT', '2026-07-22', 60000.0, 47.0)"
+        )
+        row = conn.execute(
+            "SELECT baseline_price, capital_usd FROM benchmark_baselines"
+            " WHERE environment = 'crypto' AND symbol = 'BTCUSDT'"
+        ).fetchone()
+    assert row["baseline_price"] == 60000.0
+    assert row["capital_usd"] == 47.0
+
+
+def test_v010_benchmark_baselines_pk_rejects_duplicate(db_with_legacy_schema) -> None:
+    """V010: PRIMARY KEY (environment, symbol) — one baseline per env symbol.
+
+    A second row for the same (env, symbol) bounces off the PK (the recorder resolves
+    this via ON CONFLICT upsert, not a raw INSERT); a different symbol is accepted.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    ins = (
+        "INSERT INTO benchmark_baselines"
+        " (environment, symbol, baseline_date, baseline_price, capital_usd)"
+        " VALUES ('crypto', %s, '2026-07-22', 60000.0, 47.0)"
+    )
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(ins, ("BTCUSDT",))
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(ins, ("BTCUSDT",))
+    with db_with_legacy_schema.connection() as conn:
+        conn.execute(ins, ("ETHUSDT",))  # different symbol OK
+
+
+def test_v010_benchmark_baselines_requires_baseline_price(db_with_legacy_schema) -> None:
+    """V010: baseline_price is NOT NULL — a baseline with no anchor price is meaningless."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO benchmark_baselines"
+                " (environment, symbol, baseline_date, capital_usd)"
+                " VALUES ('crypto', 'BTCUSDT', '2026-07-22', 47.0)"
+            )
+
+
+def test_v010_schema_version_is_10(db_with_legacy_schema) -> None:
+    """Exec-alignment Task 9: SELECT max(version) FROM schema_migrations == 10."""
     from swingrl.data.migration_runner import apply_migrations
 
     apply_migrations(db_with_legacy_schema)
     with db_with_legacy_schema.connection() as conn:
         row = conn.execute("SELECT max(version) AS v FROM schema_migrations").fetchone()
-    assert row["v"] == 8
+    assert row["v"] == 10

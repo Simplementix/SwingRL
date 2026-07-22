@@ -20,7 +20,9 @@ def mock_config() -> MagicMock:
     config.scheduler.misfire_grace_time = 300
     config.scheduler.misfire_grace_s = {"equity": 720, "crypto": 3600}
     config.scheduler.max_workers = 4
+    config.risk.sweep_interval_minutes = 30
     config.equity.cycle_time_et = "15:45"
+    config.equity.fill_confirmation_time_et = "09:35"
     config.equity.market_calendar_gate = True
     config.alerting.alerts_webhook_url = ""
     config.alerting.daily_webhook_url = ""
@@ -45,10 +47,10 @@ def mock_fill() -> MagicMock:
 
 
 class TestMainRegistersJobs:
-    """Verify that main.py registers all 12 cron jobs."""
+    """Verify that main.py registers all 14 cron/interval jobs."""
 
     def test_main_registers_all_jobs(self, mock_config: MagicMock) -> None:
-        """PAPER-12: main.py registers 12 cron jobs with correct IDs."""
+        """PAPER-12 + SWEEP-D10 + EXEC-D11: main.py registers 14 jobs with correct IDs."""
         from scripts.main import create_scheduler_and_register_jobs
 
         # Explicit (review minor finding #4): an unconfigured MagicMock attribute is
@@ -58,11 +60,12 @@ class TestMainRegistersJobs:
         mock_scheduler = MagicMock()
         create_scheduler_and_register_jobs(mock_scheduler, mock_config)
 
-        assert mock_scheduler.add_job.call_count == 12
+        assert mock_scheduler.add_job.call_count == 14
 
         job_ids = {c.kwargs["id"] for c in mock_scheduler.add_job.call_args_list}
         expected_ids = {
             "equity_cycle",
+            "equity_fill_confirmation",
             "crypto_cycle",
             "daily_summary",
             "stuck_agent_check",
@@ -74,8 +77,47 @@ class TestMainRegistersJobs:
             "shadow_promotion_check",
             "automated_trigger_check",
             "daily_reconciliation",
+            "risk_sweep",
         }
         assert job_ids == expected_ids
+
+    def test_equity_fill_confirmation_schedule(self, mock_config: MagicMock) -> None:
+        """EXEC-D11: equity_fill_confirmation fires from config.equity.fill_confirmation_time_et
+        on weekdays (~09:35 ET, after the 09:30 open — records pre-open auction fills)."""
+        from scripts.main import create_scheduler_and_register_jobs
+
+        mock_scheduler = MagicMock()
+        create_scheduler_and_register_jobs(mock_scheduler, mock_config)
+
+        call = next(
+            c
+            for c in mock_scheduler.add_job.call_args_list
+            if c.kwargs["id"] == "equity_fill_confirmation"
+        )
+        assert call.kwargs["trigger"] == "cron"
+        assert call.kwargs["hour"] == 9
+        assert call.kwargs["minute"] == 35
+        assert call.kwargs["day_of_week"] == "mon-fri"
+        assert call.kwargs["timezone"] == "America/New_York"
+        # Review #3: a generous misfire grace so a restart spanning 09:35 still records the
+        # auction fills that day (pure bookkeeping, safe to run late) — not the 300s default.
+        assert call.kwargs["misfire_grace_time"] == 18000
+
+    def test_risk_sweep_schedule(self, mock_config: MagicMock) -> None:
+        """SWEEP-D10: risk_sweep fires on an interval trigger every
+        config.risk.sweep_interval_minutes minutes (between-cycle blind-window guard)."""
+        from scripts.main import create_scheduler_and_register_jobs
+
+        mock_config.risk.sweep_interval_minutes = 30
+        mock_scheduler = MagicMock()
+        create_scheduler_and_register_jobs(mock_scheduler, mock_config)
+
+        sweep_call = next(
+            c for c in mock_scheduler.add_job.call_args_list if c.kwargs["id"] == "risk_sweep"
+        )
+        assert sweep_call.kwargs["trigger"] == "interval"
+        assert sweep_call.kwargs["minutes"] == 30
+        assert sweep_call.kwargs["replace_existing"] is True
 
     def test_equity_cycle_schedule(self, mock_config: MagicMock) -> None:
         """(e) equity_cycle fires from config.equity.cycle_time_et on weekdays (review C2).
@@ -171,6 +213,7 @@ class TestBackupJobGating:
     NON_BACKUP_JOB_IDS = frozenset(
         {
             "equity_cycle",
+            "equity_fill_confirmation",
             "crypto_cycle",
             "daily_summary",
             "stuck_agent_check",
@@ -179,6 +222,7 @@ class TestBackupJobGating:
             "shadow_promotion_check",
             "automated_trigger_check",
             "daily_reconciliation",
+            "risk_sweep",
         }
     )
 
@@ -590,9 +634,12 @@ class TestEquityCycleSendsTradeEmbeds:
         mock_db = MagicMock()
         mock_config = MagicMock()
 
-        # Mock the connection context manager to return rows
-        mock_conn = MagicMock()
-        mock_conn.execute.return_value.fetchall.return_value = [
+        # Mock the connection context manager. daily_summary_job issues THREE query kinds:
+        # the portfolio_snapshots read, the per-env signal-trade count, and the per-env
+        # buy-and-hold benchmark probe (Task 9). Route by SQL so the trades query returns
+        # rows carrying the `n` key the count loop reads, and benchmark_baselines returns
+        # empty (no baselines -> _benchmark_value None -> digest keeps its pre-reset shape).
+        snapshot_rows = [
             {
                 "environment": "equity",
                 "total_value": 400.0,
@@ -601,6 +648,20 @@ class TestEquityCycleSendsTradeEmbeds:
                 "drawdown_pct": 0.02,
             }
         ]
+        trade_count_rows = [{"environment": "equity", "n": 3}]
+
+        def _execute(sql: str, *args: object, **kwargs: object) -> MagicMock:
+            result = MagicMock()
+            if "FROM trades" in sql:
+                result.fetchall.return_value = trade_count_rows
+            elif "FROM benchmark_baselines" in sql:
+                result.fetchall.return_value = []  # no baselines -> benchmark None
+            else:
+                result.fetchall.return_value = snapshot_rows
+            return result
+
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = _execute
         mock_db.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
         mock_db.connection.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -618,3 +679,11 @@ class TestEquityCycleSendsTradeEmbeds:
                 daily_summary_job()
 
         mock_alerter.send_embed.assert_called_once()
+
+
+def test_equity_cycle_default_is_preopen() -> None:
+    """SCHED-D2: default equity cycle is 09:15 ET pre-open — decide on t-1 bars, submit
+    before the 09:28 auction cutoff, fill at the open (spec D2/D11)."""
+    from swingrl.config.schema import EquityConfig
+
+    assert EquityConfig().cycle_time_et == "09:15"

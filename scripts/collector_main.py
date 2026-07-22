@@ -324,7 +324,7 @@ def candles_equity_job() -> None:
         # reported as one.
         try:
             components["alerter"].send_alert(
-                "info", "Equity candles ingested", f"rows_added={rows}"
+                "info", "Equity candles ingested", f"rows_added={rows}", category="ingest"
             )
         except Exception as exc:
             log.error("candles_equity_info_alert_failed", error=str(exc))
@@ -365,6 +365,7 @@ def candles_crypto_job() -> None:
                 "info",
                 "Crypto candles ingested",
                 f"rows_added={rows} gaps_filled={gaps_filled}",
+                category="ingest",
             )
         except Exception as exc:
             log.error("candles_crypto_info_alert_failed", error=str(exc))

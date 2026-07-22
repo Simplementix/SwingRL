@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from swingrl.utils.exceptions import ConfigError
@@ -55,9 +55,13 @@ class EquityConfig(BaseModel):
     max_drawdown_pct: float = Field(default=0.10, gt=0.0, lt=1.0)
     daily_loss_limit_pct: float = Field(default=0.02, gt=0.0, lt=1.0)
     min_order_usd: float = Field(default=1.0, ge=1.0)  # Alpaca $1 floor for fractional shares
-    # Daily rebalance time (ET, HH:MM). 15:45 fires 15m before the 16:00 close so fills
-    # land intraday, not post-close (review C2). The scheduler restricts it to weekdays.
-    cycle_time_et: str = Field(default="15:45")
+    # Daily rebalance time (ET, HH:MM). 09:15 decides pre-open on t-1 bars; orders are
+    # submitted before the 09:28 auction cutoff and fill at t's open (spec D2/D11). The
+    # scheduler restricts it to weekdays.
+    cycle_time_et: str = Field(default="09:15")
+    # Fill-confirmation time (ET, HH:MM). 09:35 (after the 09:30 open) records the pre-open
+    # auction fills submitted at 09:15 (spec D11). Weekdays only, per the scheduler.
+    fill_confirmation_time_et: str = Field(default="09:35")
     # Gate the equity cycle on the Alpaca market clock (skip on closed/holiday). Fail-safe.
     market_calendar_gate: bool = Field(default=True)
     # Post-submit fill polling bounds (review C2): wait up to timeout, polling each interval,
@@ -73,16 +77,17 @@ class EquityConfig(BaseModel):
             raise ConfigError("equity.symbols must not be empty")
         return v
 
-    @field_validator("cycle_time_et")
+    @field_validator("cycle_time_et", "fill_confirmation_time_et")
     @classmethod
-    def cycle_time_is_hh_mm(cls, v: str) -> str:
-        """Validate cycle_time_et parses as a 24h HH:MM clock time."""
+    def time_is_hh_mm(cls, v: str, info: ValidationInfo) -> str:
+        """Validate an ET clock field parses as a 24h HH:MM time."""
+        field = info.field_name
         parts = v.split(":")
         if len(parts) != 2 or not all(p.isdigit() for p in parts):
-            raise ConfigError(f"equity.cycle_time_et must be HH:MM, got {v!r}")
+            raise ConfigError(f"equity.{field} must be HH:MM, got {v!r}")
         hour, minute = int(parts[0]), int(parts[1])
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            raise ConfigError(f"equity.cycle_time_et out of range, got {v!r}")
+            raise ConfigError(f"equity.{field} out of range, got {v!r}")
         return v
 
     @model_validator(mode="after")
@@ -302,6 +307,22 @@ class SchedulerConfig(BaseModel):
         return v
 
 
+class RiskConfig(BaseModel):
+    """Between-cycle risk-sweep configuration (D10)."""
+
+    sweep_interval_minutes: int = Field(
+        default=30,
+        ge=5,
+        description=(
+            "Interval (minutes) for the between-cycle risk sweep: mark held positions to "
+            "market and evaluate the drawdown/daily-loss breakers so a crash during the "
+            "blind window between trading cycles (crypto every 4h, equity once a day) is "
+            "caught within one interval. The sweep places no orders and writes no "
+            "portfolio_snapshots. Floor of 5 minutes avoids hammering the broker price API."
+        ),
+    )
+
+
 class BackupConfig(BaseModel):
     """Backup and retention configuration."""
 
@@ -380,8 +401,9 @@ class CandleJobsConfig(BaseModel):
     """
 
     enabled: bool = Field(default=True)
-    # After the 16:35 EOD options snapshot and outside the 15:30–16:45 ET quiet window.
-    equity_time_et: str = Field(default="16:50")  # HH:MM, Mon–Fri
+    # Past 00:00 UTC year-round (EDT+EST) so the day-D bar lands day-D evening; still after the
+    # 16:35 EOD options snapshot and outside the 15:30–16:45 ET quiet window.
+    equity_time_et: str = Field(default="20:15")  # HH:MM, Mon–Fri; past 00:00 UTC year-round
     # Minute past each 4H UTC bar close (hours 0,4,8,12,16,20) — ahead of the trader's :05 cycles.
     crypto_minute: int = Field(default=1, ge=0, le=59)
     equity_misfire_grace_s: int = Field(default=21600, gt=0)
@@ -403,7 +425,7 @@ class OptionsCollectorConfig(BaseModel):
     snapshots: list[OptionsSnapshotConfig] = Field(
         default_factory=lambda: [
             OptionsSnapshotConfig(
-                label="decision", market_time_et="15:45", pull_time_et="16:00", misfire_grace_s=900
+                label="decision", market_time_et="09:30", pull_time_et="09:46", misfire_grace_s=900
             ),
             OptionsSnapshotConfig(
                 label="eod", market_time_et="16:15", pull_time_et="16:35", misfire_grace_s=18000
@@ -870,6 +892,7 @@ class SwingRLConfig(BaseSettings):
     system: SystemConfig = Field(default_factory=SystemConfig)
     alerting: AlertingConfig = Field(default_factory=AlertingConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    risk: RiskConfig = Field(default_factory=RiskConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
     options_collector: OptionsCollectorConfig = Field(default_factory=OptionsCollectorConfig)
     calendar: CalendarConfig = Field(default_factory=CalendarConfig)

@@ -670,6 +670,45 @@ class TestSendEmbed:
 
 
 # ---------------------------------------------------------------------------
+# Test: Category styling (STYLE-D15)
+# ---------------------------------------------------------------------------
+
+
+class TestCategoryStyling:
+    """STYLE-D15: category selects sidebar color + emoji title prefix; routing unchanged."""
+
+    def test_alert_category_sets_color_and_emoji(self, webhook_url: str, mocker: Any) -> None:
+        """STYLE-D15: category selects sidebar color + emoji title prefix; ingest=blue 📥,
+        cycle=purple 🔄; omitted category keeps today's level-default behavior."""
+        mock_post = mocker.patch("swingrl.monitoring.alerter.httpx.post")
+        mock_post.return_value = MagicMock(status_code=204)
+        mock_post.return_value.raise_for_status = MagicMock()
+        # info_immediate so info posts at once (mirrors the collector's candle-ingest path).
+        a = Alerter(
+            webhook_url=webhook_url,
+            cooldown_minutes=30,
+            consecutive_failures_before_alert=1,
+            info_immediate=True,
+        )
+
+        a.send_alert(
+            level="info", title="Equity candles ingested", message="rows=8", category="ingest"
+        )
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert embed["color"] == 0x3498DB
+        assert embed["title"].startswith("📥")
+
+        a.send_alert(
+            level="info", title="Cycle orders submitted — crypto", message="…", category="cycle"
+        )
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert embed["color"] == 0x9B59B6 and embed["title"].startswith("🔄")
+
+        a.send_alert(level="info", title="plain", message="no category")
+        assert mock_post.call_args[1]["json"]["embeds"][0]["color"] == 0x3498DB  # legacy path
+
+
+# ---------------------------------------------------------------------------
 # Test: Backward compatibility
 # ---------------------------------------------------------------------------
 

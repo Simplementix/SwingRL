@@ -1,8 +1,8 @@
 """SwingRL production entrypoint -- APScheduler with cron jobs and stop-price polling.
 
-Initializes all components, registers up to 12 jobs (6 trading + up to 3 config-gated
-backup + 1 shadow + 1 trigger + 1 reconciliation), starts crypto stop-price polling daemon
-thread, and blocks until SIGTERM/SIGINT.
+Initializes all components, registers up to 13 jobs (6 trading + up to 3 config-gated
+backup + 1 shadow + 1 trigger + 1 reconciliation + 1 risk sweep), starts crypto stop-price
+polling daemon thread, and blocks until SIGTERM/SIGINT.
 
 Usage:
     python scripts/main.py --config config/swingrl.yaml
@@ -32,10 +32,12 @@ from swingrl.scheduler.jobs import (
     daily_backup_job,
     daily_summary_job,
     equity_cycle,
+    equity_fill_confirmation_job,
     init_job_context,
     monthly_macro_job,
     monthly_offsite_job,
     reconciliation_job,
+    risk_sweep_job,
     shadow_promotion_check_job,
     stuck_agent_check_job,
     weekly_duckdb_backup_job,
@@ -69,16 +71,22 @@ except ImportError:  # pragma: no cover
 # flag-false cleanup below can never drift apart.
 TRADER_BACKUP_JOB_IDS = ("daily_sqlite_backup", "weekly_duckdb_backup", "monthly_offsite")
 
+# Misfire grace for the 09:35 equity fill-confirmation job (D11, review #3): 5 hours. Recording
+# opening-auction fills is idempotent bookkeeping that stays correct run late, so a restart
+# window spanning 09:35 must still record the day's fills rather than skip them (the 300s
+# default would). 5h ends well before the day's later equity jobs.
+_FILL_CONFIRMATION_MISFIRE_GRACE_S = 18000
+
 
 def _job_count(config: Any) -> int:
     """Number of jobs create_scheduler_and_register_jobs registers for this config.
 
-    9 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation); the
-    3 in-container backup jobs join that count only when
-    config.backup.trader_backup_jobs_enabled is True. Single source of truth for both
-    startup log lines so they can never drift apart.
+    11 jobs are always registered (6 trading + 1 equity fill-confirmation + 1 shadow +
+    1 trigger + 1 reconciliation + 1 risk sweep); the 3 in-container backup jobs join that
+    count only when config.backup.trader_backup_jobs_enabled is True. Single source of truth
+    for both startup log lines so they can never drift apart.
     """
-    return 9 + (len(TRADER_BACKUP_JOB_IDS) if config.backup.trader_backup_jobs_enabled else 0)
+    return 11 + (len(TRADER_BACKUP_JOB_IDS) if config.backup.trader_backup_jobs_enabled else 0)
 
 
 def create_scheduler_and_register_jobs(
@@ -87,8 +95,9 @@ def create_scheduler_and_register_jobs(
 ) -> None:
     """Register trading/monitoring jobs, plus the trader's backup jobs when enabled.
 
-    9 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation). The
-    3 in-container backup jobs (see TRADER_BACKUP_JOB_IDS) are registered only when
+    11 jobs are always registered (6 trading + 1 equity fill-confirmation + 1 shadow +
+    1 trigger + 1 reconciliation + 1 risk sweep). The 3 in-container backup jobs (see
+    TRADER_BACKUP_JOB_IDS) are registered only when
     config.backup.trader_backup_jobs_enabled is True (default).
 
     Registration only -- no stale-job removal here. This can run on a not-yet-started
@@ -114,6 +123,27 @@ def create_scheduler_and_register_jobs(
         timezone="America/New_York",
         id="equity_cycle",
         misfire_grace_time=config.scheduler.misfire_grace_s["equity"],
+        replace_existing=True,
+    )
+
+    # Equity fill confirmation (D11): after the 09:30 open, record the pre-open opening-auction
+    # fills submitted by the 09:15 cycle. Time from config (default 09:35 ET), weekdays only.
+    conf_hour, conf_minute = (
+        int(part) for part in config.equity.fill_confirmation_time_et.split(":")
+    )
+    scheduler.add_job(
+        equity_fill_confirmation_job,
+        trigger="cron",
+        hour=conf_hour,
+        minute=conf_minute,
+        day_of_week="mon-fri",
+        timezone="America/New_York",
+        id="equity_fill_confirmation",
+        # Generous misfire grace (review #3): recording pre-open auction fills is pure
+        # bookkeeping and stays correct run late, so a restart window spanning 09:35 must not
+        # skip a whole day's recording. 5h covers any realistic restart yet still ends well
+        # before the day's other equity jobs; the job itself is idempotent (crash-safe re-run).
+        misfire_grace_time=_FILL_CONFIRMATION_MISFIRE_GRACE_S,
         replace_existing=True,
     )
 
@@ -222,6 +252,18 @@ def create_scheduler_and_register_jobs(
         trigger="interval",
         minutes=5,
         id="automated_trigger_check",
+        replace_existing=True,
+    )
+
+    # Between-cycle risk sweep (D10): mark held positions + evaluate breakers on an
+    # interval so a crash during the blind window between sparse trading cycles is caught
+    # within one sweep. No trading, no snapshots. Mirrors the automated_trigger_check
+    # interval pattern (inherits coalesce/max_instances/misfire from job_defaults).
+    scheduler.add_job(
+        risk_sweep_job,
+        trigger="interval",
+        minutes=config.risk.sweep_interval_minutes,
+        id="risk_sweep",
         replace_existing=True,
     )
 

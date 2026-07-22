@@ -129,6 +129,32 @@ class PositionTracker:
             marked += qty * price
         return float(marked + self.compute_cash(env))
 
+    def mark_positions(self, env: str, prices: dict[str, float]) -> None:
+        """Persist fresh marks: last_price + recomputed unrealized_pnl per priced symbol.
+
+        Every cycle marks held positions to the prices fetched that cycle so the
+        stored state (and the derived snapshot) moves with the market even when no
+        order fills (MTM-D6 — value froze on a deadzone cycle). ``unrealized_pnl``
+        is recomputed from the fresh mark: ``(last_price - cost_basis) * quantity``.
+        Symbols with no matching position row update zero rows (harmless no-op).
+
+        Args:
+            env: "equity" or "crypto".
+            prices: Map of symbol -> fresh mark price. Empty map is a no-op.
+        """
+        if not prices:
+            return
+        updated_at = datetime.now(tz=UTC).isoformat()
+        with self._db.connection() as conn:
+            for symbol, price in prices.items():
+                conn.execute(
+                    "UPDATE positions SET last_price = %s, "
+                    "unrealized_pnl = (%s - cost_basis) * quantity, "
+                    "updated_at = %s "
+                    "WHERE environment = %s AND symbol = %s",
+                    (price, price, updated_at, env, symbol),
+                )
+
     def get_positions(self, env: str) -> list[dict[str, Any]]:
         """Return list of positions for environment.
 

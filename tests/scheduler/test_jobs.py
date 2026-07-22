@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -16,14 +18,18 @@ import psycopg
 import pytest
 from psycopg.rows import dict_row
 
+from swingrl.config.schema import load_config
+from swingrl.data.db import DatabaseManager
 from swingrl.scheduler.halt_check import init_emergency_flags, set_halt
 from swingrl.scheduler.jobs import (
     JobContext,
+    _benchmark_value,
     crypto_cycle,
     daily_summary_job,
     equity_cycle,
     init_job_context,
     monthly_macro_job,
+    risk_sweep_job,
     stuck_agent_check_job,
     weekly_fundamentals_job,
 )
@@ -198,6 +204,175 @@ class TestDailySummaryJob:
         daily_summary_job()
         # daily_summary_job now uses send_embed via build_daily_summary_embed
         mock_alerter.send_embed.assert_called()
+
+    def test_counts_signal_trades_today(
+        self, job_ctx: JobContext, mock_db: MagicMock, mock_alerter: MagicMock
+    ) -> None:
+        """DIGEST-D5: digest counts today's (ET) signal trades per env from the trades
+        table — never the hardcoded zeros (found live 2026-07-21)."""
+        init_emergency_flags(mock_db)
+        with mock_db.connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                    timestamp TEXT NOT NULL,
+                    environment TEXT NOT NULL,
+                    total_value DOUBLE PRECISION NOT NULL,
+                    equity_value DOUBLE PRECISION, crypto_value DOUBLE PRECISION,
+                    cash_balance DOUBLE PRECISION,
+                    high_water_mark DOUBLE PRECISION, daily_pnl DOUBLE PRECISION,
+                    drawdown_pct DOUBLE PRECISION,
+                    PRIMARY KEY (timestamp, environment)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trades (
+                    trade_id TEXT PRIMARY KEY,
+                    timestamp TIMESTAMPTZ NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    quantity DOUBLE PRECISION NOT NULL,
+                    price DOUBLE PRECISION NOT NULL,
+                    commission DOUBLE PRECISION DEFAULT 0.0,
+                    slippage DOUBLE PRECISION DEFAULT 0.0,
+                    environment TEXT NOT NULL,
+                    broker TEXT, order_type TEXT, trade_type TEXT
+                )
+            """)
+            # Isolate from any cross-test rows so counts are deterministic.
+            conn.execute("DELETE FROM portfolio_snapshots")
+            conn.execute("DELETE FROM trades")
+            # One snapshot per env so build_daily_summary_embed renders BOTH
+            # "Equity Trades" and "Crypto Trades" fields.
+            # Same timestamp for both envs is fine — PK is (timestamp, environment).
+            # Must be a valid TIMESTAMPTZ literal: the migrated schema's timestamp
+            # column is TIMESTAMPTZ, so a "...Z-equity" suffix would fail to parse.
+            for env in ("equity", "crypto"):
+                conn.execute(
+                    "INSERT INTO portfolio_snapshots VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    " ON CONFLICT DO NOTHING",
+                    ("2026-03-09T12:00:00Z", env, 400.0, 300.0, 0.0, 100.0, 400.0, 0.0, 0.0),
+                )
+            insert = (
+                "INSERT INTO trades (trade_id, timestamp, symbol, side, quantity, price, "
+                "environment, trade_type) VALUES (%s, {ts}, %s, %s, %s, %s, %s, %s)"
+            )
+            # 2 crypto signal trades TODAY -> counted.
+            conn.execute(
+                insert.format(ts="now()"),
+                ("c1", "BTCUSDT", "buy", 0.001, 40000.0, "crypto", "signal"),
+            )
+            conn.execute(
+                insert.format(ts="now()"),
+                ("c2", "ETHUSDT", "buy", 0.01, 3000.0, "crypto", "signal"),
+            )
+            # Decoy: crypto NON-signal today -> excluded by trade_type filter.
+            conn.execute(
+                insert.format(ts="now()"),
+                ("c3", "BTCUSDT", "sell", 0.001, 40000.0, "crypto", "rebalance"),
+            )
+            # Decoy: crypto signal from a PRIOR ET day -> excluded by date filter.
+            conn.execute(
+                insert.format(ts="now() - interval '2 days'"),
+                ("c4", "BTCUSDT", "buy", 0.001, 40000.0, "crypto", "signal"),
+            )
+            # Equity: no trades today -> count 0.
+        daily_summary_job()
+
+        embed = mock_alerter.send_embed.call_args.args[1]
+        fields = {f["name"]: f["value"] for f in embed["embeds"][0]["fields"]}
+        assert fields["Crypto Trades"] == "2"
+        assert fields["Equity Trades"] == "0"
+
+
+def _seed_benchmark_tables(conn: Any) -> None:
+    """Create + isolate benchmark_baselines and ohlcv_4h (IF NOT EXISTS, then DELETE).
+
+    Mirrors the digest tests' self-contained table setup so the benchmark tests run
+    against either the migrated schema (V010) or a bare scratch DB.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS benchmark_baselines (
+            environment TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            baseline_date DATE NOT NULL,
+            baseline_price DOUBLE PRECISION NOT NULL,
+            capital_usd DOUBLE PRECISION NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (environment, symbol)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ohlcv_4h (
+            symbol TEXT NOT NULL,
+            datetime TIMESTAMPTZ NOT NULL,
+            open DOUBLE PRECISION, high DOUBLE PRECISION, low DOUBLE PRECISION,
+            close DOUBLE PRECISION, volume DOUBLE PRECISION, source TEXT,
+            fetched_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (symbol, datetime)
+        )
+    """)
+    conn.execute("DELETE FROM benchmark_baselines WHERE environment = 'crypto'")
+    conn.execute("DELETE FROM ohlcv_4h WHERE symbol IN ('BTCUSDT', 'ETHUSDT')")
+
+
+class TestBenchmarkValue:
+    """BENCH-D13: _benchmark_value grows each equal-weight baseline slice to latest close."""
+
+    def test_benchmark_value_equal_weight(self, job_ctx: JobContext, mock_db: MagicMock) -> None:
+        """BENCH-D13: benchmark = equal-weight capital split grown by close/baseline per
+        symbol. 47 capital, 2 symbols; BTC +10%, ETH -10% -> exactly 47.0.
+
+        (Reconciled: the brief sketched a ``mock_ctx.set_baselines`` helper; the real
+        digest scaffolding in this module is DB-backed, so this seeds the same numbers
+        into benchmark_baselines + ohlcv_4h — the assertion contract is unchanged.)
+        """
+        with mock_db.connection() as conn:
+            _seed_benchmark_tables(conn)
+            for symbol, baseline_price in (("BTCUSDT", 60000.0), ("ETHUSDT", 2000.0)):
+                conn.execute(
+                    "INSERT INTO benchmark_baselines"
+                    " (environment, symbol, baseline_date, baseline_price, capital_usd)"
+                    " VALUES ('crypto', %s, '2026-07-22', %s, 47.0)",
+                    (symbol, baseline_price),
+                )
+            for symbol, close in (("BTCUSDT", 66000.0), ("ETHUSDT", 1800.0)):
+                conn.execute(
+                    "INSERT INTO ohlcv_4h (symbol, datetime, close) VALUES (%s, now(), %s)",
+                    (symbol, close),
+                )
+            value = _benchmark_value(conn, "crypto")
+        assert value == pytest.approx(47.0)
+
+    def test_benchmark_value_none_when_no_baselines(
+        self, job_ctx: JobContext, mock_db: MagicMock
+    ) -> None:
+        """BENCH-D13: no baselines for the env -> None (digest omits the fields)."""
+        with mock_db.connection() as conn:
+            _seed_benchmark_tables(conn)
+            value = _benchmark_value(conn, "crypto")
+        assert value is None
+
+    def test_benchmark_value_uses_latest_close(
+        self, job_ctx: JobContext, mock_db: MagicMock
+    ) -> None:
+        """BENCH-D13: the newest bar (max datetime) is the current price, not an older one."""
+        with mock_db.connection() as conn:
+            _seed_benchmark_tables(conn)
+            conn.execute(
+                "INSERT INTO benchmark_baselines"
+                " (environment, symbol, baseline_date, baseline_price, capital_usd)"
+                " VALUES ('crypto', 'BTCUSDT', '2026-07-22', 100.0, 47.0)"
+            )
+            conn.execute(
+                "INSERT INTO ohlcv_4h (symbol, datetime, close)"
+                " VALUES ('BTCUSDT', now() - interval '8 hours', 100.0)"
+            )
+            conn.execute(
+                "INSERT INTO ohlcv_4h (symbol, datetime, close) VALUES ('BTCUSDT', now(), 200.0)"
+            )
+            value = _benchmark_value(conn, "crypto")
+        # single symbol: 47 capital * (200 latest / 100 baseline) = 94.0
+        assert value == pytest.approx(94.0)
 
 
 class TestDailySummaryDigestFlush:
@@ -455,6 +630,167 @@ class TestFredImportPath:
                 mock_ingestor.run_all.assert_called_once()
 
 
+class _SweepCtx:
+    """Adapts the brief's ``mock_ctx`` to the real JobContext -> ExecutionPipeline layout.
+
+    The risk components the sweep touches (position tracker, per-env circuit breakers,
+    global breaker, exchange adapters) live on ``ctx.pipeline``, not on ``ctx`` itself.
+    The sweep reaches them through the pipeline's public accessors, so this helper hangs
+    mocks off a mock pipeline and mirrors the brief's ``set_positions`` ergonomics.
+    """
+
+    def __init__(self) -> None:
+        """Wire mock risk components onto a mock pipeline (crypto+equity breakers)."""
+        self.adapter = MagicMock()
+        self.adapter.get_current_price.return_value = 100.0
+        self.circuit_breakers: dict[str, MagicMock] = {
+            "equity": MagicMock(),
+            "crypto": MagicMock(),
+        }
+        self.global_cb = MagicMock()
+        self.tracker = MagicMock()
+        self._positions: dict[str, list[dict[str, Any]]] = {"equity": [], "crypto": []}
+        self.tracker.get_positions.side_effect = lambda env: self._positions.get(env, [])
+        # Numeric returns so the sweep's max()/arithmetic works on real numbers.
+        self.tracker.compute_portfolio_value.return_value = 5000.0
+        self.tracker.compute_daily_pnl.return_value = -100.0
+        self.tracker.get_high_water_mark.return_value = 10000.0
+        self.pipeline = MagicMock()
+        self.pipeline.position_tracker = self.tracker
+        self.pipeline.circuit_breakers = self.circuit_breakers
+        self.pipeline.global_cb = self.global_cb
+        self.pipeline.get_adapter.return_value = self.adapter
+        self.db = MagicMock()
+
+    def set_positions(self, env: str, positions: dict[str, tuple[float, float]]) -> None:
+        """Seed held positions for ``env`` as ``{symbol: (quantity, cost_basis)}``."""
+        self._positions[env] = [
+            {
+                "symbol": symbol,
+                "quantity": qty,
+                "cost_basis": cost,
+                "last_price": cost,
+                "unrealized_pnl": 0.0,
+                "updated_at": None,
+            }
+            for symbol, (qty, cost) in positions.items()
+        ]
+
+
+@pytest.fixture
+def sweep_ctx() -> Generator[_SweepCtx, None, None]:
+    """Build a risk-sweep JobContext on a mock pipeline; default ``is_halted`` -> False."""
+    ctx = _SweepCtx()
+    init_job_context(config=MagicMock(), db=ctx.db, pipeline=ctx.pipeline, alerter=MagicMock())
+    with patch("swingrl.scheduler.jobs.is_halted", return_value=False):
+        yield ctx
+
+
+class TestRiskSweepJob:
+    """SWEEP-D10: between-cycle risk sweep marks positions + evaluates breakers, no trading."""
+
+    def test_risk_sweep_trips_breaker_between_cycles(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: a crash between cycles is caught by the sweep — marks refresh and the
+        drawdown breaker evaluates without any trading."""
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        sweep_ctx.adapter.get_current_price.return_value = 30000.0
+        risk_sweep_job()
+        assert sweep_ctx.circuit_breakers["crypto"].check_and_update.called
+        assert sweep_ctx.adapter.submit_order.call_count == 0
+
+    def test_risk_sweep_writes_no_snapshots(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: sweeps never write portfolio_snapshots (cycle-cadence stays clean for
+        daily-P&L baselines).
+
+        ``PositionTracker.record_snapshot`` is the sole writer of that table, so asserting
+        it is never called is the faithful adaptation of the brief's
+        ``executed_sql_matching("INSERT INTO portfolio_snapshots")`` contract onto the real
+        component layout.
+        """
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        risk_sweep_job()
+        sweep_ctx.tracker.record_snapshot.assert_not_called()
+
+    def test_risk_sweep_skips_when_halted(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: an active halt flag short-circuits the sweep — no marks, no breaker eval."""
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        with patch("swingrl.scheduler.jobs.is_halted", return_value=True):
+            risk_sweep_job()
+        sweep_ctx.tracker.mark_positions.assert_not_called()
+        sweep_ctx.circuit_breakers["crypto"].check_and_update.assert_not_called()
+        sweep_ctx.global_cb.check_combined.assert_not_called()
+
+    def test_risk_sweep_skips_env_with_no_positions(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: an env with no held positions gets no per-env breaker eval (nothing can
+        draw down), but the global breaker still runs across both envs."""
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        # equity left flat (no positions).
+        risk_sweep_job()
+        sweep_ctx.circuit_breakers["equity"].check_and_update.assert_not_called()
+        sweep_ctx.circuit_breakers["crypto"].check_and_update.assert_called_once()
+        sweep_ctx.global_cb.check_combined.assert_called_once()
+
+    def test_risk_sweep_price_fetch_fail_open(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: a per-symbol price-fetch failure is warned and skipped (fail-open) — the
+        sweep still marks/evaluates using the stored last_price fallback and never raises."""
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        sweep_ctx.adapter.get_current_price.side_effect = RuntimeError("broker down")
+        risk_sweep_job()  # must not raise
+        sweep_ctx.circuit_breakers["crypto"].check_and_update.assert_called_once()
+
+    def test_risk_sweep_evaluates_global_breaker_across_envs(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: the global breaker sees BOTH envs' current values (a cash-only env must
+        be included or its capital is omitted from the combined drawdown/daily-loss math)."""
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        risk_sweep_job()
+        sweep_ctx.global_cb.check_combined.assert_called_once()
+        portfolio_values, daily_pnls = sweep_ctx.global_cb.check_combined.call_args.args
+        assert set(portfolio_values.keys()) == {"equity", "crypto"}
+        assert set(daily_pnls.keys()) == {"equity", "crypto"}
+
+    def test_risk_sweep_per_env_failure_isolation(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: a failure in one env (e.g. adapter lazy-init) must NOT stop the other —
+        env B's per-env breaker still evaluates, so a persistent env-A fault cannot re-open
+        env-B's between-cycle blind window, the exact window this job exists to close."""
+        sweep_ctx.set_positions("equity", {"SPY": (10.0, 400.0)})
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+
+        def _adapter(env: str) -> MagicMock:
+            if env == "equity":  # env A (first-iterated) fails at adapter init
+                raise RuntimeError("alpaca client init failed")
+            return sweep_ctx.adapter
+
+        sweep_ctx.pipeline.get_adapter.side_effect = _adapter
+
+        risk_sweep_job()  # must not raise
+
+        sweep_ctx.circuit_breakers["equity"].check_and_update.assert_not_called()
+        sweep_ctx.circuit_breakers["crypto"].check_and_update.assert_called_once()
+
+    def test_risk_sweep_skips_global_when_env_value_missing(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: when an env errors BEFORE its value is computed, that value is missing
+        from the combined dict — check_combined is SKIPPED (a partial dict would understate
+        total value and risk a false global halt) and the skip is warned. A flat env is NOT
+        missing: it still contributes its cash value."""
+        from structlog.testing import capture_logs
+
+        sweep_ctx.set_positions("equity", {"SPY": (10.0, 400.0)})
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+
+        def _adapter(env: str) -> MagicMock:
+            if env == "equity":
+                raise RuntimeError("alpaca client init failed")
+            return sweep_ctx.adapter
+
+        sweep_ctx.pipeline.get_adapter.side_effect = _adapter
+
+        with capture_logs() as logs:
+            risk_sweep_job()
+
+        sweep_ctx.global_cb.check_combined.assert_not_called()
+        assert any(entry.get("event") == "risk_sweep_global_skipped" for entry in logs)
+
+
 class TestTradeCommentary:
     """Task 12: post-cycle MT commentary skeleton — inert by default (meta_trader.enabled)."""
 
@@ -521,3 +857,287 @@ class TestTradeCommentary:
         with patch("swingrl.memory.client.MemoryClient") as mock_client_cls:
             equity_cycle()
         mock_client_cls.assert_not_called()
+
+
+class _MockAlpaca:
+    """Stand-in Alpaca equity adapter for the fill-confirmation job (D11).
+
+    ``order_status`` programs a per-order broker status; the confirmation job reads it back
+    through the production ``get_order_status(order_id)`` call.
+    """
+
+    def __init__(self) -> None:
+        self._statuses: dict[str, SimpleNamespace] = {}
+
+    def order_status(self, order_id: str, **fields: Any) -> None:
+        """Program the broker order state the job will observe for ``order_id``."""
+        self._statuses[order_id] = SimpleNamespace(**fields)
+
+    def get_order_status(self, order_id: str) -> SimpleNamespace:
+        """Return the programmed order (default: an un-filled 'new' order)."""
+        return self._statuses.get(order_id, SimpleNamespace(status="new"))
+
+
+class _MockCtx:
+    """Adapts the brief's ``mock_ctx`` onto the real JobContext -> ExecutionPipeline layout.
+
+    Wires a real (migrated) DB, a real ExecutionPipeline (mock feature pipeline + mock
+    alerter), and a mock Alpaca equity adapter injected into the pipeline's adapter cache
+    so ``equity_fill_confirmation_job()`` and the D12 cycle-orders ping run end-to-end.
+    """
+
+    def __init__(self, db: DatabaseManager, config: Any, alerter: MagicMock) -> None:
+        from swingrl.execution.pipeline import ExecutionPipeline
+
+        self.db = db
+        self.alerter = alerter
+        self.alpaca = _MockAlpaca()
+        self.pipeline = ExecutionPipeline(
+            config=config,
+            db=db,
+            feature_pipeline=MagicMock(),
+            alerter=alerter,
+            models_dir=Path("/tmp/swingrl_task8_models"),
+        )
+        # Inject the mock equity adapter so get_adapter("equity") returns it (no broker).
+        self.pipeline._adapters["equity"] = self.alpaca
+        init_job_context(config=config, db=db, pipeline=self.pipeline, alerter=alerter)
+        self._clear()
+
+    def _clear(self) -> None:
+        """Isolate the shared test DB — each table dropped in its own transaction so a
+        not-yet-migrated table (RED) cannot abort the others."""
+        for table in ("pending_orders", "fill_quality", "trades", "positions"):
+            try:
+                with self.db.connection() as conn:
+                    conn.execute(f"DELETE FROM {table}")  # noqa: S608 — fixed table names
+            except Exception:  # noqa: BLE001 — table may not exist yet at RED
+                pass
+
+    def set_pending_order(self, order_id: str, cycle_id: int, symbol: str, side: str) -> None:
+        """Seed the FK parent inference_cycles row (forced id) + an unresolved pending order."""
+        with self.db.connection() as conn:
+            conn.execute(
+                "INSERT INTO inference_cycles (cycle_id, environment, mode, cycle_ts) "
+                "OVERRIDING SYSTEM VALUE VALUES (%s, 'equity', 'paper', now()) "
+                "ON CONFLICT (cycle_id) DO NOTHING",
+                (cycle_id,),
+            )
+            conn.execute(
+                "INSERT INTO pending_orders (order_id, cycle_id, symbol, side, submitted_at) "
+                "VALUES (%s, %s, %s, %s, now())",
+                (order_id, cycle_id, symbol, side),
+            )
+
+    def inserted_trade(self) -> dict[str, Any] | None:
+        """Return the most recently inserted trades row."""
+        with self.db.connection() as conn:
+            return conn.execute("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 1").fetchone()
+
+    def pending_row(self, order_id: str) -> dict[str, Any] | None:
+        """Return the pending_orders row for ``order_id`` (to assert resolved_at state)."""
+        with self.db.connection() as conn:
+            return conn.execute(
+                "SELECT * FROM pending_orders WHERE order_id = %s", (order_id,)
+            ).fetchone()
+
+    def seed_trade(
+        self,
+        trade_id: str,
+        cycle_id: int,
+        symbol: str,
+        side: str,
+        price: float = 600.10,
+        quantity: float = 0.0416,
+    ) -> None:
+        """Seed a trades row (simulates a prior confirmation run that already recorded it)."""
+        with self.db.connection() as conn:
+            conn.execute(
+                "INSERT INTO trades (trade_id, timestamp, symbol, side, quantity, price, "
+                "commission, slippage, environment, broker, order_type, trade_type, cycle_id) "
+                "VALUES (%s, now(), %s, %s, %s, %s, 0.0, 0.0, 'equity', 'alpaca', 'market', "
+                "'signal', %s)",
+                (trade_id, symbol, side, quantity, price, cycle_id),
+            )
+
+    def trade_count(self, trade_id: str) -> int:
+        """Return the number of trades rows for ``trade_id`` (duplicate-detection)."""
+        with self.db.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) AS n FROM trades WHERE trade_id = %s", (trade_id,)
+            ).fetchone()
+        return int(row["n"])
+
+    @staticmethod
+    def _to_summaries(orders: list[tuple[Any, ...]]) -> list[Any]:
+        """Convert the brief's order tuples into CycleOrderSummary descriptors.
+
+        buy:  (symbol, "buy", notional)
+        sell: (symbol, "sell", qty, approx_value)
+        """
+        from swingrl.execution.types import CycleOrderSummary
+
+        summaries: list[Any] = []
+        for order in orders:
+            if order[1] == "buy":
+                summaries.append(
+                    CycleOrderSummary(
+                        symbol=order[0], side="buy", notional_usd=float(order[2]), quantity=None
+                    )
+                )
+            else:
+                summaries.append(
+                    CycleOrderSummary(
+                        symbol=order[0],
+                        side="sell",
+                        notional_usd=float(order[3]),
+                        quantity=float(order[2]),
+                    )
+                )
+        return summaries
+
+    def run_equity_cycle(self, orders: list[tuple[Any, ...]]) -> None:
+        """Drive the pipeline's D12 cycle-orders INFO ping for the equity env."""
+        self.pipeline._send_cycle_orders_ping("equity", self._to_summaries(orders))
+
+    def run_crypto_cycle(self, orders: list[tuple[Any, ...]]) -> None:
+        """Drive the pipeline's D12 cycle-orders INFO ping for the crypto env."""
+        self.pipeline._send_cycle_orders_ping("crypto", self._to_summaries(orders))
+
+
+@pytest.fixture
+def mock_ctx(valid_config_yaml: str, tmp_path: Path) -> Generator[_MockCtx, None, None]:
+    """Real-DB harness for the D11 fill-confirmation job + D12 cycle-orders ping."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        pytest.skip("DATABASE_URL not set — no PostgreSQL available for testing")
+
+    config_file = tmp_path / "swingrl.yaml"
+    config_file.write_text(valid_config_yaml)
+    config = load_config(config_file)
+    config.system.database_url = db_url
+
+    DatabaseManager.reset()
+    db = DatabaseManager(config)
+    db.init_schema()  # legacy tables idempotent; V001-V009 applied to the test DB externally
+    ctx = _MockCtx(db, config, MagicMock())
+    yield ctx
+    DatabaseManager.reset()
+
+
+class TestEquityFillConfirmationJob:
+    """EXEC-D11: the 09:35 job turns confirmed pre-open auction fills into trades/embeds."""
+
+    def test_fill_confirmation_records_auction_fill(self, mock_ctx: _MockCtx) -> None:
+        """EXEC-D11: the 09:35 job converts a filled auction order into a trade row with the
+        originating cycle_id, capture rows, and a trade embed."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="o1", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.alpaca.order_status(
+            "o1", status="filled", filled_avg_price=600.10, filled_qty=0.0416
+        )
+
+        equity_fill_confirmation_job()
+
+        trade = mock_ctx.inserted_trade()
+        assert trade is not None
+        assert trade["cycle_id"] == 42
+        assert trade["price"] == pytest.approx(600.10)
+        assert mock_ctx.alerter.send_embed.called  # trade embed fired
+        # The pending order is stamped resolved so the next run does not re-record it.
+        assert mock_ctx.pending_row("o1")["resolved_at"] is not None
+
+    def test_fill_confirmation_warns_on_unfilled(self, mock_ctx: _MockCtx) -> None:
+        """EXEC-D11: an order still unfilled after the auction alerts a warning and stays
+        unresolved for the next run — never silently dropped."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="o2", cycle_id=42, symbol="QQQ", side="buy")
+        mock_ctx.alpaca.order_status("o2", status="canceled")
+
+        equity_fill_confirmation_job()
+
+        assert "unfilled" in mock_ctx.alerter.send_alert.call_args.kwargs["title"].lower()
+        # Row is NOT resolved — it survives for the next confirmation run.
+        assert mock_ctx.pending_row("o2")["resolved_at"] is None
+        # No trade recorded for an unfilled order.
+        assert mock_ctx.inserted_trade() is None
+
+    def test_fill_confirmation_partial_fill_surfaced(self, mock_ctx: _MockCtx) -> None:
+        """EXEC-D11 (review #1): a partially-filled auction order (filled_qty > 0 but not
+        fully filled) is NOT recorded as a trade, but the warning surfaces the executed shares
+        explicitly (symbol, filled vs requested, fill price) under a distinct PARTIAL title —
+        it must never read as a clean no-fill."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="o5", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.alpaca.order_status(
+            "o5", status="partially_filled", filled_avg_price=600.10, filled_qty=0.02, qty=0.05
+        )
+
+        equity_fill_confirmation_job()
+
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert "partially" in kwargs["title"].lower()
+        # Executed-shares detail surfaced: filled qty, requested qty, and fill price.
+        assert "0.02" in kwargs["message"]
+        assert "0.05" in kwargs["message"]
+        assert "600.1" in kwargs["message"]
+        # Not recorded as a trade; row stays unresolved for the next run / user decision.
+        assert mock_ctx.inserted_trade() is None
+        assert mock_ctx.pending_row("o5")["resolved_at"] is None
+
+    def test_fill_confirmation_idempotent_after_crash(self, mock_ctx: _MockCtx) -> None:
+        """EXEC-D11 (review #2): a prior run that recorded the trade but crashed before
+        stamping resolved_at must NOT re-record (duplicate TEXT PK) or fire a false
+        'Fill Executed But Not Recorded' CRITICAL. The re-run detects the already-recorded
+        fill, stamps resolved_at quietly, and moves on — no duplicate, no critical."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="o6", cycle_id=42, symbol="SPY", side="buy")
+        # Prior run recorded the trade (same broker order id = trades PK) then crashed before
+        # UPDATE pending_orders SET resolved_at — so the row is still unresolved.
+        mock_ctx.seed_trade("o6", cycle_id=42, symbol="SPY", side="buy", price=600.10)
+        mock_ctx.alpaca.order_status(
+            "o6", status="filled", filled_avg_price=600.10, filled_qty=0.0416
+        )
+
+        equity_fill_confirmation_job()  # must not raise
+
+        # Quietly resolved — no re-record, no critical.
+        assert mock_ctx.pending_row("o6")["resolved_at"] is not None
+        assert mock_ctx.trade_count("o6") == 1  # no duplicate trade
+        levels = [c.kwargs.get("level") for c in mock_ctx.alerter.send_alert.call_args_list]
+        assert "critical" not in levels
+
+
+class TestCycleOrdersInfoPing:
+    """EXEC-D12: every cycle (both envs) ends with one INFO listing each order."""
+
+    def test_cycle_orders_info_ping_both_envs_incl_sells(self, mock_ctx: _MockCtx) -> None:
+        """EXEC-D12: EVERY cycle (equity AND crypto) ends with one INFO listing each order
+        — buys as notional, SELLS as qty + approx value — or 'no orders — deadzone held'.
+        Fires both ways (candle-alert full-parity precedent, user ruling)."""
+        mock_ctx.run_equity_cycle(orders=[("SPY", "buy", 25.0), ("QQQ", "sell", 0.0416, 25.0)])
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "info" and "cycle orders" in kwargs["title"].lower()
+        # STYLE-D15: aligned monospace columns (side left-justified to 4 -> "BUY  SPY").
+        assert "BUY  SPY $25.00" in kwargs["message"]
+        assert "SELL QQQ 0.0416" in kwargs["message"]  # sells never omitted
+
+        mock_ctx.run_crypto_cycle(orders=[("BTCUSDT", "buy", 20.06)])
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert "crypto" in kwargs["title"].lower() and "BUY  BTCUSDT $20.06" in kwargs["message"]
+
+        mock_ctx.run_crypto_cycle(orders=[])
+        assert "deadzone" in mock_ctx.alerter.send_alert.call_args.kwargs["message"].lower()
+
+    def test_cycle_ping_orders_render_in_code_block(self, mock_ctx: _MockCtx) -> None:
+        """STYLE-D15: D12 cycle-ping order lists are monospace code blocks, aligned."""
+        mock_ctx.run_equity_cycle(orders=[("SPY", "buy", 25.0), ("QQQ", "sell", 0.0416, 25.0)])
+        msg = mock_ctx.alerter.send_alert.call_args.kwargs["message"]
+        assert "```" in msg and "BUY  SPY" in msg
+        # STYLE-D15: the ping is tagged category="cycle" (purple 🔄) for the embed styling.
+        assert mock_ctx.alerter.send_alert.call_args.kwargs["category"] == "cycle"

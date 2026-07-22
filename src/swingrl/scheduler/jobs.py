@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -261,6 +262,157 @@ def crypto_cycle() -> list[FillResult]:
     return fills
 
 
+def risk_sweep_job() -> None:
+    """Between-cycle risk sweep (D10): mark held positions + evaluate breakers, no trading.
+
+    Trading cycles are sparse (crypto every 4h, equity once a day), so between them the
+    system is blind to a crash in a held position. This interval job (config
+    ``risk.sweep_interval_minutes``) closes that blind window: for each environment with
+    held positions it fetches fresh prices (fail-open per symbol), marks the positions to
+    market, and evaluates the per-env drawdown/daily-loss breaker; it then evaluates the
+    global breaker across BOTH environments' current values.
+
+    Two negatives are load-bearing (pinned test contracts): the sweep places NO orders
+    (it never touches the broker's submit path) and writes NO ``portfolio_snapshots`` rows
+    (snapshots stay cycle-cadence append-only so the daily-P&L baseline query is not
+    polluted — it never calls ``record_snapshot``). A breach flows through the breaker's
+    existing ``_trigger`` halt/alert path unchanged.
+
+    Skips entirely when the halt flag is active. Each env's body is isolated in its own
+    try/except so one env's failure (e.g. a broker adapter lazy-init error, an env-specific
+    DB error) cannot stop the other — a persistent env-A fault must never re-open env-B's
+    blind window. The global check is skipped if any env's value is missing (see below).
+    """
+    ctx = _get_ctx()
+
+    if is_halted(ctx.db):
+        log.warning("risk_sweep_skipped", reason="halt_flag_active")
+        return
+
+    pipeline = ctx.pipeline
+    tracker = pipeline.position_tracker
+    breakers = pipeline.circuit_breakers
+
+    # Combined inputs for the global breaker. EVERY env is included — even a flat
+    # cash-only env — because GlobalCircuitBreaker reconstructs the combined high-water
+    # mark from ALL envs' persisted snapshots; omitting an env's current value would
+    # understate total value and overstate combined drawdown, tripping a false global halt
+    # of every environment.
+    portfolio_values: dict[str, float] = {}
+    daily_pnls: dict[str, float] = {}
+
+    for env, breaker in breakers.items():
+        # Per-env isolation: a failure anywhere in this env's body is logged and the loop
+        # moves on to the next env, so a persistent fault in one environment cannot re-open
+        # the between-cycle blind window this job exists to close for the other.
+        try:
+            held = [p for p in tracker.get_positions(env) if p["quantity"]]
+
+            # Fetch fresh marks only when the env actually holds positions (no broker
+            # call for a flat env). Fail-open per symbol: a fetch failure or non-positive
+            # price warns and is skipped, so compute_portfolio_value falls back to the
+            # stored last_price for that symbol — a sweep never blocks on one bad quote.
+            prices: dict[str, float] = {}
+            if held:
+                adapter = pipeline.get_adapter(env)
+                for pos in held:
+                    symbol = pos["symbol"]
+                    try:
+                        price = adapter.get_current_price(symbol)
+                    except Exception:
+                        log.warning("sweep_price_fetch_failed", environment=env, symbol=symbol)
+                        continue
+                    if price is not None and price > 0:
+                        prices[symbol] = price
+                    else:
+                        log.warning(
+                            "sweep_price_non_positive", environment=env, symbol=symbol, price=price
+                        )
+                tracker.mark_positions(env, prices)
+
+            # Mark-to-market value for this env (cash-only when flat). No snapshot written.
+            value = tracker.compute_portfolio_value(env, prices)
+            daily_pnl = tracker.compute_daily_pnl(env, value)
+            portfolio_values[env] = value
+            daily_pnls[env] = daily_pnl
+
+            # Per-env breaker only matters when the env holds positions (a cash-only env
+            # cannot draw down). HWM folds in this cycle's value explicitly: unlike the
+            # trade path, the sweep writes no snapshot first, so the stored HWM does not
+            # yet include ``value`` — max() reproduces the record_snapshot-then-check
+            # semantics the cycle path gets for free.
+            if held:
+                hwm = max(tracker.get_high_water_mark(env), value)
+                breaker.check_and_update(
+                    portfolio_value=value,
+                    high_water_mark=hwm,
+                    daily_pnl=daily_pnl,
+                )
+        except Exception:
+            log.exception("risk_sweep_env_failed", environment=env)
+
+    # Global breaker across both envs' current values (combined drawdown/daily loss). Skip
+    # when any env's value is missing — an env that errored before computing its value is
+    # absent from the dict, and a partial dict would understate total value and risk the
+    # same false global halt the flat-env inclusion avoids. A flat env is NOT missing: it
+    # contributed its cash value above. Own try/except so a global failure never crashes
+    # the scheduler.
+    if set(portfolio_values) != set(breakers):
+        log.warning("risk_sweep_global_skipped", evaluated=sorted(portfolio_values))
+        return
+    try:
+        pipeline.global_cb.check_combined(portfolio_values, daily_pnls)
+        log.info("risk_sweep_complete", envs=sorted(portfolio_values))
+    except Exception:
+        log.exception("risk_sweep_global_failed")
+
+
+# D13 buy-and-hold: env -> latest-close query. Constant SQL (no interpolation) so
+# bandit stays quiet; the ORDER BY column differs per env (ohlcv_daily.date vs
+# ohlcv_4h.datetime), which is why this is a map of full statements, not an f-string.
+_LATEST_CLOSE_SQL: dict[str, str] = {
+    "equity": "SELECT close FROM ohlcv_daily WHERE symbol = %s ORDER BY date DESC LIMIT 1",
+    "crypto": "SELECT close FROM ohlcv_4h WHERE symbol = %s ORDER BY datetime DESC LIMIT 1",
+}
+
+
+def _benchmark_value(conn: Any, env: str) -> float | None:
+    """Equal-weight buy-and-hold value of the env's baselines, grown to latest close (D13).
+
+    Returns Σ over the env's ``benchmark_baselines`` rows of
+    ``(capital_usd / n_symbols) × latest_close / baseline_price`` — what an equal-weight
+    passive hold of each symbol would be worth today. Returns None when the env has no
+    baselines (pre epoch reset), so the digest omits the "Buy & Hold" fields and its
+    pre-reset shape is unchanged. A symbol with no stored close is skipped (its slice
+    contributes nothing) rather than failing the whole digest.
+
+    Args:
+        conn: An open DB connection (called inside the digest's connection block).
+        env: "equity" or "crypto".
+
+    Returns:
+        The benchmark value in USD, or None when no baselines exist for ``env``.
+    """
+    close_sql = _LATEST_CLOSE_SQL.get(env)
+    if close_sql is None:
+        return None
+    baselines = conn.execute(
+        "SELECT symbol, baseline_price, capital_usd FROM benchmark_baselines"
+        " WHERE environment = %s",
+        (env,),
+    ).fetchall()
+    if not baselines:
+        return None
+    n_symbols = len(baselines)
+    total = 0.0
+    for row in baselines:
+        close_row = conn.execute(close_sql, (row["symbol"],)).fetchone()
+        if close_row is None or close_row["close"] is None:
+            continue
+        total += (row["capital_usd"] / n_symbols) * (close_row["close"] / row["baseline_price"])
+    return total
+
+
 def daily_summary_job() -> None:
     """Query portfolio snapshots and send daily summary alert.
 
@@ -285,12 +437,35 @@ def daily_summary_job() -> None:
         return
 
     try:
+        # Per-env count of TODAY's (ET) signal trades from the trades ledger. ET date on
+        # both sides — a bare timestamp::date renders in the server session timezone,
+        # which misses between 20:00 and 24:00 ET (same convention as
+        # position_tracker.get_daily_pnl). Replaces the previously hardcoded zeros that
+        # made every digest report "0 trades" (found live 2026-07-21).
+        counts = {"equity": 0, "crypto": 0}
+        # Buy-and-hold benchmark per env (D13). Computed in the SAME connection block as
+        # the snapshots + trade counts (Task 3's wiring) — one connection per digest.
+        # None until the epoch-reset recorder has written baselines, in which case the
+        # embed omits the "Buy & Hold" fields (pre-reset shape unchanged).
+        benchmarks: dict[str, float | None] = {"equity": None, "crypto": None}
         with ctx.db.connection() as conn:
             rows = conn.execute(
                 "SELECT environment, total_value, cash_balance, daily_pnl, drawdown_pct "
                 "FROM portfolio_snapshots "
                 "ORDER BY timestamp DESC LIMIT 2"
             ).fetchall()
+            trade_rows = conn.execute(
+                "SELECT environment, count(*) AS n FROM trades "
+                "WHERE trade_type = 'signal' "
+                "AND (timestamp AT TIME ZONE 'America/New_York')::date = "
+                "(now() AT TIME ZONE 'America/New_York')::date "
+                "GROUP BY environment"
+            ).fetchall()
+            benchmarks["equity"] = _benchmark_value(conn, "equity")
+            benchmarks["crypto"] = _benchmark_value(conn, "crypto")
+
+        for r in trade_rows:
+            counts[r["environment"]] = int(r["n"])
 
         if not rows:
             log.info("daily_summary_no_data")
@@ -314,8 +489,10 @@ def daily_summary_job() -> None:
             embed = build_daily_summary_embed(
                 equity_snapshot=equity_snap,
                 crypto_snapshot=crypto_snap,
-                equity_trades_today=0,
-                crypto_trades_today=0,
+                equity_trades_today=counts["equity"],
+                crypto_trades_today=counts["crypto"],
+                equity_benchmark=benchmarks["equity"],
+                crypto_benchmark=benchmarks["crypto"],
             )
             ctx.alerter.send_embed("info", embed)
         else:
@@ -564,6 +741,251 @@ def reconciliation_job() -> None:
             )
         except Exception:
             log.exception("reconciliation_job_alert_failed")
+
+
+def equity_fill_confirmation_job() -> None:
+    """Confirm pre-open equity opening-auction fills (~09:35 ET, spec D11).
+
+    The 09:15 pre-open cycle submits DAY market orders that Alpaca fills at the official
+    opening print; this job (after the 09:30 open) turns those confirmed fills into real
+    trades. It loads every unresolved ``pending_orders`` row (a restart-safe DB worklist —
+    the orders survive a process restart between 09:15 and 09:35), polls each order's status
+    by id, and for a filled order builds a real FillResult and records it through the SAME
+    post-fill path the synchronous route uses (``pipeline.record_fill`` — trades + positions +
+    fill_quality + realized-P&L attach), sends the trade embed, and stamps ``resolved_at``.
+
+    An order still unfilled/canceled after the auction gets a warning alert and is LEFT
+    unresolved for the next run — never silently dropped. Runs regardless of the halt flag:
+    the auction orders already executed, so their fills must be recorded for the ledger to
+    stay truthful (recording is bookkeeping, not new trading). Never raises.
+    """
+    ctx = _get_ctx()
+
+    try:
+        with ctx.db.connection() as conn:
+            rows = conn.execute(
+                "SELECT order_id, cycle_id, symbol, side, submitted_at FROM pending_orders "
+                "WHERE resolved_at IS NULL ORDER BY submitted_at"
+            ).fetchall()
+    except Exception:
+        log.exception("equity_fill_confirmation_load_failed")
+        return
+
+    if not rows:
+        log.info("equity_fill_confirmation_no_pending")
+        return
+
+    try:
+        adapter = ctx.pipeline.get_adapter("equity")
+    except Exception:
+        log.exception("equity_fill_confirmation_adapter_failed")
+        return
+
+    confirmed = 0
+    for row in rows:
+        try:
+            if _confirm_one_pending_order(ctx, adapter, row):
+                confirmed += 1
+        except Exception:
+            log.exception("equity_fill_confirmation_order_failed", order_id=row["order_id"])
+    log.info("equity_fill_confirmation_complete", pending=len(rows), confirmed=confirmed)
+
+
+def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any]) -> bool:
+    """Confirm a single pending pre-open order; return True if a fill was recorded (D11).
+
+    A filled order is recorded via the pipeline's shared post-fill path and its
+    ``pending_orders`` row is stamped resolved; anything else (unfilled/canceled) alerts a
+    warning and leaves the row unresolved for the next run.
+
+    Args:
+        ctx: The job context.
+        adapter: The equity exchange adapter (Alpaca), exposing ``get_order_status``.
+        row: A ``pending_orders`` row (order_id, cycle_id, symbol, side, submitted_at).
+
+    Returns:
+        True if the auction fill was recorded, False otherwise.
+    """
+    from swingrl.execution.types import FillResult, SizedOrder  # noqa: PLC0415
+
+    order_id = row["order_id"]
+    order = adapter.get_order_status(order_id)
+    status = str(getattr(order, "status", "") or "").lower()
+    filled_price = getattr(order, "filled_avg_price", None)
+    filled_qty = getattr(order, "filled_qty", None)
+    filled_qty_val = _safe_float(filled_qty)
+
+    is_fully_filled = status == "filled" and filled_price is not None and filled_qty is not None
+
+    if not is_fully_filled:
+        if filled_qty_val is not None and filled_qty_val > 0:
+            # Review #1: a partial fill executed REAL shares but the order is not fully filled.
+            # Whether to record partial fills as trades is plan-silent (a user decision), so we
+            # do NOT record here — but the executed shares must be surfaced explicitly under a
+            # distinct title so this can never be mistaken for a clean no-fill. Row stays
+            # unresolved for the next run / user review.
+            requested = getattr(order, "qty", None)
+            if requested is None:
+                requested = getattr(order, "notional", None)
+            ctx.alerter.send_alert(
+                level="warning",
+                title="Equity auction order PARTIALLY filled — unrecorded",
+                message=(
+                    f"{row['symbol']} {row['side']} (order {order_id}) PARTIALLY filled: "
+                    f"{filled_qty_val} of {requested} at {filled_price} "
+                    f"({status or 'unknown'}) — not recorded, left pending for the next "
+                    "confirmation run / user review."
+                ),
+                environment="equity",
+            )
+            log.warning(
+                "pending_order_partial_fill",
+                order_id=order_id,
+                symbol=row["symbol"],
+                filled_qty=filled_qty_val,
+                requested=str(requested),
+                status=status,
+            )
+            return False
+
+        # Clean no-fill / canceled after the auction — warn and leave the row unresolved
+        # (retry next run). Never silently dropped; capital-preservation visibility.
+        ctx.alerter.send_alert(
+            level="warning",
+            title="Equity auction order unfilled",
+            message=(
+                f"{row['symbol']} {row['side']} (order {order_id}) is still "
+                f"{status or 'unknown'} after the opening auction — not recorded, left "
+                "pending for the next confirmation run."
+            ),
+            environment="equity",
+        )
+        log.warning(
+            "equity_auction_order_unfilled", order_id=order_id, symbol=row["symbol"], status=status
+        )
+        return False
+
+    # Review #2 crash-safety: a prior run may have recorded the trade (the broker order id is
+    # the trades PK) but crashed before stamping resolved_at, leaving this row unresolved. Re-
+    # recording would hit the TEXT PK inside record_fill and fire a false "Fill Executed But
+    # Not Recorded" CRITICAL on every run forever. Detect the already-recorded fill, stamp
+    # resolved_at quietly, and move on — no duplicate trade, no critical, no re-sent embed.
+    if _trade_already_recorded(ctx, order_id):
+        _stamp_pending_resolved(ctx, order_id)
+        log.info("equity_auction_fill_already_recorded", order_id=order_id, symbol=row["symbol"])
+        return True
+
+    fill_price = _safe_float(filled_price)
+    quantity = filled_qty_val
+    if fill_price is None or quantity is None:
+        # Defensive: a "filled" order should always carry numeric price/qty; if not, do not
+        # fabricate a trade — warn and leave the row for the next run rather than crash.
+        log.warning(
+            "equity_auction_fill_unparseable_amounts",
+            order_id=order_id,
+            symbol=row["symbol"],
+            filled_price=str(filled_price),
+            filled_qty=str(filled_qty),
+        )
+        return False
+    submitted_at = _to_iso(row.get("submitted_at"))
+    filled_at = _to_iso(getattr(order, "filled_at", None)) or datetime.now(UTC).isoformat()
+
+    fill = FillResult(
+        trade_id=order_id,
+        symbol=row["symbol"],
+        side=row["side"],
+        quantity=quantity,
+        fill_price=fill_price,
+        commission=0.0,
+        slippage=0.0,
+        environment="equity",
+        broker="alpaca",
+        status="filled",
+        submitted_at=submitted_at,
+        filled_at=filled_at,
+    )
+    # Minimal SizedOrder — equity carries no stops; process() reads side + stop/TP (None).
+    sized_order = SizedOrder(
+        symbol=row["symbol"],
+        side=row["side"],
+        quantity=quantity,
+        dollar_amount=fill_price * quantity,
+        stop_loss_price=None,
+        take_profit_price=None,
+        environment="equity",
+    )
+
+    # Same post-fill path as the synchronous route (trades + positions + fill_quality +
+    # realized-P&L attach). decision_price is None — the 09:15 sizing price is not stored on
+    # the pending row, so fill_quality slippage is NULL (the row is still written).
+    recorded = ctx.pipeline.record_fill(
+        fill,
+        sized_order=sized_order,
+        cycle_id=row.get("cycle_id"),
+        decision_price=None,
+        env_name="equity",
+    )
+    if recorded is None:
+        # Recording failed — record_fill already sent a critical alert. Leave the row
+        # unresolved so the next run retries rather than losing the fill.
+        return False
+
+    # Trade embed (same callback the synchronous equity_cycle fires per fill).
+    if build_trade_embed is not None:
+        try:
+            embed = build_trade_embed(recorded)
+            ctx.alerter.send_embed("info", embed)
+        except Exception:
+            log.exception("equity_fill_confirmation_embed_failed", order_id=order_id)
+
+    _stamp_pending_resolved(ctx, order_id)
+    log.info(
+        "equity_auction_fill_confirmed",
+        order_id=order_id,
+        symbol=row["symbol"],
+        fill_price=fill_price,
+        quantity=quantity,
+        cycle_id=row.get("cycle_id"),
+    )
+    return True
+
+
+def _trade_already_recorded(ctx: JobContext, trade_id: str) -> bool:
+    """Return True if a trades row already exists for ``trade_id`` (the broker order id)."""
+    with ctx.db.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM trades WHERE trade_id = %s LIMIT 1", (trade_id,)
+        ).fetchone()
+    return row is not None
+
+
+def _stamp_pending_resolved(ctx: JobContext, order_id: str) -> None:
+    """Stamp a pending_orders row resolved (confirmation complete)."""
+    with ctx.db.connection() as conn:
+        conn.execute(
+            "UPDATE pending_orders SET resolved_at = %s WHERE order_id = %s",
+            (datetime.now(UTC).isoformat(), order_id),
+        )
+
+
+def _safe_float(value: Any) -> float | None:  # noqa: ANN401
+    """Parse a broker numeric field (str/float/None) to float, or None if unparseable."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_iso(value: Any) -> str | None:  # noqa: ANN401
+    """Normalize a DB/broker timestamp (datetime or str) to a UTC ISO string, or None."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def automated_trigger_check_job() -> None:
