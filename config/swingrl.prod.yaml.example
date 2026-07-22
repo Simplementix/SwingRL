@@ -49,7 +49,7 @@ scheduler:
   enabled: true                            # true for live/paper trading; false for training-only hosts
   misfire_grace_time: 300                  # default grace (seconds) for non-cycle jobs
   misfire_grace_s:                         # per-env grace for the trading cycle jobs (A30 restart addendum)
-    equity: 720                            # a restart shortly after 15:45 still runs late; past ~15:57 it skips
+    equity: 720                            # a restart up to 09:15+720s=09:27 ET still runs the cycle (before the 09:28 auction cutoff); past that it skips
     crypto: 3600                           # 4H cadence — an hour late is immaterial
 
 environment:
