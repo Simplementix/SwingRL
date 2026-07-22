@@ -742,6 +742,42 @@ class TestMarketGateAndSnapshotLifecycle:
         assert pending["resolved_at"] is None
         assert trade is None
 
+    def test_record_pending_order_persists_decision_price(
+        self, pipeline: ExecutionPipeline
+    ) -> None:
+        """RULING-3: _record_pending_order stores the sizing-time price on the worklist row."""
+        self._clear(pipeline)
+        with pipeline._db.connection() as conn:
+            conn.execute("DELETE FROM pending_orders")
+            conn.execute(
+                "INSERT INTO inference_cycles (cycle_id, environment, mode, cycle_ts) "
+                "OVERRIDING SYSTEM VALUE VALUES (7, 'equity', 'paper', now()) "
+                "ON CONFLICT (cycle_id) DO NOTHING"
+            )
+
+        fill = FillResult(
+            trade_id="op-1",
+            symbol="SPY",
+            side="buy",
+            quantity=0.0,
+            fill_price=0.0,
+            commission=0.0,
+            slippage=0.0,
+            environment="equity",
+            broker="alpaca",
+            status="pending",
+            submitted_at="2026-07-22T13:15:00+00:00",
+        )
+        pipeline._record_pending_order(fill, cycle_id=7, decision_price=600.25)
+
+        with pipeline._db.connection() as conn:
+            row = conn.execute(
+                "SELECT decision_price FROM pending_orders WHERE order_id = %s", ("op-1",)
+            ).fetchone()
+        # The INSERT carries the decision_price column and persists the sizing-time value.
+        assert row is not None
+        assert row["decision_price"] == pytest.approx(600.25)
+
 
 class TestCycleOrdersPing:
     """EXEC-D12: every non-dry-run cycle ends with one INFO ping listing submitted orders.

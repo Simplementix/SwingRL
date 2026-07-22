@@ -914,8 +914,20 @@ class _MockCtx:
             except Exception:  # noqa: BLE001 — table may not exist yet at RED
                 pass
 
-    def set_pending_order(self, order_id: str, cycle_id: int, symbol: str, side: str) -> None:
-        """Seed the FK parent inference_cycles row (forced id) + an unresolved pending order."""
+    def set_pending_order(
+        self,
+        order_id: str,
+        cycle_id: int,
+        symbol: str,
+        side: str,
+        decision_price: float | None = None,
+    ) -> None:
+        """Seed the FK parent inference_cycles row (forced id) + an unresolved pending order.
+
+        ``decision_price`` seeds the 09:15 sizing price on the worklist row so the confirmation
+        job can forward it into ``record_fill`` (RULING-3); defaults None for the pre-ruling
+        rows the other tests use.
+        """
         with self.db.connection() as conn:
             conn.execute(
                 "INSERT INTO inference_cycles (cycle_id, environment, mode, cycle_ts) "
@@ -924,9 +936,10 @@ class _MockCtx:
                 (cycle_id,),
             )
             conn.execute(
-                "INSERT INTO pending_orders (order_id, cycle_id, symbol, side, submitted_at) "
-                "VALUES (%s, %s, %s, %s, now())",
-                (order_id, cycle_id, symbol, side),
+                "INSERT INTO pending_orders "
+                "(order_id, cycle_id, symbol, side, submitted_at, decision_price) "
+                "VALUES (%s, %s, %s, %s, now(), %s)",
+                (order_id, cycle_id, symbol, side, decision_price),
             )
 
     def inserted_trade(self) -> dict[str, Any] | None:
@@ -1111,6 +1124,29 @@ class TestEquityFillConfirmationJob:
         assert mock_ctx.trade_count("o6") == 1  # no duplicate trade
         levels = [c.kwargs.get("level") for c in mock_ctx.alerter.send_alert.call_args_list]
         assert "critical" not in levels
+
+    def test_fill_confirmation_passes_decision_price(self, mock_ctx: _MockCtx) -> None:
+        """RULING-3: the confirmation job forwards the stored 09:15 decision_price into
+        record_fill so fill_quality computes real auction slippage (was always NULL)."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(
+            order_id="odp1", cycle_id=42, symbol="SPY", side="buy", decision_price=600.00
+        )
+        mock_ctx.alpaca.order_status(
+            "odp1", status="filled", filled_avg_price=600.60, filled_qty=0.05
+        )
+
+        equity_fill_confirmation_job()
+
+        with mock_ctx.db.connection() as conn:
+            fq = conn.execute(
+                "SELECT decision_price_usd, slippage_frac FROM fill_quality WHERE trade_id = %s",
+                ("odp1",),
+            ).fetchone()
+        assert fq is not None
+        assert float(fq["decision_price_usd"]) == pytest.approx(600.00)
+        assert fq["slippage_frac"] is not None  # 0.60/600 — measured, not NULL
 
 
 class TestCycleOrdersInfoPing:
