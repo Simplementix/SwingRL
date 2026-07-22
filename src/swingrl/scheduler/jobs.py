@@ -277,8 +277,10 @@ def risk_sweep_job() -> None:
     polluted — it never calls ``record_snapshot``). A breach flows through the breaker's
     existing ``_trigger`` halt/alert path unchanged.
 
-    Skips entirely when the halt flag is active. Wrapped in try/except so a sweep failure
-    can never crash the scheduler.
+    Skips entirely when the halt flag is active. Each env's body is isolated in its own
+    try/except so one env's failure (e.g. a broker adapter lazy-init error, an env-specific
+    DB error) cannot stop the other — a persistent env-A fault must never re-open env-B's
+    blind window. The global check is skipped if any env's value is missing (see below).
     """
     ctx = _get_ctx()
 
@@ -286,20 +288,23 @@ def risk_sweep_job() -> None:
         log.warning("risk_sweep_skipped", reason="halt_flag_active")
         return
 
-    try:
-        pipeline = ctx.pipeline
-        tracker = pipeline.position_tracker
-        breakers = pipeline.circuit_breakers
+    pipeline = ctx.pipeline
+    tracker = pipeline.position_tracker
+    breakers = pipeline.circuit_breakers
 
-        # Combined inputs for the global breaker. EVERY env is included — even a flat
-        # cash-only env — because GlobalCircuitBreaker reconstructs the combined
-        # high-water mark from ALL envs' persisted snapshots; omitting an env's current
-        # value would understate total value and overstate combined drawdown, tripping a
-        # false global halt of every environment.
-        portfolio_values: dict[str, float] = {}
-        daily_pnls: dict[str, float] = {}
+    # Combined inputs for the global breaker. EVERY env is included — even a flat
+    # cash-only env — because GlobalCircuitBreaker reconstructs the combined high-water
+    # mark from ALL envs' persisted snapshots; omitting an env's current value would
+    # understate total value and overstate combined drawdown, tripping a false global halt
+    # of every environment.
+    portfolio_values: dict[str, float] = {}
+    daily_pnls: dict[str, float] = {}
 
-        for env, breaker in breakers.items():
+    for env, breaker in breakers.items():
+        # Per-env isolation: a failure anywhere in this env's body is logged and the loop
+        # moves on to the next env, so a persistent fault in one environment cannot re-open
+        # the between-cycle blind window this job exists to close for the other.
+        try:
             held = [p for p in tracker.get_positions(env) if p["quantity"]]
 
             # Fetch fresh marks only when the env actually holds positions (no broker
@@ -342,13 +347,23 @@ def risk_sweep_job() -> None:
                     high_water_mark=hwm,
                     daily_pnl=daily_pnl,
                 )
+        except Exception:
+            log.exception("risk_sweep_env_failed", environment=env)
 
-        # Global breaker across both envs' current values (combined drawdown/daily loss).
+    # Global breaker across both envs' current values (combined drawdown/daily loss). Skip
+    # when any env's value is missing — an env that errored before computing its value is
+    # absent from the dict, and a partial dict would understate total value and risk the
+    # same false global halt the flat-env inclusion avoids. A flat env is NOT missing: it
+    # contributed its cash value above. Own try/except so a global failure never crashes
+    # the scheduler.
+    if set(portfolio_values) != set(breakers):
+        log.warning("risk_sweep_global_skipped", evaluated=sorted(portfolio_values))
+        return
+    try:
         pipeline.global_cb.check_combined(portfolio_values, daily_pnls)
-
-        log.info("risk_sweep_complete", envs=list(portfolio_values.keys()))
+        log.info("risk_sweep_complete", envs=sorted(portfolio_values))
     except Exception:
-        log.exception("risk_sweep_failed")
+        log.exception("risk_sweep_global_failed")
 
 
 def daily_summary_job() -> None:
