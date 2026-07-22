@@ -109,8 +109,9 @@ class RiskManager:
             daily_pnl = self._tracker.compute_daily_pnl(env, portfolio_value)
         env_config = self._config.equity if env == "equity" else self._config.crypto
 
-        # 2. Position size check
-        if portfolio_value > 0:
+        # 2. Position size check — buys only (ruling 2026-07-22 #5): a sell shrinks or
+        # closes an existing position; vetoing it on size would block risk reduction.
+        if order.side == "buy" and portfolio_value > 0:
             position_pct = order.dollar_amount / portfolio_value
             if position_pct > env_config.max_position_size:
                 self._veto(
@@ -119,10 +120,14 @@ class RiskManager:
                     f"position_size {position_pct:.4f} exceeds max {env_config.max_position_size}",
                 )
 
-        # 3. Exposure check
+        # 3. Exposure check — side-aware (ruling 2026-07-22 #5): a buy adds its dollar
+        # amount to exposure, a sell subtracts it. A sell can therefore never breach the
+        # 1.0 cap (D14 2026-07-22: the additive form computed 0.85 + 0.43 = 1.28 for a
+        # full-position close and vetoed the exit — the guard pointed the wrong way).
         current_exposure = self._tracker.get_exposure(env)
+        signed_amount = order.dollar_amount if order.side == "buy" else -order.dollar_amount
         new_exposure = current_exposure + (
-            order.dollar_amount / portfolio_value if portfolio_value > 0 else 0.0
+            signed_amount / portfolio_value if portfolio_value > 0 else 0.0
         )
         if new_exposure > 1.0:
             self._veto(
