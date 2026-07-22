@@ -24,6 +24,7 @@ from swingrl.scheduler.jobs import (
     equity_cycle,
     init_job_context,
     monthly_macro_job,
+    risk_sweep_job,
     stuck_agent_check_job,
     weekly_fundamentals_job,
 )
@@ -528,6 +529,125 @@ class TestFredImportPath:
                 mock_fred_cls.assert_called_once_with(mock_config)
                 # run_all() called (not refresh())
                 mock_ingestor.run_all.assert_called_once()
+
+
+class _SweepCtx:
+    """Adapts the brief's ``mock_ctx`` to the real JobContext -> ExecutionPipeline layout.
+
+    The risk components the sweep touches (position tracker, per-env circuit breakers,
+    global breaker, exchange adapters) live on ``ctx.pipeline``, not on ``ctx`` itself.
+    The sweep reaches them through the pipeline's public accessors, so this helper hangs
+    mocks off a mock pipeline and mirrors the brief's ``set_positions`` ergonomics.
+    """
+
+    def __init__(self) -> None:
+        """Wire mock risk components onto a mock pipeline (crypto+equity breakers)."""
+        self.adapter = MagicMock()
+        self.adapter.get_current_price.return_value = 100.0
+        self.circuit_breakers: dict[str, MagicMock] = {
+            "equity": MagicMock(),
+            "crypto": MagicMock(),
+        }
+        self.global_cb = MagicMock()
+        self.tracker = MagicMock()
+        self._positions: dict[str, list[dict[str, Any]]] = {"equity": [], "crypto": []}
+        self.tracker.get_positions.side_effect = lambda env: self._positions.get(env, [])
+        # Numeric returns so the sweep's max()/arithmetic works on real numbers.
+        self.tracker.compute_portfolio_value.return_value = 5000.0
+        self.tracker.compute_daily_pnl.return_value = -100.0
+        self.tracker.get_high_water_mark.return_value = 10000.0
+        self.pipeline = MagicMock()
+        self.pipeline.position_tracker = self.tracker
+        self.pipeline.circuit_breakers = self.circuit_breakers
+        self.pipeline.global_cb = self.global_cb
+        self.pipeline.get_adapter.return_value = self.adapter
+        self.db = MagicMock()
+
+    def set_positions(self, env: str, positions: dict[str, tuple[float, float]]) -> None:
+        """Seed held positions for ``env`` as ``{symbol: (quantity, cost_basis)}``."""
+        self._positions[env] = [
+            {
+                "symbol": symbol,
+                "quantity": qty,
+                "cost_basis": cost,
+                "last_price": cost,
+                "unrealized_pnl": 0.0,
+                "updated_at": None,
+            }
+            for symbol, (qty, cost) in positions.items()
+        ]
+
+
+@pytest.fixture
+def sweep_ctx() -> Generator[_SweepCtx, None, None]:
+    """Build a risk-sweep JobContext on a mock pipeline; default ``is_halted`` -> False."""
+    ctx = _SweepCtx()
+    init_job_context(config=MagicMock(), db=ctx.db, pipeline=ctx.pipeline, alerter=MagicMock())
+    with patch("swingrl.scheduler.jobs.is_halted", return_value=False):
+        yield ctx
+
+
+class TestRiskSweepJob:
+    """SWEEP-D10: between-cycle risk sweep marks positions + evaluates breakers, no trading."""
+
+    def test_risk_sweep_trips_breaker_between_cycles(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: a crash between cycles is caught by the sweep — marks refresh and the
+        drawdown breaker evaluates without any trading."""
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        sweep_ctx.adapter.get_current_price.return_value = 30000.0
+        risk_sweep_job()
+        assert sweep_ctx.circuit_breakers["crypto"].check_and_update.called
+        assert sweep_ctx.adapter.submit_order.call_count == 0
+
+    def test_risk_sweep_writes_no_snapshots(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: sweeps never write portfolio_snapshots (cycle-cadence stays clean for
+        daily-P&L baselines).
+
+        ``PositionTracker.record_snapshot`` is the sole writer of that table, so asserting
+        it is never called is the faithful adaptation of the brief's
+        ``executed_sql_matching("INSERT INTO portfolio_snapshots")`` contract onto the real
+        component layout.
+        """
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        risk_sweep_job()
+        sweep_ctx.tracker.record_snapshot.assert_not_called()
+
+    def test_risk_sweep_skips_when_halted(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: an active halt flag short-circuits the sweep — no marks, no breaker eval."""
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        with patch("swingrl.scheduler.jobs.is_halted", return_value=True):
+            risk_sweep_job()
+        sweep_ctx.tracker.mark_positions.assert_not_called()
+        sweep_ctx.circuit_breakers["crypto"].check_and_update.assert_not_called()
+        sweep_ctx.global_cb.check_combined.assert_not_called()
+
+    def test_risk_sweep_skips_env_with_no_positions(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: an env with no held positions gets no per-env breaker eval (nothing can
+        draw down), but the global breaker still runs across both envs."""
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        # equity left flat (no positions).
+        risk_sweep_job()
+        sweep_ctx.circuit_breakers["equity"].check_and_update.assert_not_called()
+        sweep_ctx.circuit_breakers["crypto"].check_and_update.assert_called_once()
+        sweep_ctx.global_cb.check_combined.assert_called_once()
+
+    def test_risk_sweep_price_fetch_fail_open(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: a per-symbol price-fetch failure is warned and skipped (fail-open) — the
+        sweep still marks/evaluates using the stored last_price fallback and never raises."""
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        sweep_ctx.adapter.get_current_price.side_effect = RuntimeError("broker down")
+        risk_sweep_job()  # must not raise
+        sweep_ctx.circuit_breakers["crypto"].check_and_update.assert_called_once()
+
+    def test_risk_sweep_evaluates_global_breaker_across_envs(self, sweep_ctx: _SweepCtx) -> None:
+        """SWEEP-D10: the global breaker sees BOTH envs' current values (a cash-only env must
+        be included or its capital is omitted from the combined drawdown/daily-loss math)."""
+        sweep_ctx.set_positions("crypto", {"BTCUSDT": (0.5, 60000.0)})
+        risk_sweep_job()
+        sweep_ctx.global_cb.check_combined.assert_called_once()
+        portfolio_values, daily_pnls = sweep_ctx.global_cb.check_combined.call_args.args
+        assert set(portfolio_values.keys()) == {"equity", "crypto"}
+        assert set(daily_pnls.keys()) == {"equity", "crypto"}
 
 
 class TestTradeCommentary:

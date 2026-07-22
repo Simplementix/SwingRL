@@ -20,6 +20,7 @@ def mock_config() -> MagicMock:
     config.scheduler.misfire_grace_time = 300
     config.scheduler.misfire_grace_s = {"equity": 720, "crypto": 3600}
     config.scheduler.max_workers = 4
+    config.risk.sweep_interval_minutes = 30
     config.equity.cycle_time_et = "15:45"
     config.equity.market_calendar_gate = True
     config.alerting.alerts_webhook_url = ""
@@ -45,10 +46,10 @@ def mock_fill() -> MagicMock:
 
 
 class TestMainRegistersJobs:
-    """Verify that main.py registers all 12 cron jobs."""
+    """Verify that main.py registers all 13 cron/interval jobs."""
 
     def test_main_registers_all_jobs(self, mock_config: MagicMock) -> None:
-        """PAPER-12: main.py registers 12 cron jobs with correct IDs."""
+        """PAPER-12 + SWEEP-D10: main.py registers 13 jobs with correct IDs."""
         from scripts.main import create_scheduler_and_register_jobs
 
         # Explicit (review minor finding #4): an unconfigured MagicMock attribute is
@@ -58,7 +59,7 @@ class TestMainRegistersJobs:
         mock_scheduler = MagicMock()
         create_scheduler_and_register_jobs(mock_scheduler, mock_config)
 
-        assert mock_scheduler.add_job.call_count == 12
+        assert mock_scheduler.add_job.call_count == 13
 
         job_ids = {c.kwargs["id"] for c in mock_scheduler.add_job.call_args_list}
         expected_ids = {
@@ -74,8 +75,25 @@ class TestMainRegistersJobs:
             "shadow_promotion_check",
             "automated_trigger_check",
             "daily_reconciliation",
+            "risk_sweep",
         }
         assert job_ids == expected_ids
+
+    def test_risk_sweep_schedule(self, mock_config: MagicMock) -> None:
+        """SWEEP-D10: risk_sweep fires on an interval trigger every
+        config.risk.sweep_interval_minutes minutes (between-cycle blind-window guard)."""
+        from scripts.main import create_scheduler_and_register_jobs
+
+        mock_config.risk.sweep_interval_minutes = 30
+        mock_scheduler = MagicMock()
+        create_scheduler_and_register_jobs(mock_scheduler, mock_config)
+
+        sweep_call = next(
+            c for c in mock_scheduler.add_job.call_args_list if c.kwargs["id"] == "risk_sweep"
+        )
+        assert sweep_call.kwargs["trigger"] == "interval"
+        assert sweep_call.kwargs["minutes"] == 30
+        assert sweep_call.kwargs["replace_existing"] is True
 
     def test_equity_cycle_schedule(self, mock_config: MagicMock) -> None:
         """(e) equity_cycle fires from config.equity.cycle_time_et on weekdays (review C2).
@@ -179,6 +197,7 @@ class TestBackupJobGating:
             "shadow_promotion_check",
             "automated_trigger_check",
             "daily_reconciliation",
+            "risk_sweep",
         }
     )
 
