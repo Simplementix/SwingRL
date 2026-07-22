@@ -16,12 +16,12 @@ from datetime import date
 from typing import TYPE_CHECKING
 
 import pytest
+
 from scripts.record_benchmark_baselines import (
     BaselineRow,
     build_baseline_rows,
     record_baselines,
 )
-
 from swingrl.utils.exceptions import DataError
 
 if TYPE_CHECKING:

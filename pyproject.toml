@@ -123,6 +123,12 @@ target-version = "py311"
 select = ["E", "W", "F", "I", "B", "C4", "UP", "N"]
 ignore = ["E501", "B008", "N803", "N806"]
 
+[tool.ruff.lint.isort]
+# Pin first-party detection so import ordering is identical in local and Docker CI.
+# Without this, `scripts` is classified by heuristic (third-party locally, first-party
+# in the container), and no single layout satisfies both (I001 in one or the other).
+known-first-party = ["swingrl", "scripts"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = false
