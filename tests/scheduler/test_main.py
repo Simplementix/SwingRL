@@ -99,6 +99,9 @@ class TestMainRegistersJobs:
         assert call.kwargs["minute"] == 35
         assert call.kwargs["day_of_week"] == "mon-fri"
         assert call.kwargs["timezone"] == "America/New_York"
+        # Review #3: a generous misfire grace so a restart spanning 09:35 still records the
+        # auction fills that day (pure bookkeeping, safe to run late) — not the 300s default.
+        assert call.kwargs["misfire_grace_time"] == 18000
 
     def test_risk_sweep_schedule(self, mock_config: MagicMock) -> None:
         """SWEEP-D10: risk_sweep fires on an interval trigger every

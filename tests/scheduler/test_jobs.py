@@ -849,6 +849,33 @@ class _MockCtx:
                 "SELECT * FROM pending_orders WHERE order_id = %s", (order_id,)
             ).fetchone()
 
+    def seed_trade(
+        self,
+        trade_id: str,
+        cycle_id: int,
+        symbol: str,
+        side: str,
+        price: float = 600.10,
+        quantity: float = 0.0416,
+    ) -> None:
+        """Seed a trades row (simulates a prior confirmation run that already recorded it)."""
+        with self.db.connection() as conn:
+            conn.execute(
+                "INSERT INTO trades (trade_id, timestamp, symbol, side, quantity, price, "
+                "commission, slippage, environment, broker, order_type, trade_type, cycle_id) "
+                "VALUES (%s, now(), %s, %s, %s, %s, 0.0, 0.0, 'equity', 'alpaca', 'market', "
+                "'signal', %s)",
+                (trade_id, symbol, side, quantity, price, cycle_id),
+            )
+
+    def trade_count(self, trade_id: str) -> int:
+        """Return the number of trades rows for ``trade_id`` (duplicate-detection)."""
+        with self.db.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) AS n FROM trades WHERE trade_id = %s", (trade_id,)
+            ).fetchone()
+        return int(row["n"])
+
     @staticmethod
     def _to_summaries(orders: list[tuple[Any, ...]]) -> list[Any]:
         """Convert the brief's order tuples into CycleOrderSummary descriptors.
@@ -944,6 +971,54 @@ class TestEquityFillConfirmationJob:
         assert mock_ctx.pending_row("o2")["resolved_at"] is None
         # No trade recorded for an unfilled order.
         assert mock_ctx.inserted_trade() is None
+
+    def test_fill_confirmation_partial_fill_surfaced(self, mock_ctx: _MockCtx) -> None:
+        """EXEC-D11 (review #1): a partially-filled auction order (filled_qty > 0 but not
+        fully filled) is NOT recorded as a trade, but the warning surfaces the executed shares
+        explicitly (symbol, filled vs requested, fill price) under a distinct PARTIAL title —
+        it must never read as a clean no-fill."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="o5", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.alpaca.order_status(
+            "o5", status="partially_filled", filled_avg_price=600.10, filled_qty=0.02, qty=0.05
+        )
+
+        equity_fill_confirmation_job()
+
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert "partially" in kwargs["title"].lower()
+        # Executed-shares detail surfaced: filled qty, requested qty, and fill price.
+        assert "0.02" in kwargs["message"]
+        assert "0.05" in kwargs["message"]
+        assert "600.1" in kwargs["message"]
+        # Not recorded as a trade; row stays unresolved for the next run / user decision.
+        assert mock_ctx.inserted_trade() is None
+        assert mock_ctx.pending_row("o5")["resolved_at"] is None
+
+    def test_fill_confirmation_idempotent_after_crash(self, mock_ctx: _MockCtx) -> None:
+        """EXEC-D11 (review #2): a prior run that recorded the trade but crashed before
+        stamping resolved_at must NOT re-record (duplicate TEXT PK) or fire a false
+        'Fill Executed But Not Recorded' CRITICAL. The re-run detects the already-recorded
+        fill, stamps resolved_at quietly, and moves on — no duplicate, no critical."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="o6", cycle_id=42, symbol="SPY", side="buy")
+        # Prior run recorded the trade (same broker order id = trades PK) then crashed before
+        # UPDATE pending_orders SET resolved_at — so the row is still unresolved.
+        mock_ctx.seed_trade("o6", cycle_id=42, symbol="SPY", side="buy", price=600.10)
+        mock_ctx.alpaca.order_status(
+            "o6", status="filled", filled_avg_price=600.10, filled_qty=0.0416
+        )
+
+        equity_fill_confirmation_job()  # must not raise
+
+        # Quietly resolved — no re-record, no critical.
+        assert mock_ctx.pending_row("o6")["resolved_at"] is not None
+        assert mock_ctx.trade_count("o6") == 1  # no duplicate trade
+        levels = [c.kwargs.get("level") for c in mock_ctx.alerter.send_alert.call_args_list]
+        assert "critical" not in levels
 
 
 class TestCycleOrdersInfoPing:
