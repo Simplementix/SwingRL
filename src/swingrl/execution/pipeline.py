@@ -470,7 +470,7 @@ class ExecutionPipeline:
                     # will fill at the open. Persist it to pending_orders (restart-safe) so
                     # the ~09:35 confirmation job records the real fill.
                     if fill.status == "pending" and env_name == "equity":
-                        self._record_pending_order(fill, cycle_id)
+                        self._record_pending_order(fill, cycle_id, current_price)
                     log.warning(
                         "order_unfilled_skipped",
                         symbol=fill.symbol,
@@ -654,7 +654,9 @@ class ExecutionPipeline:
             return None
         return dataclasses.replace(fill, realized_pnl=realized_pnl)
 
-    def _record_pending_order(self, fill: FillResult, cycle_id: int | None) -> None:
+    def _record_pending_order(
+        self, fill: FillResult, cycle_id: int | None, decision_price: float | None
+    ) -> None:
         """Persist a pending pre-open equity order for the 09:35 confirmation job (D11).
 
         Restart-safe worklist: the order was submitted at 09:15 and fills at the open; this
@@ -665,15 +667,18 @@ class ExecutionPipeline:
         Args:
             fill: The pending FillResult (its ``trade_id`` is the broker order id).
             cycle_id: The originating inference cycle id, or None (capture failed).
+            decision_price: The 09:15 sizing price (Step 9's get_current_price value), stored on
+                the worklist row so the 09:35 confirmation forwards it into record_fill and
+                fill_quality computes real auction slippage (RULING-3). None if unavailable.
         """
         submitted_at = fill.submitted_at or datetime.now(UTC).isoformat()
         try:
             with self._db.connection() as conn:
                 conn.execute(
                     "INSERT INTO pending_orders "
-                    "(order_id, cycle_id, symbol, side, submitted_at) "
-                    "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (order_id) DO NOTHING",
-                    (fill.trade_id, cycle_id, fill.symbol, fill.side, submitted_at),
+                    "(order_id, cycle_id, symbol, side, submitted_at, decision_price) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (order_id) DO NOTHING",
+                    (fill.trade_id, cycle_id, fill.symbol, fill.side, submitted_at, decision_price),
                 )
             log.info(
                 "pending_order_recorded",

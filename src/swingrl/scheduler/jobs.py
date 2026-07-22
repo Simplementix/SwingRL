@@ -764,8 +764,8 @@ def equity_fill_confirmation_job() -> None:
     try:
         with ctx.db.connection() as conn:
             rows = conn.execute(
-                "SELECT order_id, cycle_id, symbol, side, submitted_at FROM pending_orders "
-                "WHERE resolved_at IS NULL ORDER BY submitted_at"
+                "SELECT order_id, cycle_id, symbol, side, submitted_at, decision_price "
+                "FROM pending_orders WHERE resolved_at IS NULL ORDER BY submitted_at"
             ).fetchall()
     except Exception:
         log.exception("equity_fill_confirmation_load_failed")
@@ -917,13 +917,13 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
     )
 
     # Same post-fill path as the synchronous route (trades + positions + fill_quality +
-    # realized-P&L attach). decision_price is None — the 09:15 sizing price is not stored on
-    # the pending row, so fill_quality slippage is NULL (the row is still written).
+    # realized-P&L attach). decision_price is the stored 09:15 sizing price, so fill_quality
+    # computes real auction slippage (RULING-3); None only if it was never captured.
     recorded = ctx.pipeline.record_fill(
         fill,
         sized_order=sized_order,
         cycle_id=row.get("cycle_id"),
-        decision_price=None,
+        decision_price=row.get("decision_price"),
         env_name="equity",
     )
     if recorded is None:
