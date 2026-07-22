@@ -618,3 +618,11 @@ class TestEquityCycleSendsTradeEmbeds:
                 daily_summary_job()
 
         mock_alerter.send_embed.assert_called_once()
+
+
+def test_equity_cycle_default_is_preopen() -> None:
+    """SCHED-D2: default equity cycle is 09:15 ET pre-open — decide on t-1 bars, submit
+    before the 09:28 auction cutoff, fill at the open (spec D2/D11)."""
+    from swingrl.config.schema import EquityConfig
+
+    assert EquityConfig().cycle_time_et == "09:15"

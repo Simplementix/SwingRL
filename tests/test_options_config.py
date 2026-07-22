@@ -29,10 +29,10 @@ def test_options_collector_defaults_present() -> None:
 
 
 def test_options_snapshots_pull_vs_market_time() -> None:
-    """OPT-CFG-2: decision pulls 16:00 for the 15:45 state; eod pulls 16:35 (D8)."""
+    """OPT-CFG-2: decision pulls 09:46 for the 09:30 state; eod pulls 16:35 (D8)."""
     cfg = OptionsCollectorConfig()
     rows = [(s.label, s.market_time_et, s.pull_time_et, s.misfire_grace_s) for s in cfg.snapshots]
-    assert rows == [("decision", "15:45", "16:00", 900), ("eod", "16:15", "16:35", 18000)]
+    assert rows == [("decision", "09:30", "09:46", 900), ("eod", "16:15", "16:35", 18000)]
 
 
 def test_options_config_attached_to_root() -> None:
