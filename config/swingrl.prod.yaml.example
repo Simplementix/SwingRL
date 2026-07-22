@@ -52,6 +52,13 @@ scheduler:
     equity: 720                            # a restart up to 09:15+720s=09:27 ET still runs the cycle (before the 09:28 auction cutoff); past that it skips
     crypto: 3600                           # 4H cadence — an hour late is immaterial
 
+risk:
+  sweep_interval_minutes: 30               # D10: between-cycle risk sweep — mark held positions +
+                                           # evaluate drawdown/daily-loss breakers every N min so a
+                                           # crash in the blind window between sparse trading cycles
+                                           # is caught within one sweep. No trading, no snapshots.
+                                           # Floor 5 min (ge=5) to avoid hammering the broker price API.
+
 environment:
   zero_turbulence_obs: true                # F1b: freeze the turbulence obs slot at 0.0 before
                                            # inference — era-0 models trained with it frozen, so a

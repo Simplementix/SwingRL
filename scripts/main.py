@@ -1,8 +1,8 @@
 """SwingRL production entrypoint -- APScheduler with cron jobs and stop-price polling.
 
-Initializes all components, registers up to 12 jobs (6 trading + up to 3 config-gated
-backup + 1 shadow + 1 trigger + 1 reconciliation), starts crypto stop-price polling daemon
-thread, and blocks until SIGTERM/SIGINT.
+Initializes all components, registers up to 13 jobs (6 trading + up to 3 config-gated
+backup + 1 shadow + 1 trigger + 1 reconciliation + 1 risk sweep), starts crypto stop-price
+polling daemon thread, and blocks until SIGTERM/SIGINT.
 
 Usage:
     python scripts/main.py --config config/swingrl.yaml
@@ -36,6 +36,7 @@ from swingrl.scheduler.jobs import (
     monthly_macro_job,
     monthly_offsite_job,
     reconciliation_job,
+    risk_sweep_job,
     shadow_promotion_check_job,
     stuck_agent_check_job,
     weekly_duckdb_backup_job,
@@ -73,12 +74,12 @@ TRADER_BACKUP_JOB_IDS = ("daily_sqlite_backup", "weekly_duckdb_backup", "monthly
 def _job_count(config: Any) -> int:
     """Number of jobs create_scheduler_and_register_jobs registers for this config.
 
-    9 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation); the
-    3 in-container backup jobs join that count only when
+    10 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation +
+    1 risk sweep); the 3 in-container backup jobs join that count only when
     config.backup.trader_backup_jobs_enabled is True. Single source of truth for both
     startup log lines so they can never drift apart.
     """
-    return 9 + (len(TRADER_BACKUP_JOB_IDS) if config.backup.trader_backup_jobs_enabled else 0)
+    return 10 + (len(TRADER_BACKUP_JOB_IDS) if config.backup.trader_backup_jobs_enabled else 0)
 
 
 def create_scheduler_and_register_jobs(
@@ -87,9 +88,9 @@ def create_scheduler_and_register_jobs(
 ) -> None:
     """Register trading/monitoring jobs, plus the trader's backup jobs when enabled.
 
-    9 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation). The
-    3 in-container backup jobs (see TRADER_BACKUP_JOB_IDS) are registered only when
-    config.backup.trader_backup_jobs_enabled is True (default).
+    10 jobs are always registered (6 trading + 1 shadow + 1 trigger + 1 reconciliation +
+    1 risk sweep). The 3 in-container backup jobs (see TRADER_BACKUP_JOB_IDS) are
+    registered only when config.backup.trader_backup_jobs_enabled is True (default).
 
     Registration only -- no stale-job removal here. This can run on a not-yet-started
     scheduler (build_app() calls it before scheduler.start()), and remove_job() on a
@@ -222,6 +223,18 @@ def create_scheduler_and_register_jobs(
         trigger="interval",
         minutes=5,
         id="automated_trigger_check",
+        replace_existing=True,
+    )
+
+    # Between-cycle risk sweep (D10): mark held positions + evaluate breakers on an
+    # interval so a crash during the blind window between sparse trading cycles is caught
+    # within one sweep. No trading, no snapshots. Mirrors the automated_trigger_check
+    # interval pattern (inherits coalesce/max_instances/misfire from job_defaults).
+    scheduler.add_job(
+        risk_sweep_job,
+        trigger="interval",
+        minutes=config.risk.sweep_interval_minutes,
+        id="risk_sweep",
         replace_existing=True,
     )
 

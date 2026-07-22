@@ -303,6 +303,22 @@ class SchedulerConfig(BaseModel):
         return v
 
 
+class RiskConfig(BaseModel):
+    """Between-cycle risk-sweep configuration (D10)."""
+
+    sweep_interval_minutes: int = Field(
+        default=30,
+        ge=5,
+        description=(
+            "Interval (minutes) for the between-cycle risk sweep: mark held positions to "
+            "market and evaluate the drawdown/daily-loss breakers so a crash during the "
+            "blind window between trading cycles (crypto every 4h, equity once a day) is "
+            "caught within one interval. The sweep places no orders and writes no "
+            "portfolio_snapshots. Floor of 5 minutes avoids hammering the broker price API."
+        ),
+    )
+
+
 class BackupConfig(BaseModel):
     """Backup and retention configuration."""
 
@@ -872,6 +888,7 @@ class SwingRLConfig(BaseSettings):
     system: SystemConfig = Field(default_factory=SystemConfig)
     alerting: AlertingConfig = Field(default_factory=AlertingConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    risk: RiskConfig = Field(default_factory=RiskConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
     options_collector: OptionsCollectorConfig = Field(default_factory=OptionsCollectorConfig)
     calendar: CalendarConfig = Field(default_factory=CalendarConfig)

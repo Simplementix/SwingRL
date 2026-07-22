@@ -71,6 +71,12 @@ scheduler:
     crypto: 3600                           # 4H cadence — an hour late is immaterial
   max_workers: 4                           # APScheduler thread pool size
 
+risk:
+  sweep_interval_minutes: 30               # D10: between-cycle risk sweep — mark held positions
+                                           # + evaluate breakers every N min so a crash in the blind
+                                           # window between sparse trading cycles is caught within
+                                           # one sweep. No trading, no snapshots. Floor 5 min.
+
 backup:
   backup_retention_days: 14         # days to keep database backups
   duckdb_rotate: false              # rotate DuckDB snapshots (off in dev)

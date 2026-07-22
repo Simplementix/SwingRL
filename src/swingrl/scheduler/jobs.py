@@ -261,6 +261,96 @@ def crypto_cycle() -> list[FillResult]:
     return fills
 
 
+def risk_sweep_job() -> None:
+    """Between-cycle risk sweep (D10): mark held positions + evaluate breakers, no trading.
+
+    Trading cycles are sparse (crypto every 4h, equity once a day), so between them the
+    system is blind to a crash in a held position. This interval job (config
+    ``risk.sweep_interval_minutes``) closes that blind window: for each environment with
+    held positions it fetches fresh prices (fail-open per symbol), marks the positions to
+    market, and evaluates the per-env drawdown/daily-loss breaker; it then evaluates the
+    global breaker across BOTH environments' current values.
+
+    Two negatives are load-bearing (pinned test contracts): the sweep places NO orders
+    (it never touches the broker's submit path) and writes NO ``portfolio_snapshots`` rows
+    (snapshots stay cycle-cadence append-only so the daily-P&L baseline query is not
+    polluted — it never calls ``record_snapshot``). A breach flows through the breaker's
+    existing ``_trigger`` halt/alert path unchanged.
+
+    Skips entirely when the halt flag is active. Wrapped in try/except so a sweep failure
+    can never crash the scheduler.
+    """
+    ctx = _get_ctx()
+
+    if is_halted(ctx.db):
+        log.warning("risk_sweep_skipped", reason="halt_flag_active")
+        return
+
+    try:
+        pipeline = ctx.pipeline
+        tracker = pipeline.position_tracker
+        breakers = pipeline.circuit_breakers
+
+        # Combined inputs for the global breaker. EVERY env is included — even a flat
+        # cash-only env — because GlobalCircuitBreaker reconstructs the combined
+        # high-water mark from ALL envs' persisted snapshots; omitting an env's current
+        # value would understate total value and overstate combined drawdown, tripping a
+        # false global halt of every environment.
+        portfolio_values: dict[str, float] = {}
+        daily_pnls: dict[str, float] = {}
+
+        for env, breaker in breakers.items():
+            held = [p for p in tracker.get_positions(env) if p["quantity"]]
+
+            # Fetch fresh marks only when the env actually holds positions (no broker
+            # call for a flat env). Fail-open per symbol: a fetch failure or non-positive
+            # price warns and is skipped, so compute_portfolio_value falls back to the
+            # stored last_price for that symbol — a sweep never blocks on one bad quote.
+            prices: dict[str, float] = {}
+            if held:
+                adapter = pipeline.get_adapter(env)
+                for pos in held:
+                    symbol = pos["symbol"]
+                    try:
+                        price = adapter.get_current_price(symbol)
+                    except Exception:
+                        log.warning("sweep_price_fetch_failed", environment=env, symbol=symbol)
+                        continue
+                    if price is not None and price > 0:
+                        prices[symbol] = price
+                    else:
+                        log.warning(
+                            "sweep_price_non_positive", environment=env, symbol=symbol, price=price
+                        )
+                tracker.mark_positions(env, prices)
+
+            # Mark-to-market value for this env (cash-only when flat). No snapshot written.
+            value = tracker.compute_portfolio_value(env, prices)
+            daily_pnl = tracker.compute_daily_pnl(env, value)
+            portfolio_values[env] = value
+            daily_pnls[env] = daily_pnl
+
+            # Per-env breaker only matters when the env holds positions (a cash-only env
+            # cannot draw down). HWM folds in this cycle's value explicitly: unlike the
+            # trade path, the sweep writes no snapshot first, so the stored HWM does not
+            # yet include ``value`` — max() reproduces the record_snapshot-then-check
+            # semantics the cycle path gets for free.
+            if held:
+                hwm = max(tracker.get_high_water_mark(env), value)
+                breaker.check_and_update(
+                    portfolio_value=value,
+                    high_water_mark=hwm,
+                    daily_pnl=daily_pnl,
+                )
+
+        # Global breaker across both envs' current values (combined drawdown/daily loss).
+        pipeline.global_cb.check_combined(portfolio_values, daily_pnls)
+
+        log.info("risk_sweep_complete", envs=list(portfolio_values.keys()))
+    except Exception:
+        log.exception("risk_sweep_failed")
+
+
 def daily_summary_job() -> None:
     """Query portfolio snapshots and send daily summary alert.
 

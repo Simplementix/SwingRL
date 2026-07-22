@@ -142,6 +142,35 @@ class ExecutionPipeline:
         """Public accessor for the database manager."""
         return self._db
 
+    @property
+    def position_tracker(self) -> PositionTracker:
+        """Public accessor for the position tracker (between-cycle risk sweep, D10)."""
+        return self._position_tracker
+
+    @property
+    def circuit_breakers(self) -> dict[str, CircuitBreaker]:
+        """Public accessor for the per-environment circuit breakers (risk sweep, D10)."""
+        return self._circuit_breakers
+
+    @property
+    def global_cb(self) -> GlobalCircuitBreaker:
+        """Public accessor for the global circuit breaker (risk sweep, D10)."""
+        return self._global_cb
+
+    def get_adapter(self, env_name: str) -> Any:
+        """Return the exchange adapter for the environment (public, cached).
+
+        Thin public wrapper over the lazy per-env adapter cache so the between-cycle
+        risk sweep (D10) can fetch fresh marks without reaching into a private member.
+
+        Args:
+            env_name: Environment name ("equity" or "crypto").
+
+        Returns:
+            ExchangeAdapter instance.
+        """
+        return self._get_adapter(env_name)
+
     def execute_cycle(
         self,
         env_name: str,
