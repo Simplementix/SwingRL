@@ -304,6 +304,12 @@ class ExecutionPipeline:
             self._config.equity.symbols if env_name == "equity" else self._config.crypto.symbols
         )
         fills: list[FillResult] = []
+        # Tracks whether any symbol cleared the deadzone/min-order threshold and was
+        # therefore routed through the risk manager (which evaluates the breaker
+        # pre-trade). Stays False on a pure deadzone cycle, which is what Step 10 uses
+        # to close the no-order breaker-evaluation gap (T16 drill finding #1) without
+        # double-evaluating cycles that already traded.
+        orders_attempted = False
         # Prices fetched this cycle, reused to mark the portfolio to market for the
         # end-of-cycle snapshot (review C1 — no extra broker calls).
         cycle_prices: dict[str, float] = {}
@@ -347,6 +353,11 @@ class ExecutionPipeline:
 
             if abs(delta_value) < min_order_value:
                 continue
+
+            # This symbol cleared the deadzone: it will be routed through the risk
+            # manager (pre-trade breaker evaluation), so the cycle no longer counts as
+            # zero-order and Step 10 must not re-evaluate the breaker for it.
+            orders_attempted = True
 
             side: Literal["buy", "sell"] = "buy" if delta_value > 0 else "sell"
 
@@ -511,6 +522,25 @@ class ExecutionPipeline:
             )
             daily_pnl = self._position_tracker.compute_daily_pnl(env_name, new_portfolio_value)
             self._position_tracker.record_snapshot(env_name, new_portfolio_value, cash, daily_pnl)
+
+            # Breaker evaluation on the no-order path (T16 drill finding #1): a
+            # zero-order (deadzone) cycle skips the risk manager entirely, so a
+            # held-position crash during a deadzone would never trip the drawdown /
+            # daily-loss breaker. Evaluate it here against this cycle's fresh
+            # mark-to-market value. Gated on ``not orders_attempted`` because the trade
+            # path already runs check_and_update pre-trade — so a cycle that traded is
+            # never double-evaluated. A breach flows through the breaker's existing
+            # _trigger halt/alert path unchanged. HWM comes straight from
+            # get_high_water_mark (the trade-path convention); record_snapshot ran just
+            # above, so the stored mark already folds in this cycle's value — the
+            # brief's max(hwm, new_portfolio_value) reduces to this exactly.
+            if not orders_attempted and cb is not None:
+                hwm = self._position_tracker.get_high_water_mark(env_name)
+                cb.check_and_update(
+                    portfolio_value=new_portfolio_value,
+                    high_water_mark=hwm,
+                    daily_pnl=daily_pnl,
+                )
 
         log.info(
             "cycle_complete",
