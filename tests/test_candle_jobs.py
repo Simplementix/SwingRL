@@ -254,3 +254,16 @@ def test_candles_crypto_job_info_alert_failure_does_not_raise(monkeypatch) -> No
     cm.candles_crypto_job()  # must not raise
     calls = components["alerter"].send_alert.call_args_list
     assert not any(c.args[0] == "warning" for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# Schedule default
+# ---------------------------------------------------------------------------
+
+
+def test_equity_candle_default_lands_same_evening() -> None:
+    """CANDLE-D1: default equity candle time is past 00:00 UTC year-round (20:15 ET),
+    so day-D bars land day-D evening (Alpaca fetch end pins to 00:00 UTC)."""
+    from swingrl.config.schema import CandleJobsConfig
+
+    assert CandleJobsConfig().equity_time_et == "20:15"
