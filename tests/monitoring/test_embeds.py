@@ -6,6 +6,7 @@ PAPER-13: Trade alert, daily summary, stuck agent, and circuit breaker embeds.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from swingrl.execution.types import FillResult
 from swingrl.monitoring.embeds import (
@@ -14,6 +15,32 @@ from swingrl.monitoring.embeds import (
     build_stuck_agent_embed,
     build_trade_embed,
 )
+
+
+def make_fill(
+    *,
+    side: Literal["buy", "sell"],
+    symbol: str = "SPY",
+    quantity: float = 10.0,
+    fill_price: float = 150.0,
+    commission: float = 0.0,
+    realized_pnl: float | None = None,
+) -> FillResult:
+    """Build a filled FillResult for embed tests (buys default to no realized P&L)."""
+    return FillResult(
+        trade_id="embed-fill",
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        fill_price=fill_price,
+        commission=commission,
+        slippage=0.0,
+        environment="equity",
+        broker="alpaca",
+        status="filled",
+        realized_pnl=realized_pnl,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Test: build_trade_embed
@@ -170,6 +197,15 @@ class TestBuildTradeEmbed:
         ts = embed["embeds"][0]["timestamp"]
         # Should parse without error
         datetime.fromisoformat(ts)
+
+    def test_sell_embed_shows_realized_pnl(self) -> None:
+        """PNL-D8: sell embeds carry the Realized P&L field; buys never do."""
+        sell = make_fill(side="sell", realized_pnl=19.56)
+        fields = {f["name"] for f in build_trade_embed(sell)["embeds"][0]["fields"]}
+        assert "Realized P&L" in fields
+        buy = make_fill(side="buy")
+        fields = {f["name"] for f in build_trade_embed(buy)["embeds"][0]["fields"]}
+        assert "Realized P&L" not in fields
 
 
 # ---------------------------------------------------------------------------
