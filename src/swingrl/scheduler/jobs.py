@@ -285,12 +285,28 @@ def daily_summary_job() -> None:
         return
 
     try:
+        # Per-env count of TODAY's (ET) signal trades from the trades ledger. ET date on
+        # both sides — a bare timestamp::date renders in the server session timezone,
+        # which misses between 20:00 and 24:00 ET (same convention as
+        # position_tracker.get_daily_pnl). Replaces the previously hardcoded zeros that
+        # made every digest report "0 trades" (found live 2026-07-21).
+        counts = {"equity": 0, "crypto": 0}
         with ctx.db.connection() as conn:
             rows = conn.execute(
                 "SELECT environment, total_value, cash_balance, daily_pnl, drawdown_pct "
                 "FROM portfolio_snapshots "
                 "ORDER BY timestamp DESC LIMIT 2"
             ).fetchall()
+            trade_rows = conn.execute(
+                "SELECT environment, count(*) AS n FROM trades "
+                "WHERE trade_type = 'signal' "
+                "AND (timestamp AT TIME ZONE 'America/New_York')::date = "
+                "(now() AT TIME ZONE 'America/New_York')::date "
+                "GROUP BY environment"
+            ).fetchall()
+
+        for r in trade_rows:
+            counts[r["environment"]] = int(r["n"])
 
         if not rows:
             log.info("daily_summary_no_data")
@@ -314,8 +330,8 @@ def daily_summary_job() -> None:
             embed = build_daily_summary_embed(
                 equity_snapshot=equity_snap,
                 crypto_snapshot=crypto_snap,
-                equity_trades_today=0,
-                crypto_trades_today=0,
+                equity_trades_today=counts["equity"],
+                crypto_trades_today=counts["crypto"],
             )
             ctx.alerter.send_embed("info", embed)
         else:
