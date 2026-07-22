@@ -380,8 +380,9 @@ class CandleJobsConfig(BaseModel):
     """
 
     enabled: bool = Field(default=True)
-    # After the 16:35 EOD options snapshot and outside the 15:30–16:45 ET quiet window.
-    equity_time_et: str = Field(default="16:50")  # HH:MM, Mon–Fri
+    # Past 00:00 UTC year-round (EDT+EST) so the day-D bar lands day-D evening; still after the
+    # 16:35 EOD options snapshot and outside the 15:30–16:45 ET quiet window.
+    equity_time_et: str = Field(default="20:15")  # HH:MM, Mon–Fri; past 00:00 UTC year-round
     # Minute past each 4H UTC bar close (hours 0,4,8,12,16,20) — ahead of the trader's :05 cycles.
     crypto_minute: int = Field(default=1, ge=0, le=59)
     equity_misfire_grace_s: int = Field(default=21600, gt=0)

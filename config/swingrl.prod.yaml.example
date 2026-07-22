@@ -79,8 +79,9 @@ options_collector:
   # 2026-07-18: the collector keeps OHLCV bars fresh while training is paused (candles used to
   # ride along with every training iteration). Existing Alpaca/Binance ingestors — CBOE stays
   # options-only. Times/grace fall back to CandleJobsConfig defaults (see config/swingrl.yaml);
-  # equity_time_et must stay after the eod options snapshot and outside the 15:30–16:45 quiet
-  # window, and crypto must fire ahead of the trader's :05 crypto cycles.
+  # equity_time_et defaults to 20:15 — past 00:00 UTC year-round (EDT+EST) so the day-D bar lands
+  # day-D evening (still after the eod options snapshot and outside the 15:30–16:45 quiet window),
+  # and crypto must fire ahead of the trader's :05 crypto cycles.
   candle_jobs:
     enabled: true
 
