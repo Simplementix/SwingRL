@@ -1209,6 +1209,65 @@ class TestEquityFillConfirmationJob:
         assert row["resolved_at"] is not None
         assert row["disposition"] == "expired"
 
+    def test_fill_confirmation_filled_unparseable_price_left_open(self, mock_ctx: _MockCtx) -> None:
+        """Finding 1: broker says 'filled' but filled_avg_price is unusable (None) while
+        shares are unrecorded -> the job must NOT stamp the row 'filled' and silently drop
+        the fill. It warns and leaves the row open; a later run with a good price records the
+        trade and closes the row (retry path proven end-to-end)."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="ou1", cycle_id=42, symbol="SPY", side="buy")
+        # First run: filled status but no usable average price -> books cannot match broker.
+        mock_ctx.alpaca.order_status(
+            "ou1", status="filled", filled_avg_price=None, filled_qty=0.0416
+        )
+        equity_fill_confirmation_job()
+
+        # Nothing recorded, row left open, a WARNING alert fired (no false 'already recorded').
+        assert mock_ctx.inserted_trade() is None
+        row = mock_ctx.pending_row("ou1")
+        assert row["resolved_at"] is None
+        assert row["disposition"] is None
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert "unparseable" in kwargs["title"].lower()
+
+        # Second run: the broker now returns a usable price -> the fill is recorded and the
+        # row is stamped 'filled' (retry path works end-to-end).
+        mock_ctx.alpaca.order_status(
+            "ou1", status="filled", filled_avg_price=600.10, filled_qty=0.0416
+        )
+        equity_fill_confirmation_job()
+
+        trade = mock_ctx.inserted_trade()
+        assert trade is not None
+        assert float(trade["quantity"]) == pytest.approx(0.0416)
+        assert float(trade["price"]) == pytest.approx(600.10)
+        assert mock_ctx.alerter.send_embed.called
+        resolved = mock_ctx.pending_row("ou1")
+        assert resolved["resolved_at"] is not None
+        assert resolved["disposition"] == "filled"
+
+    def test_fill_confirmation_filled_zero_qty_left_open(self, mock_ctx: _MockCtx) -> None:
+        """Finding 1: broker says 'filled' but filled_qty is unparseable (cum_qty computes 0)
+        with nothing recorded -> the job warns and leaves the row open rather than stamping a
+        phantom 'filled' backed by no trade."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="ou2", cycle_id=42, symbol="QQQ", side="buy")
+        mock_ctx.alpaca.order_status(
+            "ou2", status="filled", filled_avg_price=None, filled_qty="unparseable"
+        )
+        equity_fill_confirmation_job()
+
+        assert mock_ctx.inserted_trade() is None
+        row = mock_ctx.pending_row("ou2")
+        assert row["resolved_at"] is None
+        assert row["disposition"] is None
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert "unparseable" in kwargs["title"].lower()
+
 
 class TestCycleOrdersInfoPing:
     """EXEC-D12: every cycle (both envs) ends with one INFO listing each order."""
