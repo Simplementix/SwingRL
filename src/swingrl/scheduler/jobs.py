@@ -750,14 +750,18 @@ def equity_fill_confirmation_job() -> None:
     opening print; this job (after the 09:30 open) turns those confirmed fills into real
     trades. It loads every unresolved ``pending_orders`` row (a restart-safe DB worklist —
     the orders survive a process restart between 09:15 and 09:35), polls each order's status
-    by id, and for a filled order builds a real FillResult and records it through the SAME
-    post-fill path the synchronous route uses (``pipeline.record_fill`` — trades + positions +
-    fill_quality + realized-P&L attach), sends the trade embed, and stamps ``resolved_at``.
+    by id, and records the INCREMENT of shares filled since the last look as a real trade
+    slice through the SAME post-fill path the synchronous route uses (``pipeline.record_fill``
+    — trades + positions + fill_quality + realized-P&L attach), sending the trade embed for
+    each slice (ruling 2026-07-22 #1). See ``_confirm_one_pending_order`` for the slice model.
 
-    An order still unfilled/canceled after the auction gets a warning alert and is LEFT
-    unresolved for the next run — never silently dropped. Runs regardless of the halt flag:
-    the auction orders already executed, so their fills must be recorded for the ledger to
-    stay truthful (recording is bookkeeping, not new trading). Never raises.
+    A terminal broker state (filled, or canceled/expired/rejected/done_for_day/replaced)
+    stamps ``resolved_at`` + ``disposition`` and fires ONE final alert, after which the row
+    leaves the worklist — a dead order is closed once, never re-warned daily forever (ruling
+    #2). A still-live order (partially_filled/new/accepted) gets a warning and stays open for
+    the next run — never silently dropped. Runs regardless of the halt flag: the auction
+    orders already executed, so their fills must be recorded for the ledger to stay truthful
+    (recording is bookkeeping, not new trading). Never raises.
     """
     ctx = _get_ctx()
 
@@ -791,181 +795,183 @@ def equity_fill_confirmation_job() -> None:
     log.info("equity_fill_confirmation_complete", pending=len(rows), confirmed=confirmed)
 
 
+_TERMINAL_DEAD_STATUSES = {"canceled", "expired", "rejected", "done_for_day", "replaced"}
+
+
 def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any]) -> bool:
-    """Confirm a single pending pre-open order; return True if a fill was recorded (D11).
+    """Confirm one pending pre-open order; return True if any fill slice was recorded.
 
-    A filled order is recorded via the pipeline's shared post-fill path and its
-    ``pending_orders`` row is stamped resolved; anything else (unfilled/canceled) alerts a
-    warning and leaves the row unresolved for the next run.
-
-    Args:
-        ctx: The job context.
-        adapter: The equity exchange adapter (Alpaca), exposing ``get_order_status``.
-        row: A ``pending_orders`` row (order_id, cycle_id, symbol, side, submitted_at).
-
-    Returns:
-        True if the auction fill was recorded, False otherwise.
+    Slice model (ruling 2026-07-22 #1): each run records the INCREMENT of shares filled
+    since the last look, at the increment's derived price, through the shared post-fill
+    path — the books match the broker the same day, and the risk sweeps mark real
+    positions. Terminal broker states (ruling #2) stamp resolved_at + disposition
+    ('filled'/'canceled'/'expired') with one final alert, then the row leaves the worklist.
     """
     from swingrl.execution.types import FillResult, SizedOrder  # noqa: PLC0415
 
     order_id = row["order_id"]
     order = adapter.get_order_status(order_id)
     status = str(getattr(order, "status", "") or "").lower()
-    filled_price = getattr(order, "filled_avg_price", None)
-    filled_qty = getattr(order, "filled_qty", None)
-    filled_qty_val = _safe_float(filled_qty)
+    cum_qty = _safe_float(getattr(order, "filled_qty", None)) or 0.0
+    cum_avg = _safe_float(getattr(order, "filled_avg_price", None))
 
-    is_fully_filled = status == "filled" and filled_price is not None and filled_qty is not None
+    prev_qty, prev_dollars, prev_slices = _recorded_for_order(ctx, order_id)
+    delta_qty = cum_qty - prev_qty
+    slice_recorded = False
 
-    if not is_fully_filled:
-        if filled_qty_val is not None and filled_qty_val > 0:
-            # Review #1: a partial fill executed REAL shares but the order is not fully filled.
-            # Whether to record partial fills as trades is plan-silent (a user decision), so we
-            # do NOT record here — but the executed shares must be surfaced explicitly under a
-            # distinct title so this can never be mistaken for a clean no-fill. Row stays
-            # unresolved for the next run / user review.
-            requested = getattr(order, "qty", None)
-            if requested is None:
-                requested = getattr(order, "notional", None)
-            ctx.alerter.send_alert(
-                level="warning",
-                title="Equity auction order PARTIALLY filled — unrecorded",
-                message=(
-                    f"{row['symbol']} {row['side']} (order {order_id}) PARTIALLY filled: "
-                    f"{filled_qty_val} of {requested} at {filled_price} "
-                    f"({status or 'unknown'}) — not recorded, left pending for the next "
-                    "confirmation run / user review."
-                ),
-                environment="equity",
-            )
+    if delta_qty > 1e-9 and cum_avg is not None:
+        slice_dollars = cum_avg * cum_qty - prev_dollars
+        slice_price = slice_dollars / delta_qty if slice_dollars > 0 else cum_avg
+        if slice_price <= 0:
+            slice_price = cum_avg
             log.warning(
-                "pending_order_partial_fill",
+                "pending_order_slice_price_fallback",
                 order_id=order_id,
-                symbol=row["symbol"],
-                filled_qty=filled_qty_val,
-                requested=str(requested),
-                status=status,
+                cum_qty=cum_qty,
+                cum_avg=cum_avg,
+                prev_dollars=prev_dollars,
             )
+        trade_id = order_id if prev_slices == 0 else f"{order_id}#{prev_slices + 1}"
+        submitted_at = _to_iso(row.get("submitted_at"))
+        filled_at = _to_iso(getattr(order, "filled_at", None)) or datetime.now(UTC).isoformat()
+        fill = FillResult(
+            trade_id=trade_id,
+            symbol=row["symbol"],
+            side=row["side"],
+            quantity=delta_qty,
+            fill_price=slice_price,
+            commission=0.0,
+            slippage=0.0,
+            environment="equity",
+            broker="alpaca",
+            status="filled",
+            submitted_at=submitted_at,
+            filled_at=filled_at,
+        )
+        sized_order = SizedOrder(
+            symbol=row["symbol"],
+            side=row["side"],
+            quantity=delta_qty,
+            dollar_amount=slice_price * delta_qty,
+            stop_loss_price=None,
+            take_profit_price=None,
+            environment="equity",
+        )
+        recorded = ctx.pipeline.record_fill(
+            fill,
+            sized_order=sized_order,
+            cycle_id=row.get("cycle_id"),
+            decision_price=row.get("decision_price"),
+            env_name="equity",
+        )
+        if recorded is None:
+            # record_fill alerted critical; leave the row open so the next run retries.
             return False
+        slice_recorded = True
+        if build_trade_embed is not None:
+            try:
+                embed = build_trade_embed(recorded)
+                ctx.alerter.send_embed("info", embed)
+            except Exception:
+                log.exception("equity_fill_confirmation_embed_failed", order_id=order_id)
+        log.info(
+            "equity_auction_fill_slice_recorded",
+            order_id=order_id,
+            trade_id=trade_id,
+            symbol=row["symbol"],
+            quantity=delta_qty,
+            fill_price=slice_price,
+            cumulative_qty=cum_qty,
+            cycle_id=row.get("cycle_id"),
+        )
 
-        # Clean no-fill / canceled after the auction — warn and leave the row unresolved
-        # (retry next run). Never silently dropped; capital-preservation visibility.
+    if status == "filled":
+        _stamp_pending_resolved(ctx, order_id, "filled")
+        if not slice_recorded:
+            log.info(
+                "equity_auction_fill_already_recorded", order_id=order_id, symbol=row["symbol"]
+            )
+        return True
+
+    if status in _TERMINAL_DEAD_STATUSES:
+        disposition = "canceled" if status in {"canceled", "rejected", "replaced"} else "expired"
+        _stamp_pending_resolved(ctx, order_id, disposition)
+        total_qty = prev_qty + (delta_qty if slice_recorded else 0.0)
+        ctx.alerter.send_alert(
+            level="warning",
+            title=f"Equity auction order {disposition} — closed",
+            message=(
+                f"{row['symbol']} {row['side']} (order {order_id}) is {status}: "
+                f"{total_qty} filled+recorded of {getattr(order, 'qty', None)} requested. "
+                "Row closed — no further warnings."
+            ),
+            environment="equity",
+        )
+        log.warning(
+            "pending_order_closed_terminal",
+            order_id=order_id,
+            symbol=row["symbol"],
+            status=status,
+            disposition=disposition,
+            recorded_qty=total_qty,
+        )
+        return slice_recorded
+
+    # Still live (partially_filled / new / accepted): warn per state, keep the row open.
+    if slice_recorded:
+        ctx.alerter.send_alert(
+            level="warning",
+            title="Equity auction order PARTIALLY filled — recorded",
+            message=(
+                f"{row['symbol']} {row['side']} (order {order_id}) partially filled: "
+                f"{delta_qty} recorded now ({cum_qty} cumulative of "
+                f"{getattr(order, 'qty', None)} requested) at {cum_avg} avg — remainder "
+                "still working, row stays open."
+            ),
+            environment="equity",
+        )
+    else:
         ctx.alerter.send_alert(
             level="warning",
             title="Equity auction order unfilled",
             message=(
                 f"{row['symbol']} {row['side']} (order {order_id}) is still "
-                f"{status or 'unknown'} after the opening auction — not recorded, left "
-                "pending for the next confirmation run."
+                f"{status or 'unknown'} after the opening auction — nothing new to record, "
+                "left pending for the next confirmation run."
             ),
             environment="equity",
         )
         log.warning(
             "equity_auction_order_unfilled", order_id=order_id, symbol=row["symbol"], status=status
         )
-        return False
-
-    # Review #2 crash-safety: a prior run may have recorded the trade (the broker order id is
-    # the trades PK) but crashed before stamping resolved_at, leaving this row unresolved. Re-
-    # recording would hit the TEXT PK inside record_fill and fire a false "Fill Executed But
-    # Not Recorded" CRITICAL on every run forever. Detect the already-recorded fill, stamp
-    # resolved_at quietly, and move on — no duplicate trade, no critical, no re-sent embed.
-    if _trade_already_recorded(ctx, order_id):
-        _stamp_pending_resolved(ctx, order_id)
-        log.info("equity_auction_fill_already_recorded", order_id=order_id, symbol=row["symbol"])
-        return True
-
-    fill_price = _safe_float(filled_price)
-    quantity = filled_qty_val
-    if fill_price is None or quantity is None:
-        # Defensive: a "filled" order should always carry numeric price/qty; if not, do not
-        # fabricate a trade — warn and leave the row for the next run rather than crash.
-        log.warning(
-            "equity_auction_fill_unparseable_amounts",
-            order_id=order_id,
-            symbol=row["symbol"],
-            filled_price=str(filled_price),
-            filled_qty=str(filled_qty),
-        )
-        return False
-    submitted_at = _to_iso(row.get("submitted_at"))
-    filled_at = _to_iso(getattr(order, "filled_at", None)) or datetime.now(UTC).isoformat()
-
-    fill = FillResult(
-        trade_id=order_id,
-        symbol=row["symbol"],
-        side=row["side"],
-        quantity=quantity,
-        fill_price=fill_price,
-        commission=0.0,
-        slippage=0.0,
-        environment="equity",
-        broker="alpaca",
-        status="filled",
-        submitted_at=submitted_at,
-        filled_at=filled_at,
-    )
-    # Minimal SizedOrder — equity carries no stops; process() reads side + stop/TP (None).
-    sized_order = SizedOrder(
-        symbol=row["symbol"],
-        side=row["side"],
-        quantity=quantity,
-        dollar_amount=fill_price * quantity,
-        stop_loss_price=None,
-        take_profit_price=None,
-        environment="equity",
-    )
-
-    # Same post-fill path as the synchronous route (trades + positions + fill_quality +
-    # realized-P&L attach). decision_price is the stored 09:15 sizing price, so fill_quality
-    # computes real auction slippage (RULING-3); None only if it was never captured.
-    recorded = ctx.pipeline.record_fill(
-        fill,
-        sized_order=sized_order,
-        cycle_id=row.get("cycle_id"),
-        decision_price=row.get("decision_price"),
-        env_name="equity",
-    )
-    if recorded is None:
-        # Recording failed — record_fill already sent a critical alert. Leave the row
-        # unresolved so the next run retries rather than losing the fill.
-        return False
-
-    # Trade embed (same callback the synchronous equity_cycle fires per fill).
-    if build_trade_embed is not None:
-        try:
-            embed = build_trade_embed(recorded)
-            ctx.alerter.send_embed("info", embed)
-        except Exception:
-            log.exception("equity_fill_confirmation_embed_failed", order_id=order_id)
-
-    _stamp_pending_resolved(ctx, order_id)
-    log.info(
-        "equity_auction_fill_confirmed",
-        order_id=order_id,
-        symbol=row["symbol"],
-        fill_price=fill_price,
-        quantity=quantity,
-        cycle_id=row.get("cycle_id"),
-    )
-    return True
+    return slice_recorded
 
 
-def _trade_already_recorded(ctx: JobContext, trade_id: str) -> bool:
-    """Return True if a trades row already exists for ``trade_id`` (the broker order id)."""
+def _recorded_for_order(ctx: JobContext, order_id: str) -> tuple[float, float, int]:
+    """Return (recorded qty, recorded dollars, slice count) for a broker order's trades.
+
+    Slice trade ids are the broker order id for the first slice and ``{order_id}#<n>`` for
+    later slices, so one broker order maps to one-or-more trades rows without violating the
+    trades TEXT PK.
+    """
     with ctx.db.connection() as conn:
         row = conn.execute(
-            "SELECT 1 FROM trades WHERE trade_id = %s LIMIT 1", (trade_id,)
+            "SELECT COALESCE(SUM(quantity), 0) AS q, "
+            "COALESCE(SUM(quantity * price), 0) AS d, COUNT(*) AS n "
+            "FROM trades WHERE trade_id = %s OR trade_id LIKE %s",
+            (order_id, order_id + "#%"),
         ).fetchone()
-    return row is not None
+    if row is None:  # COUNT(*) always returns a row; guard keeps the return type-safe.
+        return 0.0, 0.0, 0
+    return float(row["q"]), float(row["d"]), int(row["n"])
 
 
-def _stamp_pending_resolved(ctx: JobContext, order_id: str) -> None:
-    """Stamp a pending_orders row resolved (confirmation complete)."""
+def _stamp_pending_resolved(ctx: JobContext, order_id: str, disposition: str) -> None:
+    """Stamp a pending order terminal: resolved_at + disposition ('filled'|'canceled'|'expired')."""
     with ctx.db.connection() as conn:
         conn.execute(
-            "UPDATE pending_orders SET resolved_at = %s WHERE order_id = %s",
-            (datetime.now(UTC).isoformat(), order_id),
+            "UPDATE pending_orders SET resolved_at = now(), disposition = %s WHERE order_id = %s",
+            (disposition, order_id),
         )
 
 
