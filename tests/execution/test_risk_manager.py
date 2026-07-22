@@ -327,6 +327,11 @@ class TestSellSideRiskMath:
         monkeypatch.setattr(risk_manager._tracker, "get_exposure", lambda env: 0.85)
         monkeypatch.setattr(risk_manager._tracker, "get_daily_pnl", lambda env: 0.0)
         monkeypatch.setattr(risk_manager._tracker, "get_high_water_mark", lambda env: 47.0)
+        # Global aggregator (check 6) is out of scope for the side-aware size/exposure
+        # checks under test: it floors the combined HWM at config capital ($447), so an
+        # isolated low book reads as a large drawdown. Stub it — check 6 is unchanged and
+        # has its own tests (TestRiskManagerDrawdown / GlobalCircuitBreaker suite).
+        monkeypatch.setattr(risk_manager._global_cb, "check_combined", lambda **kwargs: False)
 
         order = _make_order(symbol="BTCUSDT", side="sell", dollar_amount=20.0, environment="crypto")
         decision = risk_manager.evaluate(order)
@@ -340,6 +345,8 @@ class TestSellSideRiskMath:
         monkeypatch.setattr(risk_manager._tracker, "get_exposure", lambda env: 0.90)
         monkeypatch.setattr(risk_manager._tracker, "get_daily_pnl", lambda env: 0.0)
         monkeypatch.setattr(risk_manager._tracker, "get_high_water_mark", lambda env: 100.0)
+        # Global aggregator (check 6) is out of scope here — see the companion sell test.
+        monkeypatch.setattr(risk_manager._global_cb, "check_combined", lambda **kwargs: False)
 
         order = _make_order(side="sell", dollar_amount=80.0)  # 80% > any size cap
         decision = risk_manager.evaluate(order)
