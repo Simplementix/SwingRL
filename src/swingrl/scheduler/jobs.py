@@ -758,10 +758,43 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
     status = str(getattr(order, "status", "") or "").lower()
     filled_price = getattr(order, "filled_avg_price", None)
     filled_qty = getattr(order, "filled_qty", None)
+    filled_qty_val = _safe_float(filled_qty)
 
-    if status != "filled" or filled_price is None or filled_qty is None:
-        # Unfilled/canceled after the auction — warn and leave the row unresolved (retry next
-        # run). Never silently dropped; capital-preservation visibility.
+    is_fully_filled = status == "filled" and filled_price is not None and filled_qty is not None
+
+    if not is_fully_filled:
+        if filled_qty_val is not None and filled_qty_val > 0:
+            # Review #1: a partial fill executed REAL shares but the order is not fully filled.
+            # Whether to record partial fills as trades is plan-silent (a user decision), so we
+            # do NOT record here — but the executed shares must be surfaced explicitly under a
+            # distinct title so this can never be mistaken for a clean no-fill. Row stays
+            # unresolved for the next run / user review.
+            requested = getattr(order, "qty", None)
+            if requested is None:
+                requested = getattr(order, "notional", None)
+            ctx.alerter.send_alert(
+                level="warning",
+                title="Equity auction order PARTIALLY filled — unrecorded",
+                message=(
+                    f"{row['symbol']} {row['side']} (order {order_id}) PARTIALLY filled: "
+                    f"{filled_qty_val} of {requested} at {filled_price} "
+                    f"({status or 'unknown'}) — not recorded, left pending for the next "
+                    "confirmation run / user review."
+                ),
+                environment="equity",
+            )
+            log.warning(
+                "pending_order_partial_fill",
+                order_id=order_id,
+                symbol=row["symbol"],
+                filled_qty=filled_qty_val,
+                requested=str(requested),
+                status=status,
+            )
+            return False
+
+        # Clean no-fill / canceled after the auction — warn and leave the row unresolved
+        # (retry next run). Never silently dropped; capital-preservation visibility.
         ctx.alerter.send_alert(
             level="warning",
             title="Equity auction order unfilled",
@@ -777,8 +810,29 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
         )
         return False
 
-    fill_price = float(filled_price)
-    quantity = float(filled_qty)
+    # Review #2 crash-safety: a prior run may have recorded the trade (the broker order id is
+    # the trades PK) but crashed before stamping resolved_at, leaving this row unresolved. Re-
+    # recording would hit the TEXT PK inside record_fill and fire a false "Fill Executed But
+    # Not Recorded" CRITICAL on every run forever. Detect the already-recorded fill, stamp
+    # resolved_at quietly, and move on — no duplicate trade, no critical, no re-sent embed.
+    if _trade_already_recorded(ctx, order_id):
+        _stamp_pending_resolved(ctx, order_id)
+        log.info("equity_auction_fill_already_recorded", order_id=order_id, symbol=row["symbol"])
+        return True
+
+    fill_price = _safe_float(filled_price)
+    quantity = filled_qty_val
+    if fill_price is None or quantity is None:
+        # Defensive: a "filled" order should always carry numeric price/qty; if not, do not
+        # fabricate a trade — warn and leave the row for the next run rather than crash.
+        log.warning(
+            "equity_auction_fill_unparseable_amounts",
+            order_id=order_id,
+            symbol=row["symbol"],
+            filled_price=str(filled_price),
+            filled_qty=str(filled_qty),
+        )
+        return False
     submitted_at = _to_iso(row.get("submitted_at"))
     filled_at = _to_iso(getattr(order, "filled_at", None)) or datetime.now(UTC).isoformat()
 
@@ -830,11 +884,7 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
         except Exception:
             log.exception("equity_fill_confirmation_embed_failed", order_id=order_id)
 
-    with ctx.db.connection() as conn:
-        conn.execute(
-            "UPDATE pending_orders SET resolved_at = %s WHERE order_id = %s",
-            (datetime.now(UTC).isoformat(), order_id),
-        )
+    _stamp_pending_resolved(ctx, order_id)
     log.info(
         "equity_auction_fill_confirmed",
         order_id=order_id,
@@ -844,6 +894,34 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
         cycle_id=row.get("cycle_id"),
     )
     return True
+
+
+def _trade_already_recorded(ctx: JobContext, trade_id: str) -> bool:
+    """Return True if a trades row already exists for ``trade_id`` (the broker order id)."""
+    with ctx.db.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM trades WHERE trade_id = %s LIMIT 1", (trade_id,)
+        ).fetchone()
+    return row is not None
+
+
+def _stamp_pending_resolved(ctx: JobContext, order_id: str) -> None:
+    """Stamp a pending_orders row resolved (confirmation complete)."""
+    with ctx.db.connection() as conn:
+        conn.execute(
+            "UPDATE pending_orders SET resolved_at = %s WHERE order_id = %s",
+            (datetime.now(UTC).isoformat(), order_id),
+        )
+
+
+def _safe_float(value: Any) -> float | None:  # noqa: ANN401
+    """Parse a broker numeric field (str/float/None) to float, or None if unparseable."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _to_iso(value: Any) -> str | None:  # noqa: ANN401

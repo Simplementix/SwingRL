@@ -71,6 +71,12 @@ except ImportError:  # pragma: no cover
 # flag-false cleanup below can never drift apart.
 TRADER_BACKUP_JOB_IDS = ("daily_sqlite_backup", "weekly_duckdb_backup", "monthly_offsite")
 
+# Misfire grace for the 09:35 equity fill-confirmation job (D11, review #3): 5 hours. Recording
+# opening-auction fills is idempotent bookkeeping that stays correct run late, so a restart
+# window spanning 09:35 must still record the day's fills rather than skip them (the 300s
+# default would). 5h ends well before the day's later equity jobs.
+_FILL_CONFIRMATION_MISFIRE_GRACE_S = 18000
+
 
 def _job_count(config: Any) -> int:
     """Number of jobs create_scheduler_and_register_jobs registers for this config.
@@ -133,6 +139,11 @@ def create_scheduler_and_register_jobs(
         day_of_week="mon-fri",
         timezone="America/New_York",
         id="equity_fill_confirmation",
+        # Generous misfire grace (review #3): recording pre-open auction fills is pure
+        # bookkeeping and stays correct run late, so a restart window spanning 09:35 must not
+        # skip a whole day's recording. 5h covers any realistic restart yet still ends well
+        # before the day's other equity jobs; the job itself is idempotent (crash-safe re-run).
+        misfire_grace_time=_FILL_CONFIRMATION_MISFIRE_GRACE_S,
         replace_existing=True,
     )
 
