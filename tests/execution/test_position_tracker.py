@@ -362,6 +362,43 @@ class TestPositionTrackerMarkToMarket:
         assert cb.check_and_update(v_fallen, hwm, 0.0) == CBState.HALTED
 
 
+class TestPositionTrackerMarkPositions:
+    """MTM-D6: mark_positions persists fresh last_price + recomputed unrealized_pnl."""
+
+    def test_mark_positions_writes_last_price_and_recomputed_pnl(
+        self, position_tracker: PositionTracker, mock_db: DatabaseManager
+    ) -> None:
+        """MTM-D6: UPDATE writes last_price and unrealized_pnl = (price - cost_basis) * qty."""
+        with mock_db.connection() as conn:
+            conn.execute(
+                "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                ("BTCUSDT", "crypto", 0.5, 60000.0, 60000.0, 0.0, "2026-03-09T10:00:00Z"),
+            )
+        position_tracker.mark_positions("crypto", {"BTCUSDT": 50000.0})
+
+        row = position_tracker.get_positions("crypto")[0]
+        assert row["last_price"] == pytest.approx(50000.0)
+        # (50000 - 60000) * 0.5 = -5000.0
+        assert row["unrealized_pnl"] == pytest.approx((50000.0 - 60000.0) * 0.5)
+
+    def test_mark_positions_empty_map_is_noop(
+        self, position_tracker: PositionTracker, mock_db: DatabaseManager
+    ) -> None:
+        """MTM-D6: an empty price map leaves the stored mark untouched (guard clause)."""
+        with mock_db.connection() as conn:
+            conn.execute(
+                "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
+                "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                ("BTCUSDT", "crypto", 0.5, 60000.0, 60000.0, 0.0, "2026-03-09T10:00:00Z"),
+            )
+        position_tracker.mark_positions("crypto", {})
+
+        row = position_tracker.get_positions("crypto")[0]
+        assert row["last_price"] == pytest.approx(60000.0)
+        assert row["unrealized_pnl"] == pytest.approx(0.0)
+
+
 class TestPositionTrackerPortfolioStateArray:
     """PAPER-05: Portfolio state arrays match ObservationAssembler format."""
 

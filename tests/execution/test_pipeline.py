@@ -7,8 +7,10 @@ weight-based delta order generation.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -17,6 +19,7 @@ import pytest
 
 from swingrl.execution.pipeline import ExecutionPipeline
 from swingrl.execution.types import FillResult
+from swingrl.utils.exceptions import BrokerError
 
 
 @pytest.fixture
@@ -52,6 +55,114 @@ def pipeline(
 def _per_algo_obs_dict(obs: np.ndarray) -> dict[str, np.ndarray]:
     """Helper: build per-algo normalized obs dict (same obs for all algos)."""
     return {"ppo": obs, "a2c": obs, "sac": obs}
+
+
+class _DeadzoneCycleHarness:
+    """Seed held crypto positions and drive a zero-order ("deadzone") cycle.
+
+    Models the MTM-D6 scenario: ``process_actions`` is pinned to return the
+    current weights (target == current) so Step 9 generates no orders and never
+    fetches a price. The only price fetch that can occur is the Step 10
+    mark-to-market pass over held positions — exactly what the assertions probe.
+
+    Exposes the scaffolding the brief's assertions read: ``adapter`` (the mock
+    exchange adapter), ``run_cycle(env)``, ``recorded_snapshot()`` (latest snapshot
+    row), and ``cash`` (derived cash at seed time).
+    """
+
+    _ENV = "crypto"
+
+    def __init__(
+        self,
+        pipeline: ExecutionPipeline,
+        positions: dict[str, tuple[float, float]],
+        orders_generated: int,
+    ) -> None:
+        if orders_generated != 0:
+            raise ValueError("harness only models deadzone (zero-order) cycles")
+        self._pipeline = pipeline
+        self.adapter = MagicMock()
+        self._seed(positions)
+        # Derived cash at seed time (no trades seeded -> config initial capital). The
+        # deadzone cycle adds no fills, so this stays valid through run_cycle().
+        self.cash = pipeline._position_tracker.compute_cash(self._ENV)
+        # Bypass the feature-health gate so the order loop always runs.
+        pipeline._health_tracker = MagicMock()
+        pipeline._health_tracker.assess.return_value = MagicMock(should_block=False)
+
+    def _seed(self, positions: dict[str, tuple[float, float]]) -> None:
+        """Clear the shared tables and seed one held position per entry."""
+        now = datetime.now(tz=UTC).isoformat()
+        with self._pipeline._db.connection() as conn:
+            for table in (
+                "circuit_breaker_events",
+                "positions",
+                "trades",
+                "portfolio_snapshots",
+            ):
+                conn.execute(f"DELETE FROM {table}")  # noqa: S608 — fixed table names
+            for symbol, (qty, cost_basis) in positions.items():
+                conn.execute(
+                    "INSERT INTO positions (symbol, environment, quantity, cost_basis, "
+                    "last_price, unrealized_pnl, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (symbol, self._ENV, qty, cost_basis, cost_basis, 0.0, now),
+                )
+
+    def run_cycle(self, env: str) -> list[FillResult]:
+        """Run a full execute_cycle with a zero-order (deadzone) decision."""
+        obs = np.zeros(156, dtype=np.float32)
+        mock_model = MagicMock()
+        mock_model.predict.return_value = (np.zeros(3), None)  # 2 crypto assets + cash dim
+        with (
+            patch.object(self._pipeline, "_check_turbulence", return_value=False),
+            patch.object(self._pipeline, "_get_adapter", return_value=self.adapter),
+            patch.object(
+                self._pipeline,
+                "_load_models",
+                return_value={
+                    "ppo": (mock_model, None),
+                    "a2c": (mock_model, None),
+                    "sac": (mock_model, None),
+                },
+            ),
+            patch.object(
+                self._pipeline,
+                "_get_ensemble_weights",
+                return_value={"ppo": 0.4, "a2c": 0.3, "sac": 0.3},
+            ),
+            patch.object(
+                self._pipeline, "_normalize_observation", return_value=_per_algo_obs_dict(obs)
+            ),
+            # target == current -> every delta is zero -> no orders generated.
+            patch(
+                "swingrl.execution.pipeline.process_actions",
+                side_effect=lambda _blended, current, deadzone: current,
+            ),
+        ):
+            return self._pipeline.execute_cycle(env)
+
+    def recorded_snapshot(self) -> SimpleNamespace:
+        """Return the latest portfolio snapshot as an object with ``total_value``."""
+        with self._pipeline._db.connection() as conn:
+            row = conn.execute(
+                "SELECT total_value FROM portfolio_snapshots "
+                "WHERE environment = %s ORDER BY timestamp DESC LIMIT 1",
+                (self._ENV,),
+            ).fetchone()
+        assert row is not None, "no snapshot recorded for the cycle"
+        return SimpleNamespace(total_value=float(row["total_value"]))
+
+
+@pytest.fixture
+def pipeline_fixture(pipeline: ExecutionPipeline) -> Callable[..., _DeadzoneCycleHarness]:
+    """Factory for a seeded deadzone-cycle harness (see :class:`_DeadzoneCycleHarness`)."""
+
+    def _make(
+        positions: dict[str, tuple[float, float]], orders_generated: int = 0
+    ) -> _DeadzoneCycleHarness:
+        return _DeadzoneCycleHarness(pipeline, positions, orders_generated)
+
+    return _make
 
 
 class TestExecuteCycle:
@@ -634,3 +745,34 @@ class TestSkipClassification:
         reasons = ExecutionPipeline._classify_skips(symbols, target, current, 1000.0, 10.0)
 
         assert reasons == {"SPY": "below_min_delta"}
+
+
+class TestDeadzoneMarkToMarket:
+    """MTM-D6: every cycle marks held positions to market, even with zero orders.
+
+    Live defect (2026-07-21): on a deadzone cycle (agent emits no orders) the
+    pipeline never fetched prices for held symbols, so the snapshot value froze on
+    07-19 while the market moved. Step 10 now fetches missing marks fail-open.
+    """
+
+    def test_deadzone_cycle_marks_held_positions(
+        self, pipeline_fixture: Callable[..., _DeadzoneCycleHarness]
+    ) -> None:
+        """MTM-D6: a cycle with zero orders still fetches prices for held symbols, so the
+        snapshot moves with the market (live defect: value frozen since 07-19)."""
+        fx = pipeline_fixture(positions={"BTCUSDT": (0.5, 60000.0)}, orders_generated=0)
+        fx.adapter.get_current_price.return_value = 50000.0  # crashed
+        fx.run_cycle("crypto")
+        snap = fx.recorded_snapshot()
+        assert snap.total_value == pytest.approx(0.5 * 50000.0 + fx.cash)
+        fx.adapter.get_current_price.assert_called_with("BTCUSDT")
+
+    def test_mark_failure_falls_back_and_warns(
+        self, pipeline_fixture: Callable[..., _DeadzoneCycleHarness]
+    ) -> None:
+        """MTM-D6 fail-open: a price-fetch failure falls back to stored last_price, warns,
+        and never blocks the cycle."""
+        fx = pipeline_fixture(positions={"BTCUSDT": (0.5, 60000.0)}, orders_generated=0)
+        fx.adapter.get_current_price.side_effect = BrokerError("down")
+        fx.run_cycle("crypto")  # must not raise
+        assert fx.recorded_snapshot().total_value == pytest.approx(0.5 * 60000.0 + fx.cash)
