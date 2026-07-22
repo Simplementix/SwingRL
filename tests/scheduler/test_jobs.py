@@ -238,11 +238,14 @@ class TestDailySummaryJob:
             conn.execute("DELETE FROM trades")
             # One snapshot per env so build_daily_summary_embed renders BOTH
             # "Equity Trades" and "Crypto Trades" fields.
+            # Same timestamp for both envs is fine — PK is (timestamp, environment).
+            # Must be a valid TIMESTAMPTZ literal: the migrated schema's timestamp
+            # column is TIMESTAMPTZ, so a "...Z-equity" suffix would fail to parse.
             for env in ("equity", "crypto"):
                 conn.execute(
                     "INSERT INTO portfolio_snapshots VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
                     " ON CONFLICT DO NOTHING",
-                    (f"2026-03-09T12:00:00Z-{env}", env, 400.0, 300.0, 0.0, 100.0, 400.0, 0.0, 0.0),
+                    ("2026-03-09T12:00:00Z", env, 400.0, 300.0, 0.0, 100.0, 400.0, 0.0, 0.0),
                 )
             insert = (
                 "INSERT INTO trades (trade_id, timestamp, symbol, side, quantity, price, "

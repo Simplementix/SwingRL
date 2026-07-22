@@ -609,9 +609,10 @@ class TestEquityCycleSendsTradeEmbeds:
         mock_db = MagicMock()
         mock_config = MagicMock()
 
-        # Mock the connection context manager to return rows
-        mock_conn = MagicMock()
-        mock_conn.execute.return_value.fetchall.return_value = [
+        # Mock the connection context manager. daily_summary_job issues TWO queries:
+        # the portfolio_snapshots read and the per-env signal-trade count. Route by SQL
+        # so the trades query returns rows carrying the `n` key the count loop reads.
+        snapshot_rows = [
             {
                 "environment": "equity",
                 "total_value": 400.0,
@@ -620,6 +621,18 @@ class TestEquityCycleSendsTradeEmbeds:
                 "drawdown_pct": 0.02,
             }
         ]
+        trade_count_rows = [{"environment": "equity", "n": 3}]
+
+        def _execute(sql: str, *args: object, **kwargs: object) -> MagicMock:
+            result = MagicMock()
+            if "FROM trades" in sql:
+                result.fetchall.return_value = trade_count_rows
+            else:
+                result.fetchall.return_value = snapshot_rows
+            return result
+
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = _execute
         mock_db.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
         mock_db.connection.return_value.__exit__ = MagicMock(return_value=False)
 
