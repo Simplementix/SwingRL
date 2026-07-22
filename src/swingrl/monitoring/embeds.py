@@ -213,11 +213,11 @@ def build_daily_summary_embed(
 
     today_str = datetime.now(UTC).strftime("%Y-%m-%d")
 
-    digest_color, _ = _CATEGORY_STYLE["digest"]  # STYLE-D15: gold
+    digest_color, digest_emoji = _CATEGORY_STYLE["digest"]  # STYLE-D15: gold + 📊
     return {
         "embeds": [
             {
-                "title": "Daily Summary",
+                "title": f"{digest_emoji} Daily Summary",
                 "color": digest_color,
                 "fields": fields,
                 "footer": {"text": f"SwingRL | Daily Summary | {today_str}"},

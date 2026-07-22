@@ -243,14 +243,14 @@ class TestBuildDailySummaryEmbed:
         assert any("▼" in str(f["value"]) for f in embed["fields"])
 
     def test_title_is_daily_summary(self) -> None:
-        """Title is 'Daily Summary'."""
+        """STYLE-D15: title carries the 📊 category emoji prefix — '📊 Daily Summary'."""
         embed = build_daily_summary_embed(
             equity_snapshot=None,
             crypto_snapshot=None,
             equity_trades_today=0,
             crypto_trades_today=0,
         )
-        assert embed["embeds"][0]["title"] == "Daily Summary"
+        assert embed["embeds"][0]["title"] == "📊 Daily Summary"
 
     def test_equity_fields_present(self) -> None:
         """Equity snapshot fields shown when provided."""
