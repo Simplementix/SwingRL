@@ -199,6 +199,81 @@ class TestDailySummaryJob:
         # daily_summary_job now uses send_embed via build_daily_summary_embed
         mock_alerter.send_embed.assert_called()
 
+    def test_counts_signal_trades_today(
+        self, job_ctx: JobContext, mock_db: MagicMock, mock_alerter: MagicMock
+    ) -> None:
+        """DIGEST-D5: digest counts today's (ET) signal trades per env from the trades
+        table — never the hardcoded zeros (found live 2026-07-21)."""
+        init_emergency_flags(mock_db)
+        with mock_db.connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                    timestamp TEXT NOT NULL,
+                    environment TEXT NOT NULL,
+                    total_value DOUBLE PRECISION NOT NULL,
+                    equity_value DOUBLE PRECISION, crypto_value DOUBLE PRECISION,
+                    cash_balance DOUBLE PRECISION,
+                    high_water_mark DOUBLE PRECISION, daily_pnl DOUBLE PRECISION,
+                    drawdown_pct DOUBLE PRECISION,
+                    PRIMARY KEY (timestamp, environment)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trades (
+                    trade_id TEXT PRIMARY KEY,
+                    timestamp TIMESTAMPTZ NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    quantity DOUBLE PRECISION NOT NULL,
+                    price DOUBLE PRECISION NOT NULL,
+                    commission DOUBLE PRECISION DEFAULT 0.0,
+                    slippage DOUBLE PRECISION DEFAULT 0.0,
+                    environment TEXT NOT NULL,
+                    broker TEXT, order_type TEXT, trade_type TEXT
+                )
+            """)
+            # Isolate from any cross-test rows so counts are deterministic.
+            conn.execute("DELETE FROM portfolio_snapshots")
+            conn.execute("DELETE FROM trades")
+            # One snapshot per env so build_daily_summary_embed renders BOTH
+            # "Equity Trades" and "Crypto Trades" fields.
+            for env in ("equity", "crypto"):
+                conn.execute(
+                    "INSERT INTO portfolio_snapshots VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    " ON CONFLICT DO NOTHING",
+                    (f"2026-03-09T12:00:00Z-{env}", env, 400.0, 300.0, 0.0, 100.0, 400.0, 0.0, 0.0),
+                )
+            insert = (
+                "INSERT INTO trades (trade_id, timestamp, symbol, side, quantity, price, "
+                "environment, trade_type) VALUES (%s, {ts}, %s, %s, %s, %s, %s, %s)"
+            )
+            # 2 crypto signal trades TODAY -> counted.
+            conn.execute(
+                insert.format(ts="now()"),
+                ("c1", "BTCUSDT", "buy", 0.001, 40000.0, "crypto", "signal"),
+            )
+            conn.execute(
+                insert.format(ts="now()"),
+                ("c2", "ETHUSDT", "buy", 0.01, 3000.0, "crypto", "signal"),
+            )
+            # Decoy: crypto NON-signal today -> excluded by trade_type filter.
+            conn.execute(
+                insert.format(ts="now()"),
+                ("c3", "BTCUSDT", "sell", 0.001, 40000.0, "crypto", "rebalance"),
+            )
+            # Decoy: crypto signal from a PRIOR ET day -> excluded by date filter.
+            conn.execute(
+                insert.format(ts="now() - interval '2 days'"),
+                ("c4", "BTCUSDT", "buy", 0.001, 40000.0, "crypto", "signal"),
+            )
+            # Equity: no trades today -> count 0.
+        daily_summary_job()
+
+        embed = mock_alerter.send_embed.call_args.args[1]
+        fields = {f["name"]: f["value"] for f in embed["embeds"][0]["fields"]}
+        assert fields["Crypto Trades"] == "2"
+        assert fields["Equity Trades"] == "0"
+
 
 class TestDailySummaryDigestFlush:
     """A30 Discord wiring (Task E): daily_summary_job flushes the buffered INFO digest."""
