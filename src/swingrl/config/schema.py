@@ -55,9 +55,10 @@ class EquityConfig(BaseModel):
     max_drawdown_pct: float = Field(default=0.10, gt=0.0, lt=1.0)
     daily_loss_limit_pct: float = Field(default=0.02, gt=0.0, lt=1.0)
     min_order_usd: float = Field(default=1.0, ge=1.0)  # Alpaca $1 floor for fractional shares
-    # Daily rebalance time (ET, HH:MM). 15:45 fires 15m before the 16:00 close so fills
-    # land intraday, not post-close (review C2). The scheduler restricts it to weekdays.
-    cycle_time_et: str = Field(default="15:45")
+    # Daily rebalance time (ET, HH:MM). 09:15 decides pre-open on t-1 bars; orders are
+    # submitted before the 09:28 auction cutoff and fill at t's open (spec D2/D11). The
+    # scheduler restricts it to weekdays.
+    cycle_time_et: str = Field(default="09:15")
     # Gate the equity cycle on the Alpaca market clock (skip on closed/holiday). Fail-safe.
     market_calendar_gate: bool = Field(default=True)
     # Post-submit fill polling bounds (review C2): wait up to timeout, polling each interval,
@@ -404,7 +405,7 @@ class OptionsCollectorConfig(BaseModel):
     snapshots: list[OptionsSnapshotConfig] = Field(
         default_factory=lambda: [
             OptionsSnapshotConfig(
-                label="decision", market_time_et="15:45", pull_time_et="16:00", misfire_grace_s=900
+                label="decision", market_time_et="09:30", pull_time_et="09:46", misfire_grace_s=900
             ),
             OptionsSnapshotConfig(
                 label="eod", market_time_et="16:15", pull_time_et="16:35", misfire_grace_s=18000

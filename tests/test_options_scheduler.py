@@ -40,12 +40,12 @@ def test_register_jobs_registers_snapshots_plus_fixed() -> None:
 
 
 def test_snapshot_jobs_use_pull_time_and_per_label_grace() -> None:
-    """OPT-SCHED-2: decision fires at 16:00 with 900s grace; eod 16:35 with 18000s (D8/D9)."""
+    """OPT-SCHED-2: decision fires at 09:46 with 900s grace; eod 16:35 with 18000s (D8/D9)."""
     scheduler = MagicMock()
     register_jobs(scheduler, _components())
     by_id = {c.kwargs["id"]: c.kwargs for c in scheduler.add_job.call_args_list}
     dec = by_id["options_decision_snapshot"]
-    assert (dec["hour"], dec["minute"], dec["misfire_grace_time"]) == (16, 0, 900)
+    assert (dec["hour"], dec["minute"], dec["misfire_grace_time"]) == (9, 46, 900)
     eod = by_id["options_eod_snapshot"]
     assert (eod["hour"], eod["minute"], eod["misfire_grace_time"]) == (16, 35, 18000)
 
@@ -229,8 +229,9 @@ def test_health_check_skips_today_not_yet_due(monkeypatch) -> None:
     store = MagicMock()
     store.snapshot_exists_parquet.return_value = False  # nothing captured yet today
     alerter = MagicMock()
-    # 13:00 ET (EDT) = 17:00 UTC — before every label's pull_time + misfire grace.
-    run_health_check(cfg, collector, store, alerter, now=datetime(2026, 7, 14, 17, 0, tzinfo=UTC))
+    # 09:00 ET (EDT) = 13:00 UTC — before every label's pull_time + misfire grace
+    # (decision due 09:46+900s=10:01 ET; eod due 16:35+18000s=21:35 ET).
+    run_health_check(cfg, collector, store, alerter, now=datetime(2026, 7, 14, 13, 0, tzinfo=UTC))
     alerter.send_alert.assert_not_called()
 
 

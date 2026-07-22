@@ -12,7 +12,7 @@ equity:
   max_drawdown_pct: 0.10        # circuit breaker: halt equity env at 10% DD
   daily_loss_limit_pct: 0.02    # circuit breaker: halt equity env at 2% daily loss
   min_order_usd: 1.0            # Alpaca minimum order floor ($1.00 fractional shares)
-  cycle_time_et: "15:45"        # daily rebalance time (ET); 15m before close so fills land intraday
+  cycle_time_et: "09:15"        # pre-open decision on t-1 bars; orders submitted before the 09:28 auction cutoff (spec D2/D11)
   market_calendar_gate: true    # gate the equity cycle on the Alpaca market clock (fail-safe)
   order_fill_timeout_s: 60      # cancel an unfilled order after N seconds (never a $0 trade)
   order_poll_interval_s: 2      # poll order status every N seconds during the fill wait
@@ -94,8 +94,8 @@ options_collector:
   rate_limit_per_sec: 1.0           # courtesy throttle; 9 GETs per run
   health_check_time_et: "17:15"
   health_lookback_days: 3           # D9: health check scans the last N trading days
-  snapshots:                        # pull trails market time by the feed delay (D8; T6-measured 2026-07-15: content delay 15m27s — 16:00/16:35 confirmed)
-    - { label: decision, market_time_et: "15:45", pull_time_et: "16:00", misfire_grace_s: 900 }
+  snapshots:                        # pull trails market time by the feed delay (D8; T6-measured 2026-07-15: content delay 15m27s — 16-min trail preserves the margin: 09:30→09:46 decision, 16:15→16:35 eod)
+    - { label: decision, market_time_et: "09:30", pull_time_et: "09:46", misfire_grace_s: 900 }
     - { label: eod,      market_time_et: "16:15", pull_time_et: "16:35", misfire_grace_s: 18000 }
   integrity:
     contract_count_drop_warn_frac: 0.5   # partial-chain guard (CBOE has no truncation flag)

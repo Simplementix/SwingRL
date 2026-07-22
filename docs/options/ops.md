@@ -52,22 +52,26 @@ side effect.
 To ship new collector code:
 
 1. Edit `image:` in `docker-compose.yml` to a new date-stamped tag.
-2. Confirm you are **outside the 15:30–16:45 ET quiet window** on a trading day (see below).
+2. Confirm you are **outside both quiet windows (09:00–10:15 and 16:00–16:45 ET)** on a trading
+   day (see below).
 3. `docker compose build --no-cache swingrl-collector`
 4. `docker compose up -d swingrl-collector`
 5. `docker compose logs -f swingrl-collector` — confirm `options_boot_self_check_done` then
    `options_collector_started` with the 5 job ids.
 
-### Quiet window
+### Quiet windows
 
-**15:30–16:45 ET on trading days:** no recreation of `swingrl-collector` (image bump, `up -d`
-after a build, `docker compose down`/`up`), and no homelab CI runs that span this window. The
-window brackets both snapshot pulls (16:00 decision, 16:35 eod) with margin. `ci-homelab.sh`'s
-cleanup is scoped to the dev compose project (`docker compose -p swingrl-ci -f
-docker-compose-dev.yml down`, verified in `scripts/ci-homelab.sh`) — CI never tears down the
-always-on `swingrl-collector` service.
+**Two trading-day windows — 09:00–10:15 and 16:00–16:45 ET:** no recreation of
+`swingrl-collector` (image bump, `up -d` after a build, `docker compose down`/`up`), and no
+homelab CI runs that span either window. The equity cycle, opening-auction fills, fill
+confirmation, and the decision snapshot pull all live in the morning window (09:15 cycle → ~09:30
+auction fills → ~09:35 fill-confirmation → 09:46 decision pull); the afternoon window brackets the
+16:35 eod snapshot pull, and the eod chain is otherwise unchanged. `ci-homelab.sh`'s cleanup is
+scoped to the dev compose project (`docker compose -p swingrl-ci -f docker-compose-dev.yml down`,
+verified in `scripts/ci-homelab.sh`) — CI never tears down the always-on `swingrl-collector`
+service.
 
-A **restart that happens anyway** inside the window (host reboot, OOM, etc.) is not silent: the
+A **restart that happens anyway** inside either window (host reboot, OOM, etc.) is not silent: the
 decision snapshot's misfire grace is short (900s) so a missed cron fires and stamps `late_by_s`
 + WARNs; the eod snapshot's grace is long (18000s / 5h) so it simply fires late within the same
 session; and the next boot's self-check (below) catches anything still missing by the next
@@ -82,7 +86,7 @@ UTC 4H grid.
 
 | Job id | Trigger (ET) | Represents / does |
 |---|---|---|
-| `options_decision_snapshot` | 16:00 | Pulls the chain; label `decision`; `market_time_et=15:45` — the ~15-min-delayed feed pulled at 16:00 is assumed to show the 15:45 market state. `misfire_grace_s=900` (15 min) — beyond that, skip + WARN rather than mislabel. |
+| `options_decision_snapshot` | 09:46 | Pulls the chain; label `decision`; `market_time_et=09:30` — the ~15-min-delayed feed pulled at 09:46 is assumed to show the 09:30 open-auction market state. `misfire_grace_s=900` (15 min) — beyond that, skip + WARN rather than mislabel. |
 | `options_eod_snapshot` | 16:35 | Pulls the chain; label `eod`; `market_time_et=16:15` — options freeze ~16:15, so 16:35 is comfortably past the close with a 20-min buffer. `misfire_grace_s=18000` (5h) — a frozen close stays valid to capture much later in the day. |
 | `options_health_check` | 17:15 | Scans the last `health_lookback_days` (3) NYSE sessions for missing/incomplete snapshots per symbol. CRITICAL if a whole snapshot is missing for any session; WARNING if only some symbols are missing. |
 | `options_data_audit` | 1st of month, 18:00 | Runs `run_data_quality_audit` over the trailing 30 days (greeks range, crossed markets, OI-null, OI same-day stability). CRITICAL on any failure; INFO digest (rows/median IV per symbol) on pass. Fires on the calendar day regardless of weekday. |
@@ -109,7 +113,7 @@ Every container start (before the scheduler starts accepting cron fires) runs
    (see "pg16-outage self-heal" below).
 2. `run_health_check(...)` — the same lookback scan as the 17:15 job, run immediately at boot.
 
-This means a deliberate restart is always safe outside the quiet window: it re-verifies the
+This means a deliberate restart is always safe outside the quiet windows: it re-verifies the
 last 3 trading sessions and backfills Postgres from Parquet on every start, so downtime never
 needs a manual "did we miss anything?" check.
 
@@ -151,7 +155,7 @@ Parquet + Postgres at ~70–100k rows/day.
 - **Postgres's copy is gated by `options_collector.postgres_store_raw_json`** (default `true`
   in `config/swingrl.yaml`). This is the fastest-growing, least-queried column in the
   Postgres mirror. Flip it to `false` once real GB/day is known, then restart the collector
-  (outside the quiet window) to pick up the change.
+  (outside the quiet windows) to pick up the change.
 
 **Known gap:** flipping the flag back to `true` later does **not** backfill `raw_json` for
 rows already synced with it `NULL` — `reconcile()` only inserts snapshots whose parent row is

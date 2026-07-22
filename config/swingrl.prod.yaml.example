@@ -11,7 +11,7 @@ equity:
   max_drawdown_pct: 0.10        # 10% DD halts equity — do not raise until Sharpe > 0.7 sustained
   daily_loss_limit_pct: 0.02    # 2% daily loss limit
   min_order_usd: 5.0            # equity min order floor ($5) — skip dust trades not worth commission
-  cycle_time_et: "15:45"        # daily rebalance time (ET); 15m before close so fills land intraday
+  cycle_time_et: "09:15"        # pre-open decision on t-1 bars; orders submitted before the 09:28 auction cutoff (spec D2/D11)
   market_calendar_gate: true    # gate the cycle on the Alpaca market clock (skip closed/holiday)
   order_fill_timeout_s: 60      # cancel an unfilled order after N seconds (never a $0 trade)
   order_poll_interval_s: 2      # poll order status every N seconds during the fill wait
