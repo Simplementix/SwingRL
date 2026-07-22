@@ -315,6 +315,52 @@ class TestStopBreachDoesNotHaltSells:
         assert rows[0]["resumed_at"] is None  # append-only audit row stays open
 
 
+class TestSellSideRiskMath:
+    """RULING-5 (2026-07-22): sells reduce exposure — the guard must never veto risk
+    reduction. D14 evidence: 85% exposed + full-close sell (43%) computed 128% and vetoed."""
+
+    def test_full_position_sell_passes_at_high_exposure(
+        self, risk_manager: RiskManager, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A full-position close passes even when the book is almost fully invested."""
+        monkeypatch.setattr(risk_manager._tracker, "get_portfolio_value", lambda env: 47.0)
+        monkeypatch.setattr(risk_manager._tracker, "get_exposure", lambda env: 0.85)
+        monkeypatch.setattr(risk_manager._tracker, "get_daily_pnl", lambda env: 0.0)
+        monkeypatch.setattr(risk_manager._tracker, "get_high_water_mark", lambda env: 47.0)
+
+        order = _make_order(symbol="BTCUSDT", side="sell", dollar_amount=20.0, environment="crypto")
+        decision = risk_manager.evaluate(order)
+        assert decision.final_action == "sell"
+
+    def test_sell_skips_position_size_cap(
+        self, risk_manager: RiskManager, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sell larger than max_position_size%% of the book is NOT vetoed on size."""
+        monkeypatch.setattr(risk_manager._tracker, "get_portfolio_value", lambda env: 100.0)
+        monkeypatch.setattr(risk_manager._tracker, "get_exposure", lambda env: 0.90)
+        monkeypatch.setattr(risk_manager._tracker, "get_daily_pnl", lambda env: 0.0)
+        monkeypatch.setattr(risk_manager._tracker, "get_high_water_mark", lambda env: 100.0)
+
+        order = _make_order(side="sell", dollar_amount=80.0)  # 80% > any size cap
+        decision = risk_manager.evaluate(order)
+        assert decision.final_action == "sell"
+
+    def test_buy_still_vetoed_on_exposure(
+        self, risk_manager: RiskManager, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Buys keep the additive math — the 1.0 exposure cap still vetoes them."""
+        from swingrl.utils.exceptions import RiskVetoError
+
+        monkeypatch.setattr(risk_manager._tracker, "get_portfolio_value", lambda env: 100.0)
+        monkeypatch.setattr(risk_manager._tracker, "get_exposure", lambda env: 0.90)
+        monkeypatch.setattr(risk_manager._tracker, "get_daily_pnl", lambda env: 0.0)
+        monkeypatch.setattr(risk_manager._tracker, "get_high_water_mark", lambda env: 100.0)
+
+        order = _make_order(side="buy", dollar_amount=15.0)  # 0.90 + 0.15 > 1.0
+        with pytest.raises(RiskVetoError):
+            risk_manager.evaluate(order)
+
+
 class TestRiskManagerCBInteraction:
     """PAPER-04: Risk manager checks CB state before evaluation."""
 
