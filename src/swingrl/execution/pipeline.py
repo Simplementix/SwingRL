@@ -485,6 +485,26 @@ class ExecutionPipeline:
         # zero-fill cycle — not the previous snapshot copied forward. Snapshots stay
         # append-only. Dry-run is a simulation and never writes a snapshot.
         if not dry_run:
+            # Mark EVERY held position to market (MTM-D6): a deadzone cycle (zero
+            # orders) fetched no prices in Step 9, so without this the snapshot kept
+            # copying forward the last stored mark and its value froze while the
+            # market moved (live defect: frozen since 07-19). Fetch a fresh price for
+            # each held symbol missing from cycle_prices, fail-open per symbol — a
+            # fetch failure or non-positive price warns and falls back to the stored
+            # last_price (via compute_portfolio_value), never blocks the cycle.
+            for pos in self._position_tracker.get_positions(env_name):
+                sym = pos["symbol"]
+                if pos["quantity"] and sym not in cycle_prices:
+                    try:
+                        price = adapter.get_current_price(sym)
+                    except Exception:
+                        log.warning("mark_price_fetch_failed", symbol=sym, exc_info=True)
+                        continue
+                    if price is not None and price > 0:
+                        cycle_prices[sym] = price
+                    else:
+                        log.warning("mark_price_non_positive", symbol=sym, price=price)
+            self._position_tracker.mark_positions(env_name, cycle_prices)
             cash = self._position_tracker.compute_cash(env_name)
             new_portfolio_value = self._position_tracker.compute_portfolio_value(
                 env_name, cycle_prices
