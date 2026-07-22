@@ -297,6 +297,34 @@ class TestBuildDailySummaryEmbed:
         footer = embed["embeds"][0]["footer"]["text"]
         assert "Daily Summary" in footer
 
+    def test_digest_shows_agent_vs_buy_and_hold(self) -> None:
+        """BENCH-D13: digest embeds carry Buy & Hold + vs B&H fields when baselines exist,
+        and omit them (unchanged shape) when none do."""
+        embed = build_daily_summary_embed(
+            equity_snapshot=None,
+            crypto_snapshot={"total_value": 50.0, "daily_pnl": 1.0},
+            equity_trades_today=0,
+            crypto_trades_today=0,
+            crypto_benchmark=47.0,
+        )
+        fields = {f["name"]: f["value"] for f in embed["embeds"][0]["fields"]}
+        names = list(fields)
+        assert "Crypto Buy & Hold" in names and "Crypto vs B&H" in names
+        # agent_value 50 vs benchmark 47 -> +$3.00 (+6.38%)
+        assert fields["Crypto Buy & Hold"] == "$47.00"
+        assert fields["Crypto vs B&H"] == "$+3.00 (+6.38%)"
+
+    def test_benchmark_fields_omitted_when_none(self) -> None:
+        """BENCH-D13: no benchmark -> no Buy & Hold / vs B&H fields (pre-reset shape)."""
+        embed = build_daily_summary_embed(
+            equity_snapshot={"total_value": 50.0, "daily_pnl": 1.0},
+            crypto_snapshot={"total_value": 50.0, "daily_pnl": 1.0},
+            equity_trades_today=0,
+            crypto_trades_today=0,
+        )
+        names = [f["name"] for f in embed["embeds"][0]["fields"]]
+        assert not any("Buy & Hold" in n or "vs B&H" in n for n in names)
+
 
 # ---------------------------------------------------------------------------
 # Test: build_stuck_agent_embed

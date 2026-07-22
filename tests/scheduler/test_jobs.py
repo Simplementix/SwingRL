@@ -23,6 +23,7 @@ from swingrl.data.db import DatabaseManager
 from swingrl.scheduler.halt_check import init_emergency_flags, set_halt
 from swingrl.scheduler.jobs import (
     JobContext,
+    _benchmark_value,
     crypto_cycle,
     daily_summary_job,
     equity_cycle,
@@ -281,6 +282,97 @@ class TestDailySummaryJob:
         fields = {f["name"]: f["value"] for f in embed["embeds"][0]["fields"]}
         assert fields["Crypto Trades"] == "2"
         assert fields["Equity Trades"] == "0"
+
+
+def _seed_benchmark_tables(conn: Any) -> None:
+    """Create + isolate benchmark_baselines and ohlcv_4h (IF NOT EXISTS, then DELETE).
+
+    Mirrors the digest tests' self-contained table setup so the benchmark tests run
+    against either the migrated schema (V010) or a bare scratch DB.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS benchmark_baselines (
+            environment TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            baseline_date DATE NOT NULL,
+            baseline_price DOUBLE PRECISION NOT NULL,
+            capital_usd DOUBLE PRECISION NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (environment, symbol)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ohlcv_4h (
+            symbol TEXT NOT NULL,
+            datetime TIMESTAMPTZ NOT NULL,
+            open DOUBLE PRECISION, high DOUBLE PRECISION, low DOUBLE PRECISION,
+            close DOUBLE PRECISION, volume DOUBLE PRECISION, source TEXT,
+            fetched_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (symbol, datetime)
+        )
+    """)
+    conn.execute("DELETE FROM benchmark_baselines WHERE environment = 'crypto'")
+    conn.execute("DELETE FROM ohlcv_4h WHERE symbol IN ('BTCUSDT', 'ETHUSDT')")
+
+
+class TestBenchmarkValue:
+    """BENCH-D13: _benchmark_value grows each equal-weight baseline slice to latest close."""
+
+    def test_benchmark_value_equal_weight(self, job_ctx: JobContext, mock_db: MagicMock) -> None:
+        """BENCH-D13: benchmark = equal-weight capital split grown by close/baseline per
+        symbol. 47 capital, 2 symbols; BTC +10%, ETH -10% -> exactly 47.0.
+
+        (Reconciled: the brief sketched a ``mock_ctx.set_baselines`` helper; the real
+        digest scaffolding in this module is DB-backed, so this seeds the same numbers
+        into benchmark_baselines + ohlcv_4h — the assertion contract is unchanged.)
+        """
+        with mock_db.connection() as conn:
+            _seed_benchmark_tables(conn)
+            for symbol, baseline_price in (("BTCUSDT", 60000.0), ("ETHUSDT", 2000.0)):
+                conn.execute(
+                    "INSERT INTO benchmark_baselines"
+                    " (environment, symbol, baseline_date, baseline_price, capital_usd)"
+                    " VALUES ('crypto', %s, '2026-07-22', %s, 47.0)",
+                    (symbol, baseline_price),
+                )
+            for symbol, close in (("BTCUSDT", 66000.0), ("ETHUSDT", 1800.0)):
+                conn.execute(
+                    "INSERT INTO ohlcv_4h (symbol, datetime, close) VALUES (%s, now(), %s)",
+                    (symbol, close),
+                )
+            value = _benchmark_value(conn, "crypto")
+        assert value == pytest.approx(47.0)
+
+    def test_benchmark_value_none_when_no_baselines(
+        self, job_ctx: JobContext, mock_db: MagicMock
+    ) -> None:
+        """BENCH-D13: no baselines for the env -> None (digest omits the fields)."""
+        with mock_db.connection() as conn:
+            _seed_benchmark_tables(conn)
+            value = _benchmark_value(conn, "crypto")
+        assert value is None
+
+    def test_benchmark_value_uses_latest_close(
+        self, job_ctx: JobContext, mock_db: MagicMock
+    ) -> None:
+        """BENCH-D13: the newest bar (max datetime) is the current price, not an older one."""
+        with mock_db.connection() as conn:
+            _seed_benchmark_tables(conn)
+            conn.execute(
+                "INSERT INTO benchmark_baselines"
+                " (environment, symbol, baseline_date, baseline_price, capital_usd)"
+                " VALUES ('crypto', 'BTCUSDT', '2026-07-22', 100.0, 47.0)"
+            )
+            conn.execute(
+                "INSERT INTO ohlcv_4h (symbol, datetime, close)"
+                " VALUES ('BTCUSDT', now() - interval '8 hours', 100.0)"
+            )
+            conn.execute(
+                "INSERT INTO ohlcv_4h (symbol, datetime, close) VALUES ('BTCUSDT', now(), 200.0)"
+            )
+            value = _benchmark_value(conn, "crypto")
+        # single symbol: 47 capital * (200 latest / 100 baseline) = 94.0
+        assert value == pytest.approx(94.0)
 
 
 class TestDailySummaryDigestFlush:
