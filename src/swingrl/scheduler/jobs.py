@@ -1007,9 +1007,9 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
             ),
             environment="equity",
             # Ruling 2026-07-23: valid partials on different symbols are distinct events,
-            # never duplicates — bypass the consecutive gate and the shared-title cooldown
-            # (which delivered 1 of 8 on 2026-07-23). Title carries the symbol so two
-            # same-morning partials cannot collide even at the Discord level.
+            # never duplicates. bypass_suppression skips ONLY the consecutive-warnings gate;
+            # the per-title cooldown still runs but is de-collided by the symbol in the title
+            # (the old shared title collapsed 8 partials into 1 delivered on 2026-07-23).
             bypass_suppression=True,
         )
     else:
