@@ -327,6 +327,31 @@ def _make_test_fold(
     )
 
 
+def test_create_backtest_schema_preserves_migrated_columns() -> None:
+    """Ruling 2026-07-22: the schema helper must not strip V001 back-stamp columns.
+
+    Pre-fix, _create_backtest_schema DROPped backtest_results/iteration_results
+    and hand-rolled pre-V001 replacements while schema_migrations still said V001
+    was applied — a ledger/reality desync on the shared scratch DB that only
+    healed if a db_with_legacy_schema test happened to run later.
+    """
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        pytest.skip("DATABASE_URL not set")
+    conn = psycopg.connect(db_url, autocommit=True)
+    _create_backtest_schema(conn)
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'backtest_results'"
+        ).fetchall()
+    }
+    conn.close()
+    assert "era_id" in cols, "V001 back-stamp column era_id lost by the test helper"
+    assert "gate_version_id" in cols
+
+
 class TestStoreFoldResultsToDuckdb:
     """Tests for store_fold_results_to_duckdb()."""
 
