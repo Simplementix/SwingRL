@@ -2,11 +2,11 @@
 
 Runs a miniature pytest suite in-process (pytester) using the REAL wipe fixture
 and the REAL marker-derivation logic, with the TRUNCATE function stubbed to a
-recorder — no PostgreSQL needed, so these meta-tests live in the fast lane.
-
-(The literal string DATABASE_URL below auto-marks THIS module ``db`` too; that
-is harmless — in the fast lane the wipe no-ops on a blank URL, in the db lane it
-truncates an already-clean scratch DB.)
+recorder — no PostgreSQL needed. The literal ``DATABASE_URL`` string below
+auto-marks THIS module ``db`` (tests/db_marker.py), so ``-m "not db"`` deselects
+it: these meta-tests are db-marked by their own literal and run in the db/full
+lanes, not the fast lane. That marking is harmless — in the fast lane the wipe
+no-ops on a blank URL, in the db lane it truncates an already-clean scratch DB.
 """
 
 from __future__ import annotations

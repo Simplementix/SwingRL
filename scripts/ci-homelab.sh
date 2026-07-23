@@ -161,7 +161,7 @@ $DEV_COMPOSE run --rm --entrypoint "" swingrl uv run pip-audit --strict \
 echo "=== [6/6] Cleanup ==="
 docker exec pg16 psql -U temporal -d postgres -c "DROP DATABASE IF EXISTS swingrl_test;" || true
 docker exec pg16 psql -U temporal -d postgres -tAc \
-    "SELECT datname FROM pg_database WHERE datname ~ '^swingrl_(gw[0-9]+|main[0-9]+)_test$'" |
+    "SELECT datname FROM pg_database WHERE datname ~ '^swingrl_([a-z0-9]+_)*(gw|main)[0-9]+_test$'" |
 while read -r db; do
     [ -n "$db" ] && docker exec pg16 psql -U temporal -d postgres \
         -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE);" || true

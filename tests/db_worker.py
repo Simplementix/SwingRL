@@ -2,9 +2,17 @@
 
 Every xdist worker (and, opt-in via SWINGRL_TEST_ISOLATED_DB=1, every serial
 session) gets its own scratch DB cloned file-level from ``swingrl_test_template``
-(~100-300 ms via CREATE DATABASE … TEMPLATE — no migration replay), so parallel
-workers and concurrent sessions can never share mutable DB state (the
-2026-07-22 two-session corruption incident becomes structurally impossible).
+(~100-300 ms via CREATE DATABASE … TEMPLATE — no migration replay). Clone
+isolation covers the workers WITHIN one session and opt-in serial sessions
+(pid-keyed): those can never share mutable DB state, so the 2026-07-22
+two-session corruption incident becomes structurally impossible for that
+workflow.
+
+Concurrency constraint: two SIMULTANEOUS xdist sessions on the SAME base URL
+derive identical clone names (``swingrl_gw0_test`` …) and each session's
+``DROP DATABASE … WITH (FORCE)`` would kill the other's live clone — a loud
+failure, not corruption. Run at most ONE xdist session per base URL at a time;
+give concurrent sessions DIFFERENT base URLs.
 
 Naming: derived names always end in ``_test`` so the existing name guard
 (tests/db_guard.py:67 — any ``*_test`` passes) admits them UNCHANGED: gw0 on
@@ -25,7 +33,7 @@ import psycopg
 from psycopg import sql
 
 from swingrl.data.migration_runner import EXPECTED_SCHEMA_VERSION
-from tests.db_guard import classify_db_url
+from tests.db_guard import classify_db_url, resolve_target_db_url
 
 TEMPLATE_DB = "swingrl_test_template"
 
@@ -73,7 +81,12 @@ def ensure_isolated_db(base_url: str, worker_url: str) -> None:
     error two workers can hit when cloning simultaneously, then verifies the
     clone's ledger is at EXPECTED_SCHEMA_VERSION so a stale template fails loud.
     """
-    _, worker_name = classify_db_url(worker_url)
+    verdict, worker_name = classify_db_url(worker_url)
+    if verdict != "safe" or worker_name is None:
+        raise RuntimeError(
+            f"Refusing to create an isolated DB from a non-test worker URL "
+            f"(verdict={verdict!r}, name={worker_name!r})."
+        )
     with psycopg.connect(base_url, autocommit=True) as admin:
         admin.execute(
             sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(worker_name))
@@ -109,7 +122,7 @@ def activate_isolated_db() -> None:
     """Rewrite DATABASE_URL to this process's isolated clone (no-op when not applicable)."""
     global _active_worker_url, _admin_base_url
     token = isolation_token()
-    base_url = os.environ.get("DATABASE_URL", "").strip()
+    base_url = resolve_target_db_url()
     if token is None or not base_url:
         return
     worker_url = derive_isolated_db_url(base_url, token)

@@ -34,7 +34,7 @@ print(f'applied={n} current_version={current_schema_version(db)}')
 
 echo "=== [4/4] Reap stale worker/session clones ==="
 docker exec "$PG_CONTAINER" psql -U temporal -d postgres -tAc \
-    "SELECT datname FROM pg_database WHERE datname ~ '^swingrl_(gw[0-9]+|main[0-9]+)_test$'" |
+    "SELECT datname FROM pg_database WHERE datname ~ '^swingrl_([a-z0-9]+_)*(gw|main)[0-9]+_test$'" |
 while read -r db; do
     [ -n "$db" ] && docker exec "$PG_CONTAINER" psql -U temporal -d postgres \
         -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE);"
