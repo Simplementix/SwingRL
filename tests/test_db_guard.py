@@ -2,10 +2,27 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
 import tests.db_guard as guard
 from tests.db_guard import classify_db_url, resolve_target_db_url
+
+
+@pytest.fixture(autouse=True)
+def _clear_yaml_fallback_cache() -> Iterator[None]:
+    """Isolate the memoized YAML fallback around every test in this module.
+
+    ``resolve_target_db_url`` memoizes ``_yaml_fallback_url`` with ``lru_cache``.
+    The resolver tests here monkeypatch ``guard.load_config`` and would otherwise
+    poison each other (and be poisoned by earlier suite tests) through that shared
+    cache. Clear it before (isolate from prior tests) and after (don't leak this
+    file's stubbed config into later tests).
+    """
+    guard._yaml_fallback_url.cache_clear()
+    yield
+    guard._yaml_fallback_url.cache_clear()
 
 
 @pytest.mark.parametrize(
