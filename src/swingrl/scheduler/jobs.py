@@ -990,16 +990,27 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
 
     # Still live (partially_filled / new / accepted): warn per state, keep the row open.
     if slice_recorded:
+        requested_qty = getattr(order, "qty", None)
+        requested = (
+            requested_qty
+            if requested_qty is not None
+            else f"${_safe_float(getattr(order, 'notional', None))} notional"
+        )
         ctx.alerter.send_alert(
             level="warning",
-            title="Equity auction order PARTIALLY filled — recorded",
+            title=f"Equity auction order PARTIALLY filled — {row['symbol']} recorded",
             message=(
                 f"{row['symbol']} {row['side']} (order {order_id}) partially filled: "
                 f"{delta_qty} recorded now ({cum_qty} cumulative of "
-                f"{getattr(order, 'qty', None)} requested) at {cum_avg} avg — remainder "
+                f"{requested} requested) at {cum_avg} avg — remainder "
                 "still working, row stays open."
             ),
             environment="equity",
+            # Ruling 2026-07-23: valid partials on different symbols are distinct events,
+            # never duplicates — bypass the consecutive gate and the shared-title cooldown
+            # (which delivered 1 of 8 on 2026-07-23). Title carries the symbol so two
+            # same-morning partials cannot collide even at the Discord level.
+            bypass_suppression=True,
         )
     else:
         ctx.alerter.send_alert(
