@@ -898,7 +898,7 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
         if unusable:
             ctx.alerter.send_alert(
                 level="warning",
-                title="Equity auction order filled — amounts unparseable",
+                title=f"Equity auction order filled — {row['symbol']} amounts unparseable",
                 message=(
                     f"{row['symbol']} {row['side']} (order {order_id}) reports filled but the "
                     f"broker amounts are unusable (filled_qty="
@@ -907,6 +907,9 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
                     "open for the next confirmation run to retry."
                 ),
                 environment="equity",
+                # Finding 2: one-shot warning — the consecutive-failures gate (count 1 < 3)
+                # would suppress it to zero, and the symbol de-collides the cooldown key.
+                bypass_suppression=True,
             )
             log.warning(
                 "equity_auction_fill_unparseable_amounts",
@@ -924,18 +927,52 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
         return True
 
     if status in _TERMINAL_DEAD_STATUSES:
+        # Finding 1: a dying order that reports NEW executed shares with no parseable average
+        # price could not be booked as a slice above (the slice block needs cum_avg). Stamping
+        # resolved here would unbook those shares forever and understate total_qty. Warn once
+        # and leave the row OPEN for a retry. Keep this guard exactly this narrow: a terminal
+        # order with NO new shares (delta_qty <= 1e-9) must still stamp and close as before
+        # (ruling 2), or dead orders would nag forever.
+        if delta_qty > 1e-9 and cum_avg is None:
+            ctx.alerter.send_alert(
+                level="warning",
+                title=f"Equity auction order {status} — {row['symbol']} amounts unparseable",
+                message=(
+                    f"{row['symbol']} {row['side']} (order {order_id}) is {status} with "
+                    f"{delta_qty} newly executed shares but no parseable average price "
+                    f"(filled_qty={getattr(order, 'filled_qty', None)}, filled_avg_price="
+                    f"{getattr(order, 'filled_avg_price', None)}) — nothing recorded, row left "
+                    "open for the next confirmation run to retry."
+                ),
+                environment="equity",
+                # Finding 2: one-shot warning must bypass the consecutive-failures gate.
+                bypass_suppression=True,
+            )
+            log.warning(
+                "pending_order_terminal_unparseable_amounts",
+                order_id=order_id,
+                symbol=row["symbol"],
+                status=status,
+                filled_qty=getattr(order, "filled_qty", None),
+                filled_avg_price=getattr(order, "filled_avg_price", None),
+            )
+            return False
         disposition = "canceled" if status in {"canceled", "rejected", "replaced"} else "expired"
         _stamp_pending_resolved(ctx, order_id, disposition)
         total_qty = prev_qty + (delta_qty if slice_recorded else 0.0)
         ctx.alerter.send_alert(
             level="warning",
-            title=f"Equity auction order {disposition} — closed",
+            title=f"Equity auction order {disposition} — {row['symbol']} closed",
             message=(
                 f"{row['symbol']} {row['side']} (order {order_id}) is {status}: "
                 f"{total_qty} filled+recorded of {getattr(order, 'qty', None)} requested. "
                 "Row closed — no further warnings."
             ),
             environment="equity",
+            # Finding 2: the ruling's ONE final alert — bypass the consecutive-failures gate
+            # (count 1 < 3 would suppress it) and name the symbol so the same-title cooldown
+            # cannot swallow a sibling terminal-close for another symbol the same morning.
+            bypass_suppression=True,
         )
         log.warning(
             "pending_order_closed_terminal",
