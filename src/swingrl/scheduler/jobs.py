@@ -811,7 +811,11 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
 
     order_id = row["order_id"]
     order = adapter.get_order_status(order_id)
-    status = str(getattr(order, "status", "") or "").lower()
+    raw_status = getattr(order, "status", "")
+    # alpaca-py returns an OrderStatus ENUM whose str() is 'OrderStatus.FILLED' — compare on
+    # .value ('filled'). Plain strings (tests, other brokers) pass through unchanged.
+    # Incident 2026-07-23: without this, every filled auction order was misclassified live.
+    status = str(getattr(raw_status, "value", raw_status) or "").lower()
     cum_qty = _safe_float(getattr(order, "filled_qty", None)) or 0.0
     cum_avg = _safe_float(getattr(order, "filled_avg_price", None))
 
