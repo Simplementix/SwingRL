@@ -258,6 +258,23 @@ class TestMetaOrchestratorRegimeVector:
         assert set(vec.keys()) == {"bull", "bear", "crisis", "sideways"}
         assert abs(vec["bull"] - 0.33) < 1e-6
 
+    def test_create_hmm_db_preserves_canonical_pk(self, tmp_path: Path) -> None:
+        """Ruling 2026-07-22: the helper must never strip hmm_state_history's PRIMARY KEY.
+
+        The pre-fix helper DROP+recreated the table without the PK; production
+        upserts (ON CONFLICT (environment, date), hmm_regime.py:320) then fail
+        suites later with an error that looks nothing like its cause.
+        """
+        db_url = self._create_hmm_db(tmp_path, row=("2026-01-01", "equity", 0.6, 0.2, 0.1))
+        conn = psycopg.connect(db_url, autocommit=True)
+        row = conn.execute(
+            "SELECT con.conname FROM pg_constraint con "
+            "JOIN pg_class c ON c.oid = con.conrelid "
+            "WHERE c.relname = 'hmm_state_history' AND con.contype = 'p'"
+        ).fetchone()
+        conn.close()
+        assert row is not None, "hmm_state_history lost its PRIMARY KEY"
+
 
 # ---------------------------------------------------------------------------
 # TestMetaOrchestratorFinalMetrics
