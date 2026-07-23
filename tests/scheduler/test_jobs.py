@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import psycopg
 import pytest
+from alpaca.trading.enums import OrderStatus
 from psycopg.rows import dict_row
 
 from swingrl.config.schema import load_config
@@ -1060,6 +1061,62 @@ class TestEquityFillConfirmationJob:
         assert mock_ctx.alerter.send_embed.called  # trade embed fired
         # The pending order is stamped resolved so the next run does not re-record it.
         assert mock_ctx.pending_row("o1")["resolved_at"] is not None
+
+    def test_fill_confirmation_enum_status_filled_closes_row(self, mock_ctx: _MockCtx) -> None:
+        """Ruling 2026-07-23: a REAL alpaca-py OrderStatus.FILLED enum must close the row.
+
+        Incident 2026-07-23: str(OrderStatus.FILLED).lower() == 'orderstatus.filled' never
+        matched 'filled', so all 8 fully-filled auction orders were misclassified as
+        still-live: false PARTIALLY-filled alerts, rows open forever, daily nag alerts.
+        Production payloads carry the enum, not a string (proper-testing house rule).
+        """
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="oenum1", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.alpaca.order_status(
+            "oenum1",
+            status=OrderStatus.FILLED,
+            filled_avg_price=739.25,
+            filled_qty=0.068434223,
+        )
+        equity_fill_confirmation_job()
+        row = mock_ctx.pending_row("oenum1")
+        assert row["resolved_at"] is not None, "enum FILLED must stamp resolved_at"
+        assert row["disposition"] == "filled"
+        titles = [
+            c.kwargs.get("title", c.args[1] if len(c.args) > 1 else "")
+            for c in mock_ctx.alerter.send_alert.call_args_list
+        ]
+        assert not any("PARTIALLY" in t for t in titles), titles
+
+    def test_fill_confirmation_enum_status_partial_stays_open(self, mock_ctx: _MockCtx) -> None:
+        """A REAL OrderStatus.PARTIALLY_FILLED enum takes the valid-partial path (row open)."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="oenum2", cycle_id=42, symbol="QQQ", side="buy")
+        mock_ctx.alpaca.order_status(
+            "oenum2",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=694.63,
+            filled_qty=0.05,
+            qty=0.0973036,
+        )
+        equity_fill_confirmation_job()
+        row = mock_ctx.pending_row("oenum2")
+        assert row["resolved_at"] is None, "genuine partial must stay open"
+
+    def test_fill_confirmation_enum_status_canceled_closes_terminal(
+        self, mock_ctx: _MockCtx
+    ) -> None:
+        """A REAL OrderStatus.CANCELED enum takes the terminal-dead path."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="oenum3", cycle_id=42, symbol="VTI", side="buy")
+        mock_ctx.alpaca.order_status("oenum3", status=OrderStatus.CANCELED)
+        equity_fill_confirmation_job()
+        row = mock_ctx.pending_row("oenum3")
+        assert row["resolved_at"] is not None
+        assert row["disposition"] == "canceled"
 
     def test_fill_confirmation_closes_canceled_order(self, mock_ctx: _MockCtx) -> None:
         """RULING-2: a canceled never-filled order gets ONE final warning and a terminal
