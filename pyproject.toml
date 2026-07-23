@@ -109,7 +109,7 @@ pythonpath = ["src", "."]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--durations=25 --durations-min=1.0"
+addopts = "-p pytester --durations=25 --durations-min=1.0"
 markers = [
     "integration: requires real API keys and network access (skipped in CI)",
     "slow: long-running determinism/reproducibility tests (included in CI, no network)",
