@@ -94,6 +94,7 @@ dev = [
     "responses>=0.25",
     "pytest-mock>=3.12",
     "pytest-timeout>=2.1.0",
+    "pytest-xdist>=3.5",
     # Memory service test dependencies (services/memory/ tests run inside swingrl container)
     "fastapi>=0.110",
     "anyio[trio]>=4.0",
