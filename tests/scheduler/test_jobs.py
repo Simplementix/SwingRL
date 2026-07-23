@@ -1170,6 +1170,66 @@ class TestEquityFillConfirmationJob:
         assert mock_ctx.pending_row("o5")["resolved_at"] is None
         assert mock_ctx.pending_row("o5")["disposition"] is None
 
+    def test_partial_fill_alert_is_per_symbol_and_unsuppressed(self, mock_ctx: _MockCtx) -> None:
+        """Ruling 2026-07-23: every VALID partial notifies — symbol in title, no suppression.
+
+        Two same-morning partials on different symbols are distinct events, not duplicates:
+        the old shared title + consecutive-gate + cooldown delivered only 1 of 8.
+        """
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="op1", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.set_pending_order(order_id="op2", cycle_id=42, symbol="QQQ", side="buy")
+        mock_ctx.alpaca.order_status(
+            "op1",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=739.25,
+            filled_qty=0.03,
+            qty=0.068434223,
+        )
+        mock_ctx.alpaca.order_status(
+            "op2",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=694.63,
+            filled_qty=0.05,
+            qty=0.0973036,
+        )
+        equity_fill_confirmation_job()
+        partial_calls = [
+            c
+            for c in mock_ctx.alerter.send_alert.call_args_list
+            if "PARTIALLY filled" in (c.kwargs.get("title") or "")
+        ]
+        assert len(partial_calls) == 2, partial_calls
+        titles = sorted(c.kwargs["title"] for c in partial_calls)
+        assert any("QQQ" in t for t in titles), titles
+        assert any("SPY" in t for t in titles), titles
+        assert all(c.kwargs.get("bypass_suppression") is True for c in partial_calls)
+
+    def test_partial_fill_alert_notional_order_text(self, mock_ctx: _MockCtx) -> None:
+        """Notional orders (qty=None) show '$X notional' instead of 'None requested'."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="op3", cycle_id=42, symbol="VTI", side="buy")
+        mock_ctx.alpaca.order_status(
+            "op3",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=365.13,
+            filled_qty=0.05,
+            qty=None,
+            notional=61.10,
+        )
+        equity_fill_confirmation_job()
+        partial_calls = [
+            c
+            for c in mock_ctx.alerter.send_alert.call_args_list
+            if "PARTIALLY filled" in (c.kwargs.get("title") or "")
+        ]
+        assert len(partial_calls) == 1
+        msg = partial_calls[0].kwargs["message"]
+        assert "None requested" not in msg, msg
+        assert "$61.1 notional" in msg, msg
+
     def test_fill_confirmation_idempotent_after_crash(self, mock_ctx: _MockCtx) -> None:
         """EXEC-D11 (review #2): a prior run that recorded the trade but crashed before
         stamping resolved_at must NOT re-record (duplicate TEXT PK) or fire a false
