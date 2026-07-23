@@ -1076,6 +1076,12 @@ class TestEquityFillConfirmationJob:
         assert row["resolved_at"] is not None
         assert row["disposition"] == "canceled"
         assert mock_ctx.alerter.send_alert.called
+        # Finding 2: the one-shot terminal-close warning must bypass the consecutive-failures
+        # gate (count 1 < 3 would suppress it) and carry the symbol so the same-title cooldown
+        # cannot swallow a sibling for another symbol the same morning.
+        close_kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert close_kwargs["bypass_suppression"] is True
+        assert "QQQ" in close_kwargs["title"]
 
         # Second run: the resolved row is no longer in the worklist — no repeat warning.
         mock_ctx.alerter.send_alert.reset_mock()
@@ -1231,6 +1237,9 @@ class TestEquityFillConfirmationJob:
         kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
         assert kwargs["level"] == "warning"
         assert "unparseable" in kwargs["title"].lower()
+        # Finding 2: one-shot warning must bypass suppression and name the symbol in the title.
+        assert kwargs["bypass_suppression"] is True
+        assert "SPY" in kwargs["title"]
 
         # Second run: the broker now returns a usable price -> the fill is recorded and the
         # row is stamped 'filled' (retry path works end-to-end).
@@ -1267,6 +1276,50 @@ class TestEquityFillConfirmationJob:
         kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
         assert kwargs["level"] == "warning"
         assert "unparseable" in kwargs["title"].lower()
+        # Finding 2: one-shot warning must bypass suppression and name the symbol in the title.
+        assert kwargs["bypass_suppression"] is True
+        assert "QQQ" in kwargs["title"]
+
+    def test_fill_confirmation_terminal_unparseable_left_open(self, mock_ctx: _MockCtx) -> None:
+        """Finding 1: a terminal (expired) order reporting NEW executed shares but no parseable
+        average price must NOT stamp the terminal disposition and silently unbook those shares —
+        it warns (one-shot, bypass_suppression, symbol in title) and leaves the row open. A later
+        run with a good price records the slice AND stamps the terminal disposition (retry path
+        proven end-to-end)."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="otu1", cycle_id=42, symbol="XLK", side="buy")
+        # First run: expired with real filled shares but no usable average price.
+        mock_ctx.alpaca.order_status(
+            "otu1", status="expired", filled_avg_price=None, filled_qty=0.02, qty=0.05
+        )
+        equity_fill_confirmation_job()
+
+        # Nothing recorded, row NOT stamped terminal, a one-shot WARNING fired.
+        assert mock_ctx.inserted_trade() is None
+        row = mock_ctx.pending_row("otu1")
+        assert row["resolved_at"] is None
+        assert row["disposition"] is None
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert "unparseable" in kwargs["title"].lower()
+        assert "XLK" in kwargs["title"]
+        assert kwargs["bypass_suppression"] is True
+
+        # Second run: the broker now returns a usable price -> the slice is recorded AND the
+        # terminal disposition is stamped (retry path works end-to-end).
+        mock_ctx.alpaca.order_status(
+            "otu1", status="expired", filled_avg_price=175.50, filled_qty=0.02, qty=0.05
+        )
+        equity_fill_confirmation_job()
+
+        trade = mock_ctx.inserted_trade()
+        assert trade is not None
+        assert float(trade["quantity"]) == pytest.approx(0.02)
+        assert float(trade["price"]) == pytest.approx(175.50)
+        resolved = mock_ctx.pending_row("otu1")
+        assert resolved["resolved_at"] is not None
+        assert resolved["disposition"] == "expired"
 
 
 class TestCycleOrdersInfoPing:
