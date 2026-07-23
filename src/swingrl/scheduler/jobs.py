@@ -811,7 +811,11 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
 
     order_id = row["order_id"]
     order = adapter.get_order_status(order_id)
-    status = str(getattr(order, "status", "") or "").lower()
+    raw_status = getattr(order, "status", "")
+    # alpaca-py returns an OrderStatus ENUM whose str() is 'OrderStatus.FILLED' — compare on
+    # .value ('filled'). Plain strings (tests, other brokers) pass through unchanged.
+    # Incident 2026-07-23: without this, every filled auction order was misclassified live.
+    status = str(getattr(raw_status, "value", raw_status) or "").lower()
     cum_qty = _safe_float(getattr(order, "filled_qty", None)) or 0.0
     cum_avg = _safe_float(getattr(order, "filled_avg_price", None))
 
@@ -986,16 +990,27 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
 
     # Still live (partially_filled / new / accepted): warn per state, keep the row open.
     if slice_recorded:
+        requested_qty = getattr(order, "qty", None)
+        requested = (
+            requested_qty
+            if requested_qty is not None
+            else f"${_safe_float(getattr(order, 'notional', None))} notional"
+        )
         ctx.alerter.send_alert(
             level="warning",
-            title="Equity auction order PARTIALLY filled — recorded",
+            title=f"Equity auction order PARTIALLY filled — {row['symbol']} recorded",
             message=(
                 f"{row['symbol']} {row['side']} (order {order_id}) partially filled: "
                 f"{delta_qty} recorded now ({cum_qty} cumulative of "
-                f"{getattr(order, 'qty', None)} requested) at {cum_avg} avg — remainder "
+                f"{requested} requested) at {cum_avg} avg — remainder "
                 "still working, row stays open."
             ),
             environment="equity",
+            # Ruling 2026-07-23: valid partials on different symbols are distinct events,
+            # never duplicates. bypass_suppression skips ONLY the consecutive-warnings gate;
+            # the per-title cooldown still runs but is de-collided by the symbol in the title
+            # (the old shared title collapsed 8 partials into 1 delivered on 2026-07-23).
+            bypass_suppression=True,
         )
     else:
         ctx.alerter.send_alert(

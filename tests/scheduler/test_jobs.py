@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import psycopg
 import pytest
+from alpaca.trading.enums import OrderStatus
 from psycopg.rows import dict_row
 
 from swingrl.config.schema import load_config
@@ -1061,6 +1062,62 @@ class TestEquityFillConfirmationJob:
         # The pending order is stamped resolved so the next run does not re-record it.
         assert mock_ctx.pending_row("o1")["resolved_at"] is not None
 
+    def test_fill_confirmation_enum_status_filled_closes_row(self, mock_ctx: _MockCtx) -> None:
+        """Ruling 2026-07-23: a REAL alpaca-py OrderStatus.FILLED enum must close the row.
+
+        Incident 2026-07-23: str(OrderStatus.FILLED).lower() == 'orderstatus.filled' never
+        matched 'filled', so all 8 fully-filled auction orders were misclassified as
+        still-live: false PARTIALLY-filled alerts, rows open forever, daily nag alerts.
+        Production payloads carry the enum, not a string (proper-testing house rule).
+        """
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="oenum1", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.alpaca.order_status(
+            "oenum1",
+            status=OrderStatus.FILLED,
+            filled_avg_price=739.25,
+            filled_qty=0.068434223,
+        )
+        equity_fill_confirmation_job()
+        row = mock_ctx.pending_row("oenum1")
+        assert row["resolved_at"] is not None, "enum FILLED must stamp resolved_at"
+        assert row["disposition"] == "filled"
+        titles = [
+            c.kwargs.get("title", c.args[1] if len(c.args) > 1 else "")
+            for c in mock_ctx.alerter.send_alert.call_args_list
+        ]
+        assert not any("PARTIALLY" in t for t in titles), titles
+
+    def test_fill_confirmation_enum_status_partial_stays_open(self, mock_ctx: _MockCtx) -> None:
+        """A REAL OrderStatus.PARTIALLY_FILLED enum takes the valid-partial path (row open)."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="oenum2", cycle_id=42, symbol="QQQ", side="buy")
+        mock_ctx.alpaca.order_status(
+            "oenum2",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=694.63,
+            filled_qty=0.05,
+            qty=0.0973036,
+        )
+        equity_fill_confirmation_job()
+        row = mock_ctx.pending_row("oenum2")
+        assert row["resolved_at"] is None, "genuine partial must stay open"
+
+    def test_fill_confirmation_enum_status_canceled_closes_terminal(
+        self, mock_ctx: _MockCtx
+    ) -> None:
+        """A REAL OrderStatus.CANCELED enum takes the terminal-dead path."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="oenum3", cycle_id=42, symbol="VTI", side="buy")
+        mock_ctx.alpaca.order_status("oenum3", status=OrderStatus.CANCELED)
+        equity_fill_confirmation_job()
+        row = mock_ctx.pending_row("oenum3")
+        assert row["resolved_at"] is not None
+        assert row["disposition"] == "canceled"
+
     def test_fill_confirmation_closes_canceled_order(self, mock_ctx: _MockCtx) -> None:
         """RULING-2: a canceled never-filled order gets ONE final warning and a terminal
         disposition — it must not stay open and re-warn daily forever."""
@@ -1112,6 +1169,66 @@ class TestEquityFillConfirmationJob:
         # Remainder still working: row stays open, no disposition yet.
         assert mock_ctx.pending_row("o5")["resolved_at"] is None
         assert mock_ctx.pending_row("o5")["disposition"] is None
+
+    def test_partial_fill_alert_is_per_symbol_and_unsuppressed(self, mock_ctx: _MockCtx) -> None:
+        """Ruling 2026-07-23: every VALID partial notifies — symbol in title, no suppression.
+
+        Two same-morning partials on different symbols are distinct events, not duplicates:
+        the old shared title + consecutive-gate + cooldown delivered only 1 of 8.
+        """
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="op1", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.set_pending_order(order_id="op2", cycle_id=42, symbol="QQQ", side="buy")
+        mock_ctx.alpaca.order_status(
+            "op1",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=739.25,
+            filled_qty=0.03,
+            qty=0.068434223,
+        )
+        mock_ctx.alpaca.order_status(
+            "op2",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=694.63,
+            filled_qty=0.05,
+            qty=0.0973036,
+        )
+        equity_fill_confirmation_job()
+        partial_calls = [
+            c
+            for c in mock_ctx.alerter.send_alert.call_args_list
+            if "PARTIALLY filled" in (c.kwargs.get("title") or "")
+        ]
+        assert len(partial_calls) == 2, partial_calls
+        titles = sorted(c.kwargs["title"] for c in partial_calls)
+        assert any("QQQ" in t for t in titles), titles
+        assert any("SPY" in t for t in titles), titles
+        assert all(c.kwargs.get("bypass_suppression") is True for c in partial_calls)
+
+    def test_partial_fill_alert_notional_order_text(self, mock_ctx: _MockCtx) -> None:
+        """Notional orders (qty=None) show '$X notional' instead of 'None requested'."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="op3", cycle_id=42, symbol="VTI", side="buy")
+        mock_ctx.alpaca.order_status(
+            "op3",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=365.13,
+            filled_qty=0.05,
+            qty=None,
+            notional=61.10,
+        )
+        equity_fill_confirmation_job()
+        partial_calls = [
+            c
+            for c in mock_ctx.alerter.send_alert.call_args_list
+            if "PARTIALLY filled" in (c.kwargs.get("title") or "")
+        ]
+        assert len(partial_calls) == 1
+        msg = partial_calls[0].kwargs["message"]
+        assert "None requested" not in msg, msg
+        assert "$61.1 notional" in msg, msg
 
     def test_fill_confirmation_idempotent_after_crash(self, mock_ctx: _MockCtx) -> None:
         """EXEC-D11 (review #2): a prior run that recorded the trade but crashed before
