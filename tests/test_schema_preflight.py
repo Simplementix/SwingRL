@@ -10,9 +10,9 @@ import os
 
 import psycopg
 import pytest
-from tests.fixtures.schema_preflight import expected_pk_tables, schema_integrity_errors
 
 from swingrl.data.postgres_schema import _HMM_STATE_HISTORY_DDL
+from tests.fixtures.schema_preflight import expected_pk_tables, schema_integrity_errors
 
 
 def test_expected_pk_tables_cover_known_pk_tables() -> None:
