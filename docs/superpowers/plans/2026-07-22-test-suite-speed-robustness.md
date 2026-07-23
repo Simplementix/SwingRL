@@ -120,10 +120,12 @@ per `src/swingrl/data/migration_runner.py:34`). This mirrors CI stage 2.7
 
 | Metric | Baseline (Task 1) | After Tasks 1–4 (Task 10) | Target |
 |---|---|---|---|
-| Full suite wall time | 54:48 (accepted 2026-07-22 baseline, user ruling — no standalone run) | 30:03 (Wave 1 gate, 2026-07-23, serial, fresh `swingrl_w1_test`; 1952 passed / 7 skipped after the d0a9a0d cache-fix) | ≤ 20 min |
-| Fast lane wall time | n/a (lane doesn't exist yet) | 40.52 s (`-n auto`, 989 selected, 988 passed / 1 skipped) | < 2 min |
+| Full suite wall time | 54:48 (accepted 2026-07-22 baseline, user ruling — no standalone run) | **17:36** (`-n 4`, per-worker clones, fresh `swingrl_final_test`, 2026-07-23: 1964 passed / 0 failed / 7 skipped) — intermediate: 30:03 serial at the Wave 1 gate | ≤ 20 min ✅ |
+| Fast lane wall time | n/a (lane doesn't exist yet) | 35–51 s (`-n auto`, 996 selected, 995 passed / 1 skipped) | < 2 min ✅ |
 | Top-25 durations | n/a (no standalone baseline run, user ruling) | See "Wave 1 gate durations" note below | — |
 | Tests marked `db` | n/a | 961 of 1955 collected (994 fast lane) | — |
+
+**Final `-n 4` durations (2026-07-23, Task 10):** slowest entries are `test_cleanup_connection_is_reused_across_wipes` (8.4 s call — it deliberately double-truncates), `test_pipeline` feature writes (7.0 s), and `tests/data/test_migrations_content.py` teardowns at 5.6–6.6 s (TRUNCATE under 4-way parallel I/O contention — higher per-test than serial, but 4 run at once). Second-tier costs match the reviews' forecast (`db_with_legacy_schema` re-migration, seeded pipeline writes); parallelism is the remedy already applied. No follow-up plan needed — both success criteria met.
 
 **Wave 1 gate durations (2026-07-23):** top of the slowest-25 block is dominated by ~2.9–3.4 s
 **teardown** entries on db-lane tests (`tests/data/test_migrations_content.py`,
