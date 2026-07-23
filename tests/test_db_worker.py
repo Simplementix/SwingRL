@@ -7,6 +7,7 @@ this module stays out of the auto-derived db lane (it never touches Postgres).
 from __future__ import annotations
 
 import pytest
+
 from tests.db_worker import derive_isolated_db_url, isolation_token
 
 _BASE = "postgresql://u:pw@172.18.5.246:5432/swingrl_test"  # pragma: allowlist secret

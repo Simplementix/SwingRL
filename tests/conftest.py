@@ -25,6 +25,7 @@ from swingrl.data.db import DatabaseManager
 from swingrl.envs.equity import StockTradingEnv
 from tests.db_guard import SAFE_DB_NAMES, classify_db_url, resolve_target_db_url
 from tests.db_marker import DB_FIXTURE_NAMES, module_mentions_database_url
+from tests.db_worker import activate_isolated_db, drop_isolated_db
 
 # Autouse fixture — imported so it registers globally (wipes test DB after each test).
 from tests.fixtures.db_cleanup import wipe_db_after_test  # noqa: F401
@@ -45,6 +46,13 @@ def pytest_configure(config: pytest.Config) -> None:
     DB — any canonical table present without its PRIMARY KEY aborts the session
     with the table named (2026-07-22 incident cost three suite-hours without it).
     """
+    # Per-worker/per-session DB isolation (tests/db_worker.py). Must run FIRST:
+    # the name guard and schema preflight below validate the rewritten URL.
+    try:
+        activate_isolated_db()
+    except RuntimeError as exc:
+        pytest.exit(str(exc), returncode=2)
+
     db_url = resolve_target_db_url()
     verdict, db_name = classify_db_url(db_url)
     if verdict == "blank":
@@ -91,6 +99,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             str(item.path)
         ):
             item.add_marker(pytest.mark.db)
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Drop this process's isolated DB clone at session end (best-effort)."""
+    drop_isolated_db()
 
 
 @pytest.fixture(autouse=True)
