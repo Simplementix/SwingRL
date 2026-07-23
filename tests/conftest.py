@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
+import psycopg
 import pytest
 import structlog
 
@@ -27,6 +28,7 @@ from tests.db_marker import DB_FIXTURE_NAMES, module_mentions_database_url
 
 # Autouse fixture — imported so it registers globally (wipes test DB after each test).
 from tests.fixtures.db_cleanup import wipe_db_after_test  # noqa: F401
+from tests.fixtures.schema_preflight import schema_integrity_errors
 
 # ---------------------------------------------------------------------------
 # Database safety guard
@@ -34,27 +36,45 @@ from tests.fixtures.db_cleanup import wipe_db_after_test  # noqa: F401
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Refuse to run the suite unless the *resolved* DB target is a test database.
+    """Refuse to run the suite unless the *resolved* DB target is a safe, healthy test DB.
 
-    Resolves the target the same way DatabaseManager does (env DATABASE_URL, then
-    config.system.database_url), so a blank env var with a production URL in YAML
-    config cannot slip past the guard.
+    Layer 2 (name): resolves the target the same way DatabaseManager does (env
+    DATABASE_URL, then config.system.database_url), so a blank env var with a
+    production URL in YAML config cannot slip past the guard.
+    Layer 4 (shape): a cheap pg_constraint fingerprint refuses a poisoned scratch
+    DB — any canonical table present without its PRIMARY KEY aborts the session
+    with the table named (2026-07-22 incident cost three suite-hours without it).
     """
-    verdict, db_name = classify_db_url(resolve_target_db_url())
-    if verdict in {"blank", "safe"}:
+    db_url = resolve_target_db_url()
+    verdict, db_name = classify_db_url(db_url)
+    if verdict == "blank":
         return
     if verdict == "unparseable":
         pytest.exit(
             "Resolved database URL has no parseable database name; refusing to run pytest.",
             returncode=2,
         )
-    pytest.exit(
-        f"REFUSING TO RUN: resolved database {db_name!r} is not a test database. "
-        f"Test fixtures TRUNCATE/DELETE tables. Use a name in "
-        f"{sorted(SAFE_DB_NAMES)} or one ending in '_test'. In CI, "
-        f"scripts/ci-homelab.sh overrides DATABASE_URL automatically.",
-        returncode=2,
-    )
+    if verdict != "safe":
+        pytest.exit(
+            f"REFUSING TO RUN: resolved database {db_name!r} is not a test database. "
+            f"Test fixtures TRUNCATE/DELETE tables. Use a name in "
+            f"{sorted(SAFE_DB_NAMES)} or one ending in '_test'. In CI, "
+            f"scripts/ci-homelab.sh overrides DATABASE_URL automatically.",
+            returncode=2,
+        )
+    try:
+        errors = schema_integrity_errors(db_url)
+    except psycopg.OperationalError as exc:
+        pytest.exit(
+            f"Cannot reach test database {db_name!r} for the schema preflight: {exc}",
+            returncode=2,
+        )
+    if errors:
+        pytest.exit(
+            "SCHEMA PREFLIGHT FAILED — refusing to run against a poisoned test DB:\n  "
+            + "\n  ".join(errors),
+            returncode=2,
+        )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
