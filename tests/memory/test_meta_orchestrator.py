@@ -17,6 +17,7 @@ import pandas as pd
 import psycopg
 import pytest
 
+from swingrl.data.postgres_schema import _HMM_STATE_HISTORY_DDL
 from swingrl.memory.training.meta_orchestrator import MetaTrainingOrchestrator
 
 # ---------------------------------------------------------------------------
@@ -169,26 +170,24 @@ class TestMetaOrchestratorRegimeVector:
     """TRAIN-09: _current_regime_vector() queries hmm_state_history table."""
 
     def _create_hmm_db(self, tmp_path: Path, row: tuple | None = None) -> str:
-        """Create PostgreSQL hmm_state_history table. Returns DATABASE_URL."""
+        """Ensure the CANONICAL hmm_state_history exists; optionally seed one row.
+
+        Never DROPs the production-named table: the canonical DDL is IF NOT
+        EXISTS, the autouse wipe empties rows between db-marked tests, and a
+        hand-rolled replacement shape is exactly the 2026-07-22 PK-loss
+        incident. Insert is by column name because the canonical column order
+        (environment first, plus log_likelihood/fitted_at) differs from the old
+        hand-rolled table. Returns DATABASE_URL.
+        """
         db_url = os.environ.get("DATABASE_URL", "")
         if not db_url:
             pytest.skip("DATABASE_URL not set")
         conn = psycopg.connect(db_url, autocommit=True)
-        conn.execute("DROP TABLE IF EXISTS hmm_state_history CASCADE")
-        conn.execute(
-            """
-            CREATE TABLE hmm_state_history (
-                date DATE,
-                environment VARCHAR,
-                p_bull DOUBLE PRECISION,
-                p_bear DOUBLE PRECISION,
-                p_crisis DOUBLE PRECISION
-            )
-            """
-        )
+        conn.execute(_HMM_STATE_HISTORY_DDL)
         if row is not None:
             conn.execute(
-                "INSERT INTO hmm_state_history VALUES (%s, %s, %s, %s, %s)",
+                "INSERT INTO hmm_state_history (date, environment, p_bull, p_bear, p_crisis) "
+                "VALUES (%s, %s, %s, %s, %s)",
                 list(row),
             )
         conn.close()
@@ -224,24 +223,11 @@ class TestMetaOrchestratorRegimeVector:
 
     def test_current_regime_vector_handles_null_columns(self, tmp_path: Path) -> None:
         """TRAIN-09: NULL columns treated as 0.33/0.17 defaults."""
-        db_url = os.environ.get("DATABASE_URL", "")
-        if not db_url:
-            pytest.skip("DATABASE_URL not set")
+        db_url = self._create_hmm_db(tmp_path)
         conn = psycopg.connect(db_url, autocommit=True)
-        conn.execute("DROP TABLE IF EXISTS hmm_state_history CASCADE")
         conn.execute(
-            """
-            CREATE TABLE hmm_state_history (
-                date DATE,
-                environment VARCHAR,
-                p_bull DOUBLE PRECISION,
-                p_bear DOUBLE PRECISION,
-                p_crisis DOUBLE PRECISION
-            )
-            """
-        )
-        conn.execute(
-            "INSERT INTO hmm_state_history VALUES ('2026-01-01', 'equity', NULL, NULL, NULL)"
+            "INSERT INTO hmm_state_history (date, environment, p_bull, p_bear, p_crisis) "
+            "VALUES ('2026-01-01', 'equity', NULL, NULL, NULL)"
         )
         conn.close()
         orch = _make_orchestrator(tmp_path, database_url=db_url)
