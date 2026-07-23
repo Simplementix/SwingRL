@@ -23,6 +23,7 @@ from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.data.db import DatabaseManager
 from swingrl.envs.equity import StockTradingEnv
 from tests.db_guard import SAFE_DB_NAMES, classify_db_url, resolve_target_db_url
+from tests.db_marker import DB_FIXTURE_NAMES, module_mentions_database_url
 
 # Autouse fixture — imported so it registers globally (wipes test DB after each test).
 from tests.fixtures.db_cleanup import wipe_db_after_test  # noqa: F401
@@ -54,6 +55,22 @@ def pytest_configure(config: pytest.Config) -> None:
         f"scripts/ci-homelab.sh overrides DATABASE_URL automatically.",
         returncode=2,
     )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Auto-stamp the ``db`` marker on every DB-capable test (tests/db_marker.py).
+
+    Explicit ``@pytest.mark.db`` is honored as-is (checked first). Everything the
+    conditional wipe and the fast/db lanes do keys off this marker.
+    """
+    for item in items:
+        if item.get_closest_marker("db") is not None:
+            continue
+        fixturenames: list[str] = getattr(item, "fixturenames", [])
+        if DB_FIXTURE_NAMES.intersection(fixturenames) or module_mentions_database_url(
+            str(item.path)
+        ):
+            item.add_marker(pytest.mark.db)
 
 
 @pytest.fixture(autouse=True)
