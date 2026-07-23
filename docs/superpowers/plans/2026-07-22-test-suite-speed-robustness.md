@@ -120,10 +120,17 @@ per `src/swingrl/data/migration_runner.py:34`). This mirrors CI stage 2.7
 
 | Metric | Baseline (Task 1) | After Tasks 1–4 (Task 10) | Target |
 |---|---|---|---|
-| Full suite wall time | _(record)_ | _(record)_ | ≤ 20 min |
-| Fast lane wall time | n/a (lane doesn't exist yet) | _(record)_ | < 2 min |
-| Top-25 durations | _(paste block)_ | _(paste block)_ | — |
-| Tests marked `db` | n/a | _(record from Task 2 step 6)_ | — |
+| Full suite wall time | 54:48 (accepted 2026-07-22 baseline, user ruling — no standalone run) | 30:03 (Wave 1 gate, 2026-07-23, serial, fresh `swingrl_w1_test`; 1952 passed / 7 skipped after the d0a9a0d cache-fix) | ≤ 20 min |
+| Fast lane wall time | n/a (lane doesn't exist yet) | 40.52 s (`-n auto`, 989 selected, 988 passed / 1 skipped) | < 2 min |
+| Top-25 durations | n/a (no standalone baseline run, user ruling) | See "Wave 1 gate durations" note below | — |
+| Tests marked `db` | n/a | 961 of 1955 collected (994 fast lane) | — |
+
+**Wave 1 gate durations (2026-07-23):** top of the slowest-25 block is dominated by ~2.9–3.4 s
+**teardown** entries on db-lane tests (`tests/data/test_migrations_content.py`,
+`tests/data/test_views.py` — the per-test TRUNCATE itself), with the slowest calls at 4.5 s
+(`test_seed_pinning`, `test_trainer_memory_wiring`, `test_db_cleanup_conn`). Total user CPU was
+7:39 of 30:03 wall — DB wait dominates. Conclusion: Task 8 (per-worker DBs, `-n 4`) is the
+remaining lever to reach ≤20 min; Tasks 5–7 are unaffected (robustness, not speed).
 
 ### Execution prerequisites
 
