@@ -99,6 +99,32 @@ vs sim-realized 0.0013 is a training-assumption gap out of Task 13 scope.
 
 ### Step 6 — Go/No-Go: 🛑 PENDING USER (record below)
 
+## Partial-fill & terminal-disposition policy (09:35 confirmation, 2026-07-22 rulings)
+
+The 09:35 confirmation job (`equity_fill_confirmation_job` → `_confirm_one_pending_order`)
+uses a **slice model** — partial auction fills are recorded, not merely warned about.
+
+- **Slice recording (ruling #1).** Alpaca reports only a cumulative `filled_qty` and a
+  cumulative `filled_avg_price`. Each run records the *increment* of shares filled since the
+  last look as a real trade through the shared post-fill path (`pipeline.record_fill` —
+  trades + positions + fill_quality + realized-P&L), so the books match the broker the same
+  day and the between-cycle risk sweeps mark real positions. Earlier behaviour (partials
+  warned loudly but were left unrecorded) is retired.
+- **Slice pricing.** The increment is priced so recorded dollars reconcile to the broker's
+  cumulative average exactly: `slice_dollars = filled_avg_price × cum_qty −
+  already_recorded_dollars`; `slice_price = slice_dollars / slice_qty`. A degenerate
+  non-positive result falls back to `filled_avg_price` and logs
+  `pending_order_slice_price_fallback`.
+- **Slice trade ids.** The first slice reuses the broker `order_id`; later slices are
+  `{order_id}#<n>` (`#2`, `#3`, …) so one broker order maps to one-or-more `trades` rows
+  without violating the `trades` TEXT primary key.
+- **Terminal disposition (ruling #2).** A terminal broker state stamps `resolved_at` +
+  `disposition` and fires ONE final alert, then the row leaves the worklist — a dead order is
+  closed once, never re-warned daily forever. Mapping: `filled` → `'filled'`;
+  `canceled`/`rejected`/`replaced` → `'canceled'`; `expired`/`done_for_day` → `'expired'`.
+  Any unrecorded final increment is recorded before the row is stamped. A still-live order
+  (`partially_filled`/`new`/`accepted`) gets a warning and stays open for the next run.
+
 ## Findings log (from drills — all on final-review list, none blocking by severity)
 
 1. Zero-order cycles never reach breaker evaluation (deadzone-held cycles skip it;

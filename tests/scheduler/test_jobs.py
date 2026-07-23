@@ -914,8 +914,20 @@ class _MockCtx:
             except Exception:  # noqa: BLE001 — table may not exist yet at RED
                 pass
 
-    def set_pending_order(self, order_id: str, cycle_id: int, symbol: str, side: str) -> None:
-        """Seed the FK parent inference_cycles row (forced id) + an unresolved pending order."""
+    def set_pending_order(
+        self,
+        order_id: str,
+        cycle_id: int,
+        symbol: str,
+        side: str,
+        decision_price: float | None = None,
+    ) -> None:
+        """Seed the FK parent inference_cycles row (forced id) + an unresolved pending order.
+
+        ``decision_price`` seeds the 09:15 sizing price on the worklist row so the confirmation
+        job can forward it into ``record_fill`` (RULING-3); defaults None for the pre-ruling
+        rows the other tests use.
+        """
         with self.db.connection() as conn:
             conn.execute(
                 "INSERT INTO inference_cycles (cycle_id, environment, mode, cycle_ts) "
@@ -924,9 +936,10 @@ class _MockCtx:
                 (cycle_id,),
             )
             conn.execute(
-                "INSERT INTO pending_orders (order_id, cycle_id, symbol, side, submitted_at) "
-                "VALUES (%s, %s, %s, %s, now())",
-                (order_id, cycle_id, symbol, side),
+                "INSERT INTO pending_orders "
+                "(order_id, cycle_id, symbol, side, submitted_at, decision_price) "
+                "VALUES (%s, %s, %s, %s, now(), %s)",
+                (order_id, cycle_id, symbol, side, decision_price),
             )
 
     def inserted_trade(self) -> dict[str, Any] | None:
@@ -1048,9 +1061,9 @@ class TestEquityFillConfirmationJob:
         # The pending order is stamped resolved so the next run does not re-record it.
         assert mock_ctx.pending_row("o1")["resolved_at"] is not None
 
-    def test_fill_confirmation_warns_on_unfilled(self, mock_ctx: _MockCtx) -> None:
-        """EXEC-D11: an order still unfilled after the auction alerts a warning and stays
-        unresolved for the next run — never silently dropped."""
+    def test_fill_confirmation_closes_canceled_order(self, mock_ctx: _MockCtx) -> None:
+        """RULING-2: a canceled never-filled order gets ONE final warning and a terminal
+        disposition — it must not stay open and re-warn daily forever."""
         from swingrl.scheduler.jobs import equity_fill_confirmation_job
 
         mock_ctx.set_pending_order(order_id="o2", cycle_id=42, symbol="QQQ", side="buy")
@@ -1058,17 +1071,26 @@ class TestEquityFillConfirmationJob:
 
         equity_fill_confirmation_job()
 
-        assert "unfilled" in mock_ctx.alerter.send_alert.call_args.kwargs["title"].lower()
-        # Row is NOT resolved — it survives for the next confirmation run.
-        assert mock_ctx.pending_row("o2")["resolved_at"] is None
-        # No trade recorded for an unfilled order.
         assert mock_ctx.inserted_trade() is None
+        row = mock_ctx.pending_row("o2")
+        assert row["resolved_at"] is not None
+        assert row["disposition"] == "canceled"
+        assert mock_ctx.alerter.send_alert.called
+        # Finding 2: the one-shot terminal-close warning must bypass the consecutive-failures
+        # gate (count 1 < 3 would suppress it) and carry the symbol so the same-title cooldown
+        # cannot swallow a sibling for another symbol the same morning.
+        close_kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert close_kwargs["bypass_suppression"] is True
+        assert "QQQ" in close_kwargs["title"]
 
-    def test_fill_confirmation_partial_fill_surfaced(self, mock_ctx: _MockCtx) -> None:
-        """EXEC-D11 (review #1): a partially-filled auction order (filled_qty > 0 but not
-        fully filled) is NOT recorded as a trade, but the warning surfaces the executed shares
-        explicitly (symbol, filled vs requested, fill price) under a distinct PARTIAL title —
-        it must never read as a clean no-fill."""
+        # Second run: the resolved row is no longer in the worklist — no repeat warning.
+        mock_ctx.alerter.send_alert.reset_mock()
+        equity_fill_confirmation_job()
+        assert not mock_ctx.alerter.send_alert.called
+
+    def test_fill_confirmation_partial_fill_recorded(self, mock_ctx: _MockCtx) -> None:
+        """RULING-1: a partial auction fill IS recorded as a trade for the filled quantity
+        at the broker's average price, embed fired, row left open for the remainder."""
         from swingrl.scheduler.jobs import equity_fill_confirmation_job
 
         mock_ctx.set_pending_order(order_id="o5", cycle_id=42, symbol="SPY", side="buy")
@@ -1078,16 +1100,18 @@ class TestEquityFillConfirmationJob:
 
         equity_fill_confirmation_job()
 
+        trade = mock_ctx.inserted_trade()
+        assert trade is not None
+        assert float(trade["quantity"]) == pytest.approx(0.02)
+        assert float(trade["price"]) == pytest.approx(600.10)
+        assert trade["cycle_id"] == 42
+        assert mock_ctx.alerter.send_embed.called
         kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
-        assert kwargs["level"] == "warning"
         assert "partially" in kwargs["title"].lower()
-        # Executed-shares detail surfaced: filled qty, requested qty, and fill price.
-        assert "0.02" in kwargs["message"]
-        assert "0.05" in kwargs["message"]
-        assert "600.1" in kwargs["message"]
-        # Not recorded as a trade; row stays unresolved for the next run / user decision.
-        assert mock_ctx.inserted_trade() is None
+        assert "recorded" in kwargs["title"].lower()
+        # Remainder still working: row stays open, no disposition yet.
         assert mock_ctx.pending_row("o5")["resolved_at"] is None
+        assert mock_ctx.pending_row("o5")["disposition"] is None
 
     def test_fill_confirmation_idempotent_after_crash(self, mock_ctx: _MockCtx) -> None:
         """EXEC-D11 (review #2): a prior run that recorded the trade but crashed before
@@ -1098,8 +1122,11 @@ class TestEquityFillConfirmationJob:
 
         mock_ctx.set_pending_order(order_id="o6", cycle_id=42, symbol="SPY", side="buy")
         # Prior run recorded the trade (same broker order id = trades PK) then crashed before
-        # UPDATE pending_orders SET resolved_at — so the row is still unresolved.
-        mock_ctx.seed_trade("o6", cycle_id=42, symbol="SPY", side="buy", price=600.10)
+        # UPDATE pending_orders SET resolved_at — so the row is still unresolved. The seeded
+        # quantity equals the broker cumulative so this run's slice delta is exactly zero.
+        mock_ctx.seed_trade(
+            "o6", cycle_id=42, symbol="SPY", side="buy", price=600.10, quantity=0.0416
+        )
         mock_ctx.alpaca.order_status(
             "o6", status="filled", filled_avg_price=600.10, filled_qty=0.0416
         )
@@ -1108,9 +1135,191 @@ class TestEquityFillConfirmationJob:
 
         # Quietly resolved — no re-record, no critical.
         assert mock_ctx.pending_row("o6")["resolved_at"] is not None
+        assert mock_ctx.pending_row("o6")["disposition"] == "filled"
         assert mock_ctx.trade_count("o6") == 1  # no duplicate trade
         levels = [c.kwargs.get("level") for c in mock_ctx.alerter.send_alert.call_args_list]
         assert "critical" not in levels
+
+    def test_fill_confirmation_passes_decision_price(self, mock_ctx: _MockCtx) -> None:
+        """RULING-3: the confirmation job forwards the stored 09:15 decision_price into
+        record_fill so fill_quality computes real auction slippage (was always NULL)."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(
+            order_id="odp1", cycle_id=42, symbol="SPY", side="buy", decision_price=600.00
+        )
+        mock_ctx.alpaca.order_status(
+            "odp1", status="filled", filled_avg_price=600.60, filled_qty=0.05
+        )
+
+        equity_fill_confirmation_job()
+
+        with mock_ctx.db.connection() as conn:
+            fq = conn.execute(
+                "SELECT decision_price_usd, slippage_frac FROM fill_quality WHERE trade_id = %s",
+                ("odp1",),
+            ).fetchone()
+        assert fq is not None
+        assert float(fq["decision_price_usd"]) == pytest.approx(600.00)
+        assert fq["slippage_frac"] is not None  # 0.60/600 — measured, not NULL
+
+    def test_fill_confirmation_second_slice_at_derived_price(self, mock_ctx: _MockCtx) -> None:
+        """RULING-1: a later run records only the increment, priced so that recorded dollars
+        match the broker's cumulative average exactly."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="o7", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.alpaca.order_status(
+            "o7", status="partially_filled", filled_avg_price=600.00, filled_qty=0.02, qty=0.05
+        )
+        equity_fill_confirmation_job()  # records slice 1: 0.02 @ 600.00
+
+        # By the next run the order finished: cumulative 0.05 @ avg 600.60, then expired.
+        mock_ctx.alpaca.order_status(
+            "o7", status="expired", filled_avg_price=600.60, filled_qty=0.05, qty=0.05
+        )
+        equity_fill_confirmation_job()
+
+        with mock_ctx.db.connection() as conn:
+            slices = conn.execute(
+                "SELECT trade_id, quantity, price FROM trades "
+                "WHERE trade_id = %s OR trade_id LIKE %s ORDER BY trade_id",
+                ("o7", "o7#%"),
+            ).fetchall()
+        assert len(slices) == 2
+        assert slices[1]["trade_id"] == "o7#2"
+        assert float(slices[1]["quantity"]) == pytest.approx(0.03)
+        # Derived slice price: (600.60*0.05 - 600.00*0.02) / 0.03 = 601.00
+        assert float(slices[1]["price"]) == pytest.approx(601.00)
+        row = mock_ctx.pending_row("o7")
+        assert row["resolved_at"] is not None
+        assert row["disposition"] == "expired"
+
+    def test_fill_confirmation_expired_after_partial_stamps_terminal(
+        self, mock_ctx: _MockCtx
+    ) -> None:
+        """RULING-2: terminal-with-partial closes the row ('expired'), keeps the recorded
+        slice, and the final warning mentions both the recorded and unfilled parts."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="o8", cycle_id=42, symbol="XLK", side="buy")
+        mock_ctx.alpaca.order_status(
+            "o8", status="expired", filled_avg_price=175.50, filled_qty=0.01, qty=0.04
+        )
+
+        equity_fill_confirmation_job()
+
+        trade = mock_ctx.inserted_trade()
+        assert trade is not None and float(trade["quantity"]) == pytest.approx(0.01)
+        row = mock_ctx.pending_row("o8")
+        assert row["resolved_at"] is not None
+        assert row["disposition"] == "expired"
+
+    def test_fill_confirmation_filled_unparseable_price_left_open(self, mock_ctx: _MockCtx) -> None:
+        """Finding 1: broker says 'filled' but filled_avg_price is unusable (None) while
+        shares are unrecorded -> the job must NOT stamp the row 'filled' and silently drop
+        the fill. It warns and leaves the row open; a later run with a good price records the
+        trade and closes the row (retry path proven end-to-end)."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="ou1", cycle_id=42, symbol="SPY", side="buy")
+        # First run: filled status but no usable average price -> books cannot match broker.
+        mock_ctx.alpaca.order_status(
+            "ou1", status="filled", filled_avg_price=None, filled_qty=0.0416
+        )
+        equity_fill_confirmation_job()
+
+        # Nothing recorded, row left open, a WARNING alert fired (no false 'already recorded').
+        assert mock_ctx.inserted_trade() is None
+        row = mock_ctx.pending_row("ou1")
+        assert row["resolved_at"] is None
+        assert row["disposition"] is None
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert "unparseable" in kwargs["title"].lower()
+        # Finding 2: one-shot warning must bypass suppression and name the symbol in the title.
+        assert kwargs["bypass_suppression"] is True
+        assert "SPY" in kwargs["title"]
+
+        # Second run: the broker now returns a usable price -> the fill is recorded and the
+        # row is stamped 'filled' (retry path works end-to-end).
+        mock_ctx.alpaca.order_status(
+            "ou1", status="filled", filled_avg_price=600.10, filled_qty=0.0416
+        )
+        equity_fill_confirmation_job()
+
+        trade = mock_ctx.inserted_trade()
+        assert trade is not None
+        assert float(trade["quantity"]) == pytest.approx(0.0416)
+        assert float(trade["price"]) == pytest.approx(600.10)
+        assert mock_ctx.alerter.send_embed.called
+        resolved = mock_ctx.pending_row("ou1")
+        assert resolved["resolved_at"] is not None
+        assert resolved["disposition"] == "filled"
+
+    def test_fill_confirmation_filled_zero_qty_left_open(self, mock_ctx: _MockCtx) -> None:
+        """Finding 1: broker says 'filled' but filled_qty is unparseable (cum_qty computes 0)
+        with nothing recorded -> the job warns and leaves the row open rather than stamping a
+        phantom 'filled' backed by no trade."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="ou2", cycle_id=42, symbol="QQQ", side="buy")
+        mock_ctx.alpaca.order_status(
+            "ou2", status="filled", filled_avg_price=None, filled_qty="unparseable"
+        )
+        equity_fill_confirmation_job()
+
+        assert mock_ctx.inserted_trade() is None
+        row = mock_ctx.pending_row("ou2")
+        assert row["resolved_at"] is None
+        assert row["disposition"] is None
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert "unparseable" in kwargs["title"].lower()
+        # Finding 2: one-shot warning must bypass suppression and name the symbol in the title.
+        assert kwargs["bypass_suppression"] is True
+        assert "QQQ" in kwargs["title"]
+
+    def test_fill_confirmation_terminal_unparseable_left_open(self, mock_ctx: _MockCtx) -> None:
+        """Finding 1: a terminal (expired) order reporting NEW executed shares but no parseable
+        average price must NOT stamp the terminal disposition and silently unbook those shares —
+        it warns (one-shot, bypass_suppression, symbol in title) and leaves the row open. A later
+        run with a good price records the slice AND stamps the terminal disposition (retry path
+        proven end-to-end)."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="otu1", cycle_id=42, symbol="XLK", side="buy")
+        # First run: expired with real filled shares but no usable average price.
+        mock_ctx.alpaca.order_status(
+            "otu1", status="expired", filled_avg_price=None, filled_qty=0.02, qty=0.05
+        )
+        equity_fill_confirmation_job()
+
+        # Nothing recorded, row NOT stamped terminal, a one-shot WARNING fired.
+        assert mock_ctx.inserted_trade() is None
+        row = mock_ctx.pending_row("otu1")
+        assert row["resolved_at"] is None
+        assert row["disposition"] is None
+        kwargs = mock_ctx.alerter.send_alert.call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert "unparseable" in kwargs["title"].lower()
+        assert "XLK" in kwargs["title"]
+        assert kwargs["bypass_suppression"] is True
+
+        # Second run: the broker now returns a usable price -> the slice is recorded AND the
+        # terminal disposition is stamped (retry path works end-to-end).
+        mock_ctx.alpaca.order_status(
+            "otu1", status="expired", filled_avg_price=175.50, filled_qty=0.02, qty=0.05
+        )
+        equity_fill_confirmation_job()
+
+        trade = mock_ctx.inserted_trade()
+        assert trade is not None
+        assert float(trade["quantity"]) == pytest.approx(0.02)
+        assert float(trade["price"]) == pytest.approx(175.50)
+        resolved = mock_ctx.pending_row("otu1")
+        assert resolved["resolved_at"] is not None
+        assert resolved["disposition"] == "expired"
 
 
 class TestCycleOrdersInfoPing:

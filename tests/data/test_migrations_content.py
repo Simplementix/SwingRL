@@ -1485,10 +1485,67 @@ def test_v010_benchmark_baselines_requires_baseline_price(db_with_legacy_schema)
 
 
 def test_v010_schema_version_is_10(db_with_legacy_schema) -> None:
-    """Exec-alignment Task 9: SELECT max(version) FROM schema_migrations == 10."""
+    """V010 lands in the ledger (was newest; V011 now raises the ceiling to 11).
+
+    The newest-version invariant moved to ``test_v011_schema_version_is_11`` when the
+    2026-07-22 rulings shipped V011 — this asserts V010 was applied, not that it is the
+    maximum, so it stays green as later migrations extend the ledger.
+    """
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM schema_migrations WHERE version = 10"
+        ).fetchone()
+    assert row["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# V011 (rulings 2026-07-22 #2/#3): pending-order lifecycle columns. decision_price
+# persists the 09:15 sizing price so 09:35 confirmation can measure auction slippage
+# vs the decision; disposition ('filled'|'canceled'|'expired') stamps a terminal state
+# alongside resolved_at so a dead order is closed once instead of re-warned daily.
+# Both are additive nullable ALTER TABLE columns on the V009 pending_orders table.
+# ---------------------------------------------------------------------------
+
+
+def test_v011_adds_decision_price_and_disposition(db_with_legacy_schema) -> None:
+    """V011: pending_orders gains decision_price + disposition (both nullable)."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with db_with_legacy_schema.connection() as conn:
+        cols = {
+            r["column_name"]
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns"
+                " WHERE table_name = 'pending_orders'"
+            ).fetchall()
+        }
+    assert "decision_price" in cols
+    assert "disposition" in cols
+
+
+def test_v011_disposition_rejects_unknown_terminal_state(db_with_legacy_schema) -> None:
+    """V011: disposition CHECK allows only 'filled' | 'canceled' | 'expired'."""
+    from swingrl.data.migration_runner import apply_migrations
+
+    apply_migrations(db_with_legacy_schema)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db_with_legacy_schema.connection() as conn:
+            conn.execute(
+                "INSERT INTO pending_orders"
+                " (order_id, symbol, side, submitted_at, disposition)"
+                " VALUES ('o-bad', 'SPY', 'buy', now(), 'bogus')"
+            )
+
+
+def test_v011_schema_version_is_11(db_with_legacy_schema) -> None:
+    """Rulings 2026-07-22: SELECT max(version) FROM schema_migrations == 11."""
     from swingrl.data.migration_runner import apply_migrations
 
     apply_migrations(db_with_legacy_schema)
     with db_with_legacy_schema.connection() as conn:
         row = conn.execute("SELECT max(version) AS v FROM schema_migrations").fetchone()
-    assert row["v"] == 10
+    assert row["v"] == 11
