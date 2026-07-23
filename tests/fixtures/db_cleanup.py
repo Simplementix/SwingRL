@@ -16,6 +16,7 @@ Three safety layers (see ``tests/db_guard.py``):
 from __future__ import annotations
 
 from collections.abc import Generator
+from typing import Any
 
 import psycopg
 import pytest
@@ -67,29 +68,62 @@ def ensure_wipe_target_is_test_db(db_url: str) -> bool:
 _MIGRATION_REGISTRY_TABLES = frozenset({"schema_migrations", "eras", "gate_versions"})
 
 
-def _truncate_all_public_tables(db_url: str) -> None:
-    """TRUNCATE every non-registry table in the public schema of the test database.
+# Session-persistent cleanup connection. Opened lazily on the first db-marked
+# test's wipe, reused for every later wipe in this process, re-keyed when the
+# resolved URL changes (per-worker DB rewrite), reopened once on OperationalError
+# (server restart mid-session). Replaces a per-test psycopg.connect that charged
+# every test a TCP+auth round trip (speed review 2026-07-22 §1.2).
+_cleanup_conn: psycopg.Connection[Any] | None = None
+_cleanup_conn_url: str = ""
 
-    Uses a dedicated short-lived autocommit connection (not the pooled
-    DatabaseManager connection) to avoid pool-affinity surprises, with a bounded
-    ``lock_timeout`` so a stray lock from a misbehaving test fails fast rather
-    than hanging CI. Catalog-enumerates tables so ad-hoc tables created by raw
-    tests are covered; a single ``TRUNCATE … CASCADE`` handles FK ordering.
-    Migration-managed registry tables (``_MIGRATION_REGISTRY_TABLES``) are
-    excluded -- see that constant's docstring for why.
+
+def _get_cleanup_conn(db_url: str) -> psycopg.Connection[Any]:
+    """Return the persistent autocommit cleanup connection for ``db_url``."""
+    global _cleanup_conn, _cleanup_conn_url
+    if _cleanup_conn is not None and not _cleanup_conn.closed and _cleanup_conn_url == db_url:
+        return _cleanup_conn
+    if _cleanup_conn is not None and not _cleanup_conn.closed:
+        _cleanup_conn.close()
+    _cleanup_conn = psycopg.connect(db_url, autocommit=True)
+    # Bounded lock_timeout: a stray lock from a misbehaving test fails fast and
+    # loudly (naming the offending test) rather than hanging CI.
+    _cleanup_conn.execute("SET lock_timeout = '10s'")
+    _cleanup_conn_url = db_url
+    return _cleanup_conn
+
+
+def _run_truncate(conn: psycopg.Connection[Any]) -> None:
+    """TRUNCATE every non-registry public table on the given connection.
+
+    Catalog-enumerates tables so ad-hoc tables created by raw tests are covered;
+    a single ``TRUNCATE … CASCADE`` handles FK ordering. Migration-managed
+    registry tables (``_MIGRATION_REGISTRY_TABLES``) are excluded -- see that
+    constant's docstring for why.
     """
-    with psycopg.connect(db_url, autocommit=True) as conn:
-        conn.execute("SET lock_timeout = '10s'")
-        rows = conn.execute(
-            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-        ).fetchall()
-        tables = [row[0] for row in rows if row[0] not in _MIGRATION_REGISTRY_TABLES]
-        if not tables:
-            return
-        statement = sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(
-            sql.SQL(", ").join(sql.Identifier(name) for name in tables)
-        )
-        conn.execute(statement)
+    rows = conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'").fetchall()
+    tables = [row[0] for row in rows if row[0] not in _MIGRATION_REGISTRY_TABLES]
+    if not tables:
+        return
+    statement = sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(
+        sql.SQL(", ").join(sql.Identifier(name) for name in tables)
+    )
+    conn.execute(statement)
+
+
+def _truncate_all_public_tables(db_url: str) -> None:
+    """TRUNCATE all non-registry tables via the persistent cleanup connection.
+
+    One transparent reconnect+retry on OperationalError covers a Postgres
+    restart mid-session; any second failure propagates loudly.
+    """
+    global _cleanup_conn
+    try:
+        _run_truncate(_get_cleanup_conn(db_url))
+    except psycopg.OperationalError:
+        if _cleanup_conn is not None and not _cleanup_conn.closed:
+            _cleanup_conn.close()
+        _cleanup_conn = None
+        _run_truncate(_get_cleanup_conn(db_url))
 
 
 def drop_migration_artifacts(mgr: DatabaseManager) -> None:
@@ -228,9 +262,18 @@ def reapply_migrated_schema(mgr: DatabaseManager) -> None:
 
 
 @pytest.fixture(autouse=True)
-def wipe_db_after_test() -> Generator[None, None, None]:
-    """Wipe all test-database tables after each test (no-op when no test DB)."""
+def wipe_db_after_test(request: pytest.FixtureRequest) -> Generator[None, None, None]:
+    """Wipe test-DB tables after each ``db``-marked test (no-op otherwise).
+
+    The ``db`` marker is auto-derived at collection time (tests/db_marker.py):
+    any test that can reach the real database carries it, so skipping the wipe
+    for unmarked tests never skips a wipe that mattered. Pre-2026-07-22 this
+    fixture connect+TRUNCATEd after ALL ~1,900 tests including the ~75-80% that
+    are mock-only — the dominant share of the 59-minute wall time.
+    """
     yield
+    if request.node.get_closest_marker("db") is None:
+        return
     db_url = resolve_target_db_url()
     if not ensure_wipe_target_is_test_db(db_url):
         return
@@ -238,8 +281,8 @@ def wipe_db_after_test() -> Generator[None, None, None]:
     # NOTE: reset() closes only idle/returned connections — a connection still
     # checked out when teardown runs is NOT force-closed. That can only happen if
     # a test leaks a checked-out connection past its own body (a bug); the
-    # lock_timeout in _truncate_all_public_tables bounds such a case to a loud
-    # ~10s failure that names the offending test, rather than a silent hang.
+    # lock_timeout on the cleanup connection bounds such a case to a loud ~10s
+    # failure that names the offending test, rather than a silent hang.
     # A proper drain/rollback fixture is deferred to Stage 3.0 (see the spec).
     DatabaseManager.reset()
     _truncate_all_public_tables(db_url)

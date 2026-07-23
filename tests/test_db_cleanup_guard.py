@@ -27,3 +27,23 @@ def test_allows_test_db() -> None:
 def test_skips_when_blank() -> None:
     """REQ-STAGE1: no DB configured -> skip wipe (returns False, no raise)."""
     assert ensure_wipe_target_is_test_db("") is False
+
+
+def test_yaml_fallback_parsed_at_most_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REQ-SPEED: with DATABASE_URL unset, the YAML fallback is parsed once, not per call."""
+    from tests import db_guard
+
+    calls: list[int] = []
+    real_load = db_guard.load_config
+
+    def counting_load(path):  # type: ignore[no-untyped-def]
+        calls.append(1)
+        return real_load(path)
+
+    db_guard._yaml_fallback_url.cache_clear()
+    monkeypatch.setattr(db_guard, "load_config", counting_load)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db_guard.resolve_target_db_url()
+    db_guard.resolve_target_db_url()
+    assert len(calls) == 1
+    db_guard._yaml_fallback_url.cache_clear()  # do not leak a counting-fn cache entry

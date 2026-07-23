@@ -88,8 +88,19 @@ n = apply_migrations(db)
 print(f'applied={n} current_version={current_schema_version(db)}')
 "
 
+echo "=== [2.8/6] Create test-DB template for per-worker clones ==="
+# Workers (tests/db_worker.py) clone swingrl_gwN_test from this template at
+# session start — file-level copy, no migration replay. swingrl needs CREATEDB
+# to create its own clones. Stage 2.7 has just left swingrl_test fully migrated
+# and its container has exited, so no connections block the TEMPLATE copy.
+docker exec pg16 psql -U temporal -d postgres -c "ALTER ROLE swingrl CREATEDB;"
+docker exec pg16 psql -U temporal -d postgres -c "DROP DATABASE IF EXISTS swingrl_test_template WITH (FORCE);"
+docker exec pg16 psql -U temporal -d postgres -c "CREATE DATABASE swingrl_test_template TEMPLATE swingrl_test OWNER swingrl;"
+
 echo "=== [3/6] Run tests ==="
-$DEV_COMPOSE run --rm --entrypoint "" -e DATABASE_URL="$TEST_DB_URL" swingrl uv run pytest tests/ -v
+# -n 4: per-worker DBs (tests/db_worker.py) make the FULL suite parallel-safe —
+# each gwN worker clones swingrl_gwN_test from the stage-2.8 template.
+$DEV_COMPOSE run --rm --entrypoint "" -e DATABASE_URL="$TEST_DB_URL" swingrl uv run pytest tests/ -v -n 4
 
 echo "=== [4/6] Lint + type check ==="
 $DEV_COMPOSE run --rm --entrypoint "" swingrl uv run sh -c \
@@ -149,6 +160,13 @@ $DEV_COMPOSE run --rm --entrypoint "" swingrl uv run pip-audit --strict \
 
 echo "=== [6/6] Cleanup ==="
 docker exec pg16 psql -U temporal -d postgres -c "DROP DATABASE IF EXISTS swingrl_test;" || true
+docker exec pg16 psql -U temporal -d postgres -tAc \
+    "SELECT datname FROM pg_database WHERE datname ~ '^swingrl_([a-z0-9]+_)*(gw|main)[0-9]+_test$'" |
+while read -r db; do
+    [ -n "$db" ] && docker exec pg16 psql -U temporal -d postgres \
+        -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE);" || true
+done
+docker exec pg16 psql -U temporal -d postgres -c "DROP DATABASE IF EXISTS swingrl_test_template;" || true
 # Cleanup is scoped to the dev compose project ONLY. `docker compose down` against the
 # production project would stop every always-on service (trader, collector) on each CI
 # run. Production containers are managed by deployment, never by CI.

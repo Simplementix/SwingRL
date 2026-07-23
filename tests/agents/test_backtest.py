@@ -21,6 +21,7 @@ from swingrl.agents.backtest import (
     store_fold_results_to_duckdb,
     store_iteration_results_to_duckdb,
 )
+from swingrl.data.postgres_schema import init_postgres_schema
 from swingrl.utils.exceptions import DataError
 
 
@@ -199,86 +200,18 @@ class TestFoldResult:
 
 
 def _create_backtest_schema(conn: Any) -> None:
-    """Create backtest_results and iteration_results tables in PostgreSQL."""
-    conn.execute("DROP TABLE IF EXISTS backtest_results")
-    conn.execute("DROP TABLE IF EXISTS iteration_results")
-    conn.execute("""
-        CREATE TABLE backtest_results (
-            result_id TEXT PRIMARY KEY,
-            model_id TEXT NOT NULL,
-            environment TEXT NOT NULL,
-            algorithm TEXT NOT NULL,
-            fold_number INTEGER NOT NULL,
-            fold_type TEXT NOT NULL,
-            train_start_idx INTEGER,
-            train_end_idx INTEGER,
-            test_start_idx INTEGER,
-            test_end_idx INTEGER,
-            sharpe DOUBLE PRECISION,
-            sortino DOUBLE PRECISION,
-            calmar DOUBLE PRECISION,
-            mdd DOUBLE PRECISION,
-            profit_factor DOUBLE PRECISION,
-            win_rate DOUBLE PRECISION,
-            total_trades INTEGER,
-            avg_drawdown DOUBLE PRECISION,
-            max_dd_duration INTEGER,
-            final_portfolio_value DOUBLE PRECISION,
-            total_return DOUBLE PRECISION,
-            created_at TIMESTAMP DEFAULT current_timestamp,
-            iteration_number INTEGER DEFAULT 0,
-            run_type TEXT DEFAULT 'baseline',
-            is_sharpe DOUBLE PRECISION,
-            is_sortino DOUBLE PRECISION,
-            is_mdd DOUBLE PRECISION,
-            is_total_return DOUBLE PRECISION,
-            overfitting_gap DOUBLE PRECISION,
-            overfitting_class TEXT,
-            hmm_p_bull DOUBLE PRECISION,
-            hmm_p_bear DOUBLE PRECISION,
-            vix_mean DOUBLE PRECISION,
-            yield_spread_mean DOUBLE PRECISION,
-            converged_at_step INTEGER,
-            total_timesteps_configured INTEGER,
-            max_single_loss DOUBLE PRECISION,
-            best_single_trade DOUBLE PRECISION,
-            train_start_date TEXT,
-            train_end_date TEXT,
-            test_start_date TEXT,
-            test_end_date TEXT,
-            is_control_fold BOOLEAN DEFAULT FALSE
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE iteration_results (
-            result_id TEXT PRIMARY KEY,
-            iteration_number INTEGER NOT NULL,
-            environment TEXT NOT NULL,
-            ensemble_sharpe DOUBLE PRECISION,
-            ensemble_mdd DOUBLE PRECISION,
-            gate_passed BOOLEAN,
-            ppo_weight DOUBLE PRECISION,
-            a2c_weight DOUBLE PRECISION,
-            sac_weight DOUBLE PRECISION,
-            ppo_mean_sharpe DOUBLE PRECISION,
-            a2c_mean_sharpe DOUBLE PRECISION,
-            sac_mean_sharpe DOUBLE PRECISION,
-            ppo_mean_mdd DOUBLE PRECISION,
-            a2c_mean_mdd DOUBLE PRECISION,
-            sac_mean_mdd DOUBLE PRECISION,
-            total_folds INTEGER,
-            ppo_hyperparams TEXT,
-            a2c_hyperparams TEXT,
-            sac_hyperparams TEXT,
-            hp_source TEXT DEFAULT 'baseline',
-            run_type TEXT DEFAULT 'baseline',
-            wall_clock_s DOUBLE PRECISION,
-            memory_enabled BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP DEFAULT current_timestamp,
-            UNIQUE(iteration_number, environment, run_type)
-        )
-    """)
-    conn.commit()
+    """Ensure canonical backtest_results/iteration_results exist (non-destructive).
+
+    Replaces the pre-2026-07-22 DROP + hand-rolled pre-V001 DDL. On the migrated
+    scratch DB the canonical tables already exist (CI stage 2.7 invariant) and
+    the autouse wipe truncates rows between db-marked tests, so this is a no-op
+    there — and a full canonical bootstrap (IF NOT EXISTS DDL) on an empty DB.
+    Never DROP a production-named table from a test: CREATE TABLE IF NOT EXISTS
+    can never repair the shape afterwards (2026-07-22 hmm_state_history incident).
+    """
+    init_postgres_schema(conn)
+    if not conn.autocommit:
+        conn.commit()
 
 
 def _make_test_fold(
@@ -325,6 +258,31 @@ def _make_test_fold(
         converged_at_step=converged_at_step,
         total_timesteps=total_timesteps,
     )
+
+
+def test_create_backtest_schema_preserves_migrated_columns() -> None:
+    """Ruling 2026-07-22: the schema helper must not strip V001 back-stamp columns.
+
+    Pre-fix, _create_backtest_schema DROPped backtest_results/iteration_results
+    and hand-rolled pre-V001 replacements while schema_migrations still said V001
+    was applied — a ledger/reality desync on the shared scratch DB that only
+    healed if a db_with_legacy_schema test happened to run later.
+    """
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        pytest.skip("DATABASE_URL not set")
+    conn = psycopg.connect(db_url, autocommit=True)
+    _create_backtest_schema(conn)
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'backtest_results'"
+        ).fetchall()
+    }
+    conn.close()
+    assert "era_id" in cols, "V001 back-stamp column era_id lost by the test helper"
+    assert "gate_version_id" in cols
 
 
 class TestStoreFoldResultsToDuckdb:

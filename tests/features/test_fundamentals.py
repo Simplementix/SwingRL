@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from swingrl.config.schema import load_config
+from swingrl.data.postgres_schema import _FUNDAMENTALS_DDL
 from swingrl.features.fundamentals import FundamentalFetcher
 
 
@@ -238,19 +239,7 @@ class TestStoreFundamentals:
 
         db_url = os.environ["DATABASE_URL"]
         conn = psycopg.connect(db_url, autocommit=False)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS fundamentals (
-                symbol TEXT,
-                date DATE,
-                pe_ratio DOUBLE PRECISION,
-                earnings_growth DOUBLE PRECISION,
-                debt_to_equity DOUBLE PRECISION,
-                dividend_yield DOUBLE PRECISION,
-                sector TEXT,
-                fetched_at TIMESTAMP,
-                PRIMARY KEY (symbol, date)
-            )
-        """)
+        conn.execute(_FUNDAMENTALS_DDL)  # canonical shape — never hand-roll a prod table
 
         # Create a mock DatabaseManager that yields the real connection
         mock_db = MagicMock()
@@ -294,6 +283,4 @@ class TestStoreFundamentals:
         conn.commit()
         stored = conn.execute("SELECT * FROM fundamentals").fetchall()
         assert len(stored) == 2
-        conn.execute("DROP TABLE IF EXISTS fundamentals")
-        conn.commit()
         conn.close()

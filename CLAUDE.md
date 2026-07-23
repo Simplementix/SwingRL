@@ -157,7 +157,15 @@ Environment variable overrides (Docker .env):
 - Key fixtures: `tmp_config` (valid YAML in temp dir), `loaded_config` (SwingRLConfig),
   `equity_ohlcv` (20-row DataFrame), `crypto_ohlcv` (40-row DataFrame), `tmp_dirs` (dir tree).
 - Function scope by default. Session scope only for read-only, expensive setup.
-- Run before commit: `uv run pytest tests/ -v`
+- Run before commit (FAST lane, <2 min):
+  `env -u DATABASE_URL uv run pytest tests/ -m "not db and not slow and not integration" -n auto -q`
+- Three lanes (fast / db / full) + the after-failure `--lf`-first rule:
+  see `docs/testing/best-practices.md`. Full suite = `scripts/ci-homelab.sh`, pre-push only.
+- After ANY test failure: rerun the failing subset first (`uv run pytest --lf -q` or explicit
+  node IDs); relaunch a full lane only after the subset is green.
+- NEVER `DROP TABLE` a production-named table from a test — use canonical DDL from
+  `src/swingrl/data/postgres_schema.py` or a throwaway table name (the schema preflight
+  aborts poisoned-DB sessions).
 
 ## Key Paths (from repo root)
 

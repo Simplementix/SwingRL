@@ -146,28 +146,17 @@ class TestDuckDBDDL:
 
     @pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
     def test_model_metadata_table_created(self) -> None:
-        """TRAIN-12: model_metadata table exists after schema init."""
+        """TRAIN-12: model_metadata table exists after schema init.
+
+        Uses the canonical schema init (idempotent IF NOT EXISTS) instead of the
+        pre-2026-07-22 DROP + hand-rolled DDL — never drop a production-named
+        table from a test. Rows are cleared by the autouse wipe, so the insert
+        below always starts from an empty table.
+        """
         db_url = os.environ["DATABASE_URL"]
         conn = psycopg.connect(db_url, autocommit=True)
-        conn.execute("DROP TABLE IF EXISTS model_metadata")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS model_metadata (
-                model_id TEXT PRIMARY KEY,
-                environment TEXT NOT NULL,
-                algorithm TEXT NOT NULL,
-                version TEXT NOT NULL,
-                training_start_date TEXT,
-                training_end_date TEXT,
-                total_timesteps INTEGER,
-                converged_at_step INTEGER,
-                validation_sharpe DOUBLE PRECISION,
-                ensemble_weight DOUBLE PRECISION,
-                model_path TEXT NOT NULL,
-                vec_normalize_path TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT current_timestamp
-            )
-        """)
-        # Verify table accepts inserts
+        init_postgres_schema(conn)
+        # Verify table accepts inserts (column order matches canonical DDL).
         conn.execute("""
             INSERT INTO model_metadata VALUES (
                 'model-001', 'equity', 'PPO', 'v1.0',
@@ -187,7 +176,6 @@ class TestDuckDBDDL:
         """TRAIN-12: backtest_results table exists after schema init."""
         db_url = os.environ["DATABASE_URL"]
         conn = psycopg.connect(db_url, autocommit=True)
-        conn.execute("DROP TABLE IF EXISTS backtest_results CASCADE")
         # Use the canonical schema so the table always matches production DDL.
         init_postgres_schema(conn)
         conn.execute("""
@@ -216,9 +204,6 @@ class TestDuckDBDDL:
         """TRAIN-12: DatabaseManager.init_schema creates both tables in PostgreSQL."""
         db_url = os.environ["DATABASE_URL"]
         conn = psycopg.connect(db_url, autocommit=True)
-
-        conn.execute("DROP TABLE IF EXISTS model_metadata CASCADE")
-        conn.execute("DROP TABLE IF EXISTS backtest_results CASCADE")
 
         # Use the canonical init function so this test stays in sync with production DDL.
         init_postgres_schema(conn)

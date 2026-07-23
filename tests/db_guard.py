@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+from functools import lru_cache
 from pathlib import Path
 
 from swingrl.config.schema import load_config
@@ -30,21 +31,32 @@ _DB_NAME_RE = re.compile(r"/([^/?#]+)(?:[?#]|$)")
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "swingrl.yaml"
 
 
-def resolve_target_db_url() -> str:
-    """Resolve the DB URL the same way ``DatabaseManager.__init__`` does.
+@lru_cache(maxsize=1)
+def _yaml_fallback_url() -> str:
+    """``config.system.database_url`` from the default YAML, parsed once per process.
 
-    Order: ``DATABASE_URL`` env var, then ``config.system.database_url`` from the
-    default YAML config. Returns ``""`` when neither is set (no DB -> tests skip).
-    Whitespace-only DATABASE_URL is normalised to blank (treated as unset).
+    The YAML file is static within a test session; re-parsing it per wipe charged
+    up to ~1,900 Pydantic loads per DATABASE_URL-less run (practices review §0).
     """
-    env_url = os.environ.get("DATABASE_URL", "").strip()
-    if env_url:
-        return env_url
     try:
         config = load_config(_DEFAULT_CONFIG_PATH)
     except Exception:  # noqa: BLE001 — guard must never crash the whole suite
         return ""
     return (config.system.database_url or "").strip()
+
+
+def resolve_target_db_url() -> str:
+    """Resolve the DB URL the same way ``DatabaseManager.__init__`` does.
+
+    Order: ``DATABASE_URL`` env var (read fresh every call — tests monkeypatch
+    it), then the memoized ``config.system.database_url`` from the default YAML.
+    Returns ``""`` when neither is set (no DB -> tests skip). Whitespace-only
+    DATABASE_URL is normalised to blank (treated as unset).
+    """
+    env_url = os.environ.get("DATABASE_URL", "").strip()
+    if env_url:
+        return env_url
+    return _yaml_fallback_url()
 
 
 def classify_db_url(db_url: str) -> tuple[str, str | None]:
