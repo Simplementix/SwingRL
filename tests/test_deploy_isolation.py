@@ -154,7 +154,7 @@ def test_collector_service_untouched() -> None:
     assert "swingrl-collector" in services, "swingrl-collector must remain in docker-compose.yml"
     collector = services["swingrl-collector"]
     # Its own pinned tag (unrelated image churn must never recreate it via bare `up -d`).
-    assert collector.get("image") == "swingrl-collector:2026-07-19-4"
+    assert collector.get("image") == "swingrl-collector:2026-07-22-1"
     assert collector.get("command") == ["python", "scripts/collector_main.py"]
 
 
