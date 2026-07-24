@@ -1312,7 +1312,31 @@ class TestEquityFillConfirmationJob:
         assert len(partial_calls) == 1
         msg = partial_calls[0].kwargs["message"]
         assert "None requested" not in msg, msg
-        assert "$61.1 notional" in msg, msg
+        assert "$61.10 notional" in msg, msg
+
+    def test_partial_fill_alert_unknown_amount_when_qty_and_notional_none(
+        self, mock_ctx: _MockCtx
+    ) -> None:
+        """DIGEST-D3: qty AND notional both None renders a neutral phrase, never '$None'."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="opn", cycle_id=42, symbol="VTI", side="buy")
+        mock_ctx.alpaca.order_status(
+            "opn",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=100.0,
+            filled_qty=0.05,
+            qty=None,
+            notional=None,
+        )
+        equity_fill_confirmation_job()
+        msg = next(
+            c.kwargs["message"]
+            for c in mock_ctx.alerter.send_alert.call_args_list
+            if "PARTIALLY filled" in (c.kwargs.get("title") or "")
+        )
+        assert "$None" not in msg
+        assert "an unknown amount" in msg, msg
 
     def test_fill_confirmation_idempotent_after_crash(self, mock_ctx: _MockCtx) -> None:
         """EXEC-D11 (review #2): a prior run that recorded the trade but crashed before
