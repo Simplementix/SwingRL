@@ -1386,7 +1386,7 @@ class TestEquityFillConfirmationJob:
             ).fetchone()
         assert fq is not None
         assert float(fq["decision_price_usd"]) == pytest.approx(600.00)
-        assert fq["slippage_frac"] is not None  # 0.60/600 — measured, not NULL
+        assert fq["slippage_frac"] == pytest.approx(0.001)  # 0.60/600 — measured, sign+math pinned
 
     def test_fill_confirmation_second_slice_at_derived_price(self, mock_ctx: _MockCtx) -> None:
         """RULING-1: a later run records only the increment, priced so that recorded dollars
