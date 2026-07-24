@@ -973,7 +973,7 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
         total_qty = prev_qty + (delta_qty if slice_recorded else 0.0)
         ctx.alerter.send_alert(
             level="warning",
-            title=f"Equity auction order {disposition} — {row['symbol']} closed",
+            title=f"Equity auction order {disposition} — {row['symbol']} closed (order {order_id})",
             message=(
                 f"{row['symbol']} {row['side']} (order {order_id}) is {status}: "
                 f"{total_qty} filled+recorded of {getattr(order, 'qty', None)} requested. "
@@ -1005,7 +1005,10 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
         )
         ctx.alerter.send_alert(
             level="warning",
-            title=f"Equity auction order PARTIALLY filled — {row['symbol']} recorded",
+            title=(
+                f"Equity auction order PARTIALLY filled — {row['symbol']} recorded "
+                f"(order {order_id})"
+            ),
             message=(
                 f"{row['symbol']} {row['side']} (order {order_id}) partially filled: "
                 f"{delta_qty} recorded now ({cum_qty} cumulative of "
