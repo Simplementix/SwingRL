@@ -69,13 +69,15 @@ class TechnicalIndicatorCalculator:
         # 7. ATR-14 as percentage of price (small positive fraction)
         result["atr_14_pct"] = sdf["atr_14"] / ohlcv["close"]
 
-        # 8. Volume/SMA-20 ratio (default 1.0 when SMA is zero)
+        # 8. Volume/SMA-20 ratio (default 1.0 when SMA is zero). np.where evaluates BOTH
+        # branches, so silence the masked divide-by-zero rather than let it print a warning.
         vol_sma = sdf["volume_20_sma"]
-        result["volume_sma20_ratio"] = np.where(
-            vol_sma > 0,
-            ohlcv["volume"].values / vol_sma.values,
-            1.0,
-        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            result["volume_sma20_ratio"] = np.where(
+                vol_sma > 0,
+                ohlcv["volume"].values / vol_sma.values,
+                1.0,
+            )
 
         # 9. ADX-14
         result["adx_14"] = sdf["adx"]
