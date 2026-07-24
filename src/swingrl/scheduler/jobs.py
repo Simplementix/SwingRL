@@ -483,14 +483,12 @@ def daily_summary_job() -> None:
                 "daily_pnl": row["daily_pnl"],
                 "cash_balance": row["cash_balance"],
             }
-            # equity_as_of / crypto_as_of are captured now and consumed by Task 2
-            # (the digest "as of" footer); noqa keeps the names stable for that wiring.
             if row["environment"] == "equity":
                 equity_snap = snap
-                equity_as_of = row["timestamp"]  # noqa: F841
+                equity_as_of = row["timestamp"]
             elif row["environment"] == "crypto":
                 crypto_snap = snap
-                crypto_as_of = row["timestamp"]  # noqa: F841
+                crypto_as_of = row["timestamp"]
 
         if build_daily_summary_embed is not None:
             embed = build_daily_summary_embed(
@@ -500,6 +498,8 @@ def daily_summary_job() -> None:
                 crypto_trades_today=counts["crypto"],
                 equity_benchmark=benchmarks["equity"],
                 crypto_benchmark=benchmarks["crypto"],
+                equity_as_of=equity_as_of,
+                crypto_as_of=crypto_as_of,
             )
             ctx.alerter.send_embed("info", embed)
         else:

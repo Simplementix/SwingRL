@@ -14,9 +14,27 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from swingrl.execution.types import FillResult
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _as_of_suffix(as_of: datetime | None) -> str:
+    """Return ' (as of YYYY-MM-DD)' when the snapshot is from a prior ET day, else ''.
+
+    Guards the D1 latest-per-env query, which resurrects an env's newest row regardless of
+    age: a missed env-day would otherwise present stale numbers as today's.
+    """
+    if as_of is None:
+        return ""
+    et_date = as_of.astimezone(_ET).date()
+    if et_date == datetime.now(_ET).date():
+        return ""
+    return f" (as of {et_date.isoformat()})"
+
 
 # Discord embed sidebar colors used by the non-category embeds (stuck-agent, circuit
 # breaker, iteration-completion). Trade-fill and digest colors now live in _CATEGORY_STYLE.
@@ -134,6 +152,8 @@ def build_daily_summary_embed(
     cb_status: dict[str, str] | None = None,
     equity_benchmark: float | None = None,
     crypto_benchmark: float | None = None,
+    equity_as_of: datetime | None = None,
+    crypto_as_of: datetime | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     """Build a daily summary Discord embed.
 
@@ -147,6 +167,10 @@ def build_daily_summary_embed(
             (Task 9, BENCH-D13), or None pre-reset — the digest then omits the
             "Buy & Hold" / "vs B&H" fields, leaving the pre-reset shape unchanged.
         crypto_benchmark: Same for the crypto env.
+        equity_as_of: Timestamp of the equity snapshot (DIGEST-D19). When its ET date is
+            a prior day, the "Equity Value" field name gains an "(as of YYYY-MM-DD)" suffix
+            so a resurrected stale snapshot is not presented as today's numbers.
+        crypto_as_of: Same for the crypto env.
 
     Returns:
         Discord webhook payload dict with embeds list.
@@ -163,7 +187,11 @@ def build_daily_summary_embed(
         pct = (epnl / (ev - epnl) * 100) if (ev - epnl) != 0 else 0.0
         fields.extend(
             [
-                {"name": "Equity Value", "value": f"${ev:,.2f}", "inline": True},
+                {
+                    "name": f"Equity Value{_as_of_suffix(equity_as_of)}",
+                    "value": f"${ev:,.2f}",
+                    "inline": True,
+                },
                 {
                     "name": "Equity P&L",
                     "value": f"{_pnl_arrow(epnl)} ${epnl:+,.2f} ({pct:+.2f}%)",
@@ -183,7 +211,11 @@ def build_daily_summary_embed(
         pct = (cpnl / (cv - cpnl) * 100) if (cv - cpnl) != 0 else 0.0
         fields.extend(
             [
-                {"name": "Crypto Value", "value": f"${cv:,.2f}", "inline": True},
+                {
+                    "name": f"Crypto Value{_as_of_suffix(crypto_as_of)}",
+                    "value": f"${cv:,.2f}",
+                    "inline": True,
+                },
                 {
                     "name": "Crypto P&L",
                     "value": f"{_pnl_arrow(cpnl)} ${cpnl:+,.2f} ({pct:+.2f}%)",
