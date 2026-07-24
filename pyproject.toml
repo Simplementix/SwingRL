@@ -116,6 +116,10 @@ markers = [
     "slow: long-running determinism/reproducibility tests (included in CI, no network)",
     "db: touches the real PostgreSQL test database (auto-derived at collection; explicit mark forces)",
 ]
+filterwarnings = [
+    "ignore:.*websockets.legacy is deprecated.*:DeprecationWarning",
+    "ignore::DeprecationWarning:websockets.legacy",
+]
 timeout = 600
 
 [tool.ruff]
