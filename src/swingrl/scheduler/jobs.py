@@ -450,9 +450,10 @@ def daily_summary_job() -> None:
         benchmarks: dict[str, float | None] = {"equity": None, "crypto": None}
         with ctx.db.connection() as conn:
             rows = conn.execute(
-                "SELECT environment, total_value, cash_balance, daily_pnl, drawdown_pct "
+                "SELECT DISTINCT ON (environment) "
+                "environment, total_value, cash_balance, daily_pnl, drawdown_pct, timestamp "
                 "FROM portfolio_snapshots "
-                "ORDER BY timestamp DESC LIMIT 2"
+                "ORDER BY environment, timestamp DESC"
             ).fetchall()
             trade_rows = conn.execute(
                 "SELECT environment, count(*) AS n FROM trades "
@@ -471,9 +472,11 @@ def daily_summary_job() -> None:
             log.info("daily_summary_no_data")
             return
 
-        # Build snapshots per environment
+        # Build snapshots per environment (DISTINCT ON already gives ≤1 newest row per env).
         equity_snap = None
         crypto_snap = None
+        equity_as_of = None
+        crypto_as_of = None
         for row in rows:
             snap = {
                 "total_value": row["total_value"],
@@ -482,8 +485,10 @@ def daily_summary_job() -> None:
             }
             if row["environment"] == "equity":
                 equity_snap = snap
+                equity_as_of = row["timestamp"]
             elif row["environment"] == "crypto":
                 crypto_snap = snap
+                crypto_as_of = row["timestamp"]
 
         if build_daily_summary_embed is not None:
             embed = build_daily_summary_embed(
@@ -493,6 +498,8 @@ def daily_summary_job() -> None:
                 crypto_trades_today=counts["crypto"],
                 equity_benchmark=benchmarks["equity"],
                 crypto_benchmark=benchmarks["crypto"],
+                equity_as_of=equity_as_of,
+                crypto_as_of=crypto_as_of,
             )
             ctx.alerter.send_embed("info", embed)
         else:
@@ -966,7 +973,7 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
         total_qty = prev_qty + (delta_qty if slice_recorded else 0.0)
         ctx.alerter.send_alert(
             level="warning",
-            title=f"Equity auction order {disposition} — {row['symbol']} closed",
+            title=f"Equity auction order {disposition} — {row['symbol']} closed (order {order_id})",
             message=(
                 f"{row['symbol']} {row['side']} (order {order_id}) is {status}: "
                 f"{total_qty} filled+recorded of {getattr(order, 'qty', None)} requested. "
@@ -991,14 +998,19 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
     # Still live (partially_filled / new / accepted): warn per state, keep the row open.
     if slice_recorded:
         requested_qty = getattr(order, "qty", None)
-        requested = (
-            requested_qty
-            if requested_qty is not None
-            else f"${_safe_float(getattr(order, 'notional', None))} notional"
-        )
+        if requested_qty is not None:
+            requested = requested_qty
+        else:
+            notional = _safe_float(getattr(order, "notional", None))
+            requested = (
+                f"${notional:,.2f} notional" if notional is not None else "an unknown amount"
+            )
         ctx.alerter.send_alert(
             level="warning",
-            title=f"Equity auction order PARTIALLY filled — {row['symbol']} recorded",
+            title=(
+                f"Equity auction order PARTIALLY filled — {row['symbol']} recorded "
+                f"(order {order_id})"
+            ),
             message=(
                 f"{row['symbol']} {row['side']} (order {order_id}) partially filled: "
                 f"{delta_qty} recorded now ({cum_qty} cumulative of "
@@ -1015,7 +1027,7 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
     else:
         ctx.alerter.send_alert(
             level="warning",
-            title="Equity auction order unfilled",
+            title=f"Equity auction order still working — {row['symbol']}",
             message=(
                 f"{row['symbol']} {row['side']} (order {order_id}) is still "
                 f"{status or 'unknown'} after the opening auction — nothing new to record, "
@@ -1029,6 +1041,11 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
     return slice_recorded
 
 
+def _like_escape(value: str) -> str:
+    """Escape LIKE metacharacters in a literal so only the value itself matches (ESCAPE '\\')."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _recorded_for_order(ctx: JobContext, order_id: str) -> tuple[float, float, int]:
     """Return (recorded qty, recorded dollars, slice count) for a broker order's trades.
 
@@ -1040,8 +1057,8 @@ def _recorded_for_order(ctx: JobContext, order_id: str) -> tuple[float, float, i
         row = conn.execute(
             "SELECT COALESCE(SUM(quantity), 0) AS q, "
             "COALESCE(SUM(quantity * price), 0) AS d, COUNT(*) AS n "
-            "FROM trades WHERE trade_id = %s OR trade_id LIKE %s",
-            (order_id, order_id + "#%"),
+            "FROM trades WHERE trade_id = %s OR trade_id LIKE %s ESCAPE '\\'",
+            (order_id, _like_escape(order_id) + "#%"),
         ).fetchone()
     if row is None:  # COUNT(*) always returns a row; guard keeps the return type-safe.
         return 0.0, 0.0, 0

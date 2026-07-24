@@ -7,6 +7,7 @@ and end-to-end job -> embed -> alerter callback chain wiring.
 from __future__ import annotations
 
 import signal
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -646,6 +647,9 @@ class TestEquityCycleSendsTradeEmbeds:
                 "cash_balance": 380.0,
                 "daily_pnl": 5.0,
                 "drawdown_pct": 0.02,
+                # DISTINCT ON query now selects `timestamp` (Task 1); the build loop reads
+                # row["timestamp"] into equity_as_of for the D19 staleness marker.
+                "timestamp": datetime(2026, 7, 23, 13, 15, tzinfo=UTC),
             }
         ]
         trade_count_rows = [{"environment": "equity", "n": 3}]

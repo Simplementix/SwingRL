@@ -36,11 +36,11 @@ DB_FIXTURE_NAMES: frozenset[str] = frozenset(
 )
 
 
-def is_db_test(fixturenames: Iterable[str], module_source: str) -> bool:
+def is_db_test(fixturenames: Iterable[str], module_path: str) -> bool:
     """Return True when a test can reach the real database (see module docstring)."""
     if DB_FIXTURE_NAMES.intersection(fixturenames):
         return True
-    return "DATABASE_URL" in module_source
+    return module_mentions_database_url(module_path)
 
 
 @cache

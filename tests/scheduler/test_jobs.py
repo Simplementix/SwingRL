@@ -284,6 +284,90 @@ class TestDailySummaryJob:
         assert fields["Crypto Trades"] == "2"
         assert fields["Equity Trades"] == "0"
 
+    def test_latest_per_env_keeps_equity_and_newest_crypto(
+        self, job_ctx: JobContext, mock_db: MagicMock, mock_alerter: MagicMock
+    ) -> None:
+        """DIGEST-D1: with an OLDER equity row and TWO crypto rows, the digest keeps the
+        equity section AND the NEWEST crypto snapshot (not the older one)."""
+        init_emergency_flags(mock_db)
+        with mock_db.connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                    timestamp TIMESTAMPTZ NOT NULL, environment TEXT NOT NULL,
+                    total_value DOUBLE PRECISION NOT NULL,
+                    equity_value DOUBLE PRECISION, crypto_value DOUBLE PRECISION,
+                    cash_balance DOUBLE PRECISION, high_water_mark DOUBLE PRECISION,
+                    daily_pnl DOUBLE PRECISION, drawdown_pct DOUBLE PRECISION,
+                    PRIMARY KEY (timestamp, environment)
+                )
+            """)
+            conn.execute("DELETE FROM portfolio_snapshots")
+            rows = [
+                ("2026-07-23T13:15:00Z", "equity", 402.0, 300.0, 0.0, 100.0, 402.0, 2.0, 0.0),
+                ("2026-07-23T16:05:00Z", "crypto", 48.50, 0.0, 48.5, 0.0, 48.5, 0.5, 0.0),
+                ("2026-07-23T20:05:00Z", "crypto", 47.42, 0.0, 47.42, 0.0, 48.5, -1.08, 0.0),
+            ]
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO portfolio_snapshots VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                    " ON CONFLICT DO NOTHING",
+                    r,
+                )
+        daily_summary_job()
+        embed = mock_alerter.send_embed.call_args.args[1]
+        names = [f["name"] for f in embed["embeds"][0]["fields"]]
+        values = {f["name"]: f["value"] for f in embed["embeds"][0]["fields"]}
+        assert any(n.startswith("Equity Value") for n in names)  # equity NOT dropped
+        assert "$47.42" in values[next(n for n in names if n.startswith("Crypto Value"))]
+
+    def test_crypto_only_db_omits_equity_without_crashing(
+        self, job_ctx: JobContext, mock_db: MagicMock, mock_alerter: MagicMock
+    ) -> None:
+        """DIGEST-D1: a DB with only crypto snapshots renders crypto, omits equity, no crash."""
+        init_emergency_flags(mock_db)
+        with mock_db.connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                    timestamp TIMESTAMPTZ NOT NULL, environment TEXT NOT NULL,
+                    total_value DOUBLE PRECISION NOT NULL,
+                    equity_value DOUBLE PRECISION, crypto_value DOUBLE PRECISION,
+                    cash_balance DOUBLE PRECISION, high_water_mark DOUBLE PRECISION,
+                    daily_pnl DOUBLE PRECISION, drawdown_pct DOUBLE PRECISION,
+                    PRIMARY KEY (timestamp, environment)
+                )
+            """)
+            conn.execute("DELETE FROM portfolio_snapshots")
+            conn.execute(
+                "INSERT INTO portfolio_snapshots VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                " ON CONFLICT DO NOTHING",
+                ("2026-07-23T16:05:00Z", "crypto", 48.5, 0.0, 48.5, 0.0, 48.5, 0.5, 0.0),
+            )
+        daily_summary_job()
+        embed = mock_alerter.send_embed.call_args.args[1]
+        names = [f["name"] for f in embed["embeds"][0]["fields"]]
+        assert not any(n.startswith("Equity Value") for n in names)
+        assert any(n.startswith("Crypto Value") for n in names)
+
+    def test_empty_snapshots_returns_early(
+        self, job_ctx: JobContext, mock_db: MagicMock, mock_alerter: MagicMock
+    ) -> None:
+        """DIGEST-D1: an empty portfolio_snapshots table hits the `if not rows` early return."""
+        init_emergency_flags(mock_db)
+        with mock_db.connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                    timestamp TIMESTAMPTZ NOT NULL, environment TEXT NOT NULL,
+                    total_value DOUBLE PRECISION NOT NULL,
+                    equity_value DOUBLE PRECISION, crypto_value DOUBLE PRECISION,
+                    cash_balance DOUBLE PRECISION, high_water_mark DOUBLE PRECISION,
+                    daily_pnl DOUBLE PRECISION, drawdown_pct DOUBLE PRECISION,
+                    PRIMARY KEY (timestamp, environment)
+                )
+            """)
+            conn.execute("DELETE FROM portfolio_snapshots")
+        daily_summary_job()
+        mock_alerter.send_embed.assert_not_called()
+
 
 def _seed_benchmark_tables(conn: Any) -> None:
     """Create + isolate benchmark_baselines and ohlcv_4h (IF NOT EXISTS, then DELETE).
@@ -1228,7 +1312,31 @@ class TestEquityFillConfirmationJob:
         assert len(partial_calls) == 1
         msg = partial_calls[0].kwargs["message"]
         assert "None requested" not in msg, msg
-        assert "$61.1 notional" in msg, msg
+        assert "$61.10 notional" in msg, msg
+
+    def test_partial_fill_alert_unknown_amount_when_qty_and_notional_none(
+        self, mock_ctx: _MockCtx
+    ) -> None:
+        """DIGEST-D3: qty AND notional both None renders a neutral phrase, never '$None'."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="opn", cycle_id=42, symbol="VTI", side="buy")
+        mock_ctx.alpaca.order_status(
+            "opn",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=100.0,
+            filled_qty=0.05,
+            qty=None,
+            notional=None,
+        )
+        equity_fill_confirmation_job()
+        msg = next(
+            c.kwargs["message"]
+            for c in mock_ctx.alerter.send_alert.call_args_list
+            if "PARTIALLY filled" in (c.kwargs.get("title") or "")
+        )
+        assert "$None" not in msg
+        assert "an unknown amount" in msg, msg
 
     def test_fill_confirmation_idempotent_after_crash(self, mock_ctx: _MockCtx) -> None:
         """EXEC-D11 (review #2): a prior run that recorded the trade but crashed before
@@ -1278,7 +1386,7 @@ class TestEquityFillConfirmationJob:
             ).fetchone()
         assert fq is not None
         assert float(fq["decision_price_usd"]) == pytest.approx(600.00)
-        assert fq["slippage_frac"] is not None  # 0.60/600 — measured, not NULL
+        assert fq["slippage_frac"] == pytest.approx(0.001)  # 0.60/600 — measured, sign+math pinned
 
     def test_fill_confirmation_second_slice_at_derived_price(self, mock_ctx: _MockCtx) -> None:
         """RULING-1: a later run records only the increment, priced so that recorded dollars
@@ -1437,6 +1545,109 @@ class TestEquityFillConfirmationJob:
         resolved = mock_ctx.pending_row("otu1")
         assert resolved["resolved_at"] is not None
         assert resolved["disposition"] == "expired"
+
+    def test_partial_fill_alert_titles_unique_per_order(self, mock_ctx: _MockCtx) -> None:
+        """DIGEST-D2: two partials on the SAME symbol get DISTINCT titles (order_id in title)
+        so the alerter's per-title 30-min cooldown cannot swallow the second (found 2026-07-23).
+        """
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="sp1", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.set_pending_order(order_id="sp2", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.alpaca.order_status(
+            "sp1",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=600.0,
+            filled_qty=0.02,
+            qty=0.05,
+        )
+        mock_ctx.alpaca.order_status(
+            "sp2",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=601.0,
+            filled_qty=0.03,
+            qty=0.05,
+        )
+        equity_fill_confirmation_job()
+        titles = [
+            c.kwargs["title"]
+            for c in mock_ctx.alerter.send_alert.call_args_list
+            if "PARTIALLY filled" in (c.kwargs.get("title") or "")
+        ]
+        assert len(titles) == 2
+        assert len(set(titles)) == 2, titles  # RED today: both identical
+        assert any("sp1" in t for t in titles) and any("sp2" in t for t in titles)
+
+    def test_unfilled_order_title_says_still_working(self, mock_ctx: _MockCtx) -> None:
+        """DIGEST-D4: an order with no fill yet is titled 'still working …', not 'unfilled'."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="onew", cycle_id=42, symbol="IWM", side="buy")
+        mock_ctx.alpaca.order_status(
+            "onew", status=OrderStatus.NEW, filled_avg_price=None, filled_qty=0.0
+        )
+        equity_fill_confirmation_job()
+        titles = [c.kwargs.get("title") or "" for c in mock_ctx.alerter.send_alert.call_args_list]
+        assert any(
+            t.startswith("Equity auction order still working") and "IWM" in t for t in titles
+        ), titles
+        assert not any("unfilled" in t for t in titles), titles
+
+    def test_partial_no_new_shares_also_says_still_working(self, mock_ctx: _MockCtx) -> None:
+        """DIGEST-D4/D9: the else-branch also fires for a PARTIAL order whose full slice was
+        already recorded on a prior run (no NEW shares this run, so slice_recorded is False)
+        — it must route to the SAME 'still working' title as a genuinely-unfilled new/accepted
+        order, not a distinct one that would contradict the partial-fill history."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="opw1", cycle_id=42, symbol="XLK", side="buy")
+        # Prior run already recorded the full broker-reported cumulative quantity as a slice —
+        # this run's delta is exactly zero, so slice_recorded stays False even though the order
+        # is still (correctly) reported partially_filled/live by the broker.
+        mock_ctx.seed_trade(
+            "opw1", cycle_id=42, symbol="XLK", side="buy", price=175.50, quantity=0.02
+        )
+        mock_ctx.alpaca.order_status(
+            "opw1", status="partially_filled", filled_avg_price=175.50, filled_qty=0.02, qty=0.05
+        )
+
+        equity_fill_confirmation_job()
+
+        assert mock_ctx.trade_count("opw1") == 1  # nothing NEW recorded — no duplicate slice
+        row = mock_ctx.pending_row("opw1")
+        assert row["resolved_at"] is None  # order still live, row stays open
+        titles = [c.kwargs.get("title") or "" for c in mock_ctx.alerter.send_alert.call_args_list]
+        assert any(
+            t.startswith("Equity auction order still working") and "XLK" in t for t in titles
+        ), titles
+        assert not any("unfilled" in t for t in titles), titles
+        assert not any("PARTIALLY" in t for t in titles), titles
+
+    def test_recorded_for_order_escapes_wildcards_in_order_id(self, mock_ctx: _MockCtx) -> None:
+        """DIGEST-D5: an order_id containing SQL LIKE wildcards ('%','_') matches only its own
+        slices, not siblings, via ESCAPE. Guards a future non-UUID id format."""
+        from swingrl.scheduler.jobs import _recorded_for_order
+
+        with mock_ctx.db.connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trades (
+                    trade_id TEXT PRIMARY KEY, timestamp TIMESTAMPTZ NOT NULL, symbol TEXT NOT NULL,
+                    side TEXT NOT NULL, quantity DOUBLE PRECISION NOT NULL, price DOUBLE PRECISION NOT NULL,
+                    commission DOUBLE PRECISION DEFAULT 0.0, slippage DOUBLE PRECISION DEFAULT 0.0,
+                    environment TEXT NOT NULL, broker TEXT, order_type TEXT, trade_type TEXT
+                )
+            """)
+            conn.execute("DELETE FROM trades")
+            # 'a%b' is the order; 'aXb#1' is a DIFFERENT order's slice. Without ESCAPE the '%'
+            # in the pattern 'a%b#%' is a wildcard that wrongly swallows 'aXb#1' (n==2).
+            for tid in ("a%b", "aXb#1"):
+                conn.execute(
+                    "INSERT INTO trades (trade_id, timestamp, symbol, side, quantity, price, "
+                    "environment, trade_type) VALUES (%s, now(), 'SPY', 'buy', 1.0, 10.0, 'equity', 'signal')",
+                    (tid,),
+                )
+        qty, dollars, n = _recorded_for_order(mock_ctx, "a%b")
+        assert n == 1  # only 'a%b' itself; sibling slice 'aXb#1' excluded by ESCAPE
 
 
 class TestCycleOrdersInfoPing:

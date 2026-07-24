@@ -156,16 +156,34 @@ class TestDuckDBDDL:
         db_url = os.environ["DATABASE_URL"]
         conn = psycopg.connect(db_url, autocommit=True)
         init_postgres_schema(conn)
-        # Verify table accepts inserts (column order matches canonical DDL).
-        conn.execute("""
-            INSERT INTO model_metadata VALUES (
-                'model-001', 'equity', 'PPO', 'v1.0',
-                '2025-01-01', '2025-06-30', 500000, 350000,
-                1.5, 0.33, '/models/ppo_equity.zip',
-                '/models/ppo_equity_vecnorm.pkl',
-                current_timestamp
+        # Verify table accepts inserts (columns named explicitly — no positional drift).
+        conn.execute(
+            """
+            INSERT INTO model_metadata (
+                model_id, environment, algorithm, version,
+                training_start_date, training_end_date, total_timesteps, converged_at_step,
+                validation_sharpe, ensemble_weight, model_path, vec_normalize_path, created_at
+            ) VALUES (
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, current_timestamp
             )
-        """)
+            """,
+            (
+                "model-001",
+                "equity",
+                "PPO",
+                "v1.0",
+                "2025-01-01",
+                "2025-06-30",
+                500000,
+                350000,
+                1.5,
+                0.33,
+                "/models/ppo_equity.zip",
+                "/models/ppo_equity_vecnorm.pkl",
+            ),
+        )
         result = conn.execute("SELECT * FROM model_metadata").fetchall()
         assert len(result) == 1
         assert result[0][0] == "model-001"

@@ -447,3 +447,25 @@ class TestBuildCircuitBreakerEmbed:
         fields = embed["embeds"][0]["fields"]
         field_map = {f["name"]: f["value"] for f in fields}
         assert field_map["Cooldown Until"] == "N/A"
+
+
+def test_daily_summary_marks_stale_section() -> None:
+    """DIGEST-D19: a section whose snapshot is from a prior ET day gets an '(as of …)' suffix;
+    a same-day section does not."""
+    from datetime import UTC, datetime, timedelta
+
+    from swingrl.monitoring.embeds import build_daily_summary_embed
+
+    stale = datetime.now(UTC) - timedelta(days=2)
+    fresh = datetime.now(UTC)
+    embed = build_daily_summary_embed(
+        equity_snapshot={"total_value": 400.0, "daily_pnl": 0.0, "cash_balance": 400.0},
+        crypto_snapshot={"total_value": 48.0, "daily_pnl": 0.0, "cash_balance": 48.0},
+        equity_trades_today=0,
+        crypto_trades_today=0,
+        equity_as_of=stale,
+        crypto_as_of=fresh,
+    )
+    names = [f["name"] for f in embed["embeds"][0]["fields"]]
+    assert any(n.startswith("Equity Value (as of ") for n in names)
+    assert any(n == "Crypto Value" for n in names)  # fresh: no suffix
