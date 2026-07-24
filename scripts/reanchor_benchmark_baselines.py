@@ -207,13 +207,34 @@ class PostgresReanchorGateway(PostgresBaselineGateway):
         return {r["symbol"] for r in rows}
 
 
-def _print_diff(gateway: ReanchorGateway, proposed: list[BaselineRow], *, apply: bool) -> None:
-    """Print current-vs-proposed rows so the operator can verify before/after any write."""
+def _print_diff(
+    proposed: list[BaselineRow],
+    current_by_env: dict[str, dict[str, BaselineRow]],
+    *,
+    apply: bool,
+    total_by_env: dict[str, float | None],
+    cash_by_env: dict[str, float | None],
+) -> None:
+    """Print current-vs-proposed rows so the operator can verify before/after any write.
+
+    ``current_by_env`` is the caller's PRE-write snapshot (symbol -> row per env); using it
+    rather than re-querying keeps the ``[was …]`` column truthful after an ``--apply`` upsert.
+    ``total_by_env``/``cash_by_env`` are the origin ``total_value``/``cash_balance`` per env so
+    the operator can eyeball the D16 relationship (``None`` prints as ``unknown``).
+    """
     mode = "APPLY" if apply else "DRY-RUN"
     print(f"\n=== Re-anchor benchmark baselines ({mode}) ===")
     for env in _ENVIRONMENTS:
-        current = {r.symbol: r for r in gateway.current_baselines(env)}
-        print(f"\n{env}:")
+        current = current_by_env.get(env, {})
+        total = total_by_env.get(env)
+        cash = cash_by_env.get(env)
+        if total is None or cash is None:
+            print(f"\n{env}: origin capital total_value unknown  cash_balance unknown")
+        else:
+            print(
+                f"\n{env}: origin capital total_value ${total:,.2f}  "
+                f"cash_balance ${cash:,.2f}   (Δ ${total - cash:,.2f})"
+            )
         for r in [p for p in proposed if p.environment == env]:
             cur = current.get(r.symbol)
             was = (
@@ -256,6 +277,17 @@ def main(argv: list[str] | None = None) -> int:
     from swingrl.data.db import DatabaseManager  # noqa: PLC0415
 
     gateway = PostgresReanchorGateway(DatabaseManager(config))
+    # Snapshot current baselines + origin capital BEFORE reanchor upserts, so an --apply diff
+    # reflects real before/after (post-write re-query would show the just-written rows).
+    before_by_env = {
+        env: {r.symbol: r for r in gateway.current_baselines(env)} for env in _ENVIRONMENTS
+    }
+    total_by_env: dict[str, float | None] = {}
+    cash_by_env: dict[str, float | None] = {}
+    for env in _ENVIRONMENTS:
+        cap = gateway.origin_capital(env, origins[env])
+        total_by_env[env] = None if cap is None else cap[0]
+        cash_by_env[env] = None if cap is None else cap[1]
     try:
         rows = reanchor(
             config, gateway, apply=apply, origins=origins, backup_dir=Path(args.backup_dir)
@@ -264,7 +296,13 @@ def main(argv: list[str] | None = None) -> int:
         log.error("benchmark_reanchor_refused", error=str(exc))
         print(f"REFUSED: {exc}")
         return 1
-    _print_diff(gateway, rows, apply=apply)
+    _print_diff(
+        rows,
+        before_by_env,
+        apply=apply,
+        total_by_env=total_by_env,
+        cash_by_env=cash_by_env,
+    )
     return 0
 
 
