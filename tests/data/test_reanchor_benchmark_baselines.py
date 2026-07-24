@@ -175,3 +175,39 @@ def test_apply_diff_shows_pre_write_was(
     out = capsys.readouterr().out
     assert gw.upserted  # the write happened
     assert "was $999.0000" in out  # PRE-write price, not the just-upserted 100/200
+
+
+def test_crypto_capital_override_wins_over_derived_total(loaded_config: SwingRLConfig) -> None:
+    """#5: --crypto-capital overrides the (stale) derived crypto total_value; equity stays
+    data-derived. The derived crypto total here is the stale 46.96 the dry-run exposed."""
+    gw = _FakeGateway(
+        _all_fills(loaded_config), {"equity": (400.0, 350.0), "crypto": (46.96, 40.0)}
+    )
+    rows = build_reanchor_rows(loaded_config, gw, _ORIGINS, capital_overrides={"crypto": 48.09})
+    crypto = [r for r in rows if r.environment == "crypto"]
+    equity = [r for r in rows if r.environment == "equity"]
+    assert crypto and all(r.capital_usd == 48.09 for r in crypto)  # override wins over 46.96
+    assert equity and all(r.capital_usd == 400.0 for r in equity)  # equity untouched (derived)
+
+
+def test_main_crypto_capital_flag_flows_to_rows(
+    loaded_config: SwingRLConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#5: the --crypto-capital CLI flag threads through main() into the upserted crypto rows;
+    equity rows keep the data-derived total_value."""
+    gw = _FakeGateway(
+        _all_fills(loaded_config), {"equity": (400.0, 350.0), "crypto": (46.96, 40.0)}
+    )
+    rc = _run_main(
+        monkeypatch,
+        gw,
+        loaded_config,
+        ["--apply", "--crypto-capital", "48.09", "--backup-dir", str(tmp_path)],
+    )
+    assert rc == 0
+    crypto = [r for r in gw.upserted if r.environment == "crypto"]
+    equity = [r for r in gw.upserted if r.environment == "equity"]
+    assert crypto and all(r.capital_usd == 48.09 for r in crypto)
+    assert equity and all(r.capital_usd == 400.0 for r in equity)
