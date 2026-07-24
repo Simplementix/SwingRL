@@ -42,7 +42,8 @@
 - [x] **Phase 19: Model Training** - Train and validate PPO/A2C/SAC ensemble on homelab CPU, pass all walk-forward gates (completed 2026-03-13)
 - [~] **Phase 19.1: Memory Agent Infrastructure and Training** - Initial infra completed 2026-03-15; **REOPENED** for the memory-agent refocus + Postgres migration (memory empirically harming training 2.7–5.1× CPS). Tracked as Stage 2 in the execution plan.
 - [~] **Phase 19.2: Testing Foundation & Database Isolation** - INSERTED 2026-05-19. Four-layer test/DB-safety hardening, re-sequenced so the minimal safety floor lands first and the full repository refactor follows the training refocus. Stages 1 & 3 in the execution plan.
-- [ ] **Phase 20: Production Deployment** - Docker stack running on homelab with paper trading firing on schedule
+- [x] **Phase 20: Production Deployment** - Docker stack running on homelab with paper trading firing on schedule (ACHIEVED ~2026-07-19: paper trading live, image `swingrl:trader-2026-07-24-1`; landed via the Stage 2.R master sequence / Task 16 go-no-go rather than the original 20-01…20-05 plans)
+- [x] **Stage 2.C: Market-Data Collector** - Options EOD collector deployed ~2026-07-15 (image `swingrl-collector:2026-07-22-1`, merged PR #21) — runs alongside the trader on the homelab stack
 - [ ] **Phase 21: Discord Alert Suite** - Full alert coverage wired and smoke-tested across all severity channels
 - [ ] **Phase 22: Automated Retraining** - Equity monthly + crypto biweekly retraining with validated shadow promotion
 - [ ] **Phase 23: Monitoring and Observability** - Degradation alerts, structured validation logs, and dead man's switch active
@@ -63,8 +64,8 @@
   5. Data ingestion runs end-to-end by executing commands on the homelab Docker container — no M1 Mac involvement required
 **Plans:** 2/2 plans complete
 Plans:
-- [ ] 18-01-PLAN.md — Verification module with DuckDB quality checks
-- [ ] 18-02-PLAN.md — Ingest-all orchestrator CLI with pipeline stages and tests
+- [x] 18-01-PLAN.md — Verification module with DuckDB quality checks
+- [x] 18-02-PLAN.md — Ingest-all orchestrator CLI with pipeline stages and tests
 
 ### Phase 19: Model Training
 **Goal**: PPO/A2C/SAC agents for equity and crypto are trained on homelab CPU with LLM-powered meta-training loop, pass all walk-forward validation gates, and are deployed to models/active/ alongside their VecNormalize statistics
@@ -78,9 +79,9 @@ Plans:
   5. Ensemble passes the training success gate: Sharpe > 1.0 and max drawdown < 15% before any deployment step proceeds
 **Plans:** 3/3 plans complete
 Plans:
-- [ ] 19-01-PLAN.md — Memory agent foundation (config, client, bounds) + pipeline helper functions with tests
-- [ ] 19-02-PLAN.md — Memory training modules (HMM 3-state, reward wrapper, meta-orchestrator) + train_pipeline.py CLI
-- [ ] 19-03-PLAN.md — Memory validation scripts + homelab training execution and verification checkpoint
+- [x] 19-01-PLAN.md — Memory agent foundation (config, client, bounds) + pipeline helper functions with tests
+- [x] 19-02-PLAN.md — Memory training modules (HMM 3-state, reward wrapper, meta-orchestrator) + train_pipeline.py CLI
+- [x] 19-03-PLAN.md — Memory validation scripts + homelab training execution and verification checkpoint
 
 ### Phase 19.1: Memory Agent Infrastructure and Training (INSERTED)
 
@@ -90,10 +91,10 @@ Plans:
 **Plans:** 4/4 plans complete
 
 Plans:
-- [ ] 19.1-01-PLAN.md — swingrl-memory FastAPI service + Docker compose + Ollama setup + unit tests
-- [ ] 19.1-02-PLAN.md — DuckDB migrations + config schema updates + MemoryClient API key support
-- [ ] 19.1-03-PLAN.md — Multi-iteration training loop with resumable state + best-model deployment
-- [ ] 19.1-04-PLAN.md — CI updates + homelab deployment + 6 training iterations + verification checkpoint
+- [x] 19.1-01-PLAN.md — swingrl-memory FastAPI service + Docker compose + Ollama setup + unit tests
+- [x] 19.1-02-PLAN.md — DuckDB migrations + config schema updates + MemoryClient API key support
+- [x] 19.1-03-PLAN.md — Multi-iteration training loop with resumable state + best-model deployment
+- [x] 19.1-04-PLAN.md — CI updates + homelab deployment + 6 training iterations + verification checkpoint
 
 ### Phase 20: Production Deployment
 **Goal**: The homelab Docker stack runs both containers healthy, paper trading fires on schedule for equity (4:15 PM ET) and crypto (every 4H), and end-to-end trade execution completes without error
@@ -202,9 +203,10 @@ Plans:
 | 18. Data Ingestion | v1.1 | 2/2 | Complete | 2026-03-11 |
 | 19. Model Training | v1.1 | 3/3 | Complete | 2026-03-13 |
 | 19.1. Memory Agent Infra | v1.1 | 4/4 | Reopened — see exec plan (Stage 2) | 2026-03-15 (initial) |
-| 19.2. Testing Foundation | v1.1 | 0/TBD | In progress — see exec plan (Stages 1, 3) | - |
-| 20. Production Deployment | v1.1 | 0/5 | Planned | - |
-| 21. Discord Alert Suite | v1.1 | 0/3 | Planned | - |
+| 19.2. Testing Foundation | v1.1 | 2/TBD | Partial — Stage 1 safety-floor (PR #17) + test-infra overhaul (PR #39) merged; Stage 3 full refactor pending | - |
+| 20. Production Deployment | v1.1 | 0/5 | Achieved (paper trading live) — via Stage 2.R | ~2026-07-19 |
+| 2.C. Market-Data Collector | v1.1 | 1/1 | Achieved (options EOD collector deployed) — PR #21 | ~2026-07-15 |
+| 21. Discord Alert Suite | v1.1 | 1/3 | Partial — collector alerts (PR #26) + daily-summary embed (PR #41) shipped; full suite pending | - |
 | 22. Automated Retraining | v1.1 | 0/4 | Planned | - |
 | 23. Monitoring and Observability | v1.1 | 0/TBD | Not started | - |
 | 24. Operator Runbook | v1.1 | 0/TBD | Not started | - |

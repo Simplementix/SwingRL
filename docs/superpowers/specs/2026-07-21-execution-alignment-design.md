@@ -1,6 +1,6 @@
 # Execution Alignment & Reporting Fixes — Design
 
-**Date:** 2026-07-21 · **Status:** DRAFT — pending user approval · **Scope:** live/paper
+**Date:** 2026-07-21 · **Status:** MERGED & DEPLOYED — PR #37 (execution-alignment); trader swingrl:trader-2026-07-22-1 (2026-07-22). · **Scope:** live/paper
 execution side (era-0 compatible) + era-1 training-convention decision (recorded in the
 training-redesign spec/plan, implemented in Plan B Phase 7).
 

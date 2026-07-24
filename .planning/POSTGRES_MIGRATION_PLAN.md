@@ -1,5 +1,7 @@
 # PostgreSQL Migration Plan: Replace DuckDB + Main SQLite
 
+> ✅ COMPLETE — Postgres migration shipped (merged to main, PR #17, 2026-06-10). NOTE: production runs PostgreSQL 16 (pg16), not the postgres:17 this plan originally targeted. Retained for history.
+
 ## Context
 DuckDB's single-writer exclusive-access model blocks the dashboard and memory service during training (hours-long windows). SQLite works fine but consolidating into one database simplifies operations: one backup, one connection pool, one monitoring point, and enables cross-table JOINs between OLAP (market data) and OLTP (trades).
 

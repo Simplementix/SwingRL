@@ -1,6 +1,6 @@
 # Stage 1 — Test Safety Floor (Wipe-Based Isolation + Guard Hardening)
 
-**Status:** Draft — awaiting G1 (spec) approval
+**Status:** SHIPPED — Stage 1 safety-floor merged (PR #17, 2026-06-10); the three DB-safety guard layers are live in production.
 **Date:** 2026-06-05 ET
 **Part of:** [`V1.1_EXECUTION_PLAN.md`](../../../.planning/V1.1_EXECUTION_PLAN.md) → Stage 1
 **Design source / supersedes premise of:** [`2026-05-19-phase-19.2-testing-foundation-design.md`](2026-05-19-phase-19.2-testing-foundation-design.md)

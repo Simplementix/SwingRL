@@ -7,7 +7,7 @@
 > accordingly.
 
 - **Date:** 2026-07-14
-- **Status:** Approved — amended C1–C4 (CBOE primary)
+- **Status:** Approved — amended C1–C4 (CBOE primary) — DEPLOYED: swingrl-collector live since ~2026-07-15 (image swingrl-collector:2026-07-22-1).
 - **Author:** vpanchal-code (with Claude)
 - **Related:** `~/thetadata_pull/SPX_DATA_SOURCING_SPEC.md`, `~/thetadata_pull/SPX_PREMIUM_DATA_SPEC.md` (prior intent), `docs/training/training-data-capture.md` (options table was scaffold-only)
 

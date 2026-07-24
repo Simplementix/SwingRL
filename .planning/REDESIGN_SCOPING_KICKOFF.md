@@ -1,5 +1,7 @@
 # SwingRL Training-System Redesign — Scoping Session Kickoff (for Fable)
 
+> ✅ SCOPING COMPLETE — Stage 2.R scoping is done (G1 signed 2026-07-07; Plan A + Plan B written & walkthrough-signed). Live status: .planning/V1.1_EXECUTION_PLAN.md → Stage 2.R. Retained for history.
+
 > **Read this first, then drive a guided scoping conversation with me. This session
 > produces a DESIGN DOCUMENT, not code.**
 

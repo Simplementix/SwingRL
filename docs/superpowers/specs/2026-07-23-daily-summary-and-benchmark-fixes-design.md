@@ -1,6 +1,6 @@
 # Daily Summary & Benchmark Accuracy — Fixes Design
 
-**Date:** 2026-07-23 · **Status:** DRAFT — Fable-reviewed (APPROVE-WITH-CHANGES, all findings folded in), pending user approval · **Scope:** live/paper
+**Date:** 2026-07-23 · **Status:** MERGED & DEPLOYED — PR #41 (ee0c2a1) + benchmark re-anchor PR #42 (fb3b22a); trader swingrl:trader-2026-07-24-1 (2026-07-24). · **Scope:** live/paper
 reporting + alerting + benchmark baseline **data** (era-0 compatible — no training-side or
 digest-math changes), bundled with a test/tooling/docstring cleanup batch. One branch, one
 PR to `swingrl/2.R-training-redesign`.

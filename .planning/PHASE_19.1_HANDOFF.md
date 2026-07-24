@@ -1,5 +1,7 @@
 # Phase 19.1 — Memory Agent Refocus: Active Handoff
 
+> ⚠️ SUPERSEDED — the Phase 19.1 'wipe iter 5 / re-run fresh' plan was dissolved; Stage 2 Groups A–E were PAUSED and replaced by Stage 2.R. The gsd/phase-19.1 branch was retired (merged to main via PR #17, 2026-06-10). Test counts here predate the test-infra overhaul (PR #39). Retained for history.
+
 **Status** — Plan A, Plan B, Task C, Task D complete. Empirically
 confirmed memory is **hurting** training (control folds outperform
 treatment folds by 2.7–5.1× CPS across iter 3-4). Decision 2026-04-13:

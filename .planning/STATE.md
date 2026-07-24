@@ -14,6 +14,13 @@ progress:
   percent: 100
 ---
 
+> # ⚠️ DEPRECATED — DO NOT USE THIS FILE FOR STATUS
+> Frozen GSD-tooling state file, last updated **2026-03-22** (GSD tooling is retired). Its contents
+> (Phase 19 / "100%" / the Phase-20 resume pointer below) are ~4 months stale and WRONG.
+> **Live status is [`.planning/V1.1_EXECUTION_PLAN.md`](V1.1_EXECUTION_PLAN.md) → ▶ RESUME HERE.**
+> Reality as of 2026-07-24: Stage 2.R redesign underway; homelab stack live — trader (paper),
+> collector, memory. Retained only for historical reference.
+
 # Project State
 
 ## Project Reference

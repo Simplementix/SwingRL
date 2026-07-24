@@ -1,5 +1,7 @@
 # Stage 2 — Training Refocus (Phase 19.1 Groups A–E) — Design Spec
 
+> ⚠️ SUPERSEDED — the Stage 2 'Training Refocus' Groups A–E runbook was PAUSED (2026-06-11) and replaced by the Stage 2.R Training-System Redesign (docs/superpowers/specs/2026-06-12-training-system-redesign-design.md). Retained for history.
+
 > **Gate:** G1 (spec approval). Approved-in-conversation 2026-06-11 ET; this document is the
 > written record for review.
 > **Branch:** `swingrl/19.1-training-refocus` (cut from `main` post-PR-#17).

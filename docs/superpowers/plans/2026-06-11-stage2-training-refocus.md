@@ -1,5 +1,7 @@
 # Stage 2 Training Refocus Implementation Plan
 
+> ⚠️ SUPERSEDED — replaced by the Stage 2.R plans: Plan A docs/superpowers/plans/2026-07-07-capture-foundation-plan.md + Plan B docs/superpowers/plans/2026-07-07-training-redesign-plan.md. This Groups A–E refocus never executed. Retained for history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give the LLM advice path an objective (CPS v1), a live dashboard (leading indicators incl. trade activity), a deterministic cause diagnosis, and per-advice attribution — reversing the 2.7–5.1× treatment-vs-control CPS harm.

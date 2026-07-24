@@ -1,11 +1,12 @@
 # SwingRL
 
-> **Status (2026-06-05 ET):** v1.1 in progress. The Postgres migration, memory infra, CPS
-> framework, and `docs/training/` set live on the work branch
-> (`gsd/phase-19.1-memory-agent-infrastructure-and-training`, 249 commits ahead of `main`) —
-> **not yet merged to `main`**. Active sequencing and live stage status:
-> [`V1.1_EXECUTION_PLAN.md`](V1.1_EXECUTION_PLAN.md). The "Database" note below describes the
-> v1.0 SQLite+DuckDB layout; production has since migrated to PostgreSQL (pg16).
+> **Status (2026-07-24 ET):** v1.1 in progress. The Postgres migration, memory infra, CPS
+> framework, and `docs/training/` set **merged to `main` via PR #17 (2026-06-10)**; the
+> `gsd/phase-19.1-memory-agent-infrastructure-and-training` branch has been retired. Active
+> work now happens on the integration branch `swingrl/2.R-training-redesign` (all PRs target
+> it, never `main`); the repo is ~634 commits past `v1.0`. Active sequencing and live stage
+> status: [`V1.1_EXECUTION_PLAN.md`](V1.1_EXECUTION_PLAN.md). The "Database" note below
+> describes the v1.0 SQLite+DuckDB layout; production has since migrated to PostgreSQL (pg16).
 
 ## What This Is
 
@@ -41,13 +42,13 @@ Capital preservation through disciplined, automated risk management — the syst
 
 ### Active
 
-- [ ] Historical data ingestion with complete dimension alignment (OHLCV + macro + features)
+- [x] Historical data ingestion with complete dimension alignment (OHLCV + macro + features)
 - [ ] Agent training pipeline: PPO/A2C/SAC for equity and crypto with walk-forward validation
-- [ ] Homelab Docker deployment with production config and environment setup
+- [x] Homelab Docker deployment with production config and environment setup
 - [ ] Discord webhook setup with full alert suite (critical, warning, daily summary)
 - [ ] Automated retraining: equity monthly, crypto biweekly with shadow promotion
 - [ ] Operator runbook with detailed walkthroughs for all workflows
-- [ ] 6-month paper trading validation period on homelab
+- [ ] 6-month paper trading validation period on homelab (in progress — paper trading live since ~2026-07-19)
 
 ### Out of Scope
 
@@ -68,7 +69,7 @@ Capital preservation through disciplined, automated risk management — the syst
 
 **Brokers:** Alpaca (equities, commission-free), Binance.US (crypto, 0.10% maker/taker, $10 floor). Charles Schwab (SPX options) deferred.
 
-**Database:** SQLite (trading_ops.db, OLTP) + DuckDB (market_data.ddb, OLAP). 28 tables (10 SQLite + 18 DuckDB). Cross-database joins via sqlite_scanner.
+**Database:** SQLite (trading_ops.db, OLTP) + DuckDB (market_data.ddb, OLAP). 28 tables (10 SQLite + 18 DuckDB). Cross-database joins via sqlite_scanner. *(v1.0 layout — production has since migrated to PostgreSQL 16 (pg16) via PR #17.)*
 
 **Capital:** Phase 1: $447 ($47 crypto + $400 equity). Deposit-driven scaling to $1K+ (Phase 2), $2K+ (Phase 3).
 
@@ -110,14 +111,17 @@ Capital preservation through disciplined, automated risk management — the syst
 
 **Goal:** Get SwingRL running on the homelab in paper trading mode with automated retraining, Discord alerts, and operator documentation — fully hands-off after initial setup.
 
-**Target features:**
+**Delivered:**
 
-- Complete data ingestion pipeline (max historical depth, aligned dimensions)
-- Trained PPO/A2C/SAC agents for both equity and crypto
-- Homelab Docker deployment with paper trading
+- ✓ Complete data ingestion pipeline (max historical depth, aligned dimensions)
+- ✓ Homelab Docker deployment with paper trading (live since ~2026-07-19)
+
+**Remaining:**
+
+- Trained PPO/A2C/SAC agents for both equity and crypto (Stage 2.R training-engine redesign)
 - Discord webhook with full alert suite
 - Automated retraining (equity monthly, crypto biweekly) with shadow promotion
 - Comprehensive operator runbook with detailed walkthroughs
 
 ---
-*Last updated: 2026-06-05 ET — v1.1 mid-flight; see [`V1.1_EXECUTION_PLAN.md`](V1.1_EXECUTION_PLAN.md) for live status. (Prior update: 2026-03-10, v1.1 start.)*
+*Last updated: 2026-07-24 ET — Stage 2.R redesign underway; homelab stack live — trader (paper), collector, memory; see [`V1.1_EXECUTION_PLAN.md`](V1.1_EXECUTION_PLAN.md) for live status. (Prior update: 2026-06-05 ET, v1.1 mid-flight.)*
