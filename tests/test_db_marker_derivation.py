@@ -18,15 +18,27 @@ def test_real_db_fixture_triggers_db() -> None:
     assert is_db_test(["tmp_path", "pg_conn"], "") is True
 
 
-def test_module_mention_triggers_db() -> None:
-    """A module that reads DATABASE_URL anywhere makes all its tests db tests."""
-    source = 'db_url = os.environ.get("DATABASE_URL", "")'
-    assert is_db_test(["tmp_path"], source) is True
+def test_module_mention_triggers_db(tmp_path: Path) -> None:
+    """A module that mentions DATABASE_URL makes all its tests db tests."""
+    mod = tmp_path / "test_mentions.py"
+    mod.write_text('db_url = os.environ.get("DATABASE_URL", "")\n')
+    assert is_db_test(["tmp_path"], str(mod)) is True
 
 
-def test_plain_test_is_not_db() -> None:
+def test_plain_test_is_not_db(tmp_path: Path) -> None:
     """No DB fixture + no DATABASE_URL mention -> fast lane."""
-    assert is_db_test(["tmp_path", "loaded_config"], "import pandas as pd") is False
+    clean = tmp_path / "test_plain.py"
+    clean.write_text("import pandas as pd\n")
+    assert is_db_test(["tmp_path", "loaded_config"], str(clean)) is False
+
+
+def test_module_mentions_cache_hit_returns_stale(tmp_path: Path) -> None:
+    """@cache pins the first read per path (D18.2)."""
+    f = tmp_path / "test_cache.py"
+    f.write_text("x = 1\n")
+    assert module_mentions_database_url(str(f)) is False
+    f.write_text('y = "DATABASE_URL"\n')  # changed on disk...
+    assert module_mentions_database_url(str(f)) is False  # ...but cached False
 
 
 def test_known_real_db_fixtures_registered() -> None:
