@@ -68,13 +68,22 @@ class ReanchorGateway(Protocol):
 
 
 def build_reanchor_rows(
-    config: SwingRLConfig, gateway: ReanchorGateway, origins: dict[str, date]
+    config: SwingRLConfig,
+    gateway: ReanchorGateway,
+    origins: dict[str, date],
+    *,
+    capital_overrides: dict[str, float] | None = None,
 ) -> list[BaselineRow]:
     """Compute one corrected BaselineRow per env symbol from first fills + origin capital.
+
+    ``capital_overrides`` maps an env to an explicit ``capital_usd`` that supersedes the derived
+    origin ``total_value`` for that env (e.g. crypto's real starting cash when the earliest
+    origin-day snapshot is a stale pre-reset value). Envs absent from the mapping stay derived.
 
     Raises:
         DataError: an env has no origin-day snapshot, or a symbol has no origin-day buy fill.
     """
+    overrides = capital_overrides or {}
     rows: list[BaselineRow] = []
     for env in _ENVIRONMENTS:
         origin = origins[env]
@@ -82,6 +91,7 @@ def build_reanchor_rows(
         if capital is None:
             raise DataError(f"No {env} portfolio_snapshots on origin {origin}; cannot set capital.")
         total_value, _cash = capital
+        capital_usd = overrides.get(env, total_value)
         for symbol in getattr(config, env).symbols:
             fill = gateway.first_buy_fill(env, symbol, origin)
             if fill is None:
@@ -95,7 +105,7 @@ def build_reanchor_rows(
                     symbol=symbol,
                     baseline_date=origin,
                     baseline_price=float(price),
-                    capital_usd=float(total_value),
+                    capital_usd=float(capital_usd),
                 )
             )
     return rows
@@ -130,14 +140,18 @@ def reanchor(
     origins: dict[str, date],
     backup_dir: Path,
     stamp: str | None = None,
+    capital_overrides: dict[str, float] | None = None,
 ) -> list[BaselineRow]:
     """Compute corrected rows and, when ``apply``, back up + upsert + verify the row-set.
+
+    ``capital_overrides`` is forwarded to :func:`build_reanchor_rows` (per-env ``capital_usd``
+    overrides; envs absent stay data-derived).
 
     Raises:
         DataError: missing data (via build_reanchor_rows), or a post-write env symbol-set that
             does not equal the origin-fill set (a gap/extra corrupts the equal-weight divisor).
     """
-    rows = build_reanchor_rows(config, gateway, origins)
+    rows = build_reanchor_rows(config, gateway, origins, capital_overrides=capital_overrides)
     if not apply:
         return rows
     stamp = stamp or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -257,6 +271,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="config/swingrl.yaml")
     parser.add_argument("--equity-origin", default=_DEFAULT_ORIGINS["equity"].isoformat())
     parser.add_argument("--crypto-origin", default=_DEFAULT_ORIGINS["crypto"].isoformat())
+    parser.add_argument(
+        "--crypto-capital",
+        type=float,
+        default=None,
+        help="Override crypto capital_usd (e.g. 48.09); equity stays data-derived.",
+    )
     parser.add_argument("--backup-dir", default=".")
     return parser
 
@@ -288,9 +308,15 @@ def main(argv: list[str] | None = None) -> int:
         cap = gateway.origin_capital(env, origins[env])
         total_by_env[env] = None if cap is None else cap[0]
         cash_by_env[env] = None if cap is None else cap[1]
+    capital_overrides = {"crypto": args.crypto_capital} if args.crypto_capital is not None else None
     try:
         rows = reanchor(
-            config, gateway, apply=apply, origins=origins, backup_dir=Path(args.backup_dir)
+            config,
+            gateway,
+            apply=apply,
+            origins=origins,
+            backup_dir=Path(args.backup_dir),
+            capital_overrides=capital_overrides,
         )
     except DataError as exc:
         log.error("benchmark_reanchor_refused", error=str(exc))
