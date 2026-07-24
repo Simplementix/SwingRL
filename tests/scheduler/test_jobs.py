@@ -1578,6 +1578,21 @@ class TestEquityFillConfirmationJob:
         assert len(set(titles)) == 2, titles  # RED today: both identical
         assert any("sp1" in t for t in titles) and any("sp2" in t for t in titles)
 
+    def test_unfilled_order_title_says_still_working(self, mock_ctx: _MockCtx) -> None:
+        """DIGEST-D4: an order with no fill yet is titled 'still working …', not 'unfilled'."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="onew", cycle_id=42, symbol="IWM", side="buy")
+        mock_ctx.alpaca.order_status(
+            "onew", status=OrderStatus.NEW, filled_avg_price=None, filled_qty=0.0
+        )
+        equity_fill_confirmation_job()
+        titles = [c.kwargs.get("title") or "" for c in mock_ctx.alerter.send_alert.call_args_list]
+        assert any(
+            t.startswith("Equity auction order still working") and "IWM" in t for t in titles
+        ), titles
+        assert not any("unfilled" in t for t in titles), titles
+
 
 class TestCycleOrdersInfoPing:
     """EXEC-D12: every cycle (both envs) ends with one INFO listing each order."""
