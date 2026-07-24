@@ -24,7 +24,7 @@ from swingrl.config.schema import SwingRLConfig, load_config
 from swingrl.data.db import DatabaseManager
 from swingrl.envs.equity import StockTradingEnv
 from tests.db_guard import SAFE_DB_NAMES, classify_db_url, resolve_target_db_url
-from tests.db_marker import DB_FIXTURE_NAMES, module_mentions_database_url
+from tests.db_marker import is_db_test
 from tests.db_worker import activate_isolated_db, drop_isolated_db
 
 # Autouse fixture — imported so it registers globally (wipes test DB after each test).
@@ -50,7 +50,7 @@ def pytest_configure(config: pytest.Config) -> None:
     # the name guard and schema preflight below validate the rewritten URL.
     try:
         activate_isolated_db()
-    except RuntimeError as exc:
+    except (RuntimeError, psycopg.Error) as exc:
         pytest.exit(str(exc), returncode=2)
 
     db_url = resolve_target_db_url()
@@ -72,9 +72,9 @@ def pytest_configure(config: pytest.Config) -> None:
         )
     try:
         errors = schema_integrity_errors(db_url)
-    except psycopg.OperationalError as exc:
+    except (psycopg.OperationalError, psycopg.ProgrammingError) as exc:
         pytest.exit(
-            f"Cannot reach test database {db_name!r} for the schema preflight: {exc}",
+            f"Cannot run the schema preflight against {db_name!r}: {exc}",
             returncode=2,
         )
     if errors:
@@ -94,10 +94,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if item.get_closest_marker("db") is not None:
             continue
-        fixturenames: list[str] = getattr(item, "fixturenames", [])
-        if DB_FIXTURE_NAMES.intersection(fixturenames) or module_mentions_database_url(
-            str(item.path)
-        ):
+        if is_db_test(getattr(item, "fixturenames", []), str(item.path)):
             item.add_marker(pytest.mark.db)
 
 
