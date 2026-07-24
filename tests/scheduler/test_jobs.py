@@ -284,6 +284,90 @@ class TestDailySummaryJob:
         assert fields["Crypto Trades"] == "2"
         assert fields["Equity Trades"] == "0"
 
+    def test_latest_per_env_keeps_equity_and_newest_crypto(
+        self, job_ctx: JobContext, mock_db: MagicMock, mock_alerter: MagicMock
+    ) -> None:
+        """DIGEST-D1: with an OLDER equity row and TWO crypto rows, the digest keeps the
+        equity section AND the NEWEST crypto snapshot (not the older one)."""
+        init_emergency_flags(mock_db)
+        with mock_db.connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                    timestamp TIMESTAMPTZ NOT NULL, environment TEXT NOT NULL,
+                    total_value DOUBLE PRECISION NOT NULL,
+                    equity_value DOUBLE PRECISION, crypto_value DOUBLE PRECISION,
+                    cash_balance DOUBLE PRECISION, high_water_mark DOUBLE PRECISION,
+                    daily_pnl DOUBLE PRECISION, drawdown_pct DOUBLE PRECISION,
+                    PRIMARY KEY (timestamp, environment)
+                )
+            """)
+            conn.execute("DELETE FROM portfolio_snapshots")
+            rows = [
+                ("2026-07-23T13:15:00Z", "equity", 402.0, 300.0, 0.0, 100.0, 402.0, 2.0, 0.0),
+                ("2026-07-23T16:05:00Z", "crypto", 48.50, 0.0, 48.5, 0.0, 48.5, 0.5, 0.0),
+                ("2026-07-23T20:05:00Z", "crypto", 47.42, 0.0, 47.42, 0.0, 48.5, -1.08, 0.0),
+            ]
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO portfolio_snapshots VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                    " ON CONFLICT DO NOTHING",
+                    r,
+                )
+        daily_summary_job()
+        embed = mock_alerter.send_embed.call_args.args[1]
+        names = [f["name"] for f in embed["embeds"][0]["fields"]]
+        values = {f["name"]: f["value"] for f in embed["embeds"][0]["fields"]}
+        assert any(n.startswith("Equity Value") for n in names)  # equity NOT dropped
+        assert "$47.42" in values[next(n for n in names if n.startswith("Crypto Value"))]
+
+    def test_crypto_only_db_omits_equity_without_crashing(
+        self, job_ctx: JobContext, mock_db: MagicMock, mock_alerter: MagicMock
+    ) -> None:
+        """DIGEST-D1: a DB with only crypto snapshots renders crypto, omits equity, no crash."""
+        init_emergency_flags(mock_db)
+        with mock_db.connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                    timestamp TIMESTAMPTZ NOT NULL, environment TEXT NOT NULL,
+                    total_value DOUBLE PRECISION NOT NULL,
+                    equity_value DOUBLE PRECISION, crypto_value DOUBLE PRECISION,
+                    cash_balance DOUBLE PRECISION, high_water_mark DOUBLE PRECISION,
+                    daily_pnl DOUBLE PRECISION, drawdown_pct DOUBLE PRECISION,
+                    PRIMARY KEY (timestamp, environment)
+                )
+            """)
+            conn.execute("DELETE FROM portfolio_snapshots")
+            conn.execute(
+                "INSERT INTO portfolio_snapshots VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                " ON CONFLICT DO NOTHING",
+                ("2026-07-23T16:05:00Z", "crypto", 48.5, 0.0, 48.5, 0.0, 48.5, 0.5, 0.0),
+            )
+        daily_summary_job()
+        embed = mock_alerter.send_embed.call_args.args[1]
+        names = [f["name"] for f in embed["embeds"][0]["fields"]]
+        assert not any(n.startswith("Equity Value") for n in names)
+        assert any(n.startswith("Crypto Value") for n in names)
+
+    def test_empty_snapshots_returns_early(
+        self, job_ctx: JobContext, mock_db: MagicMock, mock_alerter: MagicMock
+    ) -> None:
+        """DIGEST-D1: an empty portfolio_snapshots table hits the `if not rows` early return."""
+        init_emergency_flags(mock_db)
+        with mock_db.connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                    timestamp TIMESTAMPTZ NOT NULL, environment TEXT NOT NULL,
+                    total_value DOUBLE PRECISION NOT NULL,
+                    equity_value DOUBLE PRECISION, crypto_value DOUBLE PRECISION,
+                    cash_balance DOUBLE PRECISION, high_water_mark DOUBLE PRECISION,
+                    daily_pnl DOUBLE PRECISION, drawdown_pct DOUBLE PRECISION,
+                    PRIMARY KEY (timestamp, environment)
+                )
+            """)
+            conn.execute("DELETE FROM portfolio_snapshots")
+        daily_summary_job()
+        mock_alerter.send_embed.assert_not_called()
+
 
 def _seed_benchmark_tables(conn: Any) -> None:
     """Create + isolate benchmark_baselines and ohlcv_4h (IF NOT EXISTS, then DELETE).
