@@ -450,9 +450,10 @@ def daily_summary_job() -> None:
         benchmarks: dict[str, float | None] = {"equity": None, "crypto": None}
         with ctx.db.connection() as conn:
             rows = conn.execute(
-                "SELECT environment, total_value, cash_balance, daily_pnl, drawdown_pct "
+                "SELECT DISTINCT ON (environment) "
+                "environment, total_value, cash_balance, daily_pnl, drawdown_pct, timestamp "
                 "FROM portfolio_snapshots "
-                "ORDER BY timestamp DESC LIMIT 2"
+                "ORDER BY environment, timestamp DESC"
             ).fetchall()
             trade_rows = conn.execute(
                 "SELECT environment, count(*) AS n FROM trades "
@@ -471,19 +472,25 @@ def daily_summary_job() -> None:
             log.info("daily_summary_no_data")
             return
 
-        # Build snapshots per environment
+        # Build snapshots per environment (DISTINCT ON already gives ≤1 newest row per env).
         equity_snap = None
         crypto_snap = None
+        equity_as_of = None
+        crypto_as_of = None
         for row in rows:
             snap = {
                 "total_value": row["total_value"],
                 "daily_pnl": row["daily_pnl"],
                 "cash_balance": row["cash_balance"],
             }
+            # equity_as_of / crypto_as_of are captured now and consumed by Task 2
+            # (the digest "as of" footer); noqa keeps the names stable for that wiring.
             if row["environment"] == "equity":
                 equity_snap = snap
+                equity_as_of = row["timestamp"]  # noqa: F841
             elif row["environment"] == "crypto":
                 crypto_snap = snap
+                crypto_as_of = row["timestamp"]  # noqa: F841
 
         if build_daily_summary_embed is not None:
             embed = build_daily_summary_embed(
