@@ -1623,6 +1623,32 @@ class TestEquityFillConfirmationJob:
         assert not any("unfilled" in t for t in titles), titles
         assert not any("PARTIALLY" in t for t in titles), titles
 
+    def test_recorded_for_order_escapes_wildcards_in_order_id(self, mock_ctx: _MockCtx) -> None:
+        """DIGEST-D5: an order_id containing SQL LIKE wildcards ('%','_') matches only its own
+        slices, not siblings, via ESCAPE. Guards a future non-UUID id format."""
+        from swingrl.scheduler.jobs import _recorded_for_order
+
+        with mock_ctx.db.connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trades (
+                    trade_id TEXT PRIMARY KEY, timestamp TIMESTAMPTZ NOT NULL, symbol TEXT NOT NULL,
+                    side TEXT NOT NULL, quantity DOUBLE PRECISION NOT NULL, price DOUBLE PRECISION NOT NULL,
+                    commission DOUBLE PRECISION DEFAULT 0.0, slippage DOUBLE PRECISION DEFAULT 0.0,
+                    environment TEXT NOT NULL, broker TEXT, order_type TEXT, trade_type TEXT
+                )
+            """)
+            conn.execute("DELETE FROM trades")
+            # 'a%b' is the order; 'aXb#1' is a DIFFERENT order's slice. Without ESCAPE the '%'
+            # in the pattern 'a%b#%' is a wildcard that wrongly swallows 'aXb#1' (n==2).
+            for tid in ("a%b", "aXb#1"):
+                conn.execute(
+                    "INSERT INTO trades (trade_id, timestamp, symbol, side, quantity, price, "
+                    "environment, trade_type) VALUES (%s, now(), 'SPY', 'buy', 1.0, 10.0, 'equity', 'signal')",
+                    (tid,),
+                )
+        qty, dollars, n = _recorded_for_order(mock_ctx, "a%b")
+        assert n == 1  # only 'a%b' itself; sibling slice 'aXb#1' excluded by ESCAPE
+
 
 class TestCycleOrdersInfoPing:
     """EXEC-D12: every cycle (both envs) ends with one INFO listing each order."""
