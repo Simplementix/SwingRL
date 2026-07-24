@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from scripts.reanchor_benchmark_baselines import build_reanchor_rows, reanchor
+import scripts.reanchor_benchmark_baselines as reanchor_mod
+import swingrl.data.db as db_mod
+from scripts.reanchor_benchmark_baselines import build_reanchor_rows, main, reanchor
+from scripts.record_benchmark_baselines import BaselineRow
 from swingrl.config.schema import SwingRLConfig
 from swingrl.utils.exceptions import DataError
 
@@ -22,10 +25,12 @@ class _FakeGateway:
         fills: dict[tuple[str, str], tuple[float, str]],
         capitals: dict[str, tuple[float, float]],
         existing_symbols: dict[str, set[str]] | None = None,
+        existing_baselines: dict[str, list[BaselineRow]] | None = None,
     ) -> None:
         self.fills = fills
         self.capitals = capitals
         self._existing = existing_symbols or {}
+        self._baselines = existing_baselines or {}
         self.upserted: list = []
 
     def first_buy_fill(
@@ -38,7 +43,12 @@ class _FakeGateway:
         return self.capitals.get(environment)
 
     def current_baselines(self, environment: str) -> list:
-        return []
+        # After an upsert, reflect the just-written rows (post-write state); otherwise return
+        # the seeded pre-existing rows. Lets a test prove the diff snapshots PRE-write state.
+        upserted = [r for r in self.upserted if r.environment == environment]
+        if upserted:
+            return upserted
+        return list(self._baselines.get(environment, []))
 
     def baseline_symbols(self, environment: str) -> set[str]:
         return set(self._existing.get(environment, set())) | {
@@ -106,3 +116,98 @@ def test_apply_aborts_on_stale_extra_row(loaded_config: SwingRLConfig, tmp_path:
     )
     with pytest.raises(DataError, match="row-set"):
         reanchor(loaded_config, gw, apply=True, origins=_ORIGINS, backup_dir=tmp_path)
+
+
+def _run_main(
+    monkeypatch: pytest.MonkeyPatch,
+    gw: _FakeGateway,
+    config: SwingRLConfig,
+    argv: list[str],
+) -> int:
+    """Drive main() DB-free by swapping load_config + the Postgres gateway/DatabaseManager."""
+    monkeypatch.setattr(reanchor_mod, "load_config", lambda _path: config)
+    monkeypatch.setattr(reanchor_mod, "configure_logging", lambda **_kw: None)
+    monkeypatch.setattr(reanchor_mod, "PostgresReanchorGateway", lambda _db: gw)
+    monkeypatch.setattr(db_mod, "DatabaseManager", lambda _config: object())
+    return main(argv)
+
+
+def test_diff_prints_origin_cash(
+    loaded_config: SwingRLConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#3: the diff shows the origin cash_balance alongside total_value so the operator can
+    eyeball the D16 relationship — crypto cash 40.00 must appear distinct from total 48.09."""
+    gw = _FakeGateway(
+        _all_fills(loaded_config), {"equity": (400.0, 350.0), "crypto": (48.09, 40.0)}
+    )
+    rc = _run_main(monkeypatch, gw, loaded_config, ["--dry-run", "--backup-dir", str(tmp_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "total_value $48.09" in out
+    assert "cash_balance $40.00" in out
+
+
+def test_apply_diff_shows_pre_write_was(
+    loaded_config: SwingRLConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """N1: an --apply diff must show the PRE-write baseline_price in [was …], not the row it
+    just upserted. Seed distinct pre-write prices (999.0) and assert they survive into output."""
+    pre = {
+        env: [
+            BaselineRow(env, s, _ORIGINS[env], 999.0, 111.0)
+            for s in getattr(loaded_config, env).symbols
+        ]
+        for env in ("equity", "crypto")
+    }
+    gw = _FakeGateway(
+        _all_fills(loaded_config),
+        {"equity": (400.0, 350.0), "crypto": (48.09, 40.0)},
+        existing_baselines=pre,
+    )
+    rc = _run_main(monkeypatch, gw, loaded_config, ["--apply", "--backup-dir", str(tmp_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert gw.upserted  # the write happened
+    assert "was $999.0000" in out  # PRE-write price, not the just-upserted 100/200
+
+
+def test_crypto_capital_override_wins_over_derived_total(loaded_config: SwingRLConfig) -> None:
+    """#5: --crypto-capital overrides the (stale) derived crypto total_value; equity stays
+    data-derived. The derived crypto total here is the stale 46.96 the dry-run exposed."""
+    gw = _FakeGateway(
+        _all_fills(loaded_config), {"equity": (400.0, 350.0), "crypto": (46.96, 40.0)}
+    )
+    rows = build_reanchor_rows(loaded_config, gw, _ORIGINS, capital_overrides={"crypto": 48.09})
+    crypto = [r for r in rows if r.environment == "crypto"]
+    equity = [r for r in rows if r.environment == "equity"]
+    assert crypto and all(r.capital_usd == 48.09 for r in crypto)  # override wins over 46.96
+    assert equity and all(r.capital_usd == 400.0 for r in equity)  # equity untouched (derived)
+
+
+def test_main_crypto_capital_flag_flows_to_rows(
+    loaded_config: SwingRLConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#5: the --crypto-capital CLI flag threads through main() into the upserted crypto rows;
+    equity rows keep the data-derived total_value."""
+    gw = _FakeGateway(
+        _all_fills(loaded_config), {"equity": (400.0, 350.0), "crypto": (46.96, 40.0)}
+    )
+    rc = _run_main(
+        monkeypatch,
+        gw,
+        loaded_config,
+        ["--apply", "--crypto-capital", "48.09", "--backup-dir", str(tmp_path)],
+    )
+    assert rc == 0
+    crypto = [r for r in gw.upserted if r.environment == "crypto"]
+    equity = [r for r in gw.upserted if r.environment == "equity"]
+    assert crypto and all(r.capital_usd == 48.09 for r in crypto)
+    assert equity and all(r.capital_usd == 400.0 for r in equity)
