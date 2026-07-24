@@ -1593,6 +1593,36 @@ class TestEquityFillConfirmationJob:
         ), titles
         assert not any("unfilled" in t for t in titles), titles
 
+    def test_partial_no_new_shares_also_says_still_working(self, mock_ctx: _MockCtx) -> None:
+        """DIGEST-D4/D9: the else-branch also fires for a PARTIAL order whose full slice was
+        already recorded on a prior run (no NEW shares this run, so slice_recorded is False)
+        — it must route to the SAME 'still working' title as a genuinely-unfilled new/accepted
+        order, not a distinct one that would contradict the partial-fill history."""
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="opw1", cycle_id=42, symbol="XLK", side="buy")
+        # Prior run already recorded the full broker-reported cumulative quantity as a slice —
+        # this run's delta is exactly zero, so slice_recorded stays False even though the order
+        # is still (correctly) reported partially_filled/live by the broker.
+        mock_ctx.seed_trade(
+            "opw1", cycle_id=42, symbol="XLK", side="buy", price=175.50, quantity=0.02
+        )
+        mock_ctx.alpaca.order_status(
+            "opw1", status="partially_filled", filled_avg_price=175.50, filled_qty=0.02, qty=0.05
+        )
+
+        equity_fill_confirmation_job()
+
+        assert mock_ctx.trade_count("opw1") == 1  # nothing NEW recorded — no duplicate slice
+        row = mock_ctx.pending_row("opw1")
+        assert row["resolved_at"] is None  # order still live, row stays open
+        titles = [c.kwargs.get("title") or "" for c in mock_ctx.alerter.send_alert.call_args_list]
+        assert any(
+            t.startswith("Equity auction order still working") and "XLK" in t for t in titles
+        ), titles
+        assert not any("unfilled" in t for t in titles), titles
+        assert not any("PARTIALLY" in t for t in titles), titles
+
 
 class TestCycleOrdersInfoPing:
     """EXEC-D12: every cycle (both envs) ends with one INFO listing each order."""

@@ -1027,7 +1027,7 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
     else:
         ctx.alerter.send_alert(
             level="warning",
-            title="Equity auction order unfilled",
+            title=f"Equity auction order still working — {row['symbol']}",
             message=(
                 f"{row['symbol']} {row['side']} (order {order_id}) is still "
                 f"{status or 'unknown'} after the opening auction — nothing new to record, "
