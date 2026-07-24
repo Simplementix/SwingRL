@@ -998,11 +998,13 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
     # Still live (partially_filled / new / accepted): warn per state, keep the row open.
     if slice_recorded:
         requested_qty = getattr(order, "qty", None)
-        requested = (
-            requested_qty
-            if requested_qty is not None
-            else f"${_safe_float(getattr(order, 'notional', None))} notional"
-        )
+        if requested_qty is not None:
+            requested = requested_qty
+        else:
+            notional = _safe_float(getattr(order, "notional", None))
+            requested = (
+                f"${notional:,.2f} notional" if notional is not None else "an unknown amount"
+            )
         ctx.alerter.send_alert(
             level="warning",
             title=(
