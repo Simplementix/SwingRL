@@ -1041,6 +1041,11 @@ def _confirm_one_pending_order(ctx: JobContext, adapter: Any, row: dict[str, Any
     return slice_recorded
 
 
+def _like_escape(value: str) -> str:
+    """Escape LIKE metacharacters in a literal so only the value itself matches (ESCAPE '\\')."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _recorded_for_order(ctx: JobContext, order_id: str) -> tuple[float, float, int]:
     """Return (recorded qty, recorded dollars, slice count) for a broker order's trades.
 
@@ -1052,8 +1057,8 @@ def _recorded_for_order(ctx: JobContext, order_id: str) -> tuple[float, float, i
         row = conn.execute(
             "SELECT COALESCE(SUM(quantity), 0) AS q, "
             "COALESCE(SUM(quantity * price), 0) AS d, COUNT(*) AS n "
-            "FROM trades WHERE trade_id = %s OR trade_id LIKE %s",
-            (order_id, order_id + "#%"),
+            "FROM trades WHERE trade_id = %s OR trade_id LIKE %s ESCAPE '\\'",
+            (order_id, _like_escape(order_id) + "#%"),
         ).fetchone()
     if row is None:  # COUNT(*) always returns a row; guard keeps the return type-safe.
         return 0.0, 0.0, 0
