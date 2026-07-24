@@ -26,6 +26,7 @@ from tests.db_marker import DB_FIXTURE_NAMES, module_mentions_database_url
 from tests.fixtures.db_cleanup import wipe_db_after_test  # noqa: F401  (autouse)
 
 
+# NOTE: mirrors tests/conftest.py pytest_collection_modifyitems — keep in sync (db-marker glue).
 def pytest_collection_modifyitems(config, items):
     for item in items:
         if item.get_closest_marker("db") is None and (

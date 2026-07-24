@@ -28,7 +28,7 @@ from tests.db_marker import is_db_test
 from tests.db_worker import activate_isolated_db, drop_isolated_db
 
 # Autouse fixture — imported so it registers globally (wipes test DB after each test).
-from tests.fixtures.db_cleanup import wipe_db_after_test  # noqa: F401
+from tests.fixtures.db_cleanup import close_cleanup_conn, wipe_db_after_test  # noqa: F401
 from tests.fixtures.schema_preflight import schema_integrity_errors
 
 # ---------------------------------------------------------------------------
@@ -99,8 +99,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
-    """Drop this process's isolated DB clone at session end (best-effort)."""
+    """Drop this process's isolated DB clone and close the cleanup conn (best-effort)."""
     drop_isolated_db()
+    close_cleanup_conn()
 
 
 @pytest.fixture(autouse=True)

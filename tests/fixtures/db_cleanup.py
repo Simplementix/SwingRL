@@ -126,6 +126,14 @@ def _truncate_all_public_tables(db_url: str) -> None:
         _run_truncate(_get_cleanup_conn(db_url))
 
 
+def close_cleanup_conn() -> None:
+    """Close the session-persistent cleanup connection at session end (best-effort)."""
+    global _cleanup_conn
+    if _cleanup_conn is not None and not _cleanup_conn.closed:
+        _cleanup_conn.close()
+    _cleanup_conn = None
+
+
 def drop_migration_artifacts(mgr: DatabaseManager) -> None:
     """Drop all V001-V011 artifacts and clear their schema_migrations ledger rows.
 

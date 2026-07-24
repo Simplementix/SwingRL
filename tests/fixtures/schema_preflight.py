@@ -30,7 +30,7 @@ def expected_pk_tables() -> frozenset[str]:
     names: set[str] = set()
     for ddl in postgres_schema._ALL_TABLE_DDL:
         match = _CREATE_TABLE_RE.search(ddl)
-        if match and "PRIMARY KEY" in ddl.upper():
+        if match and re.search(r"\bPRIMARY\s+KEY\b", ddl, re.IGNORECASE):
             names.add(match.group(1))
     return frozenset(names)
 
