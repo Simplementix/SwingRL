@@ -1405,7 +1405,7 @@ def test_v009_pending_orders_cycle_id_fk_enforced(db_with_legacy_schema) -> None
 def test_v009_schema_version_is_9(db_with_legacy_schema) -> None:
     """V009 lands in the ledger (was newest; V010 now raises the ceiling to 10).
 
-    The newest-version invariant moved to ``test_v010_schema_version_is_10`` when the
+    The newest-version invariant moved to ``test_v010_in_migration_ledger`` when the
     exec-alignment Task 9 shipped V010 — this asserts V009 was applied, not that it is
     the maximum, so it stays green as later migrations extend the ledger.
     """
@@ -1484,7 +1484,7 @@ def test_v010_benchmark_baselines_requires_baseline_price(db_with_legacy_schema)
             )
 
 
-def test_v010_schema_version_is_10(db_with_legacy_schema) -> None:
+def test_v010_in_migration_ledger(db_with_legacy_schema) -> None:
     """V010 lands in the ledger (was newest; V011 now raises the ceiling to 11).
 
     The newest-version invariant moved to ``test_v011_schema_version_is_11`` when the

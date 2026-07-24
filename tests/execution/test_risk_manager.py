@@ -340,7 +340,7 @@ class TestSellSideRiskMath:
     def test_sell_skips_position_size_cap(
         self, risk_manager: RiskManager, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A sell larger than max_position_size%% of the book is NOT vetoed on size."""
+        """A sell larger than max_position_size% of the book is NOT vetoed on size."""
         monkeypatch.setattr(risk_manager._tracker, "get_portfolio_value", lambda env: 100.0)
         monkeypatch.setattr(risk_manager._tracker, "get_exposure", lambda env: 0.90)
         monkeypatch.setattr(risk_manager._tracker, "get_daily_pnl", lambda env: 0.0)
