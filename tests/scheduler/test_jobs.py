@@ -1522,6 +1522,38 @@ class TestEquityFillConfirmationJob:
         assert resolved["resolved_at"] is not None
         assert resolved["disposition"] == "expired"
 
+    def test_partial_fill_alert_titles_unique_per_order(self, mock_ctx: _MockCtx) -> None:
+        """DIGEST-D2: two partials on the SAME symbol get DISTINCT titles (order_id in title)
+        so the alerter's per-title 30-min cooldown cannot swallow the second (found 2026-07-23).
+        """
+        from swingrl.scheduler.jobs import equity_fill_confirmation_job
+
+        mock_ctx.set_pending_order(order_id="sp1", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.set_pending_order(order_id="sp2", cycle_id=42, symbol="SPY", side="buy")
+        mock_ctx.alpaca.order_status(
+            "sp1",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=600.0,
+            filled_qty=0.02,
+            qty=0.05,
+        )
+        mock_ctx.alpaca.order_status(
+            "sp2",
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_avg_price=601.0,
+            filled_qty=0.03,
+            qty=0.05,
+        )
+        equity_fill_confirmation_job()
+        titles = [
+            c.kwargs["title"]
+            for c in mock_ctx.alerter.send_alert.call_args_list
+            if "PARTIALLY filled" in (c.kwargs.get("title") or "")
+        ]
+        assert len(titles) == 2
+        assert len(set(titles)) == 2, titles  # RED today: both identical
+        assert any("sp1" in t for t in titles) and any("sp2" in t for t in titles)
+
 
 class TestCycleOrdersInfoPing:
     """EXEC-D12: every cycle (both envs) ends with one INFO listing each order."""
