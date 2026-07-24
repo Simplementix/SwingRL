@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: radial-gradient(1200px 600px at 50% -10%, #1b1f27, #0d0f14 60%); color: #e8eaef; font-family: 'Space Grotesk', system-ui, sans-serif; }
+</style>
+</helmet>
+
+<div style="min-height:100vh;padding:40px 32px 64px;">
+  <div style="max-width:1180px;margin:0 auto;">
+    <div style="display:flex;align-items:center;gap:11px;margin-bottom:6px;">
+      <div style="width:32px;height:32px;border-radius:10px;background:#F1C40F;display:flex;align-items:center;justify-content:center;font-size:17px;">📈</div>
+      <h1 style="font-weight:700;font-size:24px;letter-spacing:-0.02em;margin:0;">SwingRL · Mobile preview</h1>
+    </div>
+    <p style="font-size:13px;color:#9aa1b0;margin:0 0 6px;max-width:640px;line-height:1.6;">The dashboard at true phone size — the top nav collapses to a bottom tab bar and header controls move into the ⚙ menu. Each phone is live: tap the bottom tabs, open ⚙, or scroll.</p>
+    <p style="font-size:11px;color:#6b7280;font-family:'IBM Plex Mono',monospace;margin:0 0 34px;">iPhone frame · 402pt wide · breakpoint &lt; 720px</p>
+
+    <div style="display:flex;flex-wrap:wrap;gap:44px;justify-content:center;align-items:flex-start;">
+      <sc-for list="{{ phones }}" as="p" hint-placeholder-count="3">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:16px;">
+          <x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ true }}" hint-size="402px,874px">
+            <div style="height:100%;padding:52px 0 34px;box-sizing:border-box;background:#0d0f14;">
+              <iframe src="{{ p.src }}" title="{{ p.label }}" style="width:100%;height:100%;border:none;display:block;"></iframe>
+            </div>
+          </x-import>
+          <div style="text-align:center;">
+            <div style="font-size:13px;font-weight:600;">{{ p.label }}</div>
+            <div style="font-size:10px;color:#6b7280;font-family:'IBM Plex Mono',monospace;margin-top:2px;">{{ p.note }}</div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const base = 'SwingRL Dashboard.dc.html';
+    return {
+      phones: [
+        { label: 'Dashboard', note: 'summary · bottom tab bar', src: `${base}?page=dashboard&theme=dark` },
+        { label: 'Trade Log', note: 'filters + fill ledger', src: `${base}?page=trades&theme=dark` },
+        { label: 'Risk Metrics', note: 'breakers + drawdown', src: `${base}?page=risk&theme=dark` },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
