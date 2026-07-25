@@ -1,8 +1,19 @@
 # Trader / Collector Audit — Data, Accuracy, Risk Controls, Observability
 
-> **Status: OPEN — findings register, not yet specced or planned.**
+> **Status: OPEN — partially specced. See the 2026-07-25 update below.**
 > **Audited:** 2026-07-24, read-only, against the live homelab database and the code at
 > `e1d86df` (branch `swingrl/25-monitoring-dashboard`, cut from `swingrl/2.R-training-redesign`).
+>
+> **UPDATE 2026-07-25.** A follow-up value-audit session answered Q-A/Q-B/Q-C, added **8 findings**
+> (A-1 … A-8 below), and produced a spec and plan covering A-2, A-3, A-6 and G1-5:
+> - Spec: `docs/superpowers/specs/2026-07-25-equity-data-reingestion-design.md` (LD-2 … LD-7)
+> - Plan: `docs/superpowers/plans/2026-07-25-equity-data-reingestion-plan.md`
+> - Branch: `swingrl/26-equity-data-reingestion`
+>
+> **Method note that generalises:** everything in *Confirmed healthy* below was cleared on
+> **recency** — "the newest row is today". That is the same check that passed `features_equity`
+> while 32 of its columns were constant zero. Value-auditing three of those "healthy" tables found
+> real defects in all three. **Recency is not health.**
 > **How this was found:** writing the Phase 0 data audit for the monitoring dashboard
 > (`docs/superpowers/plans/2026-07-24-monitoring-dashboard-plan.md`) surfaced defects in the live
 > trading path that matter more than the dashboard. That plan is TABLED pending these fixes.
@@ -106,7 +117,9 @@ The register is large deliberately; it is worked in chunks, not all at once.
 
 | Chunk | Scope | Items | Status |
 |---|---|---|---|
-| **1** | **Data quality & integrity** — what the trader reads, and what it writes | Group 1 + Group 2 + Q-A/Q-B/Q-C | 🔨 **active — do this first** |
+| **1a** | **Equity bar data** — specced and planned 2026-07-25 | A-2, A-3, A-6, G1-5 | 📋 **planned, not executed** |
+| **1b** | **Remaining feeds** — the live-decision defects | **A-1**, G1-1, G1-2, G1-3 | 🔨 **next — A-1 first** |
+| **1c** | **The ledger** — what the trader writes | Group 2 | ⏸ **blocked on the Q-D ruling (still owed)** |
 | 2 | Risk controls | Group 3 | ☐ queued |
 | 3 | Observability — the backend work the dashboard needs | Group 4 | ☐ queued |
 | 4 | Discord notifications | Group 5 | ☐ queued |
@@ -154,18 +167,131 @@ Item IDs (`G1-1`, `G4-3`, …) are stable. Reference them from specs, plans and 
 - Fix alongside G1-2 so the fuse matches the new cadence. Consider a durable clock rather than an
   in-memory one, since an in-memory fuse is defeated by the thing that happens most often.
 
-### G1-4 🔴/🟡 `fundamentals` is empty (0 rows) but feeds 32 live equity features
+### G1-4 🟡 32 equity features are constant zero — **DOWNGRADED from 🔴 by Q-A**
 
-- `features/assembler.py:38` — `EQUITY_PER_ASSET = 15  # 9 price action + 2 weekly + 4 fundamentals`.
-  4 features × 8 ETFs = **32 equity observation features sourced from an empty table.**
-- `weekly_fundamentals_job` is scheduled and has produced nothing.
-- Priority depends entirely on **Q-A**. Answer that before scoping this item.
+- **The empty `fundamentals` table is a red herring — no production code reads it.**
+  `grep "FROM fundamentals" src/` returns zero hits. The values come from a hardcoded stub:
+  `features/pipeline.py:173-175` writes literal `0.0` into all four columns.
+- **Verified across the full history:** all 21,088 `features_equity` rows, 8 symbols,
+  2016-01-03 → 2026-07-23, have `COUNT(DISTINCT) = 1` and `min = max = 0` on `pe_zscore`,
+  `earnings_growth`, `debt_to_equity` and `dividend_yield`. Not one non-zero value in any year.
+- **Training saw the same zeros** — `training/data_loader.py:163` reads the same columns; the stub
+  landed `81243cc` (2026-03-06), the active equity models trained 2026-04-02.
+- **Verdict: 32 dead constant features (~19.5% of the 164-dim observation), NOT train/serve skew.**
+  Wasted capacity, not degraded decisions. Populating them for real *would* be a distribution
+  change and **requires a retrain** → Stage 2.R, not a feeds fix.
+- `weekly_fundamentals_job` (`scheduler/jobs.py:563`) is a **misnomer** — it instantiates
+  `FREDIngestor` and runs macro ingestion. It has never touched fundamentals. See A-6b.
 
-### G1-5 ⚪ `corporate_actions` is empty (0 rows)
+### G1-5 ⚪ `corporate_actions` is empty (0 rows) — **ADDRESSED by the 2026-07-25 plan**
 
-- Referenced only by `data/corporate_actions.py`; nothing in the feature or execution path reads it.
-- Low priority on its own, but it interacts with cost-basis accuracy if ETF distributions ever
-  matter to the carve-out ledger (Group 2).
+- Referenced only by `data/corporate_actions.py`, which only *detects* via an overnight-spike
+  heuristic — nothing ever ingested into it.
+- **Closed by Task 8** of the re-ingestion plan: Alpaca's corporate-actions API returns
+  **334 cash dividends** across all 8 symbols, 2016-03-15 → 2026-06-22, verified live.
+- **Caveat: Alpaca returns zero spin-offs**, so this does not fix A-7.
+
+---
+
+## Findings added 2026-07-25 (value audit)
+
+Found by checking value *distributions* rather than row recency. All measured against the live DB.
+
+### A-1 🔴 The HMM served a 4-month-stale regime, and reported it as healthy
+
+- `_get_hmm_probs` (`features/pipeline.py:459-476`) runs
+  `WHERE environment = %s AND date <= %s ORDER BY date DESC LIMIT 1` — **no max-age bound at all.**
+- `hmm_state_history` holds **14 rows total**, with a gap from **2026-03-10 to 2026-07-17**. Every
+  equity and crypto cycle in those four months served the 2026-03-10 probabilities.
+- **The fuse is actively defeated:** line 475 calls `record_success("hmm")` on the stale read, so
+  `FeatureHealthTracker` was told the feed was fine.
+- **Still intermittent** — equity has no row for 2026-07-21 even in the recent daily run.
+- HMM rows are written only as a side effect of feature computation, gated on
+  `symbol == hmm_proxy_symbol and len(ohlcv) >= 100` (`pipeline.py:183-192`). A dedicated job would
+  be more robust.
+- Live state: equity `p_bull` is **exactly `0.000000e+00`** from 2026-07-22 onward.
+- **This is the last known defect actively feeding wrong live inputs. Do it next.**
+
+### A-2 🔴 18 NYSE sessions missing; 26.7 days of 4H bars missing → *specced*
+
+2026-03-11 → 2026-04-06 on all 8 equity symbols (2,636 held vs 2,654 XNYS sessions), and
+2026-03-10 20:00 → 2026-04-06 12:00 on both crypto symbols. Same migration-window outage, and
+immediately before the FRED freeze (04-09). **Root cause: `_resolve_start` (`alpaca.py:218-240`)
+resumes from `max + 1 day` and cannot see interior gaps. Check `data/fred.py` for the same pattern
+— it would explain G1-1.**
+
+### A-3 🔴 The equity price series is a two-feed patchwork → *specced*
+
+Average volume drops **13×–47× across all 8 symbols** around 2024-01-09 (SPY 53,562,323 → 1,132,544);
+QQQ additionally jumps 471.25 → 401.38. **Cause: `alpaca.py:105-107` selects `DataFeed.IEX` for
+incremental and `DataFeed.SIP` for backfill.** Contamination is patchier than one date — SPY
+2023-06-15 already reads 1,762,275. **It arrives nightly via `candles_equity_job` at 20:15 ET.**
+
+Also found: stored prices are **adjusted with a frozen factor** (our SPY 2016-06-15 close 177.66 vs
+Alpaca's adjusted value today 176.83), so the stored series drifts from its own source and is not
+reproducible. Resolved by LD-4 — store raw, never adjust.
+
+### A-4 🟠 Fabricated crypto bars in the training set
+
+After the 2019-08-31 → 2019-09-23 outage, 7 consecutive identical bars per symbol at exactly
+9930.13 (BTC) / 209.55 (ETH), volume 0, `source` NULL. **Deferred by LD-6** — this gap straddles
+`STITCH_DATE = 2019-09-01` (`binance.py:51`), the Binance.US/Global seam. Training-only data.
+
+### A-5 🟠 The HMM's crisis state has collapsed
+
+`p_crisis` max is **1.7e-03** across all history in both environments — the three-state model is
+effectively two-state. Mitigating: only `p_bull`/`p_bear` are served (`pipeline.py:464`), so this is
+a training-side defect. Fixing it changes observation dimensions → **retrain** → Stage 2.R.
+
+### A-6 🟡 Three bad SPY bars, and the path that let them in
+
+2018-11-01 is flat (`o=h=l=c=242.68`, volume 200); 2024-01-02 and 2024-01-04 violate
+`low ≤ min(open, close)`. **`DataValidator` would have caught the 2024 pair** — with
+`_TOLERANCE = 0.0001`, open 469.63 < low−tol 470.11. So they **bypassed validation entirely**,
+most likely via the Postgres migration. The flat bar is a genuine rule gap (Step 7 only catches
+volume *exactly* zero). Both addressed by the re-ingestion plan (Tasks 5 and 9).
+
+### A-6b 🟡 `weekly_fundamentals_job` is a misnomer
+
+`scheduler/jobs.py:563-585` instantiates `FREDIngestor` and calls `run_all()` — it runs **macro**
+ingestion weekly under a fundamentals name, silently duplicating `monthly_macro_job`. Anyone reading
+the scheduler would reasonably believe fundamentals are refreshed. Relevant to G1-2.
+
+### A-7 🟡 XLF 2016-09-19 spin-off is unadjusted and **has no available source**
+
+−18.3% (19.89 → 16.26) on full volume — the real XLRE spin-off. Undetected because the detector
+threshold is 30% and `corporate_actions` is empty. **Alpaca's corporate-actions API returns zero
+spin-off records**, so this cannot be fixed from there. Under LD-4 nothing is adjusted anyway, so
+this is a documentation gap rather than a correctness regression — but it stays **open**.
+
+### A-8 🟠 Crypto `rsi_14` and `four_h_rsi_14` are the same number, stored twice
+
+**Byte-identical across all 52,233 rows**, both symbols, `max_abs_diff = 0`. Cause: crypto's base
+timeframe *is* 4H, so `technical.py:163-164` recomputes via `stockstats` exactly what
+`compute_price_action` already produced. **2 of 26 per-asset crypto slots (~7.7%) carry zero
+incremental information.** Contrast: the SMA pair genuinely differs (722 coincidental matches,
+max diff 2.94). Natural replacement is drawdown-from-rolling-high → **retrain** → Stage 2.R.
+
+### A-9 🟠 Model provenance is unrecorded
+
+`models` / `model_metadata` / `training_runs` carry `code_version = 'unknown_era0'`,
+`data_fingerprint = 'unknown_era0'`, and NULL `training_window_start`/`end`. **You cannot currently
+prove what data any deployed model was trained on** — Q-A had to reconstruct it from git history.
+Matters now that a retrain is on the path.
+
+### A-10 ⚪ Two more declared-but-never-written columns
+
+`ohlcv_daily.adjusted_close` is NULL on all 21,088 rows (same class as G4-5's
+`portfolio_snapshots.equity_value`/`.crypto_value`). Moot under LD-4. Separately, the turbulence
+trip reason hardcodes `_exceeds_90th_pct` (`risk_manager.py:289`) while the actual gate is the
+**97th** percentile (`config/swingrl.yaml:344`) — every trip in the audit log is mislabelled.
+
+### Also confirmed healthy by value audit
+
+All 13 crypto features carry real varying values — 37,819 distinct each, std 1.00–1.34, **zero**
+exact-zeros, 1.4% NULL (warmup only). All 11 real equity features likewise. OHLC invariants hold on
+21,086 of 21,088 equity bars and all 38,537 crypto bars. HMM probabilities sum to 1.0 exactly with
+finite log-likelihoods.
 
 ---
 
@@ -415,11 +541,14 @@ down, and the single backend item that would restore it to the approved design.
 
 ## Open questions — answer these first, they resize the work
 
-| # | Question | Why it matters | Where to start |
-|---|---|---|---|
-| **Q-A** | Do the 4 missing fundamentals features per asset surface as zeros or NaN, and was the deployed equity model **trained** with real values? | Decides between "32 dead features" and "three months of degraded equity decisions" (train/serve skew). Sizes **G1-4** | `features/assembler.py`, `features/fundamentals.py`, the deployed model's training vintage |
-| **Q-B** | Does the turbulence calculation read the macro block? | Turbulence is a Mahalanobis distance; a frozen VIX against moving prices could inflate it. If yes, the equity halt `turbulence_5.9886_exceeds_90th_pct` on 2026-07-24 may be **spurious** | `features/assembler.py::turbulence_obs_index`, caller `execution/pipeline.py:33` |
-| **Q-C** | Did PR #40 ("auction-fill status-fix") fix the `resolved_at` stamp lag? | Closes **G4-7**. The timeline fits and the 07-24 run cleaned up the stale rows, but the PR was not read | `gh pr view 40` |
+**Q-A, Q-B and Q-C were all ANSWERED on 2026-07-25.** Q-D remains open and blocks Group 2.
+
+| # | Question | Answer |
+|---|---|---|
+| **Q-A** | Fundamentals: zeros or NaN, and was the model trained with real values? | **Zeros, and trained on zeros too.** `pipeline.py:173-175` writes literal `0.0`; the table is never read. **32 dead constant features, NOT train/serve skew.** G1-4 downgraded 🔴→🟡 and moved to Stage 2.R |
+| **Q-B** | Does turbulence read the macro block? | **VERIFIED NO.** Its sole input is 8 equity daily log-returns from `ohlcv_daily` (`pipeline.py:508-561`); macro is a sibling array, never an input. **The 2026-07-24 halt is GENUINE** — reproduced bit-exactly from price data alone (5.988613162880 vs recorded 5.988613162880422, threshold 4.988766759763). Caused by broad market −1.3% against XLI +1.75% on 2026-07-23. Auto-resume is lazy, due ~2026-07-31. Threshold is the **97th** percentile, not the 90th the label claims (A-10) |
+| **Q-C** | Did PR #40 fix the `resolved_at` stamp lag? | **YES — G4-7 is CLOSED.** PR #40 (merged 2026-07-23) fixed `str(OrderStatus.FILLED).lower()` never matching `"filled"`, which left 8 filled orders stuck open. Self-heals on the next 09:35 run |
+| **Q-D** | On a broker/DB mismatch: alert only, or correct the stored `trades` row? | **STILL OPEN — blocks all of Group 2.** Q-D1 (quantity) and Q-D2 (fees) have safe defaults; **Q-D3 (price) genuinely needs a ruling** |
 
 ---
 
