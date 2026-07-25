@@ -159,10 +159,13 @@ next session.
 
 ### Data flow B — ongoing daily collection
 
-**This reverses a documented prior ruling.** `config/swingrl.yaml:116` and
-`scripts/collector_main.py:487` both state *"existing Alpaca/Binance ingestors — CBOE stays
-options-only"* (2026-07-18). LD-3 supersedes that **for equity bars only**. Crypto bars stay on
-Binance, and CBOE remains the options source as before.
+**Two stale code comments need updating.** `config/swingrl.yaml:116` and
+`scripts/collector_main.py:487` both read *"existing Alpaca/Binance ingestors — CBOE stays
+options-only"*. These are **descriptive notes written in `93d1a23`** recording what the code did at
+the time — not decisions. Both files tag real decisions explicitly as `USER RULING` (8 occurrences
+in `collector_main.py`); neither of these lines carries that tag. Update the comments to match the
+new behaviour. Crypto bars stay on Binance and CBOE remains the options source, so only the equity
+clause changes.
 
 | When | Job | Action |
 |---|---|---|
