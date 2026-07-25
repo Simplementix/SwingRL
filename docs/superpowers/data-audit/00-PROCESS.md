@@ -57,7 +57,7 @@ Reading a query correctly says nothing about whether the thing it implies is tru
 |---|---|---|---|---|
 | **B1** | Options chains | CBOE — 8 ETFs + `_SPX` | **OPEN — flag in review, decide at spec** | ongoing capture is a **must**, with its own checks and balances |
 | **B2** | Calendar events | FRED releases + FOMC | shared | includes `event_outcomes` (FK child of `calendar_events`) |
-| **B3** | Corporate actions | source TBD — Alpaca returns **zero** spin-offs | n/a — record as a justified divergence | |
+| **B3** | Corporate actions | source TBD — Alpaca returns **zero** spin-offs | n/a — record as a justified divergence | **Read the "Forward note to the B3 review" in `01-MASTER-REVIEW.md` (A1.7) first** — A1 established the event types, the empty `corporate_actions` table and the split/dividend adjustment behaviour |
 
 **11 datasets.**
 
@@ -153,7 +153,7 @@ Update this table at the end of every session.
 
 | # | Dataset | Review | Spec | Plan |
 |---|---|---|---|---|
-| A1 | Candles | ☐ | ☐ | ☐ |
+| A1 | Candles | ☑ | ☐ | ☐ |
 | A2 | Derived features | ☐ | ☐ | ☐ |
 | A3 | Macro | ☐ | ☐ | ☐ |
 | A4 | Regime (HMM) | ☐ | ☐ | ☐ |
@@ -165,7 +165,7 @@ Update this table at the end of every session.
 | B2 | Calendar events | ☐ | ☐ | ☐ |
 | B3 | Corporate actions | ☐ | ☐ | ☐ |
 
-**Next session: A1 Candles — review.**
+**Next session: A2 Derived features — review.**
 
 ---
 
