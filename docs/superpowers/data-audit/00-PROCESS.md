@@ -32,6 +32,17 @@ This is not pedantry. During the sessions that produced those documents:
 Reading a query correctly says nothing about whether the thing it implies is true.
 **Do not take anything for granted from docs alone.**
 
+**What this rule does *not* cover.** A completed review in `reviews/` is a different class of
+document: its claims were measured, each carries a `file:line`, a query or command output, and its
+`<DS>.0` section records what it corrected. Those may be cited as established. Three exceptions
+stay live:
+
+- Anything the review itself marks **UNVERIFIED** is still an assumption, however confident the
+  surrounding prose sounds.
+- Anything **measured against live state** — row counts, table contents, freshness — was true on
+  the review date and may have moved since. Re-measure before restating.
+- Anything a **later ruling supersedes**.
+
 ---
 
 ## Scope
@@ -42,7 +53,7 @@ Reading a query correctly says nothing about whether the thing it implies is tru
 
 | ID | Dataset | Equity source | Crypto source | Notes |
 |---|---|---|---|---|
-| **A1** | Candles | CBOE *(proposed)* / Alpaca *(current)* | Binance.US + Binance Global archive | includes the XNYS session calendar as a validation dependency |
+| **A1** | Candles | **CBOE — USER RULING 2026-07-25**, replacing Alpaca *(current)* in full | Binance.US + Binance Global archive | ☑ **Reviewed** — [`reviews/A1-candles.md`](reviews/A1-candles.md). Includes the XNYS session calendar as a validation dependency |
 | **A2** | Derived features | `features_equity` | `features_crypto` | indicators, normalization, **and overnight context** |
 | **A3** | Macro | FRED | FRED — the same 6, forward-filled | |
 | **A4** | Regime (HMM) | fitted on SPY closes | fitted on BTCUSDT closes | |
@@ -57,7 +68,7 @@ Reading a query correctly says nothing about whether the thing it implies is tru
 |---|---|---|---|---|
 | **B1** | Options chains | CBOE — 8 ETFs + `_SPX` | **OPEN — flag in review, decide at spec** | ongoing capture is a **must**, with its own checks and balances |
 | **B2** | Calendar events | FRED releases + FOMC | shared | includes `event_outcomes` (FK child of `calendar_events`) |
-| **B3** | Corporate actions | source TBD — Alpaca returns **zero** spin-offs | n/a — record as a justified divergence | **Read the "Forward note to the B3 review" in `01-MASTER-REVIEW.md` (A1.7) first** — A1 established the event types, the empty `corporate_actions` table and the split/dividend adjustment behaviour |
+| **B3** | Corporate actions | source TBD — Alpaca returns **zero** spin-offs | n/a — record as a justified divergence | **Reviewed next (DS-8).** Read the "Forward note to the B3 review" at the end of [`reviews/A1-candles.md`](reviews/A1-candles.md) first — A1 established the event types, the empty `corporate_actions` table and the split/dividend adjustment behaviour |
 
 **11 datasets.**
 
@@ -76,19 +87,19 @@ reconciliation — the moment a session reaches for `trades` or `fill_quality`, 
 
 ## The three passes — globally ordered
 
-| Sessions | Pass | Output document |
+| Sessions | Pass | Output |
 |---|---|---|
-| 1 → 11 | **Review**, one dataset per session | `01-MASTER-REVIEW.md` |
+| 1 → 11 | **Review**, one dataset per session | `01-MASTER-REVIEW.md` (spine) + `reviews/<ID>-<slug>.md` |
 | — | 🚧 **gate: all 11 reviews complete** | |
-| 12 → 22 | **Spec**, one dataset per session | `02-MASTER-SPEC.md` |
+| 12 → 22 | **Spec**, one dataset per session | `02-MASTER-SPEC.md` (spine) + `specs/<ID>-<slug>.md` |
 | — | 🚧 **gate: all 11 specs complete** | |
-| 23 → 33 | **Plan**, one dataset per session | `03-MASTER-PLAN.md` |
+| 23 → 33 | **Plan**, one dataset per session | `03-MASTER-PLAN.md` (spine) + `plans/<ID>-<slug>.md` |
 
 **The passes are globally ordered, not per-dataset.** A1 does not get a spec until A8, B1, B2 and B3
 have all been reviewed. There is never a session that reviews *and* specs.
 
-Each master document is **append-only** across its pass — one section per dataset, added by the
-session that covers it.
+Each pass's **spine** is append-only: one roster row and one block of carry-register rows per
+dataset. The dataset's own document is written once, by the session that covers it (DS-9).
 
 ---
 
@@ -104,8 +115,12 @@ session that covers it.
    Anything inferred is marked **UNVERIFIED** in the text.
 5. **Confidence tracks evidence, not tone.** State it per claim where claims differ in strength.
    Do not average a verified mechanism together with an unverified consequence.
-6. **Stop at the gate.** When the dataset's review is written, the session ends. Do not begin the
-   next dataset and do not begin its spec.
+6. **The session is not done until the spine is updated.** Writing `reviews/<ID>-<slug>.md` is
+   most of the work, but the roster row, the carry-register rows, any cross-dataset dependency
+   edges and any new glossary terms go into `01-MASTER-REVIEW.md` in the same session. A dataset
+   document that nothing indexes is invisible.
+7. **Stop at the gate.** Once that is done, the session ends. Do not begin the next dataset and do
+   not begin its spec.
 
 ---
 
@@ -147,25 +162,67 @@ For the dataset in question, for **equity and crypto**:
 
 ---
 
+## ID conventions — binding
+
+| Kind | Form | Rule |
+|---|---|---|
+| Finding | `<DS>-F<n>` — e.g. `A1-F17` | Dataset-scoped, assigned in discovery order |
+| Carry item | `<DS>-C<n>` — e.g. `A1-C13` | Dataset-scoped, assigned in the order raised |
+
+**Never renumber and never reuse an ID.** They are stable identifiers, not sort keys — a finding is
+cross-referenced dozens of times, and renumbering to improve an ordering breaks every reference
+while buying nothing a column cannot express. Severity, environment, disposition and the items a
+finding feeds are all **columns**, so no ordering has to encode them.
+
+Bare numbers (`item 5`) are forbidden: they collide the moment a second dataset is reviewed.
+
+---
+
+## The shape every review document must take
+
+One opening section, the six content sections above, then **four** closing sections in this order:
+
+| § | Section | Must contain |
+|---|---|---|
+| `<DS>.0` | **Disposition of carried-forward assumptions** | Every prior claim about this dataset, and its verdict: confirmed / corrected / refuted, with what is actually true. This is where the overriding rule is discharged — a review that skips it has not done the work |
+| `<DS>.7` | **Findings index** | Every finding, with columns for ID, severity, environment, the section holding the evidence, and the carry items it feeds. **Grouped by disposition** — what a known, ruled-on change does to each: removed / untouched / made worse / created / is-the-risk. **If the dataset has no governing ruling, say so explicitly and group by severity instead** — do not invent a decision to sort against. Any grouping is **tested against the document** before adoption, and the test is recorded so it is not silently retried |
+| `<DS>.8` | **What the disposition means** | The prose consequences the table cannot carry — inversions, caveats, what a disposition is conditional on |
+| `<DS>.9` | **Carry register** | Every item, full statement, with its anchoring findings. **No remedies** |
+| `<DS>.10` | **Dependency map** | Which items block which, including edges to other datasets. Prose chains are not sufficient — they must be tabulated |
+
+Then: any forward notes to later datasets, the **evidence base**, a **confidence** statement listing
+what is weaker than the rest, and the closing status line with finding and item counts.
+
+[`reviews/A1-candles.md`](reviews/A1-candles.md) is the reference implementation. Copy its shape.
+
+**After writing the dataset document**, append to the spine ([`01-MASTER-REVIEW.md`](01-MASTER-REVIEW.md)):
+its roster row, its carry-register rows, any new cross-dataset dependency edges, and any new
+glossary terms.
+
+---
+
 ## Progress tracker
 
 Update this table at the end of every session.
 
-| # | Dataset | Review | Spec | Plan |
-|---|---|---|---|---|
-| A1 | Candles | ☑ | ☐ | ☐ |
-| A2 | Derived features | ☐ | ☐ | ☐ |
-| A3 | Macro | ☐ | ☐ | ☐ |
-| A4 | Regime (HMM) | ☐ | ☐ | ☐ |
-| A5 | Turbulence | ☐ | ☐ | ☐ |
-| A6 | Portfolio state | ☐ | ☐ | ☐ |
-| A7 | Fundamentals | ☐ | ☐ | ☐ |
-| A8 | Sentiment | ☐ | ☐ | ☐ |
-| B1 | Options chains | ☐ | ☐ | ☐ |
-| B2 | Calendar events | ☐ | ☐ | ☐ |
-| B3 | Corporate actions | ☐ | ☐ | ☐ |
+Order follows DS-8, not the A/B numbering.
 
-**Next session: A2 Derived features — review.**
+| Order | # | Dataset | Review | Spec | Plan |
+|---|---|---|---|---|---|
+| 1 | A1 | Candles | ☑ 2026-07-25 — 33 findings, 18 carry items | ☐ | ☐ |
+| **2** | **B3** | **Corporate actions** | ☐ **next** | ☐ | ☐ |
+| 3 | A2 | Derived features | ☐ | ☐ | ☐ |
+| 4 | A3 | Macro | ☐ | ☐ | ☐ |
+| 5 | A4 | Regime (HMM) | ☐ | ☐ | ☐ |
+| 6 | A5 | Turbulence | ☐ | ☐ | ☐ |
+| 7 | A6 | Portfolio state | ☐ | ☐ | ☐ |
+| 8 | A7 | Fundamentals | ☐ | ☐ | ☐ |
+| 9 | A8 | Sentiment | ☐ | ☐ | ☐ |
+| 10 | B1 | Options chains | ☐ | ☐ | ☐ |
+| 11 | B2 | Calendar events | ☐ | ☐ | ☐ |
+
+**Next session: B3 Corporate actions — review.** Read the "Forward note to the B3 review" at the
+end of [`reviews/A1-candles.md`](reviews/A1-candles.md) first.
 
 ---
 
@@ -180,6 +237,8 @@ Update this table at the end of every session.
 | **DS-5** | Three passes × 11 datasets = **33 sessions**, globally ordered |
 | **DS-6** | First review session is **A1 Candles** — everything else derives from it |
 | **DS-7** | **Parity by default.** Every audit covers both environments. Divergence must be justified and recorded, like LD-1, or it is a defect |
+| **DS-8** | **Review order changed: B3 Corporate actions is reviewed second, ahead of A2.** A1 established that `corporate_actions` holds **0 rows** and that three A1 carry items — the CBOE migration (**A1-C3**), the price basis (**A1-C13**) and point-in-time adjustment (**A1-C17**) — are blocked on it. Reviewing datasets in an order that leaves the hardest blocker until last would be arbitrary. Does **not** touch the gate: all 11 reviews still precede any spec |
+| **DS-9** | **One document per dataset per pass.** Each pass has a **spine** (`0N-MASTER-*.md`) holding the roster, the carry register, the cross-dataset dependency map and the shared glossary; each dataset's full document lives beside it in `reviews/`, `specs/` or `plans/`. Reason: A1 alone is ~1,900 lines, so a single review file would reach ~10,000. Split at one dataset, when it cost nothing. Amends the earlier "one file, append-only" wording |
 
 ---
 
