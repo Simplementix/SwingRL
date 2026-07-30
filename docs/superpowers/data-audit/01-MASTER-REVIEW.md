@@ -48,9 +48,9 @@ buy nothing that a column cannot express.
 
 | # | Dataset | Review | Findings | Carry items | File |
 |---|---|---|---|---|---|
-| **A1** | Candles | ☑ 2026-07-25 | 33 — 19 H / 13 M / 1 L | 18 | [`reviews/A1-candles.md`](reviews/A1-candles.md) |
-| **B3** | Corporate actions | ☐ **next** | — | — | — |
-| **A2** | Derived features | ☐ | — | — | — |
+| **A1** | Candles | ☑ 2026-07-25 | 37 — 22 H / 14 M / 1 L *(A1-F34…F37 amended 2026-07-29; the residual "CBOE is unadjusted" wording swept 2026-07-30 — 9 passages incl. 3 carry items)* | 18 | [`reviews/A1-candles.md`](reviews/A1-candles.md) |
+| **B3** | Corporate actions | ☑ 2026-07-30 | 28 — 20 H / 8 M / 0 L *(**rebuilt from first principles**; B3-F14/F15/F16 relocated to A1, B3-F10 to B4; IDs retired)* | 12 | [`reviews/B3-corporate-actions.md`](reviews/B3-corporate-actions.md) |
+| **A2** | Derived features | ☐ **next** | — | — | — |
 | **A3** | Macro | ☐ | — | — | — |
 | **A4** | Regime (HMM) | ☐ | — | — | — |
 | **A5** | Turbulence | ☐ | — | — | — |
@@ -59,6 +59,7 @@ buy nothing that a column cannot express.
 | **A8** | Sentiment | ☐ | — | — | — |
 | **B1** | Options chains | ☐ | — | — | — |
 | **B2** | Calendar events | ☐ | — | — | — |
+| **B4** | Observation events *(trading calendar + venue events)* | ☐ — **new, DS-10** | — | — | — |
 
 ---
 
@@ -87,6 +88,18 @@ exists to make cross-dataset dependencies visible, not to restate them.
 | **A1-C16** | A reference store for independent vendor payloads (yfinance, Alpaca, CBOE) | — | USER QUESTION |
 | **A1-C17** | Point-in-time adjustment — filter actions to ≤ bar date; **read-time cost unassessed** | **B3**, **A2** | USER RULING |
 | **A1-C18** | Find a free, genuinely independent crypto source | — | USER RULING |
+| **B3-C1** | The corporate-actions dataset must be sourced and owned | **B3-C3** | Scoping |
+| **B3-C2** | The collector owns corporate-action collection **and** validation, end to end | — | USER DIRECTION |
+| **B3-C3** | Settle the source per event type and per time band. **Restated 2026-07-30:** a free usable source back to 2004; Alpaca ongoing; manual entry is a **last-resort, one-time** path for residual gaps only | — | USER REQUIREMENT |
+| **B3-C4** | Evaluate the candidate 4-table schema (raw → norm → factors → adjusted) | **B3-C3**, **B3-C8**, **B3-C10**, **B3-C11**, **B3-C12** | Schema |
+| **B3-C5** | A remediation ledger — record what *we* changed, so fixes replay after a re-ingest | — | USER OBSERVATION |
+| **B3-C6** | **DS-10** — observation events become a 12th dataset: trading calendar + venue events | — | USER RULING |
+| **B3-C7** | Encode CBOE's split-adjusted / dividend-raw convention wherever series are compared | — | Wiring |
+| **B3-C8** | **Share basis must be explicit** per source and per row — the two candidate sources use **opposite, unstated** conventions, and mixing them is a silent **2.000×** factor error | — | Correctness |
+| **B3-C9** | **Settle what proves the event set complete**, given price cannot — a price detector runs at 2.4 % precision. Makes **A1-C12** load-bearing | **B3-C3** | Correctness |
+| **B3-C10** | **Event identity and revision semantics** — vendors restate by shipping an extra row; the natural key is not unique | — | Schema |
+| **B3-C11** | **Derive the event vocabulary from our instruments** (all funds), not from a vendor's operating-company catalogue | — | Scoping |
+| **B3-C12** | **Point-in-time needs a knowledge axis** as well as an event axis — extends **A1-C17**, does not contradict it | — | Correctness |
 
 ---
 
@@ -97,17 +110,52 @@ dataset's own review — for A1, in [§A1.10](reviews/A1-candles.md).
 
 | Blocked | Blocked by | Why |
 |---|---|---|
-| **A1-C3** — the CBOE migration | **B3 Corporate actions** | CBOE is unadjusted, so raw storage is only correct once corporate actions exist. `corporate_actions` holds **0 rows** |
-| **A1-C13** — price basis | **B3 Corporate actions** | Read-time adjustment is exactly as complete as that table |
-| **A1-C17** — point-in-time adjustment | **B3**, **A2 Derived features** | Needs the actions table to filter against, and needs to know whether `features_*` can be fully recomputed (**A1-F32**, UNVERIFIED) |
+| **A1-C3** — the CBOE migration | **B3 Corporate actions** | CBOE is **split-adjusted but dividend- and spin-off-raw** (**B3-F11**, 2026-07-29 — this corrects A1's "unadjusted", which was inferred from a dividend-only check). The conclusion is unchanged but the requirement is narrower: the migration needs **dividends and spin-offs**, plus split *records* for change detection, not split factors. `corporate_actions` holds **0 rows** and has no producer |
+| **A1-C13** — price basis | **B3-C3**, **B3-C8** | Read-time adjustment is exactly as complete as that table — and the factor is **exactly 2.000× wrong** if the share bases of rate and close are not reconciled (**B3-F30**) |
+| **A1-C17** — point-in-time adjustment | **B3-C3**, **B3-C12**, **A2 Derived features** | Needs the actions table to filter against; needs a **knowledge axis** the ruling does not name (**B3-F31**); and needs to know whether `features_*` can be fully recomputed (**A1-F32**, UNVERIFIED) |
+| **A1-C11** — candle audit state | ← *informed by* **B3-C5** | In-table audit state does not survive the full-table replacement that **A1-C3** requires — evidence for the in-table-vs-side-table question |
+| **A1-C12** — cross-source gate | ← *informed by* **B3-C7**; **now load-bearing** via **B3-C9** | The CBOE convention must be encoded or the comparator reports **80 of 331** false discrepancies (**B3-F25**). And because a missing event is **undetectable from price** (**B3-F26**), cross-source agreement is the *only* completeness signal that exists — so a single-source event ledger is unverifiable by construction |
+| **A1-C18** — free independent crypto source | ← *informed by* **B3-F32** | **Supersedes the earlier "blocked by B3-F5" edge.** Only `fc.yahoo.com` is DNS-filtered; Yahoo's data endpoint is reachable and serves BTC-USD (3,270 bars) and ETH-USD (3,186 bars) |
+| **B4** — the 12th dataset | ← *created by* **B3-C6** | Trading calendar + venue events (DS-10). Seeded with the rolling-XNYS-bound measurement relocated from B3 on 2026-07-29 |
+| **A1-C3** — the CBOE migration | **B4** | `validation.py:287` raises `DateOutOfBounds` **unguarded** on pre-2006 dates and `:220` does not wrap it, so the migration crashes on its first pre-2006 bar. **647 sessions** affected today, growing yearly |
+| **B3-C1**, **B3-C4** | **B3-C3** | Neither ownership nor schema can be settled before the source is |
+| **B3-C4** — the candidate schema | **B3-C8**, **B3-C10**, **B3-C11**, **B3-C12** | The rebuild found four questions the candidate does not answer: share basis, identity/revision, vocabulary, knowledge time |
+| **B1 Options chains** | ← *constrained by* **B3-C7**, **B3-C8** | Options are struck on the *unadjusted* underlying, so strike comparisons across a split date need the same convention and share basis encoded |
+| **Every remaining dataset** | ← *warned by* **B3-F20** | `data_audit_job` audits **1 dataset of 12**. B1, B2 and B4 will each meet this gap, unannounced |
 
 ```
-   B3 Corporate actions  ──►  A1-C13  ──►  A1-C3   (the equity migration)
-        (0 rows)          └─►  A1-C17  ◄──  A2 Derived features
+   B3-C3 (source) ──┬──► B3-C1 ──► collector ownership (B3-C2)
+                    ├──► B3-C4 (schema) ◄── B3-C8, B3-C10, B3-C11, B3-C12
+                    ├──► B3-C9 (completeness) ──► A1-C12   [now load-bearing]
+                    ├──► A1-C13 ──► A1-C3   (the equity migration)
+                    └──► A1-C17 ◄── B3-C12, A2 Derived features
+
+   B3-F11 (CBOE is split-adjusted) ──┬─► B3-C5 (replay) ──► A1-C11
+                                     ├─► B3-C7 (convention) ──► A1-C12
+                                     └─► B3-C8 (share basis) ──► A1-C13   [2.000× error]
+
+   B3-F26 (absence undetectable from price) ──► B3-C9 ──► A1-C12
+                                                  [cross-source is the ONLY completeness signal]
+
+   B4 (rolling calendar bound) ──► A1-C3   [validation throws on pre-2006 bars today]
+   B3-F8 / F9 / F32 ──► B3-C6 ──► B4  (12th dataset)
 ```
 
 **This is why B3 was moved ahead of A2 in the review order (DS-8).** Three of A1's items are
 blocked on a table that is empty, and one of them is the migration the whole equity plan rests on.
+
+**What B3 changed about that picture.** The blocker is *not* the empty table alone — it is the
+**source** (**B3-C3**), because the table has no producer either. And **B3-F11** refuted the premise
+that CBOE is unadjusted: it is **split-adjusted**, so the migration needs dividends and spin-offs,
+not splits.
+
+**What the 2026-07-30 rebuild changed on top of that.** The first B3 pass established *absence*;
+the rebuild established *fidelity*, which is harder. A free source covering the contested 2004–2016
+window is now demonstrated reachable (**B3-F22**, 374 measured events), so the deep history is
+obtainable — but **neither candidate source is complete**, one **contradicts itself across its own
+endpoints**, they quote the same dividend on **opposite unstated share bases**, a vendor **revision
+arrives as a duplicate row**, and a **missing event cannot be seen in price at all**. The blocker
+moved from "where do we get the data" to "how do we know the data is right".
 
 ---
 
@@ -131,3 +179,16 @@ Terms used across the audit. Each review may add dataset-specific terms in its o
 | **Observation slot** | One element of the fixed-length vector the RL agent sees each step |
 | **Disposition** | For a finding: what a known, ruled-on change does to it — removed, untouched, made worse, or created |
 | **Carry item** | A question or direction recorded by a review and handed to the spec pass. **Never a solution** |
+| **Ex-date** | The first day a buyer is *not* entitled to a pending distribution. Price adjustment keys off this date, not the record or payable date |
+| **Cumulative adjustment factor** | The product of every event factor after a given bar. Multiplying a raw bar by it produces the adjusted bar |
+| **Split-adjusted** | Prices and volumes restated onto the current share basis. **CBOE is split-adjusted but dividend-raw** (B3-F11) — a hybrid matching no standard vendor convention |
+| **Instrument event** | Something that changed the security itself — split, dividend, spin-off. Handled by **retroactive adjustment** |
+| **Observation event** | Something that changed only our *view* — exchange outage, halt, delisting, de-peg, vendor defect. Handled by **flagging or exclusion**, never adjustment |
+| **Remediation ledger** | A record of corrections *we* applied, keyed so they can be replayed onto a freshly re-ingested series (B3-C5) |
+| **Spin-off** | A distribution of a subsidiary's shares. Removes value from the parent without changing its share count — so price adjusts, volume does not |
+| **Share basis** | Which share count an amount is quoted against. A dividend paid before a 2:1 split can be stated **as paid** (the amount a holder actually received) or **restated** onto today's post-split basis (half of it). Both are "correct"; neither vendor says which it uses. Mixing bases is a silent 2× error (B3-C8) |
+| **As-paid / restated** | The two share-basis conventions. **Alpaca reports as-paid; Yahoo reports restated** — measured across 77 events (B3-F25) |
+| **Knowledge date** | When a record became known *to us*, as distinct from when the event took effect (ex-date). Needed to reproduce what was knowable at a past moment, because a revision has a past ex-date and a present knowledge date (B3-C12) |
+| **Restatement / revision** | A vendor re-issuing an event it already published. Measured behaviour: it arrives as an **additional row** with a new vendor id, not as an update (B3-F27) |
+| **Implied event calendar** | The event dates recovered by dividing a vendor's *adjusted* price series by its *raw* series and reading off the re-basing steps. Used to check a vendor's price data against its own event API (B3-F24) |
+| **Instrument identity** | What still identifies a security after a ticker change — CUSIP, not symbol. Absent from the current schema (B3-F6 (f)) |
