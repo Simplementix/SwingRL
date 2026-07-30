@@ -46,7 +46,7 @@ Per the process contract, every prior claim was re-verified from scratch. Result
 | **A-4** 7 *fabricated* flat bars per crypto symbol after the 2019-08-31→2019-09-23 *outage* at 9930.13 / 209.55, volume 0; sits on `STITCH_DATE` | **Confirmed as rows, wrong on all three characterisations** | 7 per symbol confirmed at those exact prices. But (i) they are **not fabricated** — the live Binance.US API returns those identical bars, they are the venue's own first-listing data → **A1-F7**; (ii) only **6 of 7** carry volume 0, the first carries 9.93013 (BTC) / 2.0955 (ETH); (iii) they sit at **2019-09-23/24**, 22 days *after* `STITCH_DATE`. A *different*, genuinely synthetic bar does sit exactly on the stitch → **A1-F8**. And the preceding 22 days are **not an outage** → **A1-F19** |
 | Watermark reads Parquet, not the store the consumer reads (`alpaca.py:218-240`, `binance.py:254-258`); blind to interior gaps | **Confirmed** | Both confirmed, and the consequence is worse than stated: the two stores also diverge in *values* → **A1-F2**, **A1-F3** |
 | `ohlcv_daily.adjusted_close` is 0/21,088 populated | **Confirmed** | And the column is redundant — `close` is already adjusted → **A1-F14** |
-| CBOE proposed as replacement source (`charts/historical`, ~45,406 bars) | **Now a decision — USER RULING 2026-07-25** | CBOE is the going-forward equity candle source: a fuller history with **unadjusted** values. No CBOE code path touches candles today — `grep` over `src/swingrl/data/` finds CBOE only under `data/options/` — so this is a stated direction, not implemented state. It changes which store and which vintage count as authoritative → **A1-F1**, **A1-F20** |
+| CBOE proposed as replacement source (`charts/historical`, ~45,406 bars) | **Now a decision — USER RULING 2026-07-25** | CBOE is the going-forward equity candle source: a fuller history. *(Originally recorded here as "**unadjusted** values" — **corrected 2026-07-29**: CBOE is **split-adjusted in price and volume**, dividend- and spin-off-raw. **B3-F11**, and the correction block in §A1.6.)* No CBOE code path touches candles today — `grep` over `src/swingrl/data/` finds CBOE only under `data/options/` — so this is a stated direction, not implemented state. It changes which store and which vintage count as authoritative → **A1-F1**, **A1-F20** |
 
 ---
 
@@ -241,6 +241,36 @@ Note the two bad SPY bars of **A1-F6** live inside this same island. CBOE's own 
 correctly valued for both symbols, so unlike **A1-F4** this finding is removed outright by a full
 CBOE replacement, with nothing left to qualify.
 
+**A1-F35 — A second return cluster, 2024-12-23, on a different adjustment basis from its
+neighbours — and nothing explains it. NEW — measured by the B3 session 2026-07-29 and split out of
+B3-F12 on user ruling, because it has no corporate-action cause. Confidence: high on the
+measurement / the cause is explicitly UNEXPLAINED.**
+
+Comparing stored `ohlcv_daily` returns against a fresh Alpaca fetch, and controlling for the
+stored 2-decimal rounding, **27–150 bars per symbol** differ by more than 10 bp. They fall into two
+clusters. One is **A1-F5**'s probe island. The other is **2024-12-23, across all eight symbols**,
+where the stored bar sits on a **different adjustment basis** from the bars either side of it.
+
+**Why the obvious explanations do not work:**
+
+| Candidate cause | Why it fails |
+|---|---|
+| A different fetch vintage | The bar carries the **same `fetched_at`** as its neighbours — this is not a second **A1-F5** |
+| A corporate action on the date | No dividend and no split falls on 2024-12-23 for any of the eight. This is why it is **not** a B3 finding |
+| Rounding | Already controlled for; the divergence exceeds 10 bp |
+| One symbol misbehaving | It is **all eight at once**, which points at the vendor rather than at our pipeline |
+
+**What it means for the migration.** It is a second instance of the same class as **A1-F5** — a
+localised region of `ohlcv_daily` on a basis that nothing in our code chose or recorded. Like
+A1-F5 it is **removed outright by a full CBOE replacement**, so it does not change the ruling. It
+matters as evidence: two independent unexplained basis islands in one table is the strongest
+argument in this review for per-row provenance (**A1-C11**) and for a cross-source gate that would
+have caught both (**A1-C12**).
+
+**Where this connects.** The rest of the drift measurement it was split from — the 0.25–1.34 %
+dividend re-basing across all 2,556 bars/symbol — stays in B3 as **B3-F12**, because *that* one
+does have a corporate-action cause.
+
 **A1-F15 — An unadjusted spin-off discontinuity in XLF. Confidence: high (query) / medium
 (attribution).**
 
@@ -255,11 +285,13 @@ adjusts for spin-offs:
 | XLF | 2016-09-16 | 2016-09-19 | return |
 |---|---|---|---|
 | Postgres (`Adjustment.ALL`) | 19.89 | 16.26 | **−18.25 %** |
-| CBOE (unadjusted) | 23.62 | 19.31 | **−18.25 %** |
+| CBOE (dividend- and spin-off-raw) | 23.62 | 19.31 | **−18.25 %** |
 
-**Under the unadjusted ruling this finding inverts from one bar to a systemic property.** The
-cumulative gap between unadjusted CBOE and our adjusted series *is* the total false return that
-unadjusted storage would inject, and it is threshold-free arithmetic:
+**Under the CBOE basis this finding inverts from one bar to a systemic property.** The cumulative
+gap between CBOE and our dividend-adjusted series *is* the total false return that dividend-raw
+storage would inject, and it is threshold-free arithmetic. *(Wording corrected 2026-07-30 — there
+was no "unadjusted ruling"; CBOE is split-adjusted and dividend-raw, **B3-F11**. The arithmetic
+below is unaffected, because the gap it measures is the dividend leg, which CBOE does leave raw.)*
 
 | Cumulative adjustment, 2016-01 → 2026-07 | SPY | QQQ | VTI | XLE | XLF | XLI | XLK | XLV |
 |---|---|---|---|---|---|---|---|---|
@@ -267,7 +299,7 @@ unadjusted storage would inject, and it is threshold-free arithmetic:
 
 Our stored 2016 XLE close sits **43.8 % below** the price that actually traded that day, because a
 decade of dividends has been adjusted out of it. Today that absorbs every ex-dividend date
-invisibly. Unadjusted, it re-materialises as discrete downward steps at roughly 42 dates per
+invisibly. Dividend-raw, it re-materialises as discrete downward steps at roughly 42 dates per
 symbol — each one a plausible-looking small loss, and each one *below* the 50 % spike threshold,
 exactly as the spin-off is.
 
@@ -577,6 +609,34 @@ Three extensions established this session:
    `binance.py` (`:317`, `:319`) and `fred.py` (`:237`) both use their instance validator —
    **`alpaca.py` is the only ingestor that discards its own**, and it is the one Step 12 lives on.
 
+**A1-F36 — Even when Step 12 does run, a failure is swallowed — so fixing A1-F17 alone would
+convert a silent *skip* into a silent *failure*. NEW — measured by the B3 session 2026-07-29 and
+split out of B3-F5 on user ruling. Confidence: high (code read).**
+
+`validation.py:234-255` wraps the entire cross-source call in a bare `except Exception`, logs
+`cross_source_check_failed`, and continues. There is no re-raise, no quarantine row, no alert, and
+no signal returned to the caller. The result is a validator that reports success on a check that
+did not happen.
+
+This is a **different defect from A1-F17**, at a different line, and the two compose badly:
+
+| Layer | Defect | Today's symptom |
+|---|---|---|
+| **A1-F17** | The validator is constructed without `db`/`config`, so Step 12 is skipped entirely | Skip logged at DEBUG, below the configured level — invisible |
+| **A1-F36** | If it *were* wired, any failure inside it is caught and discarded | Failure logged, ingestion proceeds, result indistinguishable from a pass |
+
+**Why this is not hypothetical.** The B3 session established that the source Step 12 depends on is
+**currently unreachable** — `fc.yahoo.com` resolves to 127.0.0.1 from the host and both containers,
+so every yfinance call dies at the cookie handshake (**B3-F5**). So the moment A1-F17's wiring is
+fixed, Step 12 begins running, failing on every batch, and reporting nothing. **Wiring alone is not
+a fix**; the failure path has to be closed at the same time.
+
+**Where this connects.** It strengthens **A1-C12** — the cross-source gate has to *gate*, meaning a
+failed or unavailable check must be distinguishable from a passed one. It is also the second
+instance in this review of the pattern named in **A1-F22**: a capability that exists, appears
+covered, and cannot actually report.
+
+
 **Where this connects.** This dead check is the *equity half* of **A1-F28**, whose crypto half has
 never existed at all — which is why Binance is unfalsifiable. It is one of the twelve capabilities
 inventoried in **A1-F22**, and its DEBUG-level skip message is the same silence as **A1-F21**: a
@@ -705,7 +765,9 @@ This resolves what "complete" means, and the answer differs by environment:
 - **Equity** — Parquet's extra 18 sessions do **not** make it the more complete store. It is
   Alpaca-derived, carries `Adjustment.ALL` prices, and inherits both the IEX volume era
   (**A1-F4**) and the probe island (**A1-F5**). Under the CBOE ruling it is superseded at source:
-  the going-forward equity feed is CBOE, with **unadjusted** values and a deeper history. So the
+  the going-forward equity feed is CBOE, with a deeper history and a **different adjustment basis**
+  — *split-adjusted, dividend- and spin-off-raw* (**B3-F11**; corrected 2026-07-30 from
+  "unadjusted"). So the
   equity Parquet files are **stale and incomplete relative to the intended source**, and their
   18-session surplus is a *drift signal that the sync path failed*, not a reserve to restore from.
 
@@ -735,7 +797,7 @@ Consequences, all verified:
    returns *different numbers* for old dates: Parquet takes them, Postgres discards them. The
    divergence widens on its own over time.
 
-   **Measured this session.** Comparing our stored SPY `close` against unadjusted CBOE by date
+   **Measured this session.** Comparing our stored SPY `close` against dividend-raw CBOE by date
    shows the adjustment as a clean step, not noise:
 
    | Window | CBOE − stored | Cause |
@@ -1084,6 +1146,37 @@ emphasis: a `grep` for `FROM data_ingestion_log` across `src/` and `scripts/` re
 anywhere** — it is a write-only table. Every ingest for four months faithfully recorded
 `rows_inserted=0`, and nothing was ever positioned to read it.
 
+**A1-F37 — A scheduled job named `data_audit_job` already exists, and it audits options only —
+candles are not covered by anything. NEW — measured by the B3 session 2026-07-29 and split out of
+B3-F20 on user ruling. Confidence: high (code read) / not re-executed.**
+
+The collector schedules a monthly `data_audit_job`. Its implementation is
+`src/swingrl/data/options/audit.py:105` and its scope is **options chains only**. Nothing in it
+touches `ohlcv_daily` or `ohlcv_4h`.
+
+**This changes what A1-C6 is.** A1-C6 currently reads as "the watermark becomes the candle integrity
+audit" — a greenfield build. The accurate framing is narrower and cheaper: **a data-audit job is
+already written, already scheduled and already running**; it simply covers one dataset. That is a
+wiring-and-scope problem, not a new capability — the thirteenth row of the **A1-F22** table, and the
+same pattern as the other twelve.
+
+| | |
+|---|---|
+| The job | `data_audit_job`, monthly, in the collector's schedule |
+| Its actual scope | `data/options/audit.py:105` — options chains only |
+| Candle coverage | **None**, from any scheduled job |
+| Consequence for **A1-C6** | Extend an existing scheduled auditor, rather than build one |
+
+**The generic name is the trap.** `data_audit_job` reads as covering *the data*. It covers one
+dataset out of twelve, and nothing announces the omission — so every later dataset in this audit
+will meet the same job and have to re-establish that it is not covered. B3 records that
+cross-cutting form of the problem; this finding records the candle instance.
+
+**Where this connects.** **A1-C6** (what the integrity audit asserts), **A1-F21** (the candle layer
+raises no alerts, so even a candle audit would have nowhere to report), and **A1-F22** (the pattern
+itself).
+
+
 **A1-F23 — The verification gate passes vacuously, treats "no data" as success, and its only
 artefact on the production runtime is failed test output. NEW.
 Confidence: high (code read + live artefact) / medium (attribution of the run).**
@@ -1257,8 +1350,11 @@ against CBOE:
 Two constraints on using Alpaca as the validator, both measured rather than assumed:
 
 1. **Prices — usable, with a caveat.** Agreement is ~2 bps only when comparing like with like. Our
-   `close` is `Adjustment.ALL`; CBOE is unadjusted. A naive comparison reports a false
-   26 bps discrepancy that is purely the dividend adjustment.
+   `close` is `Adjustment.ALL`; CBOE is **split-adjusted but dividend-raw** (**B3-F11**; corrected
+   2026-07-30 from "unadjusted"). A naive comparison reports a false 26 bps discrepancy that is
+   purely the dividend adjustment. **The correction strengthens this claim rather than weakening
+   it:** `Adjustment.ALL` applies splits *and* dividends while CBOE applies splits only, so the
+   residual between them is the dividend leg *exactly* — which is what the 26 bps measures.
 2. **Volume — not usable as configured.** The live equity path runs `since="incremental"` → IEX
    (`alpaca.py:104-107`), which reads 12–53× below CBOE. Volume cross-validation requires Alpaca on
    the **SIP** feed, which that branch selects only on a backfill call.
@@ -1474,16 +1570,24 @@ The training redesign moves Group B datasets into the observation space, which r
 consumers downstream of candles but does not change the candle contract itself.
 
 **USER RULING 2026-07-25 — equity candles move to CBOE.** CBOE becomes the going-forward equity
-source: a more complete history with **unadjusted** values. Recorded here as direction, not as
+source: a more complete history on a **different adjustment basis** — *split-adjusted in price and
+volume, dividend- and spin-off-raw* (**B3-F11**; corrected 2026-07-30 from "unadjusted", see the
+correction block below). Recorded here as direction, not as
 implemented state — no candle code path references CBOE today, which appears in
 `src/swingrl/data/options/` exclusively. Three consequences follow for later passes, stated as
 consequences and not as a design:
 
 1. It supersedes both current equity vintages. The SIP era, the IEX era (**A1-F4**) and the probe
    island (**A1-F5**) are all Alpaca artefacts that a CBOE-sourced series would not carry.
-2. Unadjusted values change what `close` means. Today `close` is split- and dividend-adjusted
+2. The new basis changes what `close` means. Today `close` is split- and dividend-adjusted
    (`alpaca.py:126`), which is why `adjusted_close` is redundant (**A1-F14**) and why re-fetches
-   return different numbers for old dates (**A1-F3**). Unadjusted values invert both properties.
+   return different numbers for old dates (**A1-F3**). **Corrected 2026-07-30 (B3-F11) — CBOE
+   inverts one property, not both.** Dividends: CBOE never re-bases for them, so a re-fetch is
+   stable across an ex-date and the dividend drops stay in the series. Splits: CBOE *does* re-base
+   the whole history retroactively, so a re-fetch after a split returns different numbers for old
+   dates exactly as Alpaca does. The re-fetch instability of **A1-F3** therefore survives the
+   migration in narrowed form — rare, but silent, which is what forces the remediation ledger of
+   **B3-C5**.
 3. It settles **A1-F20** for equity: Parquet is not a restore path, because it holds the superseded
    feed.
 
@@ -1500,9 +1604,35 @@ All 8 symbols were fetched this session from
 |---|---|
 | Volume basis vs Alpaca **SIP** | median ratio **0.968** — consolidated-tape scale, 3.2 % lower |
 | Volume basis vs Alpaca **IEX** | median **61.3×** — consistent with the **A1-F4** seam |
-| Adjustment state | **Unadjusted**, confirmed — see the dividend step in **A1-F3** |
+| Adjustment state | ~~**Unadjusted**, confirmed — see the dividend step in **A1-F3**~~ ⚠️ **REFUTED 2026-07-29 — see the correction immediately below** |
 | History depth | **2004-01-02**, ~5,676 bars/symbol vs our 2,636 — 2.15× deeper |
 | SPY 2018-11-01 (**A1-F6**'s flat bar) | CBOE reads **99,495,037** — the source **corrects** that defect |
+
+> **Correction, B3 session 2026-07-29 — CBOE is NOT unadjusted.** The A1 dividend check compared
+> CBOE against Alpaca and found no dividend adjustment, and the conclusion "therefore unadjusted"
+> was drawn from that alone. It does not follow: **splits were never tested.** B3 tested them, using
+> the only two in our universe.
+>
+> | Symbol | Split | Median CBOE ÷ Alpaca `RAW` **before** 2025-12-05 (n=2,496) | **After** (n=156) |
+> |---|---|---|---|
+> | XLE | 2:1 on 2025-12-05 | **0.499941** | 1.000000 |
+> | XLK | 2:1 on 2025-12-05 | **0.500000** | 1.000000 |
+> | SPY / IBM / XLF | none | 1.000000 | 1.000000 |
+>
+> **CBOE is split-adjusted in price and volume, retroactively, and dividend- and spin-off-raw**
+> (**B3-F11**). Volume runs ≈1.98× Alpaca raw pre-split. The 8 ETFs' spin-off — XLF 2016-09-19 —
+> still carries its full **−18.2 %** at ratio 1.0, so spin-offs are genuinely untouched.
+>
+> **What this does and does not change.** It does **not** weaken the CBOE ruling — completeness
+> (**A1-F16** in B3's terms: 0 missing sessions pre-2016 across 11 symbols) supports it strongly.
+> It changes the *shape of the work*: splits move out of the adjustment problem and into
+> **change detection** (knowing when CBOE has silently re-based history under a stored copy), and
+> **dividends become the whole of the reconstruction burden**. Any cross-source comparator must
+> encode this hybrid convention or it will report false discrepancies (**B3-C7**).
+>
+> **Scope of the verification:** 2016 → today only. Alpaca's floor is 2016-03-15, so nothing can
+> check CBOE's pre-2016 split treatment. That it behaves the same before 2016 is an **INFERENCE** —
+> and **A1-F34** shows CBOE's pre-2016 data is capable of exactly that class of defect.
 
 **What the ruling does not yet account for.** "One source, no stitching, no seams" is true of the
 *seam*. It is not true of *data quality*:
@@ -1513,12 +1643,38 @@ All 8 symbols were fetched this session from
 | Non-session bars — **2018-11-22**, Thanksgiving | **7** | Flat, zero-volume bars on 7 of 8 symbols. Five repeat the prior session's close exactly; **XLE and XLK are doubled** (2.069× and 2.000×) and revert the next day |
 | Non-session bars — **2025-05-26**, Memorial Day | **8** | The dangerous set: **full OHLC and plausible volume** — SPY reads **75,990,006 shares traded on a day the market was closed**. Six repeat the prior close; XLE and XLK are again doubled. Nothing in the validator inspects it (**A1-F10**) |
 | Corrupt 2019-01 window | **30 bars** | SPY 2019-01-07 reads **69,304** against a real 105,208,591 — a **1,518×** under-report. CBOE's own localised version of the **A1-F4** failure mode |
+| Corrupt VTI 2006 window | **~200 bars** | **VTI 2006-01-03 → 2006-10-23** sits at **half** its correct value. Found by the B3 session; recorded as **A1-F34** below |
 | Duplicate rows | 3 symbols | 2024-12-31 appears twice in SPY, VTI and XLV, with identical values |
-| Missing sessions | **4**, XLI only | Checked against the XNYS calendar (`exchange_calendars`, 5,674 sessions 2004-01-02 → 2026-07-23). Every other symbol is calendar-complete. Confirms the prior spec's note |
+| Missing sessions | **4**, XLI only | Checked against the XNYS calendar (`exchange_calendars`, 5,674 sessions 2004-01-02 → 2026-07-23). Every other symbol is calendar-complete. Confirms the prior spec's note. **Strengthened 2026-07-29 — see below** |
 
 Calendar verdict in full: **15 non-session bars across 2 dates, and 4 missing sessions in one
 symbol.** Postgres today has **zero** non-session dates (**A1.1**) — a property of what Alpaca
 supplied, not of anything the pipeline enforces (**A1-F10**).
+
+> **Amendment, B3 session 2026-07-29 — the completeness result is stronger than stated, and it is
+> the single best argument for the migration.** Re-measured across the full 11-symbol snapshot and
+> split at 2016, the picture separates cleanly:
+>
+> | Band | Missing sessions |
+> |---|---|
+> | **Pre-2016** (22.5 years, all 11 symbols) | **0** — perfectly complete |
+> | Post-2016 | 4, XLI only |
+>
+> This matters because pre-2016 is precisely the ~3,024 bars/symbol that exist in CBOE and nowhere
+> else — Alpaca's floor is 2016-03-15. The band the migration is *for* has no session gaps at all.
+> Note the tension with **A1-F34**: the deep history is **calendar-complete but not value-clean**
+> — a bar existing for every session says nothing about whether its values are right.
+>
+> *(This was written up as B3-F16 and retired on user ruling 2026-07-29; it is a candle fact with no
+> corporate-action content. The measurement is recorded here, where it belongs.)*
+
+> **Amendment, B3 session 2026-07-29 — count corrected upward, scope-dependent.** The 15 above is
+> correct **for the 8 ETFs**. Re-measured across the full 11-symbol snapshot (the 8 plus the
+> IBM/META/ARKK controls), the same two dates carry **20** non-session bars. Nothing about the
+> defect changed; the wider symbol set simply exposes 5 more instances of it. Both dates and the
+> doubled XLE/XLK behaviour reproduce exactly. The doubling has a second meaning established in B3:
+> these bars escaped CBOE's retroactive split-adjustment pass, which is corroborating evidence for
+> **B3-F11**. The finding itself stays **A1-F10 / A1-C14 (a)**; B3 raised no separate finding for it.
 
 Stated neutrally: the migration trades **one characterised boundary defect** for **~50 scattered
 defects spread over 22 years that nothing has yet characterised**. That is not an argument against
@@ -1530,6 +1686,39 @@ the ruling — the deeper history and the correct volume basis are real gains, a
    violations" is **not achievable by raw ingest**; it requires rejection or repair.
 2. It is the concrete case for per-row audit state (**A1-F26**) and for cross-source validation
    (**A1-F28**) — a second source is what distinguishes CBOE's 2019-01 corruption from real data.
+
+**A1-F34 — CBOE's VTI history is corrupt for 10 months of 2006, at half value. NEW — measured by
+the B3 session 2026-07-29, appended to A1 as an amendment because it is a candle defect, not a
+corporate-action fact. Confidence: high on the defect (measured against the snapshot) / the
+"nothing else like it is hiding" question is explicitly UNVERIFIED.**
+
+**VTI, 2006-01-03 → 2006-10-23** — roughly 200 consecutive bars sit at **half** their correct
+value. 2004, 2005 and 2007-onward all track reality, so the window is bounded on both sides.
+
+It is **not a split.** A split re-bases everything *before* the effective date and never reverts;
+this recovers after 2006-10-23. VTI has no split on record at Alpaca either. The half-value shape
+is what made it worth ruling out — it is exactly what a mis-applied 2:1 adjustment looks like, and
+that ruling-out is the only reason the B3 session touched it.
+
+**Why this one matters more than the 2019-01 window (A1-F27).** It sits inside **2004–2016**, the
+band that exists in CBOE and nowhere else. Alpaca's floor is 2016-03-15, so for this window there
+is **no second source to diff against** — the defect was found by eye, because it was blatant. A
+subtler corruption in the same band would pass unremarked, and today nothing would look.
+
+| Property | Value |
+|---|---|
+| Symbol / window | VTI, 2006-01-03 → 2006-10-23 |
+| Bars | ~200 |
+| Error | ~0.5× correct value |
+| Detectable by a second source? | **No** — pre-2016, nothing else reaches back |
+| How found | Visual comparison against adjacent years |
+
+**The open consequence, stated and not resolved here:** A1-C14 lists the validator checks the
+migration must pass, all of which are *per-bar* or *per-session* tests. None of them detects a
+smoothly-wrong 200-bar segment whose OHLC invariants all hold and whose volumes are plausible. A
+level defect of this shape is only visible against something external — a second source, a known
+index level, or a human. **Whether the deep history gets a systematic defect sweep before it is
+trusted is not settled**; it is carried under **A1-C3** and **A1-C14** rather than answered here.
 
 **A1-F29 — CBOE's 2004 floor is a fixed calendar date, not an inception date and not a rolling bar
 count. NEW — question raised by the user 2026-07-25, measured here. Confidence: high on the rule
@@ -1630,14 +1819,16 @@ only because LD-1 governs the *execution venue*, while **A1-F9** and **A1-F19** 
 
 ## A1.7 — Findings index
 
-**33 findings — 19 High, 13 Medium, 1 Low.**
+**37 findings — 22 High, 14 Medium, 1 Low.** *(**A1-F34** … **A1-F37** were appended by the B3
+session on 2026-07-29 — candle findings that surfaced during corporate-action work and belong here,
+not there. The original A1 review closed at 33.)*
 
 Ordered by **disposition**: what a full CBOE migration does to each finding. That axis was chosen
 because it is the one that survived testing — see *Why this ordering* below. Severity, environment,
 the section holding the evidence, and the carry items each finding feeds are all columns, so the
 ordering never has to carry that information.
 
-### Removed outright by a full CBOE replacement — 4, plus the equity half of A1-F1
+### Removed outright by a full CBOE replacement — 5, plus the equity half of A1-F1
 
 CBOE carries this history correctly back to 2004, so these are Alpaca artefacts with nothing left
 to qualify. Conditional on the data being **validated on the way in** (**A1-C14**).
@@ -1646,6 +1837,7 @@ to qualify. Conditional on the data being **validated on the way in** (**A1-C14*
 |---|---|---|---|---|---|
 | **A1-F4** | High | equity | A1.2 | A1-C2, A1-C3, A1-C11 | Volume seam at **2020-07-27**, 30–90× wide, spanning 5.6 years — and IEX is the *standing* regime, not a bounded era |
 | **A1-F5** | High | equity | A1.1 | — | **10** bad bars in a SPY/QQQ probe island, 2024-01-02→08; the QQQ bars carry SPY's prices |
+| **A1-F35** | Medium | equity | A1.1 | A1-C11, A1-C12 | **A second unexplained adjustment-basis island: 2024-12-23, all 8 symbols.** Same `fetched_at` as its neighbours and no corporate action on the date, so neither vintage nor event explains it. *Split out of B3-F12 by the B3 session* |
 | **A1-F6** | Medium | equity | A1.1 | A1-C3, A1-C14 | 3 invalid SPY bars. CBOE independently corrects the 2018-11-01 flat bar (99,495,037 vs 200) |
 | **A1-F14** | Low | equity | A1.4 | A1-C3, A1-C13 | `adjusted_close` 0/21,088 — no writer, no reader, and redundant, so the schema misleads about `close`. **USER RULING: remove** |
 | **A1-F1** *(equity half)* | High | equity | A1.3 | A1-C15 | 18 sessions missing from the authoritative store |
@@ -1666,7 +1858,7 @@ the historical data source, on which no decision has been taken.
 | **A1-F33** | Medium | crypto | A1.3 | A1-C18 | **No search for a crypto second source has ever been performed** — the gap is our effort, not the market |
 | **A1-F1** *(crypto half)* | High | crypto | A1.3 | A1-C15 | 159 bars per symbol missing from the authoritative store |
 
-### Untouched — structural — 15
+### Untouched — structural — 17
 
 Properties of the **pipeline**, not the vendor. A new source inherits every one of them. Two
 sub-groups held under both grouping tests; the remaining nine did not, and are listed in ID order
@@ -1679,6 +1871,7 @@ rather than forced into a shape the evidence does not support.
 | **A1-F18** | High | both | A1.3 | A1-C5, A1-C6 | Every silent-failure detector is `MAX()`-based, `>100`-row loose, crypto-only or log-only — and **3 of 7 verification checks are hardcoded `passed=True`**, including the only interior-gap check |
 | **A1-F21** | High | both | A1.3 | A1-C3, A1-C6, A1-C7, A1-C9, A1-C10 | The candle layer raises **zero** alerts; all 43 candle alerts are INFO successes that post-date the defect by four months |
 | **A1-F22** | High | both | A1.3 | A1-C7, A1-C8 | **11 of 12 integrity capabilities exist, mostly read the right store, and are wired to nothing**; `data_ingestion_log` is write-only |
+| **A1-F37** | High | both | A1.3 | A1-C6, A1-C9 | **A scheduled `data_audit_job` already exists and audits options only** — nothing audits candles. Recasts **A1-C6** from a greenfield build into extending a job that already runs. *Split out of B3-F20 by the B3 session* |
 | **A1-F23** | High | both | A1.3 | A1-C7 | The verification gate passes **vacuously** — 0 symbols = pass, "no data found" = pass — and the collector never calls it |
 
 **Nowhere to write it down — the recording surface (2)**
@@ -1698,6 +1891,7 @@ rather than forced into a shape the evidence does not support.
 | **A1-F11** | Medium | both | A1.3 | A1-C6 | Ingest-time gap detection sees only the incoming batch, and exits early on the 1-row fetches every production run delivers |
 | **A1-F12** | Medium | equity | A1.3 | A1-C5, A1-C6, A1-C7 | No equity gap-fill exists; `detect_equity_gaps` reads the right store and has **no caller** |
 | **A1-F17** | Medium | equity | A1.2 | A1-C12 | Step 12's cross-source check never runs — the validator is built without `db`/`config`, and the skip is logged at DEBUG below the configured level |
+| **A1-F36** | High | both | A1.2 | A1-C12 | **A bare `except Exception` at `validation.py:234-255` swallows any cross-source failure** — so fixing A1-F17's wiring alone turns a silent skip into a silent failure, which is exactly what would happen today given **B3-F5**. *Split out of B3-F5 by the B3 session* |
 | **A1-F20** | High | both | A1.3 | A1-C4, A1-C16 | Store authority: Postgres is the source of truth, Parquet an audit/drift check. Crypto stores agree bit-for-bit; equity Parquet is superseded. **USER RULING** |
 | **A1-F26** | Medium | both | A1.3 | A1-C5, A1-C11, A1-C13 | Candle rows carry **no audit state** — good and bad rows are indistinguishable, so no gated correction is expressible |
 | **A1-F28** | High | both | A1.3 | A1-C12, A1-C16, A1-C18 | **No independent cross-source validation runs anywhere** — equity's is built and dead, crypto's does not exist |
@@ -1706,13 +1900,14 @@ rather than forced into a shape the evidence does not support.
 
 | ID | Sev | Env | § | Feeds | Finding |
 |---|---|---|---|---|---|
-| **A1-F15** | Medium | equity | A1.1 | A1-C12, A1-C13, A1-C14, A1-C17 | XLF 2016-09-19 carries a **−18.25 %** unadjusted spin-off. Under unadjusted storage this inverts from one bad bar into a systemic property — see A1.8 |
+| **A1-F15** | Medium | equity | A1.1 | A1-C12, A1-C13, A1-C14, A1-C17 | XLF 2016-09-19 carries a **−18.25 %** spin-off that **no vendor adjusts** — Alpaca and CBOE both leave it in. Under CBOE storage this inverts from one bad bar into a systemic property — see A1.8. *(Wording corrected 2026-07-30: the basis is **dividend- and spin-off-raw**, not "unadjusted" — **B3-F11**. The finding is unaffected; CBOE genuinely is raw for spin-offs)* |
 
-### Is the migration risk — 3
+### Is the migration risk — 4
 
 | ID | Sev | Env | § | Feeds | Finding |
 |---|---|---|---|---|---|
-| **A1-F27** | High | equity | A1.6 | A1-C12, A1-C14 | CBOE's volume basis **verified consolidated** (0.968× SIP), unadjusted, 2.15× deeper history — but the source carries **~50 defects of its own**, and raw ingest would import all of them |
+| **A1-F27** | High | equity | A1.6 | A1-C12, A1-C14 | CBOE's volume basis **verified consolidated** (0.968× SIP), 2.15× deeper history — but the source carries **~50 defects of its own**, and raw ingest would import all of them. *(Adjustment state corrected 2026-07-29: **split-adjusted, dividend- and spin-off-raw** — **B3-F11** — not "unadjusted" as originally written)* |
+| **A1-F34** | High | equity | A1.6 | A1-C3, A1-C14 | **CBOE VTI 2006-01-03 → 2006-10-23 is corrupt** — ~200 bars at half value, not a split. Sits in the pre-2016 band where **no second source exists**, and no per-bar validator check can see a level defect. *Amendment, added by the B3 session* |
 | **A1-F29** | Medium | equity | A1.6 | A1-C16 | CBOE's 2004 floor is a **fixed calendar date**, not inception and not a rolling bar count. Snapshot taken. Residual: a trailing-22-year rule is indistinguishable until 2027-01-01 |
 | **A1-F30** | High | equity | A1.6 | A1-C12, A1-C16 | The proposed **sole** equity source is an unauthenticated, undocumented, free CDN endpoint for *delayed* quotes — no SLA, no contract, no schema version |
 
@@ -1739,7 +1934,8 @@ themes, every finding assigned to exactly one. Three mechanical checks were run:
 
 Only *detection & wiring* and *recording surface* survived both tests, and they are retained above
 as sub-groups. Disposition was adopted as the primary axis because it partitions all 33 findings
-cleanly and was derived independently of any taxonomy. The five findings that cited nothing —
+cleanly — 34 with the later amendment, which the axis absorbed without difficulty — and was
+derived independently of any taxonomy. The five findings that cited nothing —
 **A1-F8**, **A1-F9**, **A1-F13**, **A1-F16**, **A1-F17** — each now carry an explicit
 *"Where this connects"* paragraph in the body.
 
@@ -1758,9 +1954,15 @@ actions, because none of the four event types apply to BTC/ETH.
 
 **A1-F15 inverts, and this is the sharpest consequence of the ruling.** Today it is narrow: one XLF
 spin-off in 2016 carries a false −18.25 % because `Adjustment.ALL` does not cover spin-offs. Under
-**unadjusted** CBOE nothing is adjusted at all, so **every dividend ex-date and every split becomes
-a false negative return** — all 8 symbols, 22 years, ~90 SPY dividends alone. What is currently one
-bad bar becomes a systematic property of the entire series.
+CBOE, **every dividend ex-date and every spin-off becomes a false negative return** — all 8 symbols,
+22 years, ~90 SPY dividends alone. What is currently one bad bar becomes a systematic property of
+the entire series.
+
+> **Corrected 2026-07-29 (B3-F11).** This paragraph originally read "every dividend ex-date **and
+> every split**", on the belief that CBOE was wholly unadjusted. **Splits do not belong in that
+> list** — CBOE applies them retroactively itself, so a split leaves no discontinuity in a CBOE
+> series. The dividend and spin-off half of the argument is unaffected and is the whole of the
+> inversion. See the correction block in §A1.6.
 
 This is not an argument against the ruling. It is why **A1-C13** exists: read-time adjustment from
 `corporate_actions` is what turns raw storage from a liability into the correct design. But it has a
@@ -1794,18 +1996,18 @@ them. **No remedy is proposed or implied by their presence in this list.**
 |---|---|---|
 | **A1-C1** | Restoring the 22-day crypto hole from the already-downloaded archive — including that `DO NOTHING` will silently reject the one bar that collides with the synthetic row | **A1-F19**, **A1-F8**, **A1-F3** |
 | **A1-C2** | The two venue-volume seams, which are **independent** of the gaps and are not fixed by closing them | **A1-F4**, **A1-F9** |
-| **A1-C3** | Migrating equity candles to CBOE with unadjusted values, and what that does to `close`, `adjusted_close` and re-fetch determinism. **USER RULING 2026-07-25 — the migration must replace the equity candle table in full, so that no seam or stitch exists between providers.** The mechanism this rules out is verified: a full CBOE load writes ~45,000 rows into a table where **21,088 keys already hold Alpaca rows**, and under `ON CONFLICT DO NOTHING` (**A1-F3**) every one of those collisions is silently skipped. The result would be CBOE's 2004–2016 deep history grafted onto Alpaca's contaminated 2016–2026 present — a **new provider seam at 2016-01-04** — while `rows_inserted` reports a large positive number and nothing alerts (**A1-F21**). **A1-F6**'s SPY 2018-11-01 bar is that exact failure already observed at 1-row scale. Settling *how* the replacement is performed without violating the **A1-F3** guard is carry item **A1-C11**'s problem, and A30 additive-only applies while the trader runs | **USER RULING**, **A1-F3**, **A1-F6**, **A1-F4**, **A1-F14**, **A1-F21** |
+| **A1-C3** | Migrating equity candles to CBOE — **split-adjusted, dividend- and spin-off-raw** (**B3-F11**; corrected 2026-07-30 from "unadjusted values") — and what that does to `close`, `adjusted_close` and re-fetch determinism. Note the narrowed form: re-fetch determinism survives for dividends and **fails for splits**, since CBOE re-bases retroactively. **USER RULING 2026-07-25 — the migration must replace the equity candle table in full, so that no seam or stitch exists between providers.** The mechanism this rules out is verified: a full CBOE load writes ~45,000 rows into a table where **21,088 keys already hold Alpaca rows**, and under `ON CONFLICT DO NOTHING` (**A1-F3**) every one of those collisions is silently skipped. The result would be CBOE's 2004–2016 deep history grafted onto Alpaca's contaminated 2016–2026 present — a **new provider seam at 2016-01-04** — while `rows_inserted` reports a large positive number and nothing alerts (**A1-F21**). **A1-F6**'s SPY 2018-11-01 bar is that exact failure already observed at 1-row scale. Settling *how* the replacement is performed without violating the **A1-F3** guard is carry item **A1-C11**'s problem, and A30 additive-only applies while the trader runs | **USER RULING**, **A1-F3**, **A1-F6**, **A1-F4**, **A1-F14**, **A1-F21** |
 | **A1-C4** | Store authority — making Postgres the watermark's store, and defining what the Parquet drift check asserts | **A1-F20**, **A1-F2** |
 | **A1-C5** | The **five** DS-7 parity divergences, none of them justified or recorded. Four are behavioural; the fifth (**A1-F26**) is a schema asymmetry — the `source` provenance column exists on crypto and not equity — so it is settled by **A1-C11**'s migration rather than by new logic | **A1-F10**, **A1-F12**, **A1-F18**, **A1-F26** |
-| **A1-C6** | **USER DIRECTION 2026-07-25** — the watermark stops being a bare resume pointer and becomes the candle integrity audit, reading Postgres and raising through `alert_log()`. Scope to settle at spec: what it asserts (calendar completeness, interior gaps, store drift, value invariants), what severity each raises, and whether `alert_log` must retain the message body to be evidential | **A1-F2**, **A1-F11**, **A1-F12**, **A1-F18**, **A1-F21** |
+| **A1-C6** | **USER DIRECTION 2026-07-25** — the watermark stops being a bare resume pointer and becomes the candle integrity audit, reading Postgres and raising through `alert_log()`. Scope to settle at spec: what it asserts (calendar completeness, interior gaps, store drift, value invariants), what severity each raises, and whether `alert_log` must retain the message body to be evidential. **Amendment 2026-07-29 (A1-F37):** this is **not** a greenfield build — a monthly `data_audit_job` already exists and is already scheduled (`data/options/audit.py:105`); it simply covers options only. Scope the work as extending a running auditor | **A1-F2**, **A1-F11**, **A1-F12**, **A1-F18**, **A1-F21**, **A1-F37** |
 | **A1-C7** | **USER DIRECTION 2026-07-25 — the collector owns candles end to end:** (a) ongoing collection, (b) **auditing historical data**, (c) maintaining data quality and integrity. Today it owns only (a); (b) has no owner at all, and (c) is spread across unwired modules. Note the collector currently imports four symbols from `ingest_all` and none of the verification surface (`collector_main.py:28-32`) | **A1-F22**, **A1-F23**, **A1-F12**, **A1-F21** |
 | **A1-C8** | Most of this machinery **already exists and reads the correct store** — the spec question is predominantly wiring, ownership and thresholds, not new capability. Two exceptions: equity gap *fill* does not exist, and recording integrity facts needs a **schema change** | **A1-F22**, **A1-F24** |
 | **A1-C9** | Where integrity/quality results should live. `data_ingestion_log` is the natural home but has no column for them; `system_events` is purpose-shaped and unused (0 writers); `alert_log` hashes its message body so it cannot carry evidence. Any choice is additive-only while the trader runs (A30) | **A1-F24**, **A1-F21** |
 | **A1-C10** | **USER OBSERVATION 2026-07-25** — whether the five metadata tables collapse into a coherent model rather than five per-feature designs. Note the constraints this sits under: A30 additive-only while the trader runs; `api_errors` and `alert_log` have live readers in the execution path (`emergency.py:518`) so they are **not** free to reshape; `system_events` has zero writers and zero readers, making it the only one with no migration cost. Group C owns the execution-side tables, so any merged model crosses this audit's scope boundary | **A1-F25**, **A1-F24**, **A1-F21** |
 | **A1-C11** | **USER DIRECTION 2026-07-25** — candle rows must carry audit state: **source of the data** (feed/venue provenance), **when last audited**, a **flag for update/review**, and a **revision number**. `DO NOTHING` (**A1-F3**) stays as the default guard — it exists to protect audited history — and a correction is permitted only for rows whose audit state licenses it. To settle at spec: this is a **schema change** on both candle tables (nullable adds are A30-additive, so permitted while the trader runs, but the *choice* between in-table columns and a side table is open); it is **per-row** state, distinct from the **per-run** integrity fact of item **A1-C9** which also has no home; it should carry the **`adjusted_close` drop** ruled in **A1-F14** in the same migration, noting that a `DROP COLUMN` is *not* A30-additive and needs an explicit exception; it interacts with item **A1-C1**, where **A1-F8**'s synthetic bar wants flagging rather than silent replacement; and — **UNVERIFIED inference** — provenance is what would distinguish a retained CBOE series from the superseded Alpaca one under item **A1-C3** | **A1-F26**, **A1-F3**, **A1-F4**, **A1-F9**, **A1-F13** |
-| **A1-C12** | **USER DIRECTION 2026-07-25** — cross-source validation becomes a standing gate in both environments, so a candle is corroborated by a source independent of the one that produced it. Measured constraints: Alpaca is a demonstrated equity second source at **±2 bps**, but only against *unadjusted* values (a naive comparison reports a false 26 bps dividend artefact), and its volume is usable only on the **SIP** feed, which `alpaca.py:104-107` selects on backfill alone. **Crypto has no candidate source at all** — that is the open question, and it must be genuinely independent of Binance, unlike the confirmations used for **A1-F7** and **A1-F9**. **Do not rebuild this from scratch — most of it exists.** Reuse inventory, traced this session, so the spec pass starts from what is built: **`CrossSourceValidator`** (`cross_source.py:41`) with `validate_prices(symbols, lookback_days=7, as_of_date)` → `list[CrossSourceResult]` (`symbol, date, alpaca_close, yfinance_close, diff, status`), a live call site at `validation.py:234-256`, and a test file at `tests/data/test_cross_source.py`. **Five things must change for it to be usable, all measured:** (i) it is never constructed with `db`/`config`, on any source (**A1-F17**); (ii) `_TOLERANCE_USD = 0.05` is an **absolute dollar** threshold — it cannot express the ±2 bps agreement actually measured, and does not scale across a \$59–\$740 price range; (iii) it compares yfinance **`Adj Close`** (`auto_adjust=False`, `cross_source.py:91`) against our `Adjustment.ALL` close — **adjusted vs adjusted, which is consistent today but breaks the moment the CBOE unadjusted ruling lands**, producing a false discrepancy on every historical bar equal to the cumulative drag of **A1-F15** (16.9 % SPY, 43.8 % XLE); (iv) results are **log-only** — no alert, no quarantine, no return to the caller; (v) the 7-day lookback makes it a recency check, not a history audit | **A1-F28**, **A1-F17**, **A1-F27**, **A1-F15**, **A1-F7**, **A1-F9** |
-| **A1-C13** | **USER DIRECTION 2026-07-25** — settle the price basis: **one consistent basis for all bars**, with raw and adjusted both obtainable. Verified inputs: Alpaca `Adjustment.ALL` adjusts volume by the split factor **exactly** (AAPL 2020-08-31, ×4.0000) and leaves volume untouched by dividends; CBOE is unadjusted; a materialised adjusted column must be **rewritten across all history** on every split *and* every dividend (32+ events/year across 8 symbols), which **A1-F3**'s guard forbids, whereas a derived-at-read-time series needs only **one new `corporate_actions` row** and relocates the churn to `features_*`, which is regenerable by definition. **Verified dependency:** `corporate_actions` exists with the right shape (`symbol, action_type, effective_date, ratio, amount, processed`) and holds **0 rows**. Four event types are needed — split/reverse-split (one type, direction carried by `ratio`), cash dividend, **spin-off**, and special/return-of-capital distribution. **This fixes A1-F15 rather than merely offsetting the ruling** — the XLF spin-off has been wrong since 2016 and no vendor column has ever corrected it; both Alpaca and CBOE carry the identical −18.25 %. **USER RULING 2026-07-25 — proceed on the assumption that corporate actions are obtainable back to 2004; any residual unaccounted events are researched and entered manually.** That makes a manual-entry path part of the design, which in turn means `corporate_actions` rows need provenance of their own (entered by whom, sourced from where) — the same argument as **A1-F26**, applied to a second table. Note the failure mode also changes shape: a missing action no longer shows as one conspicuous bar but silently mis-scales a symbol's entire pre-event history, so detection falls to carry item **A1-C12**. **UNVERIFIED:** whether `features_*` exposes a full recompute path — an A2 question | **A1-F3**, **A1-F14**, **A1-F15**, **A1-F26**, **B3** |
-| **A1-C14** | **USER DIRECTION 2026-07-25 — the validator needs new checks, not just wiring.** Measured against the ~50 CBOE defects, the current 12 steps catch ~30 and let ~20 through (**A1-F10**). The enumerated gaps: **(a) no non-session-date rejection** — Step 9 finds missing sessions, nothing finds extra ones, and Step 7 explicitly *excuses* zero volume off-session (`validation.py:140`), which is why 15 holiday bars pass; **(b) no flat-bar check** — o=h=l=c passes every step, which is how **A1-F6**'s SPY bar and **A1-F7**'s 14 crypto bars entered; **(c) no implausible-volume check** — a 1,518× under-report is invisible, as is volume 200 on SPY; **(d) Step 5's `_TOLERANCE = 0.0001` band lets 6 of 36 real invariant violations pass** (`validation.py:113`); **(e) Step 8 dedups duplicate timestamps silently** with no quarantine row, so a source shipping duplicates leaves no trace; **(f) the DS-7 split** — Step 7 is equity-only (`validation.py:133`), so zero-volume crypto bars are legal by design. Note this is the gate the CBOE migration must pass, so it is a **prerequisite** of carry item **A1-C3**, not a follow-up | **A1-F10**, **A1-F27**, **A1-F6**, **A1-F7**, **A1-F15**, **A1-F16** |
+| **A1-C12** | **USER DIRECTION 2026-07-25** — cross-source validation becomes a standing gate in both environments, so a candle is corroborated by a source independent of the one that produced it. Measured constraints: Alpaca is a demonstrated equity second source at **±2 bps**, but only against *unadjusted* values (a naive comparison reports a false 26 bps dividend artefact), and its volume is usable only on the **SIP** feed, which `alpaca.py:104-107` selects on backfill alone. **Crypto has no candidate source at all** — that is the open question, and it must be genuinely independent of Binance, unlike the confirmations used for **A1-F7** and **A1-F9**. **Do not rebuild this from scratch — most of it exists.** Reuse inventory, traced this session, so the spec pass starts from what is built: **`CrossSourceValidator`** (`cross_source.py:41`) with `validate_prices(symbols, lookback_days=7, as_of_date)` → `list[CrossSourceResult]` (`symbol, date, alpaca_close, yfinance_close, diff, status`), a live call site at `validation.py:234-256`, and a test file at `tests/data/test_cross_source.py`. **Five things must change for it to be usable, all measured:** (i) it is never constructed with `db`/`config`, on any source (**A1-F17**); (ii) `_TOLERANCE_USD = 0.05` is an **absolute dollar** threshold — it cannot express the ±2 bps agreement actually measured, and does not scale across a \$59–\$740 price range; (iii) it compares yfinance **`Adj Close`** (`auto_adjust=False`, `cross_source.py:91`) against our `Adjustment.ALL` close — **adjusted vs adjusted, which is consistent today but breaks the moment the CBOE basis lands** (**corrected 2026-07-30**: CBOE is **split-adjusted, dividend-raw** — **B3-F11** — not "unadjusted", so the false discrepancy is the *dividend* leg alone, not the whole adjustment), producing a false discrepancy on every historical bar equal to the cumulative drag of **A1-F15** (16.9 % SPY, 43.8 % XLE). **B3-C8** widens this: the share basis of *both sides* must be declared before any comparison, and **B3-F25** measures two sources that quote the same dividend on opposite bases; (iv) results are **log-only** — no alert, no quarantine, no return to the caller; (v) the 7-day lookback makes it a recency check, not a history audit | **A1-F28**, **A1-F17**, **A1-F27**, **A1-F15**, **A1-F7**, **A1-F9** |
+| **A1-C13** | **USER DIRECTION 2026-07-25** — settle the price basis: **one consistent basis for all bars**, with raw and adjusted both obtainable. Verified inputs: Alpaca `Adjustment.ALL` adjusts volume by the split factor **exactly** (AAPL 2020-08-31, ×4.0000) and leaves volume untouched by dividends; CBOE is **split-adjusted in price and volume, dividend- and spin-off-raw** (**B3-F11**; corrected 2026-07-30 from "CBOE is unadjusted" — this line previously contradicted the amendment later in this same cell); a materialised adjusted column must be **rewritten across all history** on every split *and* every dividend (32+ events/year across 8 symbols), which **A1-F3**'s guard forbids, whereas a derived-at-read-time series needs only **one new `corporate_actions` row** and relocates the churn to `features_*`, which is regenerable by definition. **Verified dependency:** `corporate_actions` exists with the right shape (`symbol, action_type, effective_date, ratio, amount, processed`) and holds **0 rows**. Four event types are needed — split/reverse-split (one type, direction carried by `ratio`), cash dividend, **spin-off**, and special/return-of-capital distribution. **Amended 2026-07-29 (B3-F11):** all four are still **captured**, but splits no longer serve as an *adjustment input* under CBOE, which applies them retroactively itself — applying a stored split factor on top would halve the history a second time. Split and reverse-split rows are held as **records**, for change detection: they are how we know CBOE has silently re-based history under a stored copy, and how we check it re-based correctly. Dividends and spin-offs remain the adjustment inputs, and are the whole of the reconstruction burden. **This fixes A1-F15 rather than merely offsetting the ruling** — the XLF spin-off has been wrong since 2016 and no vendor column has ever corrected it; both Alpaca and CBOE carry the identical −18.25 %. **USER RULING 2026-07-25 — proceed on the assumption that corporate actions are obtainable back to 2004; any residual unaccounted events are researched and entered manually.** That makes a manual-entry path part of the design, which in turn means `corporate_actions` rows need provenance of their own (entered by whom, sourced from where) — the same argument as **A1-F26**, applied to a second table. Note the failure mode also changes shape: a missing action no longer shows as one conspicuous bar but silently mis-scales a symbol's entire pre-event history, so detection falls to carry item **A1-C12**. **UNVERIFIED:** whether `features_*` exposes a full recompute path — an A2 question | **A1-F3**, **A1-F14**, **A1-F15**, **A1-F26**, **B3** |
+| **A1-C14** | **USER DIRECTION 2026-07-25 — the validator needs new checks, not just wiring.** Measured against the ~50 CBOE defects, the current 12 steps catch ~30 and let ~20 through (**A1-F10**). The enumerated gaps: **(a) no non-session-date rejection** — Step 9 finds missing sessions, nothing finds extra ones, and Step 7 explicitly *excuses* zero volume off-session (`validation.py:140`), which is why 15 holiday bars pass; **(b) no flat-bar check** — o=h=l=c passes every step, which is how **A1-F6**'s SPY bar and **A1-F7**'s 14 crypto bars entered; **(c) no implausible-volume check** — a 1,518× under-report is invisible, as is volume 200 on SPY; **(d) Step 5's `_TOLERANCE = 0.0001` band lets 6 of 36 real invariant violations pass** (`validation.py:113`); **(e) Step 8 dedups duplicate timestamps silently** with no quarantine row, so a source shipping duplicates leaves no trace; **(f) the DS-7 split** — Step 7 is equity-only (`validation.py:133`), so zero-volume crypto bars are legal by design. Note this is the gate the CBOE migration must pass, so it is a **prerequisite** of carry item **A1-C3**, not a follow-up. **Amendment 2026-07-29 (B3 session):** **A1-F34** exposes a gap class none of (a)–(f) covers — a *level* defect spanning ~200 bars whose per-bar invariants and volumes are all plausible. No seventh gap is enumerated here, because (a)–(f) are the user's own list and this one has not been ruled on; it is recorded as open | **A1-F10**, **A1-F27**, **A1-F6**, **A1-F7**, **A1-F15**, **A1-F16**, **A1-F34** |
 | **A1-C15** | **USER RULING 2026-07-25** — a **backup and rollback plan before the destructive equity replacement**. **A1-C3** replaces ~21,088 keys in full, which `DO NOTHING` (**A1-F3**) makes impossible by insert — so the operation is a delete-and-load or a table swap, and neither is additive under A30. Two things are lost irreversibly if it runs without a backup: ten years of Alpaca-derived bars, and the *evidence* behind **A1-F4**, **A1-F5** and **A1-F6**, which exists nowhere else. **A1-F31** adds the second reason — every model trained to date used those exact rows, so discarding them also discards the ability to reproduce any prior training run. Prerequisite of **A1-C3** | **USER RULING**, **A1-F3**, **A1-F31**, **A1-F1** |
 | **A1-C16** | **USER QUESTION 2026-07-25** — whether Parquet becomes a **reference store for independent vendor payloads** (yfinance, Alpaca, CBOE) rather than only a mirror of our own data. **A1-F20** currently scopes Parquet to a drift check against Postgres; this widens it to frozen third-party copies, which is the only thing that would catch a **silent vendor-side change** — the failure mode a live cross-source check (**A1-C12**) cannot see, because both sides move together. The CBOE snapshot of **A1-F29** is the first instance and shows the shape: raw payloads plus a manifest hashing the *bars alone*, since vendor payloads carry volatile envelope fields. Directly mitigates **A1-F30**'s unversioned schema | **A1-F20**, **A1-F28**, **A1-F29**, **A1-F30** |
 | **A1-C17** | **USER RULING 2026-07-25** — read-time adjustment must filter `corporate_actions` to actions **on or before the bar's own date**, so a historical bar is never adjusted using an event that had not yet happened. Without that filter, raw-plus-derive reintroduces lookahead in a subtler form than the one it removes: return *ratios* survive, absolute price levels do not. **Accepted consequence:** every indicator and ratio computed from adjusted prices must then also be derived at read time, since a stored indicator would embed one fixed as-of view. **Unassessed — speed.** No measurement exists of what read-time adjustment plus indicator recomputation costs on the trainer's hot path or the trader's decision path, and no budget has been stated. Also carries **A1-F32**: the recompute path itself is UNVERIFIED (**A2**) | **USER RULING**, **A1-F15**, **A1-F3**, **A1-F32**, **B3** |
@@ -1820,7 +2022,7 @@ place, so "what blocks the CBOE migration?" is answerable without reading the se
 
 | Item | Cannot start until | Why |
 |---|---|---|
-| **A1-C3** — CBOE migration | **A1-C14**, **A1-C15**, **A1-C11**, **B3** | The validator is the gate a new source must pass (**A1-C14**); the operation is destructive and irreversible without a backup (**A1-C15**); a full replacement is exactly what `DO NOTHING` forbids, so *how* must be settled first (**A1-C11**); and unadjusted storage is only correct once corporate actions exist (**B3** → **A1-C13**) |
+| **A1-C3** — CBOE migration | **A1-C14**, **A1-C15**, **A1-C11**, **B3** | The validator is the gate a new source must pass (**A1-C14**); the operation is destructive and irreversible without a backup (**A1-C15**); a full replacement is exactly what `DO NOTHING` forbids, so *how* must be settled first (**A1-C11**); and CBOE-basis storage is only correct once corporate actions exist (**B3** → **A1-C13**) — *corrected 2026-07-30 from "unadjusted storage" (**B3-F11**); the dependency is unchanged, since dividends and spin-offs are exactly what CBOE leaves raw* |
 | **A1-C13** — price basis | **B3** | Read-time adjustment is only as complete as `corporate_actions`, which holds **0 rows** |
 | **A1-C17** — point-in-time adjustment | **B3**, **A2** | Needs the actions table to filter against, and needs to know whether `features_*` can be recomputed at all (**A1-F32**) |
 | **A1-C5** — DS-7 divergences | **A1-C11** *(partly)* | Four are behavioural and independent; the fifth is a schema asymmetry settled by the audit-state migration |
@@ -1860,7 +2062,7 @@ re-deriving it. A1 established the following, all measured:
 | Established in A1 | Consequence for B3 |
 |---|---|
 | `corporate_actions` exists with a workable shape and holds **0 rows** | The table is not the gap; a **source** is |
-| Alpaca `Adjustment.ALL` adjusts price for splits **and** dividends, and volume for splits only (×4.0000 exactly on AAPL 2020-08-31) | Whatever B3 chooses must reproduce this, since CBOE is unadjusted (**A1-F27**) |
+| Alpaca `Adjustment.ALL` adjusts price for splits **and** dividends, and volume for splits only (×4.0000 exactly on AAPL 2020-08-31) | ~~Whatever B3 chooses must reproduce this, since CBOE is unadjusted~~ **Corrected 2026-07-29 (B3-F11):** CBOE already applies the split to both price and volume, so B3 must *not* reproduce the split leg. What B3 must supply is **dividends and spin-offs**, plus split records for change detection |
 | `Adjustment.ALL` does **not** cover spin-offs — XLF 2016-09-19 carries a **−18.25 %** discontinuity as a genuine-looking return (**A1-F15**) | The one event type already known to be wrong in live data |
 | The process contract records **Alpaca returning zero spin-offs** | The incumbent vendor cannot supply the event type that is already broken |
 | Four event types are needed: split/reverse-split (one type, `ratio` carries direction), cash dividend, spin-off, special/return-of-capital distribution | B3's scope question is source coverage per type, not schema |
@@ -1901,7 +2103,8 @@ the text rather than averaged away:
 The **A1-F5** reading that QQQ's island bars are SPY-derived is medium confidence; that they are
 *not QQQ* is high.
 
-**Review status: A1 complete.** 33 findings, 18 items carried to the spec pass, spine updated
+**Review status: A1 complete.** 37 findings (33 at close, plus **A1-F34** … **A1-F37**
+amended in by the B3 session 2026-07-29), 18 items carried to the spec pass, spine updated
 (session rule #6). Per session rule #7 this review ends here — no spec, and the next dataset does
 not begin. **Next review: B3 Corporate actions** (DS-8), not A2 — three of the items above are
 blocked on a table that holds zero rows.
