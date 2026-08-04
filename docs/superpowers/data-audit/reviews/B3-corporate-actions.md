@@ -1,6 +1,7 @@
 # B3 — Corporate actions — REVIEW
 
 > **Pass:** Review (session 2 of 36) · **Date:** 2026-07-28 → 30 · **Status:** ☑ **COMPLETE**
+> · **Walked with the user 2026-08-03 — all 28 findings stand unamended; see [§B3.12](#b312--walkthrough-and-rulings-2026-08-03)**
 >
 > Process contract: [`../00-PROCESS.md`](../00-PROCESS.md) · Spine: [`../01-MASTER-REVIEW.md`](../01-MASTER-REVIEW.md)
 >
@@ -109,6 +110,12 @@ what the vendors supply.
 | **Apply** | "What number do I multiply the bar by?" | event type · **ex-date** · the magnitude in its stated convention · the share-basis that convention is expressed in · for spin-offs, the child instrument and its rate |
 | **Audit** | "Is this record right, and where did it come from?" | source · fetch timestamp · vendor record id · the raw payload · instrument identity that survives a rename (CUSIP) · event-nature flags |
 | **Replay** | "What did we believe on date D, and what did we change?" | **knowledge date** (when the record became known, distinct from ex-date) · revision number or supersession link · what *we* altered and why |
+| **Credit** *(added 2026-08-03)* | "When does the cash land in the account, and how much?" | **payable date** · the cash amount on the **as-paid** basis · the position held as of the ex-date |
+
+**"Credit" was added 2026-08-03 on a USER REQUIREMENT** — the live trader receives dividend cash in
+its real account and must account for it, and the trainer must simulate the same cash or the two
+diverge. It is listed as a fourth purpose rather than folded into "apply" because it keys off a
+**different date** (payable, not ex) and a **different basis** (as-paid, always). → **B3-C14**
 
 Two consequences fall straight out of this table and are the subject of §B3.4 and §B3.6:
 
@@ -618,7 +625,7 @@ Three A1 carry items are blocked here, which is why B3 was reviewed second (DS-8
 
 | Blocked item | Why |
 |---|---|
-| **A1-C13** — price basis (store raw, derive adjusted at read time) | Read-time adjustment is exactly as complete as this table |
+| **A1-C13** — price basis (store raw; adjusted series in a separate stored, versioned table — **USER RULING 2026-08-03**, §B3.12) | The adjusted series is exactly as complete as this table, wherever the arithmetic runs |
 | **A1-C17** — point-in-time adjustment | Needs actions to filter against |
 | **A1-C3** — the CBOE migration | Blocked transitively via A1-C13 |
 
@@ -692,7 +699,7 @@ an ordering.
 | **B3-F6** | 1 | equity | B3.1 | C1, C3, C4 | The schema **cannot represent the events** — **10 gaps, (a)–(j)** against live payloads. *(Amended 2026-07-30: **(h)** is **16** typed keys, not 13; **(e)** hardened — the natural key is demonstrably **not unique** in real vendor data)* |
 | **B3-F7** | 4 | both | B3.4 | C1, C9 | Three thresholds, none wired; the loop is open at **detection, alerting and adjudication**. *(Sharpened 2026-07-30: **0 of 336** real events reach any threshold; the largest is **6.001 %** vs a 30 % floor)* |
 | **B3-F11** | 1 | equity | B3.1 | C3, C7, C8 | **CBOE is split-adjusted**, not raw — dividends and spin-offs unadjusted. Redefines the dataset's purpose. *(2026-07-30: pre-2016 gains one corroborating test case, VTI 2008-06-18 — conditional, see §B3.1(e))* |
-| **B3-F12** | 4 | equity | B3.3 | C1, C5 | **Vendor dividend re-basing strands a stored copy** — all 2,556 bars/symbol drift 0.25–1.34 %, and `DO NOTHING` forbids correcting it. *(2026-07-30: the re-basing also **inherits the vendor's holes** — SPY's stored history is adjusted without its 2018-06-15 dividend)* |
+| **B3-F12** | 4 | equity | B3.3 | C1, C5, C13 | **Vendor dividend re-basing strands a stored copy** — all 2,556 bars/symbol drift 0.25–1.34 %, and `DO NOTHING` forbids correcting it. *(2026-07-30: the re-basing also **inherits the vendor's holes** — SPY's stored history is adjusted without its 2018-06-15 dividend)* · **USER RULING 2026-08-03: this finding is carried in BOTH A1 and B3** — cross-referenced, not relocated. The drift sits in `ohlcv_daily`, but its cause is a corporate-action gap, and today Alpaca's server-side adjustment *is* our corporate-action handling. Settles the borderline call recorded in §B3.11 |
 | **B3-F13** | 4 | both | B3.3 | C5 | **No remediation ledger** — a re-ingest destroys every manual fix with no way to replay it |
 | **B3-F18** | 3 | equity | B3.3 | C3 | The gap costs **~40 bp per missing dividend** (XLE 88 bp), 0.7–3.8 %/yr of drag, across **374 measured** pre-2016 ex-dates |
 | **B3-F21** | 1 | equity | B3.1 | C11, C3 | **The event universe was never derived from our instruments.** All 8 equity holdings are **funds**; the vendor's **16-key** vocabulary is an operating-company vocabulary. Fund classes that genuinely apply — capital-gains distribution, return of capital, reconstitution distribution, fund merger/liquidation, sponsor change — have **no typed representation anywhere**, and the one fund event in our 22-year history is typed correctly by neither vendor |
@@ -714,7 +721,7 @@ an ordering.
 | **B3-F17** | 3 | equity | B3.3 | C3 | Alpaca types the XLF 2016 spin-off as a **$0.139146 cash dividend** — a fifth 2016 distribution where every other symbol-year shows four. *(**Resolved 2026-07-30:** Yahoo returns the same date as a `1231:1000` ratio = −18.8 %, matching the measured −18.2 %. The row **is** Alpaca's representation, and it is unusable — but the event **is** typed usably by a source)* |
 | **B3-F19** | 4 | both | B3.5 | C1 | The test suite gives **false assurance** — 12 tests over dead code, skipped in the fast lane, none asserting that anything calls the detector |
 | **B3-F20** | 4 | both | B3.3 | C1 | **Nothing audits corporate actions** — and `data_audit_job` covers **1 dataset of 12**, so every remaining dataset will meet the same gap unannounced. *(Candle half split to **A1-F37** on 2026-07-29)* |
-| **B3-F28** | 1, 3 | equity | B3.3 | C3, C4 | **Vendor field completeness is banded.** `record_date` and `payable_date` are **NULL in 120 of 334** — 26/28 (2016), 32/32 (2017), 31/31 (2018), 31/34 (2019), **0 from 2020**. A schema requiring four dates has a four-year hole, and any check keyed on them silently no-ops for the early band |
+| **B3-F28** | 1, 3 | equity | B3.3 | C3, C4 | **Vendor field completeness is banded.** `record_date` and `payable_date` are **NULL in 120 of 334** — 26/28 (2016), 32/32 (2017), 31/31 (2018), 31/34 (2019), **0 from 2020**. A schema requiring four dates has a four-year hole, and any check keyed on them silently no-ops for the early band. *(**Escalated 2026-08-03:** the **B3-C14** crediting requirement makes `payable_date` **required**, so this stops being a schema annoyance and becomes a blocker for simulating dividend cash over 2016–2019)* |
 | **B3-F29** | 1, 4 | equity | B3.3 | C3, C11 | **`special` does not identify irregular distributions.** Set on **1 of 334** (QQQ 2023-12-27) while XLE 2019-12-30 — a fifth distribution at **$1.791209**, 3× the largest regular XLE dividend and the biggest event in our universe at **6.001 %** of price — carries `special=False` |
 | **B3-F32** | 6 | crypto | B3.6 | C6 | **Crypto's DS-7 divergence is now measured against an independent source** — Yahoo BTC-USD (3,270 bars) and ETH-USD (3,186 bars) return **0 dividends, 0 splits**. Incidentally a reachable free crypto candidate for **A1-C18** |
 
@@ -801,7 +808,7 @@ CBOE, and it carries the same risk.
 | **B3-C1** | **The dataset must be sourced and owned.** Covers what fills 2004→today, what keeps it current, and what makes a failure visible. Anchored by **B3-F1**, **B3-F2**, **B3-F3**, **B3-F7**, **B3-F19**, **B3-F20** |
 | **B3-C2** | **USER DIRECTION 2026-07-29** — the **collector owns** corporate-action collection *and* validation, end to end, mirroring **A1-C7** for candles. Anchored by **B3-F2** |
 | **B3-C3** | **Settle the source, per event type and per time band.** **RESTATED 2026-07-30 at the user's correction** — the previous wording ("manual entry is *demonstrated necessary*") escalated what was actually said and is withdrawn. The requirement as stated: obtain a **free, usable source for historical corporate events back to 2004**; **Alpaca serves ongoing**; **manual entry is a last-resort, one-time path for residual gaps only** — never a plan for 400+ events. Measured constraints: Alpaca covers dividends+splits from a **per-symbol** 2016 floor and spin-offs from ~2023, nothing before (**B3-F4**); **a free source covering 2004–2016 has been demonstrated reachable** and returns 374 pre-floor dividends plus the XLF spin-off typed usably (**B3-F22**, **B3-F17**); **neither candidate is complete** — each is missing events the other holds, including a current-year one (**B3-F23**); **Alpaca disagrees with itself across endpoints** (**B3-F24**); and the two sources quote amounts on **opposite, unstated share bases** (**B3-F25**). Any shortlist must be judged on **completeness, self-consistency, convention disclosure and spin-off fidelity**, not merely on whether rows are returned. **Untested candidates:** SEC EDGAR (reachable; reservation — its assumed forms are operating-company forms), the three fund sponsors, `api.nasdaq.com` (resolves, connection fails), CBOE DataShop (paid). Anchored by **B3-F3**, **B3-F4**, **B3-F5**, **B3-F17**, **B3-F18**, **B3-F22**, **B3-F23**, **B3-F24**, **B3-F29** |
-| **B3-C4** | **A candidate schema exists and should be evaluated.** The research file proposes `corporate_events_raw` → `corporate_events_norm` → `adjustment_factors_daily` → `adjusted_bars`. Against **B3-F6**'s enumerated gaps it closes **6 of 10** — (a) ex-date, (b) child symbol, (c) ratio convention, (d) vendor event id, (i) provenance, (j) `processed` — and leaves **(e)** uniqueness, **(f)** CUSIP, **(g)** event-nature flags, **(h)** vocabulary. **Not adopted — USER DIRECTION 2026-07-29 records it as the leading candidate**, which the user is inclined toward "unless we uncover something that will cause issues with it". **Three things the rebuild uncovered that bear on that test:** gap **(e)** is harder than "add a constraint" — the natural key is **not unique in real vendor data** (**B3-F27**); the candidate has **no field for the share basis** of an amount, which is a silent 2× error (**B3-F25**, **B3-F30**); and it carries `source_ts` but no **knowledge date** distinct from ex-date (**B3-F31**). Two questions stay open for the spec: whether the adjusted series is **materialised or derived at read time**, and whether these tables fold into **A1-C10**'s metadata consolidation. **A consequence the user stated 2026-07-29:** if raw CBOE bars are stored verbatim and an adjusted table is built from them, the raw→adjusted step is also where non-session bars are dropped (**A1-F10**), making the adjusted build dependent on **B4** as well as on corporate actions. Source: `../research by varun/Raw Candles and Adjustments and Validation.md` — **ideas, not fact**; currently untracked in git |
+| **B3-C4** | **A candidate schema exists and should be evaluated.** The research file proposes `corporate_events_raw` → `corporate_events_norm` → `adjustment_factors_daily` → `adjusted_bars`. Against **B3-F6**'s enumerated gaps it closes **6 of 10** — (a) ex-date, (b) child symbol, (c) ratio convention, (d) vendor event id, (i) provenance, (j) `processed` — and leaves **(e)** uniqueness, **(f)** CUSIP, **(g)** event-nature flags, **(h)** vocabulary. **Not adopted — USER DIRECTION 2026-07-29 records it as the leading candidate**, which the user is inclined toward "unless we uncover something that will cause issues with it". **Three things the rebuild uncovered that bear on that test:** gap **(e)** is harder than "add a constraint" — the natural key is **not unique in real vendor data** (**B3-F27**); the candidate has **no field for the share basis** of an amount, which is a silent 2× error (**B3-F25**, **B3-F30**); and it carries `source_ts` but no **knowledge date** distinct from ex-date (**B3-F31**). Two questions stay open for the spec: whether the adjusted series is **materialised or derived at read time**, and whether these tables fold into **A1-C10**'s metadata consolidation. *(**Direction stated 2026-08-03** — ruling 2 of §B3.12 has the adjusted series as a **stored table**. The user was asked whether that closed this question and answered **"no, the spec will close this"**, so it stays open here: the direction is recorded, the design is not settled.)* **A consequence the user stated 2026-07-29:** if raw CBOE bars are stored verbatim and an adjusted table is built from them, the raw→adjusted step is also where non-session bars are dropped (**A1-F10**), making the adjusted build dependent on **B4** as well as on corporate actions. Source: `../research by varun/Raw Candles and Adjustments and Validation.md` — **ideas, not fact**; currently untracked in git |
 | **B3-C5** | **A remediation ledger is required** — recording what *we* changed, keyed so corrections replay deterministically onto a freshly re-ingested series. Forced by **B3-F11** (CBOE re-bases silently, so recovery is a full replace) plus `DO NOTHING`. **Settles an argument A1 left open:** in-table audit state does not survive the replacement operation — evidence feeding **A1-C11**. Anchored by **B3-F12**, **B3-F13**, and by **A1-F10** and **A1-F34**, the manual cleanups a full replace would destroy |
 | **B3-C6** | **USER RULING 2026-07-29 (DS-10) — observation events become a 12th dataset**, covering the **trading calendar** and **venue events**. Kept together because neither is assessable without the other; crypto's half is 24/7 uptime with maintenance exceptions. Anchored by **B3-F8**, **B3-F9**, **B3-F32**; by **A1-F10**; and by the rolling XNYS bound relocated to B4 |
 | **B3-C7** | **The CBOE adjustment convention must be encoded wherever series are compared.** Split-adjusted but dividend-raw matches no standard vendor convention, so any cross-source check assuming otherwise reports false discrepancies — the trap **A1-C12** identified. Anchored by **B3-F11** |
@@ -810,6 +817,8 @@ CBOE, and it carries the same risk.
 | **B3-C10** | **NEW 2026-07-30 — event identity and revision semantics.** A vendor restates an event by shipping an **additional row**, not an update: QQQ 2022-09-19 returns twice with identical amount and ex-date but different `payable_date` and vendor `id` (**B3-F27**). Keyed on vendor id this double-counts the dividend; keyed on `(symbol, ex_date)` the correction is silently discarded — and that natural key is therefore **not** available as a uniqueness constraint (**B3-F6 (e)**). Covers: what identifies an event, what distinguishes "two events" from "one restated event", whether superseded rows are retained, and what re-fetch or hashing would surface a revision at all. Anchored by **B3-F27**, **B3-F24**, **B3-F6** |
 | **B3-C11** | **NEW 2026-07-30 — the event-type vocabulary must be derived from the instruments we hold, not adopted from a vendor.** All eight equity holdings are **funds**; the vendor's 16-key vocabulary is an operating-company vocabulary, and the fund classes that genuinely apply — capital-gains distribution, return of capital, reconstitution distribution, fund merger/liquidation, sponsor or index change — have no typed representation anywhere (**B3-F21**). The one fund event in our history is typed as a $0.139 cash dividend by one source and a 1231:1000 split by the other. Vendor-supplied nature flags do not substitute: `special` is set on 1 of 334 and misses the largest irregular distribution in the set (**B3-F29**). Covers: the closed vocabulary, how a vendor's typing maps onto it, and what happens to an event that maps to nothing. Anchored by **B3-F21**, **B3-F29**, **B3-F6 (g)(h)**, **B3-F17** |
 | **B3-C12** | **NEW 2026-07-30 — point-in-time needs a knowledge axis as well as an event axis.** **A1-C17** rules that read-time adjustment filters actions to `ex_date ≤ bar date`. That is necessary and correct, and **incomplete**: a revision carries a past ex-date and a present knowledge date, so ex-date filtering alone reproduces *today's* view of history rather than what was knowable at the time (**B3-F31**). Alpaca's `process_date` is the only candidate knowledge field (present on all 334 rows, unlike `record_date`/`payable_date` — **B3-F28**); Yahoo supplies none, so a knowledge date for the deep history may have to be **assigned by us at ingest** rather than sourced. Covers: which field carries knowledge time, what it means for manually entered rows, and whether the trainer and trader need different as-of views. **Extends A1-C17; does not contradict it.** Anchored by **B3-F31**, **B3-F27**, **B3-F28** |
+| **B3-C13** | **NEW 2026-08-03 — USER DIRECTION.** **Validating our computed adjustments against an independent adjusted series (Alpaca) is a required gap, and it is *distinct from completeness* (**B3-C9**).** The user's distinction, in their words: *"Validation is separate gap from completeness."* Completeness asks **"do we have every event?"**; validation asks **"did we apply the events we have correctly?"** — a ledger can be complete and still be applied wrongly, and the failure is silent in both directions. Arises from the architecture the user stated this session (raw CBOE bars in one table, a stored adjusted table built from them): once *we* compute the adjustment rather than inheriting a vendor's, nothing checks our arithmetic. Measured constraints on the comparator, none of which are objections to it: Alpaca's own stored-history basis drifts 0.25–1.34 % and inherits its own event holes (**B3-F12**); its bars and its event API contradict each other in both directions (**B3-F24**); its rates are quoted **as-paid** while CBOE closes are **split-adjusted**, so an unreconciled comparison is off by exactly **2.000×** on every pre-split dividend (**B3-F25**, **B3-F30**). Covers: what the comparison is made against, on what basis each side is declared, what tolerance counts as agreement, at what cadence it runs, and what is alerted on disagreement. Anchored by **B3-F12**, **B3-F24**, **B3-F25**, **B3-F30** |
+| **B3-C14** | **NEW 2026-08-03 — USER REQUIREMENT. Dividend cash must be credited, in both environments' equity path — which makes `payable_date` a required field and adds a fourth purpose to the dataset.** The user's position: the trader does not account for received dividends today, *"but we should include that as the trader will get dividends when trading in the account and need to account for it."* §B3.1(b) accordingly becomes **apply · audit · replay · credit**. Crediting keys off a **different date** from adjustment (**payable**, not ex) and a **different basis** (**as-paid**, always — a restated amount would credit the wrong cash, **B3-F25**). **Measured collision, which this requirement promotes from an annoyance to a blocker:** Alpaca supplies `payable_date` on **100 % of events from 2020**, but it is **NULL for 120 of 334** events covering all of **2016–2019** (**B3-F28**), and Yahoo supplies no payable date at all (**B3-F22**). So the requirement is satisfiable for the live trader and **not** satisfiable historically from either candidate source — a trainer/trader divergence in the DS-7 sense, arising from data availability rather than from design. Covers: which date credits the cash, on which basis, how the trainer simulates it, what is done for the 2016–2019 band and for the 2004–2016 deep history, and whether an unavailable payable date is imputed from the ex-date or the event is left uncredited. **Boundary note:** the *cash movement itself* is portfolio state (**A6**) and its reconciliation against broker records is **Group C, out of scope** — B3 owns only the event fields that make crediting possible. Anchored by **B3-F28**, **B3-F25**, **B3-F22** |
 
 ---
 
@@ -828,6 +837,8 @@ CBOE, and it carries the same risk.
 | **B3-C7** (convention) | — | Independent; a documentation and comparison constraint |
 | **B3-C8** (share basis) | — | Independent; forced by **B3-F11** plus measured source divergence |
 | **B3-C12** (knowledge axis) | — | Independent; extends **A1-C17** |
+| **B3-C14** (dividend crediting) | **B3-C3** | The required field (`payable_date`) is present in one candidate source and absent from the other, and absent from a four-year band of the one that has it — so it cannot be settled before the source is |
+| **B3-C13** (adjustment validation) | — | Independent of source choice; forced by the stored-adjusted-table architecture, since once *we* compute the adjustment nothing checks the arithmetic. **Distinct from B3-C9** — completeness asks whether every event is held, validation asks whether the held events were applied correctly |
 
 ### Crossing dataset boundaries
 
@@ -901,6 +912,46 @@ snapshot is evidence within it, not its starting point.
 
 ---
 
+## B3.12 — Walkthrough and rulings, 2026-08-03
+
+All **28 findings were walked individually with the user**, in four blocks: the six already
+walked in the first pass and unchanged by the rebuild (F1, F2, F3, F8, F9, F13); the six the
+rebuild **amended**, presented as amendments only (F4, F5, F6, F7, F11, F12); the four never
+walked (F17, F18, F19, F20); and the twelve **new** in the rebuild (F21 … F32).
+
+**Outcome: every one of the 28 stands as written. No finding was amended, narrowed or
+overturned** — including the four corrections the rebuild made to this document's own earlier
+claims, and including B3-F11's deliberate refusal to promote the pre-2016 conclusion from
+inference to proof.
+
+Four rulings arose during the walkthrough. They are recorded here in the user's terms, not
+paraphrased into design decisions.
+
+| # | Ruling | Where it lands |
+|---|---|---|
+| **1** | **B3-F12 is carried in *both* A1 and B3.** The user, asked why a defect in `ohlcv_daily` was a corporate-action finding: *"It's all related and it has many problems. Keep it both."* Cross-referenced, **not relocated** — which settles the borderline call §B3.11 recorded as "folded into B3-F12 rather than raised as a candle finding" | §B3.7, **B3-F12** row |
+| **2** | **Adjusted candles live in a stored table, not recomputed on every read.** The user's words: *"let's just assume that adjusted candles will be a table instead of calculating it each time which in hindsight seems dumb and inefficient."* This replaces **A1-C13**'s "derive adjusted at read time" wording. It matches the research file's own recommendation — `adjustment_factors_daily` → a materialised `adjusted_bars` keyed by `symbol, date, adjustment_version` — which precomputes but **versions**, so the series is rebuildable when a vendor revises an event. **Swept into A1 on 2026-08-03:** **A1-C13**'s statement, **A1-C17**'s three consequence clauses *(where the filter applies · indicators key to `adjustment_version` · the cost relocates from the hot path to a rebuild)*, the `adjusted_close` removal ruling, and four prose passages. **A1-C17's ex-date filter itself is untouched** | **A1-C13**, **A1-C17**; noted against **B3-C4** |
+| **3** | **Adjustment validation is a required gap, distinct from completeness.** The user's words: *"Validation is separate gap from completeness."* Raised as **new carry item B3-C13**, wording confirmed by the user before recording | §B3.9, **B3-C13** |
+| **4** | **Dividend cash must be credited — the trader receives it in the real account.** The user's words: *"no they do not right now, but we should include that as the trader will get dividends when trading in the account and need to account for it."* This adds a **fourth purpose** to §B3.1(b) — apply · audit · replay · **credit** — makes `payable_date` **required**, and escalates **B3-F28** from a schema annoyance to a blocker, since payable date is NULL for all of 2016–2019 and absent from Yahoo entirely | §B3.1(b), §B3.9 **B3-C14**, **B3-F28** |
+
+**What ruling 2 does *not* do.** Asked whether it closed **B3-C4**'s open materialised-vs-read-time
+question, the user answered ***"no, the spec will close this."*** So B3-C4 stays open in full: the
+direction is recorded, the design is not settled here. This review continues to hold no solutions.
+
+**Why ruling 3 needed its own item rather than folding into B3-C9.** B3-C9 asks *do we hold every
+event*. B3-C13 asks *did we apply the events we hold correctly*. Under the old architecture the
+second question did not exist — Alpaca adjusted server-side and we inherited the result
+(**B3.4**). Ruling 2 moves the arithmetic inside our system, which creates the gap.
+
+**Method note, carried forward.** Each finding was put to the user with its severity, what was
+**measured** versus **inferred**, and what it costs if ignored — and the ruling was recorded as
+stated, with a verification question asked wherever the intent was ambiguous rather than resolved
+by assumption. This is the discipline the withdrawn "USER RULING" of **B3-C3** failed. Two
+verification questions were asked during this walkthrough (on B3-F9 and on the scope of ruling 2),
+and both changed what was recorded.
+
+---
+
 ## Forward notes
 
 **To A2 (Derived features).** Everything the agent sees is computed from candles whose adjustment
@@ -971,6 +1022,7 @@ Everything else carries a `file:line`, a query, or command output produced this 
 
 ---
 
-**Status: COMPLETE — 28 findings (20 High / 8 Medium / 0 Low), 12 carry items.**
+**Status: COMPLETE — 28 findings (20 High / 8 Medium / 0 Low), 14 carry items.**
 **Rebuilt from first principles 2026-07-30; all prior IDs preserved, B3-F10/F14/F15/F16 retired.**
 **Four first-pass claims corrected (B3-F4, B3-F5, B3-F6 (h), B3-F17) and one mis-recorded "ruling" withdrawn (B3-C3).**
+**Walked finding-by-finding with the user 2026-08-03 — all 28 stand unamended; four rulings recorded in §B3.12, two new carry items (B3-C13, B3-C14).**

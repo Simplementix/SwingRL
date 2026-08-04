@@ -49,7 +49,7 @@ buy nothing that a column cannot express.
 | # | Dataset | Review | Findings | Carry items | File |
 |---|---|---|---|---|---|
 | **A1** | Candles | ☑ 2026-07-25 | 37 — 22 H / 14 M / 1 L *(A1-F34…F37 amended 2026-07-29; the residual "CBOE is unadjusted" wording swept 2026-07-30 — 9 passages incl. 3 carry items)* | 18 | [`reviews/A1-candles.md`](reviews/A1-candles.md) |
-| **B3** | Corporate actions | ☑ 2026-07-30 | 28 — 20 H / 8 M / 0 L *(**rebuilt from first principles**; B3-F14/F15/F16 relocated to A1, B3-F10 to B4; IDs retired)* | 12 | [`reviews/B3-corporate-actions.md`](reviews/B3-corporate-actions.md) |
+| **B3** | Corporate actions | ☑ 2026-07-30 · **walked 2026-08-03** | 28 — 20 H / 8 M / 0 L *(**rebuilt from first principles**; B3-F14/F15/F16 relocated to A1, B3-F10 to B4; IDs retired. **All 28 walked with the user 2026-08-03 — every one stands unamended**)* | **14** *(B3-C13, B3-C14 added at the walkthrough)* | [`reviews/B3-corporate-actions.md`](reviews/B3-corporate-actions.md) |
 | **A2** | Derived features | ☐ **next** | — | — | — |
 | **A3** | Macro | ☐ | — | — | — |
 | **A4** | Regime (HMM) | ☐ | — | — | — |
@@ -82,11 +82,11 @@ exists to make cross-dataset dependencies visible, not to restate them.
 | **A1-C10** | Whether the five metadata tables collapse into one coherent model | — | USER OBSERVATION |
 | **A1-C11** | Candle rows must carry audit state — provenance, last-audited, review flag, revision | ↔ **A1-C3** | USER DIRECTION |
 | **A1-C12** | Cross-source validation becomes a standing gate in both environments | **A1-C18** *(crypto half)* | USER DIRECTION |
-| **A1-C13** | Settle the price basis — store raw, derive adjusted at read time | **B3** | USER DIRECTION |
+| **A1-C13** | Settle the price basis — store raw; the adjusted series lives in a **separate stored, versioned table**, rebuilt from the actions ledger *(**USER RULING 2026-08-03**, superseding "derive adjusted at read time" — B3 §B3.12)* | **B3** | USER DIRECTION |
 | **A1-C14** | The validator needs new checks, not just wiring — six enumerated gaps | — | USER DIRECTION |
 | **A1-C15** | Backup and rollback **before** the destructive equity replacement | — | USER RULING |
 | **A1-C16** | A reference store for independent vendor payloads (yfinance, Alpaca, CBOE) | — | USER QUESTION |
-| **A1-C17** | Point-in-time adjustment — filter actions to ≤ bar date; **read-time cost unassessed** | **B3**, **A2** | USER RULING |
+| **A1-C17** | Point-in-time adjustment — filter actions to ≤ bar date. *(Amended 2026-08-03: the filter applies when the **stored adjusted table is built**; indicators key to the same `adjustment_version`; the unassessed cost moves from the hot path to a **rebuild** cost — relocated, not removed)* | **B3**, **A2** | USER RULING |
 | **A1-C18** | Find a free, genuinely independent crypto source | — | USER RULING |
 | **B3-C1** | The corporate-actions dataset must be sourced and owned | **B3-C3** | Scoping |
 | **B3-C2** | The collector owns corporate-action collection **and** validation, end to end | — | USER DIRECTION |
@@ -100,6 +100,8 @@ exists to make cross-dataset dependencies visible, not to restate them.
 | **B3-C10** | **Event identity and revision semantics** — vendors restate by shipping an extra row; the natural key is not unique | — | Schema |
 | **B3-C11** | **Derive the event vocabulary from our instruments** (all funds), not from a vendor's operating-company catalogue | — | Scoping |
 | **B3-C12** | **Point-in-time needs a knowledge axis** as well as an event axis — extends **A1-C17**, does not contradict it | — | Correctness |
+| **B3-C14** | **Dividend cash must be credited** — the trader receives real dividends, so `payable_date` becomes a **required** field and the dataset gains a fourth purpose (apply · audit · replay · **credit**). Blocked historically: payable date is NULL for 2016–2019 and absent from Yahoo | **B3-C3** | USER REQUIREMENT |
+| **B3-C13** | **Validating our computed adjustments against an independent adjusted series (Alpaca) is a required gap, distinct from completeness (B3-C9)** — completeness asks whether every event is held, validation asks whether the held events were applied correctly | — | USER DIRECTION |
 
 ---
 

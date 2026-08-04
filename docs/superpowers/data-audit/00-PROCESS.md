@@ -211,7 +211,7 @@ Order follows DS-8, not the A/B numbering.
 | Order | # | Dataset | Review | Spec | Plan |
 |---|---|---|---|---|---|
 | 1 | A1 | Candles | ☑ 2026-07-25 — 37 findings, 18 carry items *(A1-F34…F37 amended 2026-07-29; "CBOE is unadjusted" wording swept 2026-07-30)* | ☐ | ☐ |
-| 2 | B3 | Corporate actions | ☑ 2026-07-30 — **28 findings, 12 carry items** *(rebuilt from first principles)* | ☐ | ☐ |
+| 2 | B3 | Corporate actions | ☑ 2026-07-30 — **28 findings, 14 carry items** *(rebuilt from first principles; **all 28 walked with the user 2026-08-03 — all stand unamended**, B3-C13 and B3-C14 added)* | ☐ | ☐ |
 | **3** | **A2** | **Derived features** | ☐ **next** | ☐ | ☐ |
 | 4 | A3 | Macro | ☐ | ☐ | ☐ |
 | 5 | A4 | Regime (HMM) | ☐ | ☐ | ☐ |
