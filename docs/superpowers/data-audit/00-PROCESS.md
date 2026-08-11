@@ -206,22 +206,27 @@ glossary terms.
 
 Update this table at the end of every session.
 
-Order follows DS-8, not the A/B numbering.
+Order follows DS-8 and DS-11, not the A/B numbering.
 
 | Order | # | Dataset | Review | Spec | Plan |
 |---|---|---|---|---|---|
 | 1 | A1 | Candles | ☑ 2026-07-25 — 37 findings, 18 carry items *(A1-F34…F37 amended 2026-07-29; "CBOE is unadjusted" wording swept 2026-07-30)* | ☐ | ☐ |
 | 2 | B3 | Corporate actions | ☑ 2026-07-30 — **28 findings, 14 carry items** *(rebuilt from first principles; **all 28 walked with the user 2026-08-03 — all stand unamended**, B3-C13 and B3-C14 added)* | ☐ | ☐ |
-| **3** | **A2** | **Derived features** | ☐ **next** | ☐ | ☐ |
-| 4 | A3 | Macro | ☐ | ☐ | ☐ |
-| 5 | A4 | Regime (HMM) | ☐ | ☐ | ☐ |
-| 6 | A5 | Turbulence | ☐ | ☐ | ☐ |
-| 7 | A6 | Portfolio state | ☐ | ☐ | ☐ |
-| 8 | A7 | Fundamentals | ☐ | ☐ | ☐ |
-| 9 | A8 | Sentiment | ☐ | ☐ | ☐ |
-| 10 | B1 | Options chains | ☐ | ☐ | ☐ |
-| 11 | B2 | Calendar events | ☐ | ☐ | ☐ |
-| 12 | B4 | Observation events *(new, DS-10)* | ☐ | ☐ | ☐ |
+| 3 | B4 | Observation events *(new, DS-10; moved up, **DS-11**)* | ☑ 2026-08-05, extended 2026-08-10/11 — **29 findings (21 H / 8 M / 0 L), 15 carry items** *(rolling bound confirmed across two consecutive days: 652 → 653; §B4.1(h) "present but distorted"; §B4.1(i) nine-class completeness pass, 3 clean negatives; §B4.3 source hunt — equity halts sourced 2019+, equity pre-2019 and all crypto blank)* | ☐ | ☐ |
+| **4** | **A2** | **Derived features** | ☐ **next** | ☐ | ☐ |
+| 5 | A3 | Macro | ☐ | ☐ | ☐ |
+| 6 | A4 | Regime (HMM) | ☐ | ☐ | ☐ |
+| 7 | A5 | Turbulence | ☐ | ☐ | ☐ |
+| 8 | A6 | Portfolio state | ☐ | ☐ | ☐ |
+| 9 | A7 | Fundamentals | ☐ | ☐ | ☐ |
+| 10 | A8 | Sentiment | ☐ | ☐ | ☐ |
+| 11 | B1 | Options chains | ☐ | ☐ | ☐ |
+| 12 | B2 | Calendar events | ☐ | ☐ | ☐ |
+
+**Why B4 moved to third — DS-11.** The XNYS calendar bound is a **rolling** one, so the number of
+CBOE sessions the equity migration cannot validate grows by one every day. It blocks **A1-C3**
+today. Leaving the 12th dataset until last would leave a live, worsening blocker unowned — the same
+argument DS-8 made for B3.
 
 **B3 is complete.** It was **re-run from first principles on 2026-07-30** because the first pass had
 derived its coverage from a CBOE vendor snapshot rather than from the dataset itself — a scope
@@ -233,6 +238,12 @@ failure that cost four relocations and three splits. The rebuild kept every ID, 
 **Lesson recorded for every remaining review — see §B3.11.** The test for a finding is
 ***"is this a fact about this dataset?"*** — not *"did this session find it"*. Apply it when the
 finding is numbered, not as a cleanup afterwards.
+
+**B4 is complete.** It confirmed the DS-11 reasoning and sharpened it: the excluded-session count
+was measured at **652 on 2026-08-04 and 653 on 2026-08-05**, so the bound rolls **daily**, not
+yearly. B4 also found that the calendar is constructed at **five** sites rather than three, and
+that of the crypto gaps that could be tested, **7 runs are genuine Binance venue outages and 5 are
+our own losses** — indistinguishable in the stored data until this session compared them.
 
 **Next session: A2 Derived features — review.**
 
@@ -251,6 +262,7 @@ finding is numbered, not as a cleanup afterwards.
 | **DS-7** | **Parity by default.** Every audit covers both environments. Divergence must be justified and recorded, like LD-1, or it is a defect |
 | **DS-8** | **Review order changed: B3 Corporate actions is reviewed second, ahead of A2.** A1 established that `corporate_actions` holds **0 rows** and that three A1 carry items — the CBOE migration (**A1-C3**), the price basis (**A1-C13**) and point-in-time adjustment (**A1-C17**) — are blocked on it. Reviewing datasets in an order that leaves the hardest blocker until last would be arbitrary. Does **not** touch the gate: all 11 reviews still precede any spec |
 | **DS-10** | **A 12th dataset — B4 Observation events — USER RULING 2026-07-29.** B3 established that "corporate actions" was silently carrying three jobs: what the **instrument** did (adjust), what the **venue or market** did (flag), and what **we** did (replay). Only the first is B3. Observation events had no home in the roster at all, which is why the 20 phantom CBOE bars on closed NYSE sessions (**A1-F10**) and the rolling XNYS calendar bound (written up as B3-F10 and relocated to B4 the same day) had no owner. B4 covers the **trading calendar** — the baseline of what should exist — together with **venue incidents**, kept in one dataset because neither is assessable without the other. Amends **DS-5**: 12 datasets × 3 passes = **36 sessions** |
+| **DS-11** | **Review order changed again: B4 Observation events is reviewed third, ahead of A2.** Same reason as DS-8 — the blocker is live and growing daily. `exchange_calendars.get_calendar("XNYS")` is built with **no `start`** at `validation.py:61`, so it carries a **rolling ~20-year window** — first session **2006-08-04** measured on 2026-08-04, and it moves every day. CBOE equity history begins **2004-01-02**, so **652 sessions** of the history **A1-C3** must load sit outside the bound, growing by one session a day. `validation.py:287` calls `sessions_in_range` and raises `DateOutOfBounds` **unguarded**; `:220` does not wrap it — so the migration fails on its first pre-2006 bar. `start="1990-01-01"` resolves fine: a **missing argument, not a data limit**. *(Re-measured next day, 2026-08-05: first session **2006-08-07**, **653** sessions — the roll is confirmed as **daily**, see **B4-F1**.)* §B3.12 ruling 2 made it worse — the raw→adjusted build is where non-session bars are dropped, so the stored adjusted table now depends on knowing which sessions are real. Does **not** touch the gate: all 12 reviews still precede any spec |
 | **DS-9** | **One document per dataset per pass.** Each pass has a **spine** (`0N-MASTER-*.md`) holding the roster, the carry register, the cross-dataset dependency map and the shared glossary; each dataset's full document lives beside it in `reviews/`, `specs/` or `plans/`. Reason: A1 alone is ~1,900 lines, so a single review file would reach ~10,000. Split at one dataset, when it cost nothing. Amends the earlier "one file, append-only" wording |
 
 ---

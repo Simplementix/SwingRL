@@ -50,6 +50,7 @@ buy nothing that a column cannot express.
 |---|---|---|---|---|---|
 | **A1** | Candles | ☑ 2026-07-25 | 37 — 22 H / 14 M / 1 L *(A1-F34…F37 amended 2026-07-29; the residual "CBOE is unadjusted" wording swept 2026-07-30 — 9 passages incl. 3 carry items)* | 18 | [`reviews/A1-candles.md`](reviews/A1-candles.md) |
 | **B3** | Corporate actions | ☑ 2026-07-30 · **walked 2026-08-03** | 28 — 20 H / 8 M / 0 L *(**rebuilt from first principles**; B3-F14/F15/F16 relocated to A1, B3-F10 to B4; IDs retired. **All 28 walked with the user 2026-08-03 — every one stands unamended**)* | **14** *(B3-C13, B3-C14 added at the walkthrough)* | [`reviews/B3-corporate-actions.md`](reviews/B3-corporate-actions.md) |
+| **B4** | Observation events *(trading calendar + venue events)* | ☑ 2026-08-05 · **extended 2026-08-10/11** | **29 — 21 H / 8 M / 0 L** *(new dataset, DS-10; reviewed third by **DS-11**. **§B4.1(h)** "present but distorted" (F18–F20); **§B4.1(i)** nine-class completeness pass (F21–F26); **§B4.3** source hunt (F27–F29). **Three clean negatives**, **two of the review's own errors**, and **one stale B3 claim** recorded in §B4.0)* | **15** | [`reviews/B4-observation-events.md`](reviews/B4-observation-events.md) |
 | **A2** | Derived features | ☐ **next** | — | — | — |
 | **A3** | Macro | ☐ | — | — | — |
 | **A4** | Regime (HMM) | ☐ | — | — | — |
@@ -59,7 +60,6 @@ buy nothing that a column cannot express.
 | **A8** | Sentiment | ☐ | — | — | — |
 | **B1** | Options chains | ☐ | — | — | — |
 | **B2** | Calendar events | ☐ | — | — | — |
-| **B4** | Observation events *(trading calendar + venue events)* | ☐ — **new, DS-10** | — | — | — |
 
 ---
 
@@ -102,6 +102,21 @@ exists to make cross-dataset dependencies visible, not to restate them.
 | **B3-C12** | **Point-in-time needs a knowledge axis** as well as an event axis — extends **A1-C17**, does not contradict it | — | Correctness |
 | **B3-C14** | **Dividend cash must be credited** — the trader receives real dividends, so `payable_date` becomes a **required** field and the dataset gains a fourth purpose (apply · audit · replay · **credit**). Blocked historically: payable date is NULL for 2016–2019 and absent from Yahoo | **B3-C3** | USER REQUIREMENT |
 | **B3-C13** | **Validating our computed adjustments against an independent adjusted series (Alpaca) is a required gap, distinct from completeness (B3-C9)** — completeness asks whether every event is held, validation asks whether the held events were applied correctly | — | USER DIRECTION |
+| **B4-C1** | **The session baseline must be sourced, owned, stored and reproducible for a past date** — today it is a runtime library call made in five places, with no store | — | Scoping |
+| **B4-C2** | **Settle what span the baseline must cover** — the bound is rolling and the shortfall grows by one session per trading day; the CBOE migration sets the floor at 2004-01-02 | **B4-C1** | Correctness |
+| **B4-C3** | **Settle how an absent observation is classified** — legitimately absent / venue outage / our loss / filter artefact — and where that is recorded. All four already coexist in the stored data | **B4-C1**, **B4-C4** | Correctness |
+| **B4-C4** | **An observation-event record must be sourced and owned** for both environments. *(Restated 2026-08-11 — narrowed, not closed.)* **Equity 2019+ is solved** — NYSE's halt history is free, unauthenticated, coded, 71,718 records (**B4-F27**). **Two blanks, no candidate for either**: equity **pre-2019-02-22** (most of what A1-C3 imports) and **all of crypto** (4 sources tested, all failed — **B4-F29**). *"Halt"* is still taken by our circuit breaker | — | Scoping |
+| **B4-C5** | **Settle the crypto uptime baseline** — what "should exist" means for a 24/7 venue has never been stated, and the implicit `4h`-forever answer is measurably false | **B4-C4** *(pre-2019 era)* | Parity |
+| **B4-C6** | **Reconcile the two calendar authorities** — Alpaca broker clock vs xcals — or record the divergence as justified under DS-7 | — | Wiring |
+| **B4-C7** | **Settle what a detector must be able to see** — today's cannot see a trailing gap, writes nothing durable, and has never fired for a candle | **B4-C1**, **B4-C3** | Correctness |
+| **B4-C8** | **Settle whether an observation flag lives in the candle row or a side table** — the same schema question as **A1-C11**, and in-row state does not survive A1-C3's full-table replacement | **B4-C3** | Schema |
+| **B4-C9** | **Settle whether a half-day session is a comparable observation** — 46 early closes are indistinguishable from full sessions everywhere except options | **B4-C1** | Correctness |
+| **B4-C10** | **The provably-ours crypto losses are still recoverable** — 5 gap runs (7 bars) from the public archive plus the 159-bar 2026 hole from the live API, both verified serving today. Scope sits with **A1-C1** | **B4-C3** | Data repair |
+| **B4-C11** | **Settle how a "present but distorted" observation is handled** — a bar that exists, is valid and passes every check, but whose price discovery was impaired (halt, LULD cascade, venue dislocation). **Distinct from B4-C3**, which classifies *absences*: nothing is missing, so no absence-shaped detector applies and no threshold on the bar separates a real 21 % range from a broken one | **B4-C4** | Correctness |
+| **B4-C12** | **Settle whether crypto volume is comparable across 2023-06-07** — a **~13×** permanent level change sits mid-series with no marker, roughly a third market-wide and the rest venue-specific. Adjacent to **A1-C2** but a **different cause** | — | Correctness |
+| **B4-C13** | **Symbol and pair lifecycle must be represented** — listing, delisting, suspension, ticker reuse. Measured **clean today**, so a **latent** gap: nothing would tell us if it changed, and a reused ticker would splice two instruments into one series | **B4-C4** | Scoping |
+| **B4-C14** | **Observation events need a knowledge date** — `fetched_at` records when a *bar* arrived, never when something *became known about* it. This session classified 2017–2023 gaps in 2026 with nowhere to record that. Same axis as **B3-C12**, applied to observations | ↔ **B3-C12** | Correctness |
+| **B4-C15** | **Settle the storage and query timezone convention** — a `timestamptz` column under an `America/New_York` session makes every date-bounded query silently wrong by 4–5 hours, including the queries that judge completeness | — | Wiring |
 
 ---
 
@@ -119,7 +134,20 @@ dataset's own review — for A1, in [§A1.10](reviews/A1-candles.md).
 | **A1-C12** — cross-source gate | ← *informed by* **B3-C7**; **now load-bearing** via **B3-C9** | The CBOE convention must be encoded or the comparator reports **80 of 331** false discrepancies (**B3-F25**). And because a missing event is **undetectable from price** (**B3-F26**), cross-source agreement is the *only* completeness signal that exists — so a single-source event ledger is unverifiable by construction |
 | **A1-C18** — free independent crypto source | ← *informed by* **B3-F32** | **Supersedes the earlier "blocked by B3-F5" edge.** Only `fc.yahoo.com` is DNS-filtered; Yahoo's data endpoint is reachable and serves BTC-USD (3,270 bars) and ETH-USD (3,186 bars) |
 | **B4** — the 12th dataset | ← *created by* **B3-C6** | Trading calendar + venue events (DS-10). Seeded with the rolling-XNYS-bound measurement relocated from B3 on 2026-07-29 |
-| **A1-C3** — the CBOE migration | **B4** | `validation.py:287` raises `DateOutOfBounds` **unguarded** on pre-2006 dates and `:220` does not wrap it, so the migration crashes on its first pre-2006 bar. **647 sessions** affected today, growing yearly |
+| **A1-C3** — the CBOE migration | **B4-F1**, **B4-F2** | `validation.py:287` raises `DateOutOfBounds` **unguarded** on pre-2006 dates and `:220` does not wrap it, so the migration crashes on its first pre-2006 bar. **653 sessions** affected on 2026-08-05 — **and the count grows by one per trading day**, measured at 652 the day before. *(Supersedes the earlier "647, growing yearly" — the growth rate was wrong.)* Also mislabels rather than crashes on the quarantine path (**B4-F3**) |
+| **A1-C1** — restore the crypto hole | ← *extended by* **B4-C10**, **B4-F8** | A1-C1 scopes the 2019 hole. B4 adds **5 further gap runs that are provably ours** and the **159-bar 2026 hole**, all still served by the venue today — and warns that **7 genuine venue outages** sit in the same table and must not be filled alongside them |
+| **A1-C11** — candle audit state | ↔ **B4-C8** | Observation flags and audit state are the same schema question asked twice; both must survive A1-C3's full-table replacement |
+| **A1-C12** — cross-source gate | ← *strengthened by* **B4-F8**, **B4-F11** | B3-F26 made cross-source the only completeness signal for *events*. B4 shows the same for *observations*: the internal detector cannot see a trailing gap by construction, so an external comparison is the only thing that can. **B4-F8 demonstrates a working one that costs nothing** (`data.binance.vision`) |
+| **A1-C18** — free independent crypto source | ← *sharpened by* **B4-F10** | Independence is not the only requirement — **reachability of the historical venue** is a separate, unmet one: `api.binance.com` is **HTTP 451** from here. The public archive is demonstrated free, unauthenticated and complete for 13 tested dates |
+| **A1-C2** — the two venue-volume seams | ↔ **B4-C12** | Adjacent, **different causes**: A1-C2 is *source change* (Global→US stitch, IEX/SIP); B4-C12 is a *venue event* with the source unchanged on both sides. A normalisation assuming one seam per series would be wrong |
+| **A2 Derived features** | ← *warned by* **B4-F15**, **B4-F13**, **B4-F18**, **B4-F19**, **B4-F20** | 46 unflagged half-day sessions and 22 gap bars enter the feature pipeline, `technical.py:126/174` forward-fill across them — plus halt-day bars and a **13× permanent volume rescale** at 2023-06-07 |
+| **A5 Turbulence**, **A4 Regime** | ← *warned by* **B4-F18**, **B4-F19**, **B4-F20** | Turbulence percentiles and HMM fits span the 4 MWCB days, the 2015-08-24 dislocation (imported by A1-C3) and the crypto volume break — each a genuine extreme in the data and a non-comparable observation in reality |
+| **A1-C3** — the CBOE migration | ← *also blocked by* **B4-F21**, **B4-F23** | It brings a **new vendor**, whose revision behaviour is unknown, into tables that **cannot name a vendor**. `ON CONFLICT DO NOTHING` would discard any correction that vendor issued, silently |
+| **A1-C3** — the CBOE migration | ← *coverage gap from* **B4-F27** | The only halt source starts **2019-02-22**; the migration imports from **2004-01-02**, so ~15 of the 22 years it adds have **no halt record obtainable at any price** — including 2015-08-24 (**B4-F19**) and the 2008 cluster |
+| **B3-C5** — the remediation ledger | ← *evidenced by* **B4-F25** | Raised for corporate actions; B4 supplies a concrete **candle** instance — the 2026-07-18 partial bar was repaired by replacing a row `DO NOTHING` cannot replace, with no record. `operator_actions` = 0 rows |
+| **B3-C12** — the knowledge axis | ↔ **B4-C14** | The same axis on the other dataset: B3-C12 asks it of events, B4-C14 of observations. This session created the instance by classifying 2017–2023 gaps in 2026 |
+| **Every remaining dataset** | ← *warned by* **B4-F24**, **B4-F26** | Two cross-cutting hazards: the DB session timezone is **`America/New_York`**, so date-bounded audit queries silently shift 4–5 h in *any* dataset; and `data_ingestion_log` status is unreliable everywhere — **436 macro `success` runs for 48 retained rows** |
+| **B2 Calendar events** | ← *boundary with* **B4-C4** | `calendar_events` holds *scheduled economic* events; B4's calendar is *market structure*. Two datasets sharing a word — the boundary must be stated, not assumed |
 | **B3-C1**, **B3-C4** | **B3-C3** | Neither ownership nor schema can be settled before the source is |
 | **B3-C4** — the candidate schema | **B3-C8**, **B3-C10**, **B3-C11**, **B3-C12** | The rebuild found four questions the candidate does not answer: share basis, identity/revision, vocabulary, knowledge time |
 | **B1 Options chains** | ← *constrained by* **B3-C7**, **B3-C8** | Options are struck on the *unadjusted* underlying, so strike comparisons across a split date need the same convention and share basis encoded |
@@ -141,6 +169,17 @@ dataset's own review — for A1, in [§A1.10](reviews/A1-candles.md).
 
    B4 (rolling calendar bound) ──► A1-C3   [validation throws on pre-2006 bars today]
    B3-F8 / F9 / F32 ──► B3-C6 ──► B4  (12th dataset)
+
+   B4-C1 (baseline stored) ──┬──► B4-C2 (span) ──► A1-C3      [653 sessions, +1 per trading day]
+                             ├──► B4-C9 (half-days) ──► A2
+                             └──► B4-C3 (classification) ──┬──► B4-C7 (detector) ──► A1-C12
+                                        ▲                  ├──► B4-C8 (where) ◄──► A1-C11
+                                        │                  └──► B4-C10 (repair) ──► A1-C1
+   B4-C4 (incident source) ─────────────┘
+        └──► B4-C5 (crypto baseline) ──► A1-C18             [Binance Global is HTTP 451]
+
+   B4-F8 (8 of 13 gaps are the venue's, 5 are ours) ──► B4-C3
+        [4 kinds of absence already coexist in ohlcv_4h and are indistinguishable]
 ```
 
 **This is why B3 was moved ahead of A2 in the review order (DS-8).** Three of A1's items are
@@ -190,7 +229,17 @@ Terms used across the audit. Each review may add dataset-specific terms in its o
 | **Spin-off** | A distribution of a subsidiary's shares. Removes value from the parent without changing its share count — so price adjusts, volume does not |
 | **Share basis** | Which share count an amount is quoted against. A dividend paid before a 2:1 split can be stated **as paid** (the amount a holder actually received) or **restated** onto today's post-split basis (half of it). Both are "correct"; neither vendor says which it uses. Mixing bases is a silent 2× error (B3-C8) |
 | **As-paid / restated** | The two share-basis conventions. **Alpaca reports as-paid; Yahoo reports restated** — measured across 77 events (B3-F25) |
-| **Knowledge date** | When a record became known *to us*, as distinct from when the event took effect (ex-date). Needed to reproduce what was knowable at a past moment, because a revision has a past ex-date and a present knowledge date (B3-C12) |
+| **Knowledge date** | When a record became known *to us*, as distinct from when the event took effect (ex-date). Needed to reproduce what was knowable at a past moment, because a revision has a past ex-date and a present knowledge date (B3-C12). **Applies to observations too** — B4 classified 2017–2023 gaps in 2026, a past effect-date with a present knowledge-date, and `fetched_at` cannot express it (B4-C14) |
+| **Halt** | In this codebase the word is **already taken** by our own circuit breaker (`CBState.HALTED`). A **venue** halt — trading suspended by the exchange — has no name, no field and no record (B4-F7). NYSE's feed codes them as `LULD pause`, `News pending`, `Corporate Action`, `ETF Component Prices Not Available` and others |
+| **LULD pause** | Limit Up-Limit Down: an automatic exchange halt when a security moves outside a price band. The dominant halt reason — **60,362 of 71,718** NYSE records. **XLI took one on 2020-03-12** and our bar does not say so (B4-F28) |
+| **Vendor vs venue** | Two different sources of the same symptom. The **venue** is where trading happened (NYSE, Binance.US); the **vendor** is who sold us the record (CBOE, Alpaca, the archive). A vendor outage and a venue outage produce an identical absent bar and mean opposite things about the market. Neither candle table can name either (B4-F23) |
 | **Restatement / revision** | A vendor re-issuing an event it already published. Measured behaviour: it arrives as an **additional row** with a new vendor id, not as an update (B3-F27) |
 | **Implied event calendar** | The event dates recovered by dividing a vendor's *adjusted* price series by its *raw* series and reading off the re-basing steps. Used to check a vendor's price data against its own event API (B3-F24) |
 | **Instrument identity** | What still identifies a security after a ticker change — CUSIP, not symbol. Absent from the current schema (B3-F6 (f)) |
+| **Session baseline** | The set of (symbol, timestamp) slots an observation *should* occupy. For equity, the XNYS session calendar; for crypto, 24/7 uptime with exceptions. **Not stored anywhere today** (B4-F5) |
+| **Rolling calendar bound** | `exchange_calendars.get_calendar(name)` built with no `start` returns a window anchored to *now* — first session = today − 20 years — so the answerable range **moves every day**. Measured 2006-08-04 on 2026-08-04 and 2006-08-07 on 2026-08-05 (B4-F1) |
+| **Venue outage vs collector outage** | Two causes of an identical symptom — an absent bar. The first is a fact about the world (flag it); the second is our defect (repair it). Measured to coexist in `ohlcv_4h`: 7 runs venue, 5 runs ours (B4-F8) |
+| **Legitimately absent** | A slot the baseline says should be empty — a closed market. **Not a gap**, and must be excluded from any completeness count |
+| **Trailing gap** | Missing observations at the *newest* end of a series. Invisible to any detector that derives its expected range from the fetched data's own max — the shape of every live ingestion failure (B4-F11) |
+| **Early close** | A half-day session (typically 13:00 ET). 46 in the CBOE equity range, carrying roughly half a session's volume. Flagged for options, unflagged for candles (B4-F15) |
+| **Present but distorted** | An observation that **exists, is arithmetically valid and passes every check**, yet is not comparable to its neighbours because the venue's price discovery was impaired — a market-wide halt, an LULD cascade, a venue liquidity break. Defeats gap, staleness and cross-source checks by construction, because nothing is missing and the prices agree. Only an **event record** separates it from a genuine extreme (B4-F18, B4-F19, B4-F20; B4-C11) |
