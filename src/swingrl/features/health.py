@@ -73,14 +73,29 @@ class FeatureHealthTracker:
     Three sources are tracked: macro, hmm, and turbulence. Macro and HMM failures
     block trading after BLOCK_THRESHOLD consecutive failures. Turbulence failures
     produce warnings only (0.0 = calm market assumption, suboptimal but not catastrophic).
-    Macro staleness (no success in STALENESS_SECONDS) also blocks trading.
+
+    Macro staleness (no success in ``staleness_days``) can also block trading, but the
+    gate is **off by default** — see ``staleness_gate``.
     """
 
     BLOCK_THRESHOLD: int = 3
     CRITICAL_THRESHOLD: int = 5
-    STALENESS_SECONDS: float = 7 * 24 * 3600  # 7 days
+    DEFAULT_STALENESS_DAYS: int = 7
 
-    def __init__(self) -> None:
+    def __init__(self, staleness_gate: bool = False, staleness_days: int = 7) -> None:
+        """Initialize the tracker.
+
+        Args:
+            staleness_gate: When True, block trading if macro has had no successful
+                fetch within ``staleness_days``. Defaults to False (disabled
+                2026-08-13): nothing wires this tracker into FeaturePipeline, so
+                ``record_success`` never fires in the trader and the gate measures
+                process uptime rather than data age. It blocked both environments for
+                13 days while macro data was current.
+            staleness_days: Age threshold in days, applied only when the gate is armed.
+        """
+        self._staleness_gate = staleness_gate
+        self._staleness_seconds: float = staleness_days * 24 * 3600
         self._sources: dict[str, FeatureHealth] = {
             "macro": FeatureHealth(name="macro"),
             "hmm": FeatureHealth(name="hmm"),
@@ -120,9 +135,9 @@ class FeatureHealthTracker:
         # Turbulence: warning only, never blocks (0.0 = calm, suboptimal not catastrophic)
         health.turbulence_ok = self._sources["turbulence"].consecutive_failures == 0
 
-        # Check staleness
+        # Check staleness (only when the gate is armed — see __init__)
         now = time.time()
-        macro_stale = (now - macro.last_success_ts) > self.STALENESS_SECONDS
+        macro_stale = (now - macro.last_success_ts) > self._staleness_seconds
 
         if not health.macro_ok:
             health.should_block = True
@@ -130,9 +145,10 @@ class FeatureHealthTracker:
         elif not health.hmm_ok:
             health.should_block = True
             health.reason = f"hmm: {hmm.consecutive_failures} consecutive failures"
-        elif macro_stale:
+        elif self._staleness_gate and macro_stale:
+            days = self._staleness_seconds / (24 * 3600)
             health.should_block = True
-            health.reason = "macro data stale (>7 days since last success)"
+            health.reason = f"macro data stale (>{days:g} days since last success)"
 
         if health.should_block:
             log.error(

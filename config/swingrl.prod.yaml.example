@@ -183,3 +183,8 @@ features:
   equity_turbulence_warmup: 252    # expanding lookback warmup for equity turbulence
   crypto_turbulence_window: 1080   # rolling window for crypto turbulence (4H bars)
   crypto_turbulence_warmup: 360    # crypto turbulence minimum warmup bars
+  # Macro staleness gate — OFF 2026-08-13. The health tracker is never wired into
+  # FeaturePipeline, so this measured trader uptime, not macro data age, and blocked
+  # both environments for 13 days on current data. Re-arm only once it is wired.
+  macro_staleness_gate: false
+  macro_staleness_days: 7          # threshold, applied only when the gate is true

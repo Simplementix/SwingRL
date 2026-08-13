@@ -82,8 +82,12 @@ class ExecutionPipeline:
         self._alerter = alerter
         self._models_dir = models_dir
 
-        # Feature health tracking for live inference
-        self._health_tracker = FeatureHealthTracker()
+        # Feature health tracking for live inference. The macro staleness gate is
+        # config-driven and off by default — see FeaturesConfig.macro_staleness_gate.
+        self._health_tracker = FeatureHealthTracker(
+            staleness_gate=config.features.macro_staleness_gate,
+            staleness_days=config.features.macro_staleness_days,
+        )
 
         # Lazy-initialized components. Models are cached per env, keyed by the
         # artifact mtimes so a hot-swapped model (changed mtime) or a previously

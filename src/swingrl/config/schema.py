@@ -217,6 +217,14 @@ class FeaturesConfig(BaseModel):
     crypto_turbulence_warmup: int = Field(default=1080, ge=50)
     crypto_turbulence_half_life: int = Field(default=750, ge=10)
 
+    # Macro staleness gate — DISABLED 2026-08-13. FeatureHealthTracker is never passed
+    # to FeaturePipeline at any production call site, so record_success("macro") never
+    # fires and the gate measures trader process uptime, not macro data age. It blocked
+    # both environments for 13 days (2026-07-31 -> 2026-08-13) while macro_features held
+    # rows through 2026-08-07. Re-arm only once the tracker is actually wired through.
+    macro_staleness_gate: bool = Field(default=False)
+    macro_staleness_days: int = Field(default=7, ge=1)
+
     # Turbulence hard-halt baseline (F1 fix, method review 2026-07-07)
     turbulence_halt_percentile: float = Field(default=0.97, gt=0.0, lt=1.0)
     # Trailing window (in bars) the halt percentile is computed over. Equity =

@@ -56,12 +56,44 @@ class TestFeatureHealth:
         assert not result.turbulence_ok
 
     def test_staleness_blocks(self) -> None:
-        """HEALTH-05: Macro last_success_ts 8 days ago -> should_block == True."""
-        tracker = FeatureHealthTracker()
+        """HEALTH-05: Gate armed + macro last_success_ts 8 days ago -> should_block == True."""
+        tracker = FeatureHealthTracker(staleness_gate=True)
         health = tracker.get_health("macro")
         assert health is not None
         # Set last success to 8 days ago
         health.last_success_ts = time.time() - (8 * 24 * 3600)
+
+        result = tracker.assess("equity")
+        assert result.should_block is True
+        assert "stale" in result.reason
+
+    def test_staleness_gate_off_by_default(self) -> None:
+        """HEALTH-10: Gate off (the default) -> an 8-day-old success does not block."""
+        tracker = FeatureHealthTracker()
+        health = tracker.get_health("macro")
+        assert health is not None
+        health.last_success_ts = time.time() - (8 * 24 * 3600)
+
+        result = tracker.assess("equity")
+        assert result.should_block is False
+        assert result.reason == ""
+
+    def test_failures_still_block_with_gate_off(self) -> None:
+        """HEALTH-11: Disabling the staleness gate leaves the failure blocks intact."""
+        tracker = FeatureHealthTracker()
+        for _ in range(3):
+            tracker.record_failure("macro")
+
+        result = tracker.assess("equity")
+        assert result.should_block is True
+        assert "macro" in result.reason
+
+    def test_staleness_days_configurable(self) -> None:
+        """HEALTH-12: staleness_days sets the threshold when the gate is armed."""
+        tracker = FeatureHealthTracker(staleness_gate=True, staleness_days=2)
+        health = tracker.get_health("macro")
+        assert health is not None
+        health.last_success_ts = time.time() - (3 * 24 * 3600)
 
         result = tracker.assess("equity")
         assert result.should_block is True
