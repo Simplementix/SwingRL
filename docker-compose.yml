@@ -74,7 +74,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: production
-    image: swingrl:trader-2026-07-24-1
+    image: swingrl:trader-2026-08-13-1   # rollback: swingrl:trader-2026-07-24-1
     # No mem_limit — swingrl-trader is the primary workload on 64 GB homelab.
     # Other containers use ~1.5 GB (memory 1G + dashboard 0.5G).
     cpus: 10.0
