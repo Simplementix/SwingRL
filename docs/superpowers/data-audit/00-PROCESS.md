@@ -212,7 +212,7 @@ Order follows DS-8 and DS-11, not the A/B numbering.
 |---|---|---|---|---|---|
 | 1 | A1 | Candles | ☑ 2026-07-25 — 37 findings, 18 carry items *(A1-F34…F37 amended 2026-07-29; "CBOE is unadjusted" wording swept 2026-07-30)* | ☐ | ☐ |
 | 2 | B3 | Corporate actions | ☑ 2026-07-30 — **28 findings, 14 carry items** *(rebuilt from first principles; **all 28 walked with the user 2026-08-03 — all stand unamended**, B3-C13 and B3-C14 added)* | ☐ | ☐ |
-| 3 | B4 | Observation events *(new, DS-10; moved up, **DS-11**)* | ☑ 2026-08-05, extended 2026-08-10/11 — **29 findings (21 H / 8 M / 0 L), 15 carry items** *(rolling bound confirmed across two consecutive days: 652 → 653; §B4.1(h) "present but distorted"; §B4.1(i) nine-class completeness pass, 3 clean negatives; §B4.3 source hunt — equity halts sourced 2019+, equity pre-2019 and all crypto blank)* | ☐ | ☐ |
+| 3 | B4 | Observation events *(new, DS-10; moved up, **DS-11**)* | ☑ 2026-08-05, extended 2026-08-10/11, **walked 2026-08-25** — **29 findings (21 H / 8 M / 0 L), 15 carry items** *(rolling bound confirmed across two consecutive days: 652 → 653; §B4.1(h) "present but distorted"; §B4.1(i) nine-class completeness pass, 3 clean negatives; §B4.3 source hunt — equity halts sourced 2019+, equity pre-2019 and all crypto blank. **All 29 walked with the user 2026-08-25: 27 stand unamended; B4-F20 and B4-F26 amended after re-measurement; B4-F13/F17/F24 corrected; no new findings or carry items — §B4.11**)* | ☐ | ☐ |
 | **4** | **A2** | **Derived features** | ☐ **next** | ☐ | ☐ |
 | 5 | A3 | Macro | ☐ | ☐ | ☐ |
 | 6 | A4 | Regime (HMM) | ☐ | ☐ | ☐ |

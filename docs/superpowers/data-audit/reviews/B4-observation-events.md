@@ -5,6 +5,7 @@
 > **Reviewed 2026-08-04 → 2026-08-05.** Moved ahead of A2 by **DS-11**.
 >
 > **This review contains no solutions.** Findings, evidence, gaps and use — nothing else.
+> · **Walked with the user 2026-08-25 — 27 of 29 findings stand unamended; B4-F20 and B4-F26 amended; see [§B4.11](#b411--walkthrough-and-amendments-2026-08-25)**
 
 ---
 
@@ -329,8 +330,11 @@ liquidity collapse. Mean 4h BTCUSDT volume in our own table:
 | 2023-12 | 1,567,795 | 1,186,857 |
 | 2024-02 | 840,270 | 524,020 |
 
-**~13× on medians** (9.14 M → 0.67 M), and it **never recovers** — still 0.8–1.5 M through
-2024-03. Daily totals date the break to a two-day step:
+**4.30× on May→July monthly medians** (2.87 M → 0.67 M), and it **never recovers** — still
+0.8–1.5 M through 2024-03. *(Amended 2026-08-25, §B4.11: this passage previously read "~13× on
+medians (9.14 M → 0.67 M)". That is the **March→July** change, and it spans **two** declines —
+8.49 M (Apr) → 2.87 M (May) happens a month **before** the step dated below. 13× must not be
+quoted as the magnitude of this step.)* Daily totals date the break to a two-day step:
 
 ```
 2023-06-06 | 21,030,051
@@ -339,11 +343,20 @@ liquidity collapse. Mean 4h BTCUSDT volume in our own table:
 2023-06-11 |  3,991,077      ... and stays there
 ```
 
-**How much is venue-specific.** Our volume ÷ Global volume, monthly mean: **559 (May) → 180 (Jun)
-→ 184 (Jul) → 172 (Aug) → 171 (Sep)**. The ratio itself is meaningless in absolute terms (the two
-series are on different units — that is **A1-F9**'s territory), but its *change* is not: ours fell
-**~3.1× relative to Global**. So roughly a third of the 13× is a market-wide mid-2023 volume
-decline and **the remainder is specific to this venue**.
+**How much is venue-specific.** Measured **unit-matched** — our quote volume against Global's
+*quote* volume from `data.binance.vision`, **372 4h bars either side** (May 2023 vs July 2023):
+
+| Series | May 2023 median | July 2023 median | Change |
+|---|---|---|---|
+| Ours (Binance.US) | 2,873,118 | 671,240 | **4.30×** |
+| Binance Global | 154,804,740 | 113,333,386 | **1.37×** |
+| **Venue-specific** | | | **3.15×** |
+
+Global's own **1.37×** is the market-wide mid-2023 decline; the remaining **3.15×** is **specific
+to this venue**. *(Re-derived 2026-08-25, §B4.11. The original figure came from a monthly-**mean**
+ours÷Global ratio — 559 (May) → 180 (Jun) — which mixed our quote volume against Global's base
+volume. It agreed at ~3.1×, and this unit-matched measurement confirms it at **3.15×**, so the
+mixed-unit caveat is **retired**, not explained.)*
 
 Every price-based check agrees across this break, because the prices agree. Every gap check is
 silent, because no bar is missing. The series simply changes scale by an order of magnitude,
@@ -428,14 +441,23 @@ precisely where observation completeness is judged. → **B4-F24**
 | macro | **436** | 114 | 165 |
 | crypto | — | — | 4 |
 
-Equity logged **108 successful runs** over 2026-03-11 → 04-01 and **still lost 18 sessions**.
-Macro logged **436** and retained **48 rows** for the window. The status field is not merely
-missing a term for "market closed" (**B4-F14**) — it reports success while data is being lost.
+Equity logged **108 successful runs** over **2026-03-11 → 2026-04-06** and **still lost 18
+sessions** — `ohlcv_daily` holds **0 rows** across all 18, so the series stops entirely rather
+than thinning. Macro logged **436** and retained **48 rows** for the window. The status field is
+not merely missing a term for "market closed" (**B4-F14**) — it reports success while data is
+being lost.
+
+> **Method, per B4-F24.** These counts are **UTC-cast** over the incident's full extent,
+> 2026-03-11 → 2026-04-06 inclusive. A bare date literal reproduces different figures, and a
+> narrower 04-01 end reproduces none of them. *(Window corrected 2026-08-25, §B4.11 — the prose
+> previously read "→ 04-01" while this table already carried 04-06 numbers.)*
 
 The window also hit **three datasets**: equity, crypto *and* macro. Options are unaffected only
-because capture began 2026-07-15. So an incident record has to be **dataset-wide**; a
-per-environment one would have split this single event into three unrelated ones — which is
-exactly how it has been carried until now. → **B4-F26**
+because capture began 2026-07-15. **A per-environment incident record would split this single
+event into three unrelated ones** — which is exactly how it has been carried until now.
+*(Narrowed 2026-08-25: this previously read "an incident record has to be **dataset-wide**".
+Review sessions hold no solutions — session rule #3 — so the record's shape is a spec question,
+and only the observed consequence is stated here.)* → **B4-F26**
 
 #### Duplicates, identity, interventions
 
@@ -960,23 +982,23 @@ the two halves are inseparable, which is DS-10's entire premise.)*
 | **B4-F10** | crypto | **The venue that produced our pre-2019 history is unreachable** — `api.binance.com` → **HTTP 451**. With `ohlcv_4h.source` 100 % NULL (**A1-F13**), no historical crypto observation can be attributed *or* re-verified through any path the system has. The public archive works and **nothing uses it** | B4.3 | **B4-C4**, **B4-C5**, **A1-C18** |
 | **B4-F11** | equity | **The gap detector cannot see the gap that matters.** `_detect_equity_gaps` takes `start`/`end` from the fetched batch's own min/max, so only **interior** gaps are findable — a **trailing** missing session, the shape of every live ingestion failure, is invisible by construction | B4.3 | **B4-C7** |
 | **B4-F12** | crypto | **Crypto has no uptime baseline.** `_CRYPTO_FREQ = 4h` encodes "a bar every 4 hours forever" — no maintenance calendar, no venue status, no concept of a legitimately absent bar. **7 measured venue-outage runs prove the assumption false** | B4.1(f) | **B4-C5** |
-| **B4-F17** | both | The candle quarantine path **has never fired**. `data_quarantine` = **3,945 rows, 100 % macro** — not one equity or crypto row in the table's life, across 18 missing sessions, 314 missing crypto bars, 2 phantom bars and 3 invalid SPY bars | B4.3 | **B4-C7**, **B4-C8** |
+| **B4-F17** | both | The candle quarantine path **has never fired**. `data_quarantine` = **3,945 rows, 100 % macro** (2026-08-11) — not one equity or crypto row in the table's life, across 18 missing sessions, 314 missing crypto bars, 2 phantom bars and 3 invalid SPY bars. *(Re-measured 2026-08-25: **3,951 rows, still 100 % macro** — the macro count drifts as quarantine continues; the **zero** equity/crypto rows is the load-bearing figure and is unchanged.)* | B4.3 | **B4-C7**, **B4-C8** |
 | **B4-F18** | equity | **A market-wide halt leaves no trace.** The **4 MWCB days of March 2020** sit in `ohlcv_daily` today as ordinary bars and pass all 12 validation steps — the spike check is set at **50 %**, the worst day moved **10.94 %**. No existing detector is even the right *shape*: nothing is missing, so no gap or staleness check can apply. *(Amended 2026-08-11: the halts are now **confirmed from a venue record** — **522 / 787 / 825 / 1,481** halt entries on those four days — no longer inferred from price. See **B4-F27**, **B4-F28**.)* | B4.1(h), B4.3 | **B4-C11**, **B4-C4** |
 | **B4-F27** | equity | **A free retrospective halt source exists, is reachable, and nothing uses it.** NYSE `trade-halts/historical/download` — **71,718 records, 2019-02-22 → 2026-08-10**, unauthenticated, carrying symbol, exchange, **coded reason** and resume time. Its vocabulary already contains *"ETF Component Prices Not Available"*, the exact condition **B4-F19** had to infer. **It does not cover pre-2019**, so 2015-08-24 and the 2008 cluster — inside the range **A1-C3** imports — stay unsourced | B4.3 | **B4-C4**, **A1-C3** |
 | **B4-F28** | equity | **One of our own instruments was halted and the bar does not say so.** **XLI — 2020-03-12 09:55:59 ET, NYSE Arca, `LULD pause`, resumed same day.** This is the **first observation event in this review confirmed from a venue record rather than from price behaviour**, and it moves **B4-F18** from market context to a symbol-level fact about a series we train and trade on | B4.3 | **B4-C11**, **B4-C8** |
 | **B4-F29** | crypto | **Crypto has no venue-incident source at all.** Four candidates tested and all failed: `status.binance.us` does not resolve, `binance.statuspage.io` is inactive (401), `api.binance.com` is **451**, and Binance.US's authenticated status endpoint reports **current state only**. So **B4-F8**'s archive comparison is the *only* retrospective method, and it **infers** an incident from an absent bar — meaning a crypto observation event can carry **no reason, no duration, no resume time, no severity**. The DS-7 divergence from equity is now structural, not incidental | B4.3 | **B4-C4**, **B4-C5** |
 | **B4-F19** | equity | **The most distorted observations in the whole equity history are unflagged, and A1-C3 will import them.** **2015-08-24** holds the **top 3 intraday ranges across 22 years and 8 ETFs** (21.71 %, 21.68 %, 21.28 %), with lows **17–22 % below the prior close** against closes down only 3–4 %. Outside `ohlcv_daily` (2016+); **inside the CBOE snapshot** | B4.1(h) | **B4-C11**, **A1-C3** |
-| **B4-F20** | crypto | **A venue event permanently rescaled the volume series while leaving prices intact.** BTCUSDT 4h volume fell **~13× on medians** across **2023-06-06 → 06-08** and never recovered; **~3.1× of it is venue-specific** against Binance Global. Price divergence over the same span is **≤ 0.60 %**, so every price-based check agrees and sees nothing. **Not A1-F9/A1-C2** — those are *source-change* seams; here the source is unchanged on both sides. *(Unit caveat: our crypto `volume` is **quote volume in USD** (`binance.py:200`, `:218`) while the Global comparison used **base** volume, so the ours÷Global ratios are mixed-unit — only their **change** is claimed. Our own 13× series is internally consistent.)* | B4.1(h), B4.1(i) | **B4-C11**, **B4-C12** |
+| **B4-F20** | crypto | **A venue event permanently rescaled the volume series while leaving prices intact.** BTCUSDT 4h volume stepped down across **2023-06-06 → 06-08** and never recovered — **5.75×** on daily totals across the two-day step (21.0 M → 3.66 M), **4.30×** on May→July monthly medians. Of that, **3.15× is venue-specific** (Global fell only **1.37×** over the same span, unit-matched quote-against-quote, 372 bars/side). Price divergence over the span is **≤ 0.60 %** (max 0.5984 %, median 0.0388 %, 30 matched bars), so every price-based check agrees and sees nothing. **Not A1-F9/A1-C2** — those are *source-change* seams; here the source is unchanged on both sides. *(Amended 2026-08-25, §B4.11: previously stated as "~13×", which is the **March→July** change and annexes an April→May decline preceding the step. The mixed-unit caveat is **retired** — the comparison now holds in matched units.)* | B4.1(h), B4.1(i) | **B4-C11**, **B4-C12** |
 | **B4-F23** | both | **Neither candle table can name its vendor or its venue.** `ohlcv_daily` has **no source column at all**; `ohlcv_4h.source` is **100 % NULL** (**A1-F13**). A venue-scoped incident therefore cannot be applied to the rows it affected — and a **vendor** outage cannot be told from a **venue** outage, which are different truths about the market with an identical symptom | B4.1(i) | **B4-C3**, **B4-C4**, **A1-C3** |
-| **B4-F24** | both | **The database session timezone is `America/New_York`, not UTC.** A bare date literal against a `timestamptz` column silently resolves **4–5 hours off**; the table spans **25,059 EDT / 13,674 EST** rows. **This review's own audit query dropped 10 bars this way before it was caught.** Contradicts the project's *UTC internally* rule at exactly the edge where observation completeness is judged | B4.1(i) | **B4-C15**, **B4-C7** |
-| **B4-F26** | both | **`success` is logged while data is being lost.** Over 2026-03-11 → 04-01 the log records **108 equity `success` runs** and 18 sessions went missing anyway; macro records **436 successes** against **48** retained rows. The window hit **equity + crypto + macro**, so an incident record must be **dataset-wide** — a per-environment one splits a single event into three. Escalates **B4-F14** from *wrong vocabulary* to *actively misleading* | B4.1(i) | **B4-C3**, **B4-C4**, **B4-C7** |
+| **B4-F24** | both | **The database session timezone is `America/New_York`, not UTC.** A bare date literal against a `timestamptz` column silently resolves **4–5 hours off**; the table spans **25,059 EDT / 13,674 EST** rows. **This review's own audit query dropped 10 bars this way before it was caught.** Contradicts the project's *UTC internally* rule at exactly the edge where observation completeness is judged. *(Second independent instance, 2026-08-25: the §B4.11 walkthrough briefly misdiagnosed **B4-F26** as carrying this bug, because a bare-literal window and the correct UTC window happen to coincide when an incident begins at 04:00 UTC — midnight ET. Two instances inside one review, both self-inflicted.)* | B4.1(i) | **B4-C15**, **B4-C7** |
+| **B4-F26** | both | **`success` is logged while data is being lost.** Over **2026-03-11 → 2026-04-06** (UTC-cast, per **B4-F24**) the log records **108 equity `success` runs** while 18 sessions went missing — `ohlcv_daily` holds **0 rows** across all 18; macro records **436 successes** against **48** retained rows. The window hit **equity + crypto + macro**, so a per-environment incident record **would split this single event into three**. Escalates **B4-F14** from *wrong vocabulary* to *actively misleading*. *(Amended 2026-08-25, §B4.11 — window label corrected from 04-01, method note added, prescriptive clause narrowed. All three counts re-measured and reproduce exactly.)* | B4.1(i) | **B4-C3**, **B4-C4**, **B4-C7** |
 
 ### Medium — 8
 
 | ID | Env | Finding | § | Feeds |
 |---|---|---|---|---|
 | **B4-F6** | equity | **Two calendar authorities, never reconciled** — the trading gate asks the **Alpaca broker clock** (`pipeline.py:1128`), bar existence asks **xcals** (`validation.py:61`). Nothing compares them; a disagreement is undetectable | B4.5 | **B4-C6** |
-| **B4-F13** | crypto | `resolve_crypto_gaps` — the **only** gap-resolution logic in the codebase — is **dead** (tested, zero production callers), and if live would `ffill(limit=2)` **9 of the 12 small gap runs, including 6 of the 7 real venue outages**, into unmarked fabricated bars | B4.4 | **B4-C3** |
+| **B4-F13** | crypto | `resolve_crypto_gaps` — the **only** gap-resolution logic in the codebase — is **dead** (tested, zero production callers), and if live would `ffill(limit=2)` **9 of the 12 small gap runs, including 6 of the 7 real venue outages**, into unmarked fabricated bars. *(The deadness is **measured**. The 9-of-12 figure is **UNVERIFIED** — it simulates what dead code would do against the measured gap runs, not observed behaviour. Labelled 2026-08-25 per session rule #4.)* | B4.4 | **B4-C3** |
 | **B4-F14** | both | `data_ingestion_log` **cannot express "the market was closed"**. Equity logs `success` **63×** and `failed` **19×** on non-sessions — the same closed day, opposite verdicts — while `no_data` appears **24× on real sessions**, where it is a genuine problem | B4.3 | **B4-C3**, **B4-C4** |
 | **B4-F15** | equity | **46 early closes** enter `ohlcv_daily` and the features unflagged, at roughly half normal volume. `is_early_close()` exists and works — wired to **options only** (`options/collector.py:119`). **B3-F20**'s shape, exactly where B3 predicted it | B4.5 | **B4-C9** |
 | **B4-F16** | equity | `_EQUITY_GAP_THRESHOLD = 5 days` is right by luck. Measured max legitimate gap **is exactly 5 days — zero margin** — and one of its two instances is **Hurricane Sandy 2012-10-26→31**, an unscheduled venue closure, not the "holiday combo" the comment claims | B4.1(e) | **B4-C2**, **B4-C9** |
@@ -1104,7 +1126,7 @@ Ten items. **No remedies** — each records a question or a requirement, not a d
 | **B4-C9** | Correctness | **Settle whether a half-day session is a comparable observation.** 46 early closes carry roughly half a session's volume and are currently indistinguishable from full sessions everywhere except options | **B4-F15**, **B4-F16** |
 | **B4-C10** | Data repair | **The provably-ours crypto losses are still recoverable** — 5 gap runs (7 bars) from the public archive and the 159-bar hole from the live Binance.US API, both verified serving today. Scope and sequencing sit with **A1-C1** | **B4-F8**, **B4-F9** |
 | **B4-C11** | Correctness | **Settle how a "present but distorted" observation is handled** — a bar that exists, is arithmetically valid, and passes every check, but whose price discovery was impaired: a market-wide halt, an LULD cascade, a venue dislocation. **Distinct from B4-C3**, which classifies *absences*. Nothing is missing, so no absence-shaped detector can ever apply, and no threshold on the bar itself separates a real 21 % range from a broken one | **B4-F18**, **B4-F19**, **B4-F20** |
-| **B4-C12** | Correctness | **Settle whether crypto volume is comparable across 2023-06-07.** A **~13×** permanent level change sits mid-series with no marker, roughly a third market-wide and the rest venue-specific. Adjacent to **A1-C2** (the two *source* seams) but a **different cause**, so fixing those does not fix this | **B4-F20** |
+| **B4-C12** | Correctness | **Settle whether crypto volume is comparable across 2023-06-07.** A **4.30×** permanent level change sits mid-series with no marker — **1.37×** of it market-wide and **3.15×** venue-specific. Adjacent to **A1-C2** (the two *source* seams) but a **different cause**, so fixing those does not fix this | **B4-F20** |
 | **B4-C13** | Scoping | **Symbol and pair lifecycle must be represented** — listing, delisting, suspension, ticker reuse. Measured **clean today** (both crypto pairs `TRADING`; the equity symbol list unchanged since `720e03e`), which makes this a **latent** gap rather than a live one: nothing in the system would tell us if it changed, and a reused ticker would splice two different instruments into one series | *(clean negative, §B4.0)* |
 | **B4-C14** | Correctness | **Observation events need a knowledge date.** `fetched_at` records when a **bar** arrived, never when something **became known about** it. This session classified 2017–2023 gaps in 2026 — a past effect-date with a present knowledge-date, and nowhere to record it. The same axis **B3-C12** raised for corporate actions, applied to observations | **B4-F8**, **B4-F9**, **B4-F25** |
 | **B4-C15** | Wiring | **Settle the storage and query timezone convention.** A `timestamptz` column under an `America/New_York` session makes every date-bounded query silently wrong by 4–5 hours unless it casts explicitly — including the queries that judge completeness | **B4-F24** |
@@ -1151,7 +1173,7 @@ Ten items. **No remedies** — each records a question or a requirement, not a d
 | **A1-F13** — `ohlcv_4h.source` 100 % NULL | ← *consequence recorded by* **B4-F10** | A1 recorded the NULL; B4 records what it costs — no bar can be attributed to a venue, so venue-scoped incidents cannot be applied to the segment they affected |
 | **A1-C3** — the CBOE migration | ← *also carries* **B4-F19** | The migration imports **2015-08-24**, which holds the 3 largest intraday ranges in 22 years, plus the 2008-10 cluster beneath it. These are not in today's data — the migration **adds** them, unflagged |
 | **A1-C2** — the two venue-volume seams | ↔ **B4-C12** | Adjacent but **distinct causes**: A1-C2 is *source change* (Global→US stitch, IEX/SIP); B4-C12 is a *venue event* with the source unchanged on both sides. A fix for one does not address the other, and a normalisation that assumed a single seam per series would be wrong |
-| **A2 Derived features** | ← *warned by* **B4-F15**, **B4-F13**, **B4-F18**, **B4-F19**, **B4-F20** | 46 half-day sessions and 22 gap bars enter the feature pipeline unmarked, and `technical.py:126/174` forward-fills across them. Added: halt-day bars and a **13× permanent volume rescale** at 2023-06-07 — any volume-derived or volatility feature spans that break with no marker |
+| **A2 Derived features** | ← *warned by* **B4-F15**, **B4-F13**, **B4-F18**, **B4-F19**, **B4-F20** | 46 half-day sessions and 22 gap bars enter the feature pipeline unmarked, and `technical.py:126/174` forward-fills across them. Added: halt-day bars and a **4.30× permanent volume rescale** at 2023-06-07 — any volume-derived or volatility feature spans that break with no marker |
 | **A5 Turbulence**, **A4 Regime** | ← *warned by* **B4-F18**, **B4-F19**, **B4-F20** | Turbulence percentiles and HMM fits are computed over series containing the four MWCB days, the 2015-08-24 dislocation (post-migration) and the crypto volume break. Each is a genuine extreme in the data and a **non-comparable** observation in reality |
 | **B2 Calendar events** | ← *boundary with* **B4-C4** | `calendar_events` (553 rows, 2015-01-09 → 2027-12-08) holds *scheduled economic* events. B4's calendar is *market structure*. The two are different datasets sharing a word — the boundary must be stated, not assumed |
 | **B3-C5** — the remediation ledger | ← *evidenced by* **B4-F25** | B3-C5 was raised for corporate actions. B4 supplies a **concrete candle instance**: the 2026-07-18 partial bar was repaired by replacing a row that `ON CONFLICT DO NOTHING` cannot replace, and nothing records it. The ledger is not hypothetical |
@@ -1161,6 +1183,71 @@ Ten items. **No remedies** — each records a question or a requirement, not a d
 | **A1-C18** — free independent crypto source | ← *also informed by* **B4-F29** | The crypto blank is not only about *prices*. Four venue-incident candidates failed, so whatever source is chosen must be judged on whether it can speak to **venue state**, not just quotes |
 | **Every remaining dataset** | ← *warned by* **B3-F20** | Confirmed for B4: `is_early_close` is wired to **options only**, exactly the one-dataset-of-twelve shape B3 predicted |
 | **Every remaining dataset** | ← *warned by* **B4-F24**, **B4-F26** | Two cross-cutting hazards, neither specific to B4: the session timezone silently shifts date-bounded queries in **any** dataset's audit, and `data_ingestion_log`'s status is unreliable for **all** of them — it logged 436 macro successes for 48 retained rows |
+
+---
+
+## B4.11 — Walkthrough and amendments, 2026-08-25
+
+All **29 findings were walked individually with the user**, in five blocks: the **calendar
+baseline** (F1–F5); the **incident record** (F7, F14, F23, F25, F26); **attribution and the crypto
+half** (F8, F9, F10, F12, F13, F29); **"present but distorted"** (F18, F19, F20, F27, F28); and
+**detectors and silent resolution** (F6, F11, F15, F16, F17, F21, F22, F24).
+
+**Outcome: 27 of 29 stand unamended. Two are amended — B4-F20 and B4-F26** — and three findings
+carry smaller corrections. No finding was overturned, none changed severity, no carry item was
+added or removed, and no ID was retired. B4 remains **29 findings (21 H / 8 M / 0 L), 15 carry
+items**.
+
+Both amendments were found the same way: **by re-measuring a figure the review states.** Neither
+changes what its finding claims.
+
+| # | Finding | Amendment | Why |
+|---|---|---|---|
+| **1** | **B4-F20** | **"~13× on medians" → 5.75× on daily totals across the two-day step, 4.30× on May→July monthly medians.** The mixed-unit caveat is **retired** and the venue-specific split restated as **3.15×**, unit-matched quote-against-quote, with Global's own **1.37×** decline stated alongside | 9.14 M is **March 2023**'s median and 0.67 M is **July**'s, so 13× is a March→July change spanning **two** declines — 8.49 M (Apr) → 2.87 M (May) precedes the step F20 dates to 2023-06-06→08. The step is real and correctly dated; the magnitude annexed an earlier decline to it |
+| **2** | **B4-F26** | **Window "2026-03-11 → 04-01" → "2026-03-11 → 2026-04-06"**, a **method note** added recording the counts are UTC-cast, and the clause *"an incident record has to be dataset-wide"* narrowed to the conditional *"a per-environment record would split this single event into three"* | The prose window contradicted the table directly above it, which already carried 04-06 numbers. **All three counts — 108 / 436 / 48 — reproduce exactly** over the corrected window, and none reproduces over 04-01. The narrowing is session rule #3: review sessions hold no solutions, so the record's shape is a spec question |
+
+**Three smaller corrections.**
+
+| Finding | Correction |
+|---|---|
+| **B4-F13** | The **9-of-12** figure is labelled **UNVERIFIED** — it simulates what dead code would do rather than observing behaviour. Session rule #4 requires the label; this is contract compliance, not a ruling |
+| **B4-F17** | Live-state drift recorded: **3,945 → 3,951** rows on 2026-08-25, still **100 % macro**. The load-bearing figure — **zero** equity or crypto rows — is unchanged |
+| **B4-F24** | A **second independent instance** added: this walkthrough briefly misdiagnosed B4-F26 as carrying the timezone bug. Two instances inside one review, both self-inflicted |
+
+**What was re-measured, and what it showed.** Every figure below was taken 2026-08-25 with
+explicit UTC casts, against live Postgres and the public Binance archive.
+
+| Figure | As written | Re-measured | Result |
+|---|---|---|---|
+| F26 — equity `success` runs | 108 | **108** | Reproduces, over 03-11 → 04-06 only |
+| F26 — macro `success` / retained rows | 436 / 48 | **436 / 48** | Reproduces, same window |
+| F26 — equity sessions lost | 18 | **18 expected, 0 rows present** | Stronger than written — the series stops entirely |
+| F20 — price divergence | ≤ 0.60 % | **max 0.5984 %**, median 0.0388 %, 30 matched bars | Exact |
+| F20 — venue-specific | ~3.1 × | **3.15 ×** (ours 4.30× ÷ Global 1.37×), 372 bars/side | Reproduces, **now unit-matched** |
+| F20 — headline magnitude | ~13 × | 2.45–8.69 × depending on window | **Does not describe the dated step** |
+| F17 — quarantine | 3,945 / 100 % macro | **3,951 / 100 % macro** | Drift only |
+| F24 — DB session timezone | `America/New_York` | `America/New_York` | Confirmed |
+| F15 — early closes in range | 46 | **46** | Exact |
+
+**A carry item was proposed and withdrawn.** During the walkthrough a new item was floated — a
+re-derivation of F20's venue-specific split, on the grounds that it needed Binance Global data the
+system cannot reach (**B4-F10**: `api.binance.com` is 451-blocked). It was withdrawn on measuring:
+`data.binance.vision` answered it in **two requests**, unauthenticated. The item is recorded here
+as withdrawn rather than silently dropped, and the episode is itself evidence for **B4-F10** — the
+archive route works and nothing in `src/` uses it.
+
+**Method note, carried forward.** Each finding was put to the user with its severity, what was
+**measured** versus **inferred**, and what it costs if ignored. Where a claim's basis could be read
+two ways, a verification question was asked rather than resolved by assumption — the discipline the
+withdrawn "USER RULING" of **B3-C3** failed. Four verification questions were asked (on B4-F26's
+prescriptive clause, B4-F13's counterfactual, B4-F20's unit caveat, and the scope of the F20
+re-derivation); **two of the four changed what was recorded**, and one — B4-F20's — exposed the
+larger amendment. Two questions were answered ambiguously and were **re-asked rather than
+interpreted**.
+
+**What this walkthrough did not do.** It added no findings and no carry items. Both amendments
+correct *how a number was derived*; neither introduces a new subject. A2 is not started — the gate
+is all 12 reviews, and B4 being walked does not open it.
 
 ---
 
@@ -1263,7 +1350,7 @@ Weaker than the rest, explicitly:
 | The XNYS-vs-XNAS equivalence | **Measured over 2004–2026 only.** Says nothing about pre-2004 or about intraday differences |
 | ~~That trading was **halted** on the four March 2020 dates — recalled, not verified~~ | **SUPERSEDED 2026-08-11 — now VERIFIED from a venue record.** NYSE's halt history returns **522 / 787 / 825 / 1,481** entries on those four dates, plus a named `LULD pause` on **XLI** (**B4-F28**). Replaced rather than deleted: this entry existed for six days and the correction is the point |
 | That **LULD halts** caused the 2015-08-24 lows | **Still inferred — the halt source does not reach that far back** (it starts 2019-02-22). The **price behaviour is measured**; the mechanism is not. Weight added, though: the vendor's own reason vocabulary includes *"ETF Component Prices Not Available"*, so the failure mode is one the exchange names — just not for a date we can query |
-| The June 2023 volume break was caused by the regulatory action | **UNVERIFIED — deliberately.** The **break is measured** (13×, dated to 2023-06-06→08, 3.1× venue-specific). Attributing it to a specific external cause is exactly the leap **A1-F19** shows going wrong. The finding claims a venue event, not a named one |
+| The June 2023 volume break was caused by the regulatory action | **UNVERIFIED — deliberately.** The **break is measured** (4.30× May→July, dated to 2023-06-06→08, **3.15×** venue-specific). Attributing it to a specific external cause is exactly the leap **A1-F19** shows going wrong. The finding claims a venue event, not a named one |
 | The market-wide share of the crypto volume decline | **Estimated from the ours÷Global ratio**, which is computed across two series on **different units** (**A1-F9**). The *ratio change* is meaningful; the ~⅓ / ~⅔ split is approximate |
 | That 2015-08-24's bars are "correct" | **Measured as internally consistent** (OHLC ordering, bounds). Not verified against a second vendor for that date — the snapshot is single-source pre-2016 |
 | "No vendor revisions have occurred" | **Measured on 3,409 crypto bars in 7 sampled windows** — not the full 19,335-bar series, and **not at all for equity**. A revision outside the sample would not have been seen. The finding (**B4-F21**) claims *exposure*, not absence |
@@ -1284,4 +1371,4 @@ Everything else carries a `file:line`, a query, or command output produced this 
 **Amended 2026-08-05 after a user question — §B4.1(h) added, measuring the "present but distorted" class (B4-F18, B4-F19, B4-F20; B4-C11, B4-C12). One of this review's own hypotheses was REFUTED by that measurement (Binance.US price dislocation) and one of its own claims corrected (the 12 small crypto gaps were enumerated by A1) — both recorded in §B4.0.**
 **Amended again 2026-08-10 after "what haven't we considered?" — §B4.1(i) records a nine-class completeness pass: 6 findings (B4-F21…F26), 3 carry items (B4-C13…C15), and 3 clean negatives logged in §B4.0 with their evidence. One of this review's own measurements was wrong and was corrected before it was written down.**
 **Source hunt 2026-08-11 (§B4.3) — equity halts have a free retrospective source (71,718 records, 2019-02-22→); equity pre-2019 and all of crypto have none. B4-F27/F28/F29 added, B4-C4 restated, B4-F18 upgraded from inferred to venue-confirmed, and one §Confidence entry superseded in place.**
-**Not yet walked with the user.**
+**Walked finding-by-finding with the user 2026-08-25 — 27 of 29 stand unamended; B4-F20 and B4-F26 amended, B4-F13/F17/F24 carry smaller corrections. No new findings, no new carry items, no IDs retired. See §B4.11.**
